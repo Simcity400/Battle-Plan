@@ -781,3 +781,47 @@ refused!(
     "remove_relation_rule_override={target=BBB usage_desc=SYN_DESC can_send_volunteers=yes}",
     "unknown relation rule usage_desc (1403AF060/1403B4150)"
 );
+
+#[test]
+fn named_party_effect_keeps_plain_text_without_unrelated_map_or_variable_inputs() {
+    let mut fixture = Fixture::new();
+    let (catalogue, _folder) = folder_catalogue(&[
+        (
+            "common/ideologies/synthetic.txt",
+            "ideologies={plain_group={}}",
+        ),
+        (
+            "common/defines/synthetic.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "localisation/plain_l_english.yml",
+            "\u{feff}l_english:\n plain_group:0 \"Plain group\"\n PLAIN_NAME:0 \"Plain name\"\n POLITICS_PARTY_NAME_CHANGE:0 \"Party $IDEOLOGY$ => $NAME$\"\n",
+        ),
+    ]);
+    fixture.catalogue = catalogue;
+    *fixture.frame.tables[TableId::PoliticalParties.index()] =
+        TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
+            country: 100,
+            id: 20,
+            token: b"plain_group".to_vec(),
+            ..Default::default()
+        }]));
+    *fixture.frame.tables[TableId::Provinces.index()] = TableView::Unavailable {
+        reason: "unrelated province read failed".into(),
+    };
+    *fixture.frame.tables[TableId::ScriptVariables.index()] = TableView::Unavailable {
+        reason: "cached pointer opens no variable read".into(),
+    };
+    let names = fixture.catalogue.content.layers.key_names().unwrap();
+    let output = fixture.render(
+        "set_party_name={ideology=plain_group long_name=PLAIN_NAME}",
+        &mut fresh(),
+        Content {
+            key_names: Some(&names),
+            ..Default::default()
+        },
+    );
+    assert_eq!(output.text, "Party Plain group => Plain name\n");
+    assert!(output.refusals.is_empty(), "{:?}", output.refusals);
+}

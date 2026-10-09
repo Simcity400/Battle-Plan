@@ -1,13 +1,14 @@
-import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, TOP_COUNTRIES } from '../../charts/race/options.ts';
+import { TOP_COUNTRIES } from '../../charts/race/options.ts';
+import { partsRaceOptions } from '../../charts/race/partsRaceOptions.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { REFITS_OPTION } from '../../dashboard/equipment.ts';
-import type { OptionField, OptionValue } from '../../dashboard/options';
+import type { OptionField } from '../../dashboard/options';
 import { GROUPINGS, MEASURES } from './producedData.ts';
-
-const view = (options: Readonly<Record<string, OptionValue>>) => options.view ?? 'race';
+import { breakdownOption } from '../../charts/drill/drillState.ts';
 
 export const OPTIONS: readonly OptionField[] = [
-  raceViewOption('equipment'),
+  ...partsRaceOptions('equipment').map(field => field.key === 'show'
+    ? breakdownOption([{ id: 'breakdown', label: 'Equipment produced breakdown' }], 'Equipment produced') : field),
   { key: 'measure', section: 'options', label: 'Measure', hint: 'Per week and per month count what was delivered in the week or month before the moment shown',
     kind: 'choice', default: 'total', choices: MEASURES.map(item => ({ value: item.value, label: item.label })) },
   { key: 'grouping', section: 'options', label: 'Group by', kind: 'choice', default: 'type',
@@ -15,12 +16,6 @@ export const OPTIONS: readonly OptionField[] = [
   { key: 'included', section: 'options', label: 'Included types', hint: 'From the campaign’s own content', kind: 'content-set',
     automatic: 'All types', default: '' },
   REFITS_OPTION,
-  { key: 'split', section: 'options', label: 'Split bars by group', hint: 'One segment per type, variant or arm instead of one total', kind: 'toggle', default: false,
-    visibleWhen: options => view(options) === 'race' },
-  DATE_OVERLAY_OPTION,
-  { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true, visibleWhen: options => view(options) === 'lines' },
-  ...RACE_TIME_OPTIONS,
-  ...RACE_AXIS_OPTIONS,
 ];
 
 export const definition = {

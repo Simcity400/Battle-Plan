@@ -41,7 +41,7 @@ function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'sourc
   spec: FactSpec<V>, maxHours: number, attempt: number) {
   // Structured, so no tag (a mod's tags may hold any character) can blur two requests.
   const content = useContentRevision(client);
-  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, spec.product, content]) : '';
+  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id, spec.product, spec.identity, content]) : '';
   // The same countries in another order are the same request (`factsKey`).
   const key = factsKey(trackKey, wanted);
   const [version, setVersion] = useState(0);
@@ -77,7 +77,7 @@ function useFactStore<V>(client: DashboardClient, track: Pick<BoundTrack, 'sourc
 const NAMES: FactSpec<string> = {
   product: 'country-styles', perRequest: 64,
   params: (branchId, hour, tags) => ({ branchId, hour, tags }),
-  extract: data => new Map((data as CountryStyleReply).styles.flatMap(style => style.name ? [[style.tag, style.name] as const] : [])),
+  extract: data => new Map((data as CountryStyleReply).styles.flatMap(style => typeof style.name === 'string' ? [[style.tag, style.name] as const] : [])),
 };
 
 /** Country names as recorded at the given hours (`country-styles`), for labels
@@ -85,4 +85,10 @@ const NAMES: FactSpec<string> = {
 export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
   maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, string> {
   return useCountryFactsAt(client, track, wanted, active, NAMES, maxHours, attempt);
+}
+
+/** Name reads retain pending, failed and completed-missing states for dated labels. */
+export function useCountryNamesRead(client: DashboardClient, track: Pick<BoundTrack, 'source' | 'branch'> | undefined, wanted: readonly NameAt[], active: boolean,
+  maxHours = MAX_NAME_HOURS, attempt = 0): ReadonlyMap<string, string | null | typeof FAILED_FACT> {
+  return useCountryFactsRead(client, track, wanted, active, NAMES, maxHours, attempt);
 }

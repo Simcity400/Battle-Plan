@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { laneStops } from '../../charts/timeline/layout.ts';
 import { fitTooltip, tooltipText } from '../../charts/tooltip.ts';
-import type { LineDetail, LineHistory, LineRun, LineStep, OutputRun, ProductionLineDetailReply, ProductionLinesReply, VariantName } from '../../generated/dashboard';
-import { bandScale, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalAt, finalTooltip, gapTooltip, historyLanes, iconImage, laneStatus, lineTooltip,
-  linesAt, linesKnown, organisationAt, organisationText, outputAt, outputTotal, stepTooltip, totalNote, totalText, validateDetailReply,
-  unreadNote, validateProductionReply, variantAt, variantName, variantParts, weeklyOutput, weeklyText, windowOf, withNote } from './productionData.ts';
+import type { LineDetail, LineHistory, LineRun, LineStep, OutputRun, ProductionLineDetailReply, ProductionLinesReply, ProductionModifierRun, VariantName } from '../../generated/dashboard';
+import { bandScale, breakdownTooltip, detailOf, efficiencyFraction, efficiencyPercent, factoryScale, finalAt, finalTooltip, gapTooltip, historyLanes, iconImage, laneStatus, lineTooltip,
+  linesAt, linesKnown, modifierTooltip, organisationAt, organisationText, outputAt, outputTotal, productionLineKey, productionLineToken, stepTooltip, totalNote, totalText, validateDetailReply,
+  unreadNote, validateProductionReply, validateBreakdownReply, variantAt, variantName, variantParts, weeklyOutput, weeklyText, windowOf, withNote } from './productionData.ts';
 
 const run = (firstHour: number, lastHour: number, values: Partial<LineRun> = {}): LineRun => ({
   firstHour, lastHour, startsSegment: false, variant: '70', mio: '79', activeFactories: 8, requestedFactories: 10, maxFactories: 150,
@@ -36,7 +36,7 @@ function line(key: string, runs: LineRun[], values: Partial<LineHistory> & { out
   return {
     history: { key, handle: key.split('#')[0], kind: 'military', steps: stepsOf(runs), finalOutput: null, endedBy: null, beforeRecording: true,
       betweenReads: null, variants: [], ...rest },
-    detail: { key, runs, output: outputs },
+    detail: { key, runs, output: outputs, modifiers: [] },
   };
 }
 const variant = (id: string, firstHour: number, name: string | null, values: Partial<VariantName> = {}): VariantName => ({
@@ -400,4 +400,98 @@ test('hours whose output read was lost say lines made and ended there may be mis
   assert.match(tip.note ?? '', /Lines made and ended here may be missing/);
   assert.match(gapTooltip(reply, reply.lines[0], 90, 'day 90', day, unreadNote(reply, 110)).note ?? '', /may be missing/);
   assert.throws(() => validateProductionReply({ ...REPLY, unreadOutput: [{ firstHour: 130, lastHour: 120 }] }));
+});
+
+
+test('efficiency and output breakdowns keep recorded operands and name missing attribution', () => {
+  const known = run(148, 171, { variant: '71', activeFactories: 12, maxFactories: 9, speedRaw: '9007199254741499', costRaw: '50001' });
+  const [efficiency] = breakdownTooltip(REPLY, known, 150, 'efficiency', { subtitle: day(150), note: 'Read day 148.' });
+  assert.equal(efficiency.title, 'Gewehr 98');
+  assert.equal(efficiency.subtitle, 'day 150');
+  assert.equal(efficiency.rows.find(row => row.label === 'Factories included in average')?.value, '9');
+  assert.equal(efficiency.rows.find(row => row.label === 'Other / not identified')?.value, 'Not recorded');
+  assert.match(efficiency.note ?? '', /growth, cap, retention/);
+  assert.match(efficiency.note ?? '', /Read day 148/);
+  const [output] = breakdownTooltip(REPLY, known, 150, 'output', {});
+  assert.equal(output.rows.find(row => row.label === 'Recorded output per tick')?.value, '90,071,992,547.41499 IC');
+  assert.equal(output.rows.find(row => row.label === 'Cost per unit')?.value, '0.50001 IC');
+  assert.equal(output.rows.find(row => row.label === 'Other / not identified')?.value, 'Not recorded');
+  assert.match(output.note ?? '', /factory output modifiers/);
+  assert.equal(breakdownTooltip(REPLY, known, 170, 'output', {})[0].title, 'Gewehr 98k');
+});
+
+test('output breakdown never turns a missing rate into zero or restores an unread name', () => {
+  const unknown = { ...REPLY, variants: [variant('70', 100, 'Before gap'), variant('70', 124, null, { known: false })] };
+  const [tip] = breakdownTooltip(unknown, run(124, 147, { weeklyRaw: null, costRaw: '0', speedRaw: '-1' }), 130, 'output', {});
+  assert.equal(tip.title, 'Variant 70');
+  assert.equal(tip.rows.find(row => row.label === 'Output')?.value, 'Not recorded');
+  assert.equal(tip.rows.find(row => row.label === 'Recorded output per tick')?.value, '\u22120.00001 IC');
+  assert.equal(tip.rows.find(row => row.label === 'Cost per unit')?.value, '0.00000 IC');
+  assert.match(tip.note ?? '', /name is not recorded at this time/);
+});
+
+test('native modifier hover retains exact signed parts and rejects a non-reconciling reply', () => {
+  const modifiers: ProductionModifierRun = { firstHour: 148, lastHour: 171, warnings: [], groups: [{ id: 'output', label: 'Recorded daily production IC',
+    totalRaw: '100000', decimals: 5, unit: 'IC', note: 'Native retained operands.', parts: [
+      { id: 'technology', label: 'Synthetic technology', raw: '120000', unknown: null },
+      { id: 'other', label: null, raw: '-20000', unknown: 'Signed correction' },
+    ] }] };
+  const reply = { branchId: '1', tag: 'GER', key: '5#1', groups: [{ id: 'output', label: 'Output' }], reads: [148], runs: [modifiers], warnings: [] };
+  assert.equal(validateBreakdownReply(reply), reply);
+  const [tip, compact] = breakdownTooltip(REPLY, run(148, 171), 150, 'output', {}, modifiers);
+  for (const form of [tip, compact]) {
+    assert.equal(form.rows.find(row => row.label === 'Factories')?.value, '8 of 10 requested');
+    assert.equal(form.rows.find(row => row.label === 'Output')?.value, '43.4 per week');
+    assert.equal(form.rows.find(row => row.label === 'Recorded output per tick')?.value, '3.10000 IC');
+    assert.equal(form.rows.find(row => row.label === 'Cost per unit')?.value, '0.50000 IC');
+    assert.equal(form.rows.find(row => row.label === 'Recorded daily production IC')?.value, '1.00000 IC');
+  }
+  assert.equal(tip.rows.find(row => row.label === 'Synthetic technology')?.value, '1.20000 IC');
+  assert.equal(tip.rows.find(row => row.label === 'Other / not identified')?.value, '\u22120.20000 IC');
+  const [full, counted] = modifierTooltip(modifiers.groups[0], 'day 150', () => undefined);
+  for (const form of [full, counted]) assert.equal(form.rows[0].value, '1.00000 IC');
+  assert.deepEqual(full.rows.slice(1).map(row => row.value), ['1.20000 IC', '\u22120.20000 IC']);
+  assert.match(tip.note ?? '', /Click for the full breakdown/);
+  assert.throws(() => validateBreakdownReply({ ...reply, runs: [{ ...modifiers, groups: [{ ...modifiers.groups[0], totalRaw: '120000' }] }] }));
+});
+
+test('modifier reconciliation uses the exact wide signed sum rather than modulo 64 bits', () => {
+  const group = { id: 'output', label: 'Output', totalRaw: '-9223372036854775808', decimals: 5, unit: 'IC', note: '', parts: [
+    { id: 'first', label: 'First', raw: '9223372036854775807', unknown: null },
+    { id: 'second', label: 'Second', raw: '1', unknown: null },
+  ] };
+  const reply = { branchId: '1', tag: 'GER', key: '5#1', groups: [{ id: 'output', label: 'Output' }], reads: [148],
+    runs: [{ firstHour: 148, lastHour: 171, warnings: [], groups: [group] }], warnings: [] };
+  assert.throws(() => validateBreakdownReply(reply));
+  const exact = { ...reply, runs: [{ ...reply.runs[0], groups: [{ ...group, parts: [...group.parts,
+    { id: 'other', label: null, raw: '-18446744073709551616', unknown: 'Wide signed correction' }] }] }] };
+  assert.equal(validateBreakdownReply(exact), exact);
+  const [tip] = breakdownTooltip(REPLY, run(148, 171, { speedRaw: '-9223372036854775808' }), 150, 'output', {}, exact.runs[0]);
+  assert.equal(tip.rows.find(row => row.label === 'Other / not identified')?.value, '\u2212184,467,440,737,095.51616 IC');
+});
+
+test('saved production line choices retain campaign, branch and opaque producing country identity', () => {
+  const token = productionLineToken('a1', 'branch:one', 'country:[] / α', '5#1');
+  assert.equal(productionLineKey('a1', 'branch:one', 'country:[] / α', token), '5#1');
+  assert.equal(productionLineKey('a2', 'branch:one', 'country:[] / α', token), null);
+  assert.equal(productionLineKey('a1', 'branch:two', 'country:[] / α', token), null);
+  assert.equal(productionLineKey('a1', 'branch:one', 'country:[] / β', token), null);
+  assert.equal(productionLineKey('a1', 'branch:one', 'country:[] / α', '5#1'), null);
+  assert.equal(productionLineKey('a1', 'branch:one', 'country:[] / α', 'a1:not-json'), null);
+});
+
+test('long modifier chart hovers fit while retaining every spoken source and the unknown whole', () => {
+  const group = { id: 'output', label: 'Daily output', totalRaw: null, decimals: 5, unit: 'IC', note: 'One operand was not recorded.',
+    parts: Array.from({ length: 5000 }, (_, index) => ({ id: `source-${index}`, label: `Synthetic source ${index}`,
+      raw: index === 4999 ? '-1' : '1', unknown: index === 4999 ? 'Stored label could not be resolved.' : null })) };
+  const forms = modifierTooltip(group, 'day 150', () => '#123456');
+  const fitted = fitTooltip(forms, 180, { full: forms[0] });
+  assert.equal(fitted.rows.find(row => row.label === 'Daily output')?.value, 'Not recorded');
+  assert.ok(fitted.rows.length < group.parts.length);
+  assert.match(tooltipText(fitted), /Synthetic source 4999 −0\.00001 IC/);
+  assert.match(tooltipText(fitted), /Stored label could not be resolved/);
+  assert.match(fitted.note ?? '', /Click to show this day/);
+  const known = modifierTooltip({ ...group, totalRaw: '4998' }, 'day 150', () => undefined);
+  assert.equal(known[0].rows[0].value, '0.04998 IC');
+  assert.equal(known[1].rows[0].value, '0.04998 IC');
 });

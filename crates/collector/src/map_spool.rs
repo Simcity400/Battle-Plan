@@ -40,7 +40,11 @@ pub(crate) fn table_inputs(
             captured.land_participants_len,
             projection.as_deref_mut(),
         ),
-        fleets(&captured.naval.fleets, projection.as_deref_mut()),
+        fleets(
+            &captured.naval.fleets,
+            &captured.naval.fleet_names,
+            projection.as_deref_mut(),
+        ),
         task_forces(&captured.naval.task_forces, projection.as_deref_mut()),
         ships(&captured.naval.ships, projection.as_deref_mut()),
         naval_combats(&captured.naval_combats, projection.as_deref_mut()),
@@ -213,6 +217,7 @@ fn land_combats(
 
 fn fleets(
     captured: &CaptureRows<cfleet::Row>,
+    names: &[u8],
     projection: Option<&mut Projection<'_>>,
 ) -> TableInput {
     scalar_table::<tables::Fleets, _>(
@@ -224,6 +229,14 @@ fn fleets(
             id: row.id,
             owner: row.owner,
             home_base: row.home_base,
+            name: if row.name_known {
+                range(names, row.name_start, row.name_len)
+                    .map(|bytes| engine::allocation::owned_vec(engine::allocation::copy_vec(bytes)))
+            } else {
+                None
+            }
+            .into(),
+            leader: row.leader.into(),
         },
     )
 }
@@ -614,12 +627,17 @@ mod tests {
         );
         captured.land_participants = vec![u64::MAX, 0x100000002, u64::MAX];
         captured.land_participants_len = 3;
+        captured.naval.fleet_names = b"Fleet".to_vec();
         set(
             &mut captured.naval.fleets,
             vec![cfleet::Row {
                 id: u64::MAX,
                 owner: u32::MAX,
                 home_base: u32::MAX - 1,
+                leader: None,
+                name_start: 0,
+                name_len: 5,
+                name_known: true,
             }],
         );
         set(
@@ -741,6 +759,8 @@ mod tests {
                 id: u64::MAX,
                 owner: u32::MAX,
                 home_base: u32::MAX - 1,
+                name: replay::rows::Recorded::Value(Some(b"Fleet".to_vec())),
+                leader: replay::rows::Recorded::Value(None),
             }]),
             TableRows::TaskForces(vec![TaskForceRow {
                 id: u64::MAX,

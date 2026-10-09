@@ -14,9 +14,11 @@ pub(crate) struct AirWingJob {
     pub(super) equipment: Vec<rows::WingEquipmentRow>,
     pub(super) cumulative: Vec<cair_wing::CumulativeRow>,
     pub(super) memberships: Vec<WingMembershipRead>,
+    pub(crate) game_score: crate::extended::game_score::AirInputs,
+    pub(super) game_score_enabled: bool,
     pub(super) source_len: usize,
     pub(crate) map_outcome: Outcome,
-    pub(super) source_outcome: Outcome,
+    pub(crate) source_outcome: Outcome,
     pub(super) naval_outcome: Outcome,
     pub(super) equipment_outcome: Outcome,
     pub(super) cumulative_outcome: Outcome,
@@ -27,6 +29,7 @@ pub(crate) struct AirWingJob {
     pub(super) required_memberships: usize,
     pub(super) acquired: bool,
     pub(crate) membership_ticks: u64,
+    pub(crate) game_score_ticks: [u64; 2],
     pub(super) raw_bytes: [u64; WING_PACK_N],
     pub(super) capacity_charge: crate::raw_memory::Charge,
 }
@@ -43,6 +46,8 @@ impl Default for AirWingJob {
             equipment: Vec::new(),
             cumulative: Vec::new(),
             memberships: Vec::new(),
+            game_score: Default::default(),
+            game_score_enabled: false,
             source_len: 0,
             map_outcome: NO_WING_SOURCE,
             source_outcome: NO_WING_SOURCE,
@@ -56,6 +61,7 @@ impl Default for AirWingJob {
             required_memberships: 0,
             acquired: false,
             membership_ticks: 0,
+            game_score_ticks: [0; 2],
             raw_bytes: [0; 2],
             capacity_charge: Default::default(),
         }
@@ -63,7 +69,11 @@ impl Default for AirWingJob {
 }
 
 impl AirWingJob {
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_game_score(false)
+    }
+    pub(crate) fn with_game_score(enabled: bool) -> Self {
         let mut job = Self {
             names: allocation::owned_vec(allocation::default_vec(
                 crate::country_scale::air_wing_name_bytes(),
@@ -73,22 +83,36 @@ impl AirWingJob {
             equipment: allocation::owned_vec(allocation::default_vec(8192)),
             cumulative: allocation::owned_vec(allocation::default_vec(4096)),
             memberships: allocation::owned_vec(allocation::default_vec(8192)),
+            game_score: if enabled {
+                crate::extended::game_score::AirInputs::for_wing_job(8192)
+            } else {
+                Default::default()
+            },
+            game_score_enabled: enabled,
             ..Default::default()
         };
         job.update_capacity_charge();
         job
     }
-    pub(super) fn update_capacity_charge(&mut self) {
+    pub(crate) fn update_capacity_charge(&mut self) {
         use crate::raw_memory::{Capacity, vector_bytes};
         self.capacity_charge.set(Capacity {
             payload_vectors: vector_bytes(&self.map_rows)
                 + vector_bytes(&self.equipment)
                 + vector_bytes(&self.cumulative)
                 + vector_bytes(&self.memberships)
-                + vector_bytes(&self.names),
+                + vector_bytes(&self.names)
+                + self.game_score.allocated_bytes() as u64,
             auxiliary_vectors: vector_bytes(&self.sources),
             ..Default::default()
         });
+    }
+    pub(crate) fn presize_game_score(&mut self) {
+        if !self.game_score_enabled {
+            return;
+        }
+        self.game_score.presize();
+        self.update_capacity_charge();
     }
     pub fn has_storage(&self) -> bool {
         !self.sources.is_empty()
@@ -110,7 +134,9 @@ impl AirWingJob {
         self.required_memberships = 0;
         self.acquired = false;
         self.membership_ticks = 0;
+        self.game_score_ticks = [0; 2];
         self.raw_bytes = [0; 2];
+        self.game_score.begin(false);
     }
     pub fn grow_for_next(&self) -> bool {
         self.names_required
@@ -127,6 +153,7 @@ impl AirWingJob {
                 .any(|(&required, present)| required > present)
             || matches!(self.source_outcome, Outcome::Truncated { .. })
             || self.required_memberships > self.memberships.len()
+            || (self.game_score_enabled && self.game_score.grow_for_next())
     }
     pub fn grow(&mut self) {
         crate::table_capture::grow_vec(
@@ -148,6 +175,9 @@ impl AirWingJob {
                 .saturating_add(unread_rows as usize)
                 .max(self.sources.len().saturating_mul(2));
             crate::table_capture::grow_vec(&mut self.sources, required);
+        }
+        if self.game_score_enabled {
+            self.game_score.grow_owned();
         }
         self.update_capacity_charge();
     }
@@ -221,6 +251,7 @@ pub(crate) struct AirWingCopyReport {
     pub raw_ok: bool,
     pub copy_ticks: [u64; WING_PACK_N],
     pub raw_bytes: [u64; WING_PACK_N],
+    pub game_score_ticks: [u64; 2],
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AirWingCopyContext {
@@ -232,6 +263,7 @@ pub(crate) struct AirWingCopyContext {
     pub limits: [usize; 3],
     /// Independently pooled naval source capacity.
     pub naval_limit: usize,
+    pub game_score: bool,
 }
 
 impl Captured {
@@ -265,6 +297,8 @@ fn copy_air_pass(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
         job.limits[2] = 0;
     }
     job.required = job.limits;
+    job.game_score_enabled = ctx.game_score;
+    job.game_score.begin(ctx.game_score);
     let naval_limit = if job.theatres_active {
         ctx.naval_limit
     } else {
@@ -295,14 +329,18 @@ fn copy_air_pass(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
         required: 0,
         failures: 0,
     };
-    let walked = cair_wing::walk_shared_names(
+    let score_ticks = std::cell::Cell::new([0_u64; 2]);
+    let score_limit = job.game_score.wing_limit();
+    let score = std::cell::RefCell::new(&mut job.game_score);
+    let walked = cair_wing::walk_shared_game_score_with_owners(
         &source,
         ctx.base,
         ctx.game_state,
         &mut job.map_rows[..ctx.limits[0]],
         &mut job.sources,
         naval_limit,
-        &mut names,
+        Some(&mut names),
+        score_limit,
         |pointer, pool, row, admitted| {
             let wing = WingSource { pointer, pool, row };
             if admitted.sources && !matches!(equipment, Outcome::Unavailable { .. }) {
@@ -355,21 +393,45 @@ fn copy_air_pass(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
             source.mask.set(3);
             reads.select(TableId::WingEquipment);
         },
+        |pointer, row| {
+            let _reads = read_accounting::table(TableId::AirWingGameScoreStats);
+            source.mask.set(0);
+            let started = qpc();
+            score.borrow_mut().wing(&source, pointer, row);
+            let mut ticks = score_ticks.get();
+            ticks[1] = ticks[1].saturating_add(elapsed(started));
+            score_ticks.set(ticks);
+            source.mask.set(3);
+        },
+        |slot, entry| {
+            if !ctx.game_score {
+                return;
+            }
+            let _reads = read_accounting::table(TableId::CountryGameScoreInputs);
+            source.mask.set(0);
+            let started = qpc();
+            score.borrow_mut().owner(&source, ctx.base, slot, entry);
+            let mut ticks = score_ticks.get();
+            ticks[0] = ticks[0].saturating_add(elapsed(started));
+            score_ticks.set(ticks);
+            source.mask.set(3);
+        },
     );
     job.names_len = names.used;
     job.names_required = names.required;
     job.name_failures = names.failures;
     crate::map_capture::observe_air_wing_name_refusals(names.failures);
-    job.map_outcome = walked.map;
-    job.source_outcome = walked.sources;
+    score.borrow_mut().finish(walked.score);
+    job.map_outcome = walked.shared.map;
+    job.source_outcome = walked.shared.sources;
     job.naval_outcome = if job.theatres_active {
-        walked.naval
+        walked.shared.naval
     } else {
         SKIPPED
     };
-    job.equipment_outcome = require_parent(walked.sources, equipment);
+    job.equipment_outcome = require_parent(walked.shared.sources, equipment);
     job.cumulative_outcome = if job.cumulative_active {
-        require_parent(walked.sources, cumulative)
+        require_parent(walked.shared.sources, cumulative)
     } else {
         SKIPPED
     };
@@ -377,6 +439,7 @@ fn copy_air_pass(job: &mut AirWingJob, memory: &impl Memory, ctx: AirWingCopyCon
     job.membership_ticks = membership_ticks;
     job.raw_bytes = source.bytes.get();
     job.acquired = true;
+    job.game_score_ticks = score_ticks.get();
 }
 
 pub(crate) fn copy_air_refresh(
@@ -419,8 +482,14 @@ pub(crate) fn copy_air_refresh(
     copy_air_pass(job, memory, ctx);
     AirWingCopyReport {
         raw_ok: job.acquired,
-        copy_ticks: [elapsed(started).saturating_sub(job.membership_ticks), 0],
+        copy_ticks: [
+            elapsed(started)
+                .saturating_sub(job.membership_ticks)
+                .saturating_sub(job.game_score_ticks.iter().sum()),
+            0,
+        ],
         raw_bytes: job.raw_bytes,
+        game_score_ticks: job.game_score_ticks,
     }
 }
 

@@ -1,9 +1,10 @@
-import { AXIS_HEIGHT, ROW_HEIGHT, laneOffset } from './layout.ts';
+import { AXIS_HEIGHT, ROW_HEIGHT, laneOffset, lanesInView } from './layout.ts';
+import type { TimelineRows } from './layout';
 import { backingSize } from '../surface.ts';
 
 export interface LaneWindow { top: number; height: number; first: number; end: number }
 
-export const timelineHeight = (count: number, rowHeight = ROW_HEIGHT) => AXIS_HEIGHT + count * rowHeight + 8;
+export const timelineHeight = (count: number, rowHeight = ROW_HEIGHT, rows?: TimelineRows) => AXIS_HEIGHT + (rows?.height ?? count * rowHeight) + 8;
 
 /** An absolute view needs a width: its absolute canvas cannot size it. */
 export function timelineViewStyle(height: number, viewportHeight: number, stickyAxis = true) {
@@ -13,21 +14,22 @@ export function timelineViewStyle(height: number, viewportHeight: number, sticky
 
 /** The canvas covers the clipped viewport and a viewport of overscan on either side.
  * Coordinates remain those of the full timeline, including its date axis. */
-export function laneWindow(count: number, visibleTop: number, visibleHeight: number, rowHeight = ROW_HEIGHT): LaneWindow {
-  const total = timelineHeight(count, rowHeight);
+export function laneWindow(count: number, visibleTop: number, visibleHeight: number, rowHeight = ROW_HEIGHT, rows?: TimelineRows): LaneWindow {
+  const total = timelineHeight(count, rowHeight, rows);
   const overscan = Math.max(2 * rowHeight, visibleHeight);
   const top = Math.floor(Math.max(0, Math.min(total - 1, visibleTop - overscan)));
   const bottom = Math.ceil(Math.min(total, Math.max(top, visibleTop + visibleHeight + overscan)));
+  const bounds = rows ? lanesInView(Math.max(0, top - AXIS_HEIGHT), bottom - Math.max(top, AXIS_HEIGHT) + AXIS_HEIGHT, count, rows) : null;
   return {
     top, height: Math.max(1, bottom - top),
-    first: Math.max(0, Math.min(count, Math.floor((top - AXIS_HEIGHT) / rowHeight))),
-    end: Math.max(0, Math.min(count, Math.ceil((bottom - AXIS_HEIGHT) / rowHeight))),
+    first: bounds ? Math.min(count, bounds[0]) : Math.max(0, Math.min(count, Math.floor((top - AXIS_HEIGHT) / rowHeight))),
+    end: bounds ? Math.min(count, bounds[1] + 1) : Math.max(0, Math.min(count, Math.ceil((bottom - AXIS_HEIGHT) / rowHeight))),
   };
 }
 
 /** Large scroll jumps need painting in the scroll event, before the next frame. */
-export function coversViewport(window: LaneWindow, count: number, visible: { top: number; height: number }, rowHeight = ROW_HEIGHT): boolean {
-  const total = timelineHeight(count, rowHeight);
+export function coversViewport(window: LaneWindow, count: number, visible: { top: number; height: number }, rowHeight = ROW_HEIGHT, rows?: TimelineRows): boolean {
+  const total = timelineHeight(count, rowHeight, rows);
   return visible.height <= 0 || (window.top <= Math.max(0, visible.top)
     && window.top + window.height >= Math.min(total, visible.top + visible.height));
 }
@@ -76,12 +78,12 @@ export function visibleTimeline(element: HTMLElement): { top: number; height: nu
 /** The visible full-timeline coordinates and the sticky view's scroll offset. Both
  * axis modes use the same clipped, overscanned canvas and pointer coordinates. */
 export function timelineViewport(content: HTMLElement, view: HTMLElement, count: number, rowHeight = ROW_HEIGHT,
-  stickyAxis = true): { visible: { top: number; height: number }; offset: number } {
+  stickyAxis = true, rows?: TimelineRows): { visible: { top: number; height: number }; offset: number } {
   if (!stickyAxis) return { visible: visibleTimeline(content), offset: 0 };
   const rect = view.getBoundingClientRect();
   const box = content.getBoundingClientRect();
   const toLayout = rect.height ? view.clientHeight / rect.height : 1;
-  const offset = laneOffset((rect.top - box.top) * toLayout, 0, view.clientHeight, timelineHeight(count, rowHeight));
+  const offset = laneOffset((rect.top - box.top) * toLayout, 0, view.clientHeight, timelineHeight(count, rowHeight, rows));
   const clipped = visibleTimeline(view);
   return { visible: { top: offset + clipped.top, height: clipped.height }, offset };
 }

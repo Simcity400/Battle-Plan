@@ -1,14 +1,30 @@
 # Nuclear arsenal
 
-Reads `country-nukes`, a cached branch scan of every country's hourly `Nukes` rows. Fresh complete read hours are retained separately from compressed runs, so clipping or holding a run never changes the tooltip's supplying read date. The value is the game's whole stockpile counter, derived natively from `amount_raw`; `ready` counts delayed queued drops and is outside this widget. Native addresses sit beside the product's conversion and type-name mapping.
+## What it shows
 
-Race is the default, with types segmented and named through the recorded lexical dictionary and content-stack localisation. Lines show each country's total. One country by nuke type uses the shared stack. Top 10 ranks every country's nonzero recorded value, only while Countries records its existence; chosen existing countries keep their recorded zero. A proven empty read shows **No nuclear weapons yet.** An unknown or missing read says no stockpile was recorded. Chosen countries and smart groups use the same shared selection. A complete contiguous country array proves its total even when another country records more types; absent type rows never become zero in the type mix. An unnamed native ordinal retains its counted amount as **Unknown type N**, with the product's counted warning. Gaps and holes in the country's native array keep totals unknown. Names and flags in tooltips are read at the hovered hour. Right-click uses shared Jump to.
+The game’s whole nuclear stockpile counter as a race, total lines or one-country type mix, with a native-holder type drill.
 
-The shared country-race kit supplies Style A rendering, palette colours, smooth monotone lines, easing bars, ringed end dots and end labels, through the same path as Factories, Equipment produced and Fuel. Labels and tooltips retain exact recorded amounts and supplying read dates; unknown totals and gaps stop easing. End labels are on by default; the corner date is off. Both are settings, alongside playback and value axes. The optional one-country mix chooses the first selected country or the leading member of a group at the shown moment. Country choices use the shared selector without a smaller widget-specific limit.
+## Products it reads
 
-Browser appearance and live-game counter comparisons remain unverified by this no-game implementation task.
+[`country-nukes`](../../../../crates/dashboard/src/products/country_nukes.rs) supplies counters, type runs and independent read/identity histories; shared country facts supply dated looks.
 
-Drawn names and flags use the existing sampled `useCountryLooks` path: one grid
-hour per country, bounded by its recorded stretch and identity. Pending looks may
-retain the prior sample within that segment; completed missing reads use the
-shared fallback. Tooltips request country labels at the hovered hour.
+## Settings
+
+Top 10 by default, manual/groups; campaign/follow/pin/range, race/lines/mix, date/end labels, playback/axes and Show/drill choices.
+
+## Notable behaviour
+
+- Uses native whole-counter arithmetic, not ready queued drops. Content/dictionary names identify types. Top N ranks nonzero existing countries; manual known zero stays zero.
+- Read dates stay independent of compressed values. Missing rows/tables/identity and unknown totals break history and easing; no gap becomes zero.
+- Picks bind the native holder at the opening date through its aliases, excluding replacement holders. Overlap/keyboard choices hold the clicked hour until selection.
+- Manual tags select every recorded native holder under those tags and its dated aliases; backend requests keep literal picks. Smart groups use dated membership. Follow converts the clock through track alignment.
+- Drills retain signed type counts, unknown ordinals and exact whole-counter residual separately. Picking holds; Follow uses the real clock even from a held main view. Pin saves original actor/date; its country chip follows the displayed drill date.
+- Same-request NumericReply survives content-only refresh; source/selection/numeric changes mask stale picks immediately.
+
+## Files
+
+| File | Responsibility |
+|---|---|
+| [NuclearArsenalWidget.tsx](NuclearArsenalWidget.tsx), [NuclearCountryChip.tsx](NuclearCountryChip.tsx) | Shared race/drill and dated actor header. |
+| [nuclearArsenalData.ts](nuclearArsenalData.ts) | Validation, exact counts, actor-bound histories and pins; adjacent tests. |
+| [definition.ts](definition.ts), [index.ts](index.ts) | Options and registration. |

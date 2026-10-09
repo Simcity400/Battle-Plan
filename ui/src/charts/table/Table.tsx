@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
+import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { MenuItem } from '../../components/ContextMenu';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { hideTooltip, refreshTooltip, showTooltip, tooltipText } from '../tooltip';
@@ -8,8 +9,8 @@ import type { TooltipContent } from '../tooltip';
 import { movingRowClass, useRowMotion } from '../useRowMotion';
 import { useChartTokens } from '../useChartTokens';
 import { easeTau } from '../easing';
-import { barFraction, barMaximum, densityRowHeight, isMissing, nextSort, rankChanges, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
-import type { RankChange, Sort } from './logic';
+import { barFraction, barMaximum, densityRowHeight, groupedRows, isMissing, nextSort, rankChanges, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
+import type { RankChange, Sort, TableGroup } from './logic';
 import { cellContent, columnAlign, growColumnWidths, tableGrid } from './columns.ts';
 import type { TableColumn } from './columns';
 import { sortKey } from './options.ts';
@@ -22,6 +23,8 @@ export interface TableProps<T> {
   label: string; rows: readonly T[]; columns: readonly TableColumn<T>[]; rowKey: (row: T) => string;
   /** Current recorded tag order may differ from a country's stable motion key. */
   tieKey?: (row: T) => string;
+  /** Optional grouping keeps the same row identities, geometry and exact values. */
+  groupBy?: (row: T) => TableGroup;
   sort: Sort; setOption?: WidgetProps['setOption'];
   /** Content-dependent column choices encode their persisted sort token. */
   sortOptionValue?: (sort: Sort) => string;
@@ -38,7 +41,7 @@ export interface TableProps<T> {
 }
 
 /** style-5 Scoreboard: real table semantics, only the viewport's rows mounted. */
-export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
+export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey, groupBy, sort: storedSort, setOption, sortOptionValue = sortKey, cellBars = true,
   rank = false, rankMarkers = true, density = 'comfortable', rowHeight, onRowClick, muted, menu: rowMenu,
   tooltip, onVisibleRows, hoursPerSecond = 1 }: TableProps<T>) {
   const owner = useId();
@@ -57,10 +60,12 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const requestedSort = setOption ? storedSort : localSort ?? storedSort;
   const sortedColumn = columns.find(column => column.key === requestedSort.column && column.sortable !== false)
     ?? columns.find(column => column.sortable !== false);
-  const sort = { column: sortedColumn?.key ?? '', direction: requestedSort.direction };
+  const sort = { column: sortedColumn?.key ?? '', direction: sortedColumn?.direction ?? requestedSort.direction };
   const ordered = useMemo(() => {
-    return sortRows(rows, sortedColumn?.value ?? (() => null), sort.direction, rowKey, tieKey);
-  }, [rows, sortedColumn, sort.direction, rowKey, tieKey]);
+    const value = sortedColumn?.value ?? (() => null);
+    return groupBy ? groupedRows(rows, groupBy, value, sort.direction, rowKey, tieKey)
+      : sortRows(rows, value, sort.direction, rowKey, tieKey);
+  }, [rows, sortedColumn, sort.direction, rowKey, tieKey, groupBy]);
   const items = useMemo(() => ordered.map((item, slot) => ({ key: rowKey(item), item: { value: item, rank: slot + 1 } })), [ordered, rowKey]);
   const moving = useRowMotion(items);
   const committedWindow = useRef<{ items: typeof items; keys: ReadonlySet<string> } | null>(null);
@@ -68,7 +73,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
   const glideMs = easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion) * 2.5;
   const [ranks, setRanks] = useState<ReadonlyMap<string, RankChange>>(new Map());
   const rankSort = useRef('');
-  const ordering = sortKey(sort);
+  const ordering = `${groupBy ? 'grouped/' : ''}${sortKey(sort)}`;
   useLayoutEffect(() => {
     const reset = rankSort.current !== ordering;
     rankSort.current = ordering;
@@ -189,7 +194,7 @@ export default function Table<T>({ label, rows, columns, rowKey, tieKey = rowKey
         className={`${column.numeric ? 'is-numeric ' : ''}align-${columnAlign(column)}`} aria-label={column.label} data-tooltip={column.hint}
         aria-sort={column.sortable === false ? undefined : sort.column === column.key ? sort.direction : 'none'}>
         {column.sortable === false ? naturalContent(column, column.header) : <button type="button" aria-label={column.label} onClick={() => {
-          const next = nextSort(sort, column.key, column.numeric ? 'descending' : 'ascending');
+          const next = nextSort(sort, column.key, column.numeric ? 'descending' : 'ascending', column.direction);
           if (setOption) setOption('tableSort', sortOptionValue(next)); else setLocalSort(next);
         }}>{naturalContent(column, <>{column.header}{(sort.column === column.key || column.width === 'max-content') && <span className="table-sort" aria-hidden="true" style={{ visibility: sort.column === column.key ? undefined : 'hidden' }}> {sort.direction === 'descending' ? '▾' : '▴'}</span>}</>)}</button>}
       </th>)}</tr></thead>
@@ -253,6 +258,9 @@ export function CellBar({ value, maximum, children }: {
     style={{ width: `${barFraction(value, maximum) * 100}%` }} />}<span>{children}</span></span>;
 }
 
-export function CountryCell({ name, flag }: { name: string; flag?: string }) {
-  return <span className="table-country" title={name}>{flag ? <img src={flag} alt="" /> : <i className="table-flag-missing" aria-label="Flag not in this recording" />}<span>{name}</span></span>;
+export function CountryCell({ name, flag, flagReason, flagPending }: {
+  name: string; flag?: string; flagReason?: string; flagPending?: boolean;
+}) {
+  return <span className="table-country" title={name}><CountryFlagUrl className="table-country-flag"
+    url={flag} reason={flagReason} pending={flagPending} /><span>{name}</span></span>;
 }

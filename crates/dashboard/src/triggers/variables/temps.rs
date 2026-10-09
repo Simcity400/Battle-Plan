@@ -18,7 +18,11 @@ struct Operands<'v> {
 
 // AssignScopedVariableFromTokenText@140539370 parses into the existing
 // operand. Empty text changes nothing; a repeated nonliteral can keep fields.
-fn assign(evaluator: &Evaluator, operand: &mut ScopedVariable, text: &[u8]) -> Result<(), String> {
+pub(super) fn assign(
+    evaluator: &Evaluator,
+    operand: &mut ScopedVariable,
+    text: &[u8],
+) -> Result<(), String> {
     if text.is_empty() {
         return Ok(());
     }
@@ -39,7 +43,7 @@ fn assign(evaluator: &Evaluator, operand: &mut ScopedVariable, text: &[u8]) -> R
     Ok(())
 }
 
-fn zero() -> ScopedVariable {
+pub(super) fn zero() -> ScopedVariable {
     // Constructor@14014AAC0: literal zero, but parsed (+8) is clear.
     ScopedVariable {
         literal: Some(0),

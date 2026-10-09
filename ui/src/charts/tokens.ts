@@ -5,7 +5,7 @@ import type { MotionFeel } from './easing.ts';
 export { APPEARANCE_EVENT };
 
 /** Shared chart layout tokens, in layout pixels, including the established economy views. */
-export const CHART_LAYOUT = { right: 14, countryEndLabels: 150, measureEndLabels: 128, stripMin: 40, stripInset: 50 } as const;
+export const CHART_LAYOUT = { right: 14, countryEndLabels: 150, measureEndLabels: 128, stripMin: 40, stripInset: 50, hatchSpacing: 8, gapOpacity: 0.08, heatLabelWidth: 118 } as const;
 
 /** The theme values a canvas chart draws with. Charts never hard-code a colour,
  * font size or line width: they read these, so a theme or token change reaches
@@ -19,6 +19,7 @@ export interface ChartTokens {
   font: string;
   fontSize: { small: number; body: number; title: number };
   lineWidth: { grid: number; series: number; emphasis: number };
+  hatchSpacing: number; gapOpacity: number;
   /** The app's chart settings and the system's reduced-motion choice. */
   motion: MotionFeel; reducedMotion: boolean; countryColours: 'raw' | 'fixed';
 }
@@ -42,7 +43,7 @@ export function tokensFromValues(get: (variable: string) => string, font: string
   return {
     ...colors, categories: categoricalPalette(colors.surface), font,
     fontSize: sizes,
-    lineWidth: { grid: 1, series: 2, emphasis: 2.5 }, ...preferences,
+    lineWidth: { grid: 1, series: 2, emphasis: 2.5 }, hatchSpacing: CHART_LAYOUT.hatchSpacing, gapOpacity: CHART_LAYOUT.gapOpacity, ...preferences,
   };
 }
 
@@ -71,6 +72,7 @@ export function readTokens(): ChartTokens {
     reducedMotion: root.dataset.motion === 'reduced',
     countryColours: root.dataset.countryColours === 'fixed' ? 'fixed' : 'raw',
   });
+  cached.hatchSpacing = size('--chart-hatch-spacing', CHART_LAYOUT.hatchSpacing);
   probe.remove();
   return cached;
 }

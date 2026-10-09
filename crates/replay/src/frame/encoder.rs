@@ -340,7 +340,7 @@ impl FrameEncoder {
                     if keyframe {
                         output.push(4);
                         let mut reason = [0_u8; 64];
-                        let prefix = b"truncated at keyframe: ";
+                        let prefix = super::TRUNCATED_KEYFRAME_REASON.as_bytes();
                         reason[..prefix.len()].copy_from_slice(prefix);
                         let mut number = [0_u8; 10];
                         let mut value = *missing;

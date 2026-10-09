@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import WidgetState from '../../components/WidgetState';
+import CountryPicker from '../../components/CountryPicker';
 import CountryRaceView from '../../charts/race/CountryRaceView';
-import { mixCountry } from '../../charts/race/options';
 import type { RaceView } from '../../charts/race/options';
 import { formatAxisPercent } from '../../charts/valueAxis';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { isMember, rankedCandidates, resolveCountries, worldRequestTags } from '../../dashboard/groups';
+import { countryMatchFilter, isMember, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { countryDrillTagAt, countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -14,7 +15,7 @@ import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { OccupationTrendReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { measureName, occupationEntries, occupationLines, occupationLineTooltip, occupationModel, occupationRequest, occupationSegmentAt,
+import { measureName, occupationEntries, occupationHolderMix, occupationLines, occupationLineTooltip, occupationModel, occupationRequest, occupationSegmentAt,
   occupationTooltip, occupationTooltipTags, rankingMeasure, validateOccupationTrendReply } from './occupationTrendData';
 import type { OccupationMeasure, ShownMeasure } from './occupationTrendData';
 
@@ -39,21 +40,42 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const fallback = defaultCountryTag(track);
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER),
     [widget.countries, fallback, groups.data, track?.branch.lastHour]);
-  const requested = useMemo(() => worldRequestTags(widget.countries, fallback ? [fallback] : [], groups.data, track?.branch.lastHour ?? 0),
-    [widget.countries, fallback, groups.data, track?.branch.lastHour]);
+  // The request retains literal roots. Expanding aliases here would select
+  // unrelated holders which merely reused one of those aliases.
+  const requested = { tags: all ? [] : resolved.tags,
+    ready: all || resolved.top != null || (!grouped || !!groups.data) && resolved.tags.length > 0,
+    reason: all ? null : resolved.reason };
   const request = track && requested.ready && !requested.reason ? { sourceId: track.source.id, revision: track.source.revision, product: 'occupation-trend',
     params: occupationRequest(track.branch.id, requested.tags, resolved.top, rank, collaboration) } : null;
   const { data, error, retry } = useProduct<OccupationTrendReply>(runtime.client, request, active, validateOccupationTrendReply);
   const model = useMemo(() => data ? occupationModel(data) : null, [data]);
-  const slots = resolved.top ?? Math.max(1, all ? model?.tags.length ?? 0 : resolved.tags.length);
-  const ranked = useMemo(() => model ? occupationEntries(model, all ? model.tags : rankedCandidates(resolved, moment, model.tags), moment, rank, slots, digits) : [],
-    [model, all, resolved, moment, rank, slots, digits]);
+  const identities = useMemo(() => grouped && groups.data ? countryIdentityIndex(groups.data.countryIdentities) : model?.identities ?? null,
+    [grouped, groups.data, model]);
+  const counted = useMemo(() => projectResolvedCountries(resolved, countryMatchFilter(widget.countries, fallback ? [fallback] : [],
+    groups.data, track?.branch.lastHour ?? 0, identities, track?.branch.firstHour ?? 0)),
+    [resolved, widget.countries, fallback, groups.data, track?.branch.lastHour, track?.branch.firstHour, identities]);
+  const slots = resolved.top ?? Math.max(1, all ? model?.tags.length ?? 0 : counted.tags.length);
+  const ranked = useMemo(() => model ? occupationEntries(model, all ? model.tags : rankedCandidates(counted, moment, model.tags), moment, rank, slots, digits) : [],
+    [model, all, counted, moment, rank, slots, digits]);
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]);
-  const lines = useMemo(() => model ? occupationLines(model, all || resolved.top != null ? model.tags : resolved.tags,
-    shown, range, resolved.membership, digits) : [], [model, all, resolved, shown, range, digits]);
-  const mixTag = mixCountry(widget.countries, fallback, ranked);
-  const mix = useMemo(() => model && mixTag ? { tag: mixTag, lines: occupationLines(model, [mixTag], shown, range, resolved.membership, digits) }
-    : null, [model, mixTag, shown, range, resolved.membership, digits]);
+  const lines = useMemo(() => model ? occupationLines(model, all || resolved.top != null ? model.tags : counted.tags,
+    shown, range, counted.membership, digits) : [], [model, all, resolved.top, counted, shown, range, digits]);
+  const mixScopeKey = JSON.stringify([request, widget.countries, widget.time]);
+  const mixScope = useMemo(() => ({ client: runtime.client, key: mixScopeKey }), [runtime.client, mixScopeKey]);
+  const [choice, setChoice] = useState<{ scope: typeof mixScope; tag: string; hour: number } | null>(null);
+  const mixCandidates = useMemo(() => !model ? [] : resolved.top != null ? ranked.map(row => row.tag)
+    : (all ? model.tags : rankedCandidates(counted, moment, model.tags)).filter(tag => occupationSegmentAt(model, tag, moment) !== null),
+    [model, resolved.top, ranked, all, counted, moment]);
+  const selected = choice?.scope === mixScope ? choice : mixCandidates.length === 1 ? { scope: mixScope, tag: mixCandidates[0], hour: moment } : null;
+  const mixTag = selected?.tag, mixOriginHour = selected?.hour;
+  const mix = useMemo(() => model && mixTag && mixOriginHour !== undefined ? occupationHolderMix(model, mixTag, mixOriginHour, moment, shown, range, counted.membership, digits)
+    : null, [model, mixTag, mixOriginHour, moment, shown, range, counted.membership, digits]);
+  useEffect(() => {
+    if (active && view === 'mix' && choice?.scope !== mixScope && mixCandidates.length === 1) {
+      setChoice({ scope: mixScope, tag: mixCandidates[0], hour: moment });
+    }
+  }, [active, view, choice, mixScope, mixCandidates, moment]);
+  const chooserKey = JSON.stringify([mixCandidates, moment]);
   const segmentAt = useCallback((tag: string, hour: number) => occupationSegmentAt(model, tag, hour), [model]);
   const relatedTags = useCallback((hour: number, tags: readonly string[]) => model ? occupationTooltipTags(model, hour, tags, collaboration) : [], [model, collaboration]);
   useEffect(() => {
@@ -64,20 +86,33 @@ export default function OccupationTrendWidget({ widget, runtime, active, onDiagn
   const state = !track ? <WidgetState kind="empty" icon="globe" message="Load a campaign to see occupation trends." />
     : (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window ? <WidgetState kind="unavailable" message="The chosen moment is not in this campaign." />
     : error ? <WidgetState kind="error" message={error} onRetry={retry} />
-    : groups.error ? <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />
+    : grouped && groups.error ? <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />
     : requested.reason ? <WidgetState kind="empty" icon="globe" message={requested.reason} />
     : !model || (grouped && !groups.data) ? <WidgetState kind="loading" label="Loading occupation trends…" /> : null;
+  const chooserOwner = useMemo(() => ({ scope: mixScope, key: chooserKey, model, active, available: !state }),
+    [mixScope, chooserKey, model, active, !state]);
+  const chooserRef = useRef(chooserOwner);
+  chooserRef.current = chooserOwner;
+  const mixChooser = view === 'mix' && track && model && !state ? <CountryPicker countries={track.source.metadata.countries}
+    allowedTags={mixCandidates} selectedTag={mix?.available ? mix.tag : null} playerCountryId={null} source={track.source} client={runtime.client}
+    field flagAt={{ branchId: track.branch.id, hour: moment }} onChange={tag => {
+      if (!active || state || chooserRef.current !== chooserOwner || !tag || !mixCandidates.includes(tag) || occupationSegmentAt(model, tag, moment) === null) return;
+      setChoice({ scope: mixScope, tag, hour: moment });
+    }} /> : null;
   return <CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead}
     moment={moment} slots={slots} ranked={ranked} lines={lines} mix={mix} segmentAt={segmentAt} tooltipTags={relatedTags} state={state}
     presentation={{ exact: false, held: false }}
     label={`Average ${measureName(rank).toLowerCase()}`} empty="No readable held states were recorded at this moment."
     lineEmpty={{ icon: 'globe', message: 'No readable held states were recorded for these occupiers.' }}
     mixEmpty={{ icon: 'globe', message: 'Choose an occupier with readable held states.', unavailable: name => `No readable held states were recorded for ${name}.` }}
-    beforeChart={shown === 'both' && view !== 'race' ? <p className="chart-line-key"><i aria-hidden="true" />Solid: resistance · <i className="is-dashed" aria-hidden="true" />dashed: compliance</p> : null}
+    countryTags={view === 'mix' ? [...new Set(mix?.lines.map(line => line.tag) ?? [])] : undefined}
+    beforeChart={<>{mixChooser}{view === 'mix' && mix && !mix.available ? <p className="chart-line-key">The chosen native country was not recorded in this selection at this moment.</p> : null}
+      {shown === 'both' && view !== 'race' ? <p className="chart-line-key"><i aria-hidden="true" />Solid: resistance · <i className="is-dashed" aria-hidden="true" />dashed: compliance</p> : null}</>}
     formatAxis={formatAxisPercent} formatValue={String}
     tooltip={(tag, hour, _name, _colours, labelAt) => {
-      if (!model || !isMember(model.series.get(tag)?.membership ?? resolved.membership?.get(tag), hour)) return null;
-      const tip = occupationTooltip(model, tag, hour, labelAt, shown, collaboration);
+      const alias = view === 'mix' && mix ? countryDrillTagAt(mix.membership, hour) : tag;
+      if (!model || !alias || !isMember(model.series.get(alias)?.membership ?? counted.membership?.get(alias), hour)) return null;
+      const tip = occupationTooltip(model, alias, hour, labelAt, shown, collaboration);
       return tip ? [tip] : null;
     }} lineTooltip={(hour, tags, labelAt, colour) => model ? [occupationLineTooltip(model, hour, tags, labelAt, colour, shown, rank, collaboration)] : []} />;
 }

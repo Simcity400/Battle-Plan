@@ -2,7 +2,7 @@ import './ChipSet.css';
 
 /** One chip. `unavailable` says why clicking it cannot act, pressed or not, such
  * as a name that cannot be saved or the last choice that must stay. */
-export interface Chip { value: string; label: string; icon?: string | null; unavailable?: string }
+export interface Chip { value: string; label: string; icon?: string | null; colour?: string; unavailable?: string }
 
 /** Toggle chips for choosing several things, such as resources. Each chip is a
  * pressed or unpressed button; once `max` are chosen the others are disabled.
@@ -17,6 +17,7 @@ export function ChipSet({ label, chips, selected, max, full: atMax, onToggle }: 
     const reason = chip.unavailable ?? (!pressed && full ? `At most ${max} can be chosen` : undefined);
     return <button key={chip.value} type="button" className="chip" aria-pressed={pressed} aria-disabled={reason ? true : undefined}
       data-tooltip={reason} onClick={() => { if (!reason) onToggle(chip.value); }}>
+      {chip.colour && <i className="chip-dot" style={{ background: chip.colour }} aria-hidden="true" />}
       {chip.icon && <img src={chip.icon} alt="" />}{chip.label}
     </button>;
   })}</div>;

@@ -694,6 +694,7 @@ fn details_preserve_native_order_bytes_damage_and_loss_history() {
     let source = Source {
         pointer: COMBAT,
         id: (0xf000_0001_u64 << 32) | TYPE_WORD as u64,
+        sides: [ATTACK, DEFEND],
         attackers: Array {
             data: ATTACK_UNITS,
             count: 2,
@@ -849,6 +850,7 @@ fn modifiers_remain_independent_of_unreadable_tactic_and_roles_reject_overlap() 
     let source = Source {
         pointer: COMBAT,
         id: (0xf000_0001_u64 << 32) | TYPE_WORD as u64,
+        sides: [ATTACK, DEFEND],
         attackers: Array {
             data: ATTACK_UNITS,
             count: 2,
@@ -882,6 +884,7 @@ fn detail_source() -> Source {
     Source {
         pointer: COMBAT,
         id: (0xf000_0001_u64 << 32) | TYPE_WORD as u64,
+        sides: [ATTACK, DEFEND],
         attackers: Array {
             data: ATTACK_UNITS,
             count: 2,

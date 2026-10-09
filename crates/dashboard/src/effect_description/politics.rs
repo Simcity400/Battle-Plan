@@ -10,8 +10,7 @@ pub(super) use content::PoliticsContent;
 #[cfg(test)]
 mod tests;
 
-pub(super) const NULL_IDEOLOGY: &str =
-    "ideology database null-object identity (+0x78, 1402EE8E0) is unrecorded";
+pub(super) const NULL_IDEOLOGY: &str = Evaluator::NULL_IDEOLOGY;
 
 impl Renderer<'_, '_, '_> {
     // ResolveIdeologySpecifier 1402EE8E0: cached named group, numeric database
@@ -28,65 +27,21 @@ impl Renderer<'_, '_, '_> {
             .content
             .key_names
             .ok_or_else(|| self.content_gap("effect key names"))?;
-        let frame = self.context.text.frame();
-        let parties = frame
-            .complete::<tables::PoliticalParties>()
-            .map_err(|why| why.to_string())?;
         if names.counts.is_ideology(operand)? {
-            return parties
-                .iter()
-                .find(|row| row.token.eq_ignore_ascii_case(operand))
-                .map(|row| row.token.clone())
-                .ok_or_else(|| {
-                    format!(
-                        "ideology {} has no recorded native ID/token",
-                        String::from_utf8_lossy(operand)
-                    )
-                });
+            // Cached named pointers open no variable session or strict map
+            // world (1402EE8E0 returns +0 immediately).
+            let world = match self.context.expansion.and_then(|scopes| scopes.world) {
+                Some(world) => world,
+                None => self.context.text.trigger_world()?,
+            };
+            return Ok(world.named_ideology(operand)?.1.to_vec());
         }
-        let value = self.scoped_value(operand, scopes)?;
-        let id = (value / 100_000) as u32;
-        if let Some(party) = parties.iter().find(|row| row.id == id) {
-            if !names.counts.is_ideology(&party.token)? {
-                return Err(format!(
-                    "ideology {} is absent from recorded content",
-                    String::from_utf8_lossy(&party.token)
-                ));
-            }
-            return Ok(party.token.clone());
-        }
-        // Decode the evaluated constant through the shared evaluator; the
-        // authored operand is evaluated only once, retaining its session.
-        let constant = installed_content::fixed5::fixed5_to_string(value, 5);
-        let Some(country) = self
+        let (_, token) = self
             .evaluator()?
-            .scoped_country(constant.as_bytes(), scopes)?
-        else {
-            return Err(NULL_IDEOLOGY.into());
-        };
-        let politics = frame
-            .complete::<tables::Politics>()
-            .map_err(|why| why.to_string())?;
-        let party = politics
-            .iter()
-            .find(|row| self.context.text.recorded().slot(row.country) == Some(country))
-            .and_then(|row| row.ruling_party)
-            .ok_or("Politics lacks ruling ideology (14138B640)")?;
-        let token = parties
-            .iter()
-            .find(|row| {
-                row.id == party && self.context.text.recorded().slot(row.country) == Some(country)
-            })
-            .ok_or("PoliticalParties lacks ruling ideology (14138B640)")?
-            .token
-            .clone();
-        if !names.counts.is_ideology(&token)? {
-            return Err(format!(
-                "ideology {} is absent from recorded content",
-                String::from_utf8_lossy(&token)
-            ));
-        }
-        Ok(token)
+            .ideology_specifier(Some(operand), scopes, |token| {
+                names.counts.is_ideology(token)
+            })?;
+        Ok(token.to_vec())
     }
 
     // 140376270; noun suffix 14117C8D0, IDEOLOGY and VALUE, explicit LF.

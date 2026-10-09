@@ -235,27 +235,27 @@ fn wing_stats(
         cair_wing::EXPERIENCE as u32,
         field(memory, pointer, cair_wing::EXPERIENCE)?,
     )?;
-    // FindAirWingMissionStats 140F49280: mission 8 has bit index 3. -1 alone
-    // selects the default block. Refuse other invalid indexes, never guess.
-    let index = field::<i8>(memory, pointer, 0x968 + 0x18 + 3)?;
-    let stats = if index == -1 {
-        pointer
-            .checked_add(0x390)
-            .ok_or("raid tooltip stat address overflow")?
-    } else {
-        let roster = Array::read(memory, pointer + 0x968, 0x270)
-            .ok_or("raid tooltip mission stat header invalid")?;
-        let index = u32::try_from(index).map_err(|_| "raid tooltip mission stat index negative")?;
-        roster
-            .element(index, 0x270)
-            .ok_or("raid tooltip mission stat index outside array")?
-    };
+    let index = cair_wing::mission_stat_index(memory, pointer, 8).map_err(raid_stat_reason)?;
+    let stats = cair_wing::mission_stat_record(memory, pointer, index).map_err(raid_stat_reason)?;
     // GetMissionStatOrDefault 140F4B7F0, consumed by 140F49710/140F4D130
     // and reliability branch 14157C670. No getter or modifier is executed.
     for key in [0x2f, 0x31, 0x32, 0x41, 0x4c] {
         sink.push(WING_STATS, key, field(memory, stats, key as usize * 8)?)?;
     }
     Ok(())
+}
+
+fn raid_stat_reason(reason: cair_wing::MissionStatError) -> &'static str {
+    match reason {
+        cair_wing::MissionStatError::MultipleMissionBits => reason.reason(),
+        cair_wing::MissionStatError::IndexUnreadable => "raid tooltip operand unreadable",
+        cair_wing::MissionStatError::AddressOverflow => "raid tooltip stat address overflow",
+        cair_wing::MissionStatError::HeaderInvalid => "raid tooltip mission stat header invalid",
+        cair_wing::MissionStatError::IndexNegative => "raid tooltip mission stat index negative",
+        cair_wing::MissionStatError::IndexOutsideArray => {
+            "raid tooltip mission stat index outside array"
+        }
+    }
 }
 
 /// 140F48230 scans all occurrences; the other getters binary-search this
@@ -727,6 +727,41 @@ mod tests {
         assert_eq!(
             run(&bytes, &mut rows),
             Err("raid tooltip mission stat index negative")
+        );
+    }
+    #[test]
+    fn game_score_shared_mission_stats_preserve_raid_refusals() {
+        let pointer = 16;
+        let mut bytes = vec![0; pointer + 0x984];
+        bytes[pointer + 0x974..pointer + 0x978].copy_from_slice(&1u32.to_le_bytes());
+        let run = |bytes: &[u8]| {
+            wing_stats(
+                &SliceMemory { base: 0, bytes },
+                pointer,
+                &mut Sink {
+                    rows: &mut [Row::default(); 6],
+                    required: 0,
+                    raid: 77,
+                    ordinal: 0,
+                },
+            )
+        };
+        assert_eq!(run(&bytes), Err("raid tooltip mission stat header invalid"));
+        assert_eq!(
+            run(&bytes[..pointer + 0x983]),
+            Err("raid tooltip operand unreadable")
+        );
+        assert_eq!(
+            cair_wing::mission_stat_record(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &[]
+                },
+                usize::MAX,
+                -1
+            )
+            .map_err(raid_stat_reason),
+            Err("raid tooltip stat address overflow")
         );
     }
     #[test]

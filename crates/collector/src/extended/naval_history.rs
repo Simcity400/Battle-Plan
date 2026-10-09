@@ -107,6 +107,8 @@ pub struct Captured {
     result_slots: Vec<cnaval_combat_results::ResultSlot>,
     sunk: CaptureRows<csunk_ship_info::Record>,
     groups: CaptureRows<corders_group::GroupRow>,
+    group_names: Arena<u8>,
+    group_name_capacity: usize,
     group_members: CaptureRows<corders_group::MemberRow>,
     group_children: CaptureRows<corders_group::ChildRow>,
     roster_scratch: Arena<corders_group::RosterEntry>,
@@ -210,6 +212,8 @@ impl Captured {
             result_slots: owned_vec(default_vec(capacity.rows[10])),
             sunk: CaptureRows::new(capacity.rows[13]),
             groups: CaptureRows::new(capacity.rows[14]),
+            group_names: Arena::new(capacity.theatre_names),
+            group_name_capacity: capacity.theatre_names,
             group_members: CaptureRows::new(capacity.rows[15]),
             group_children: CaptureRows::new(capacity.rows[16]),
             roster_scratch: Arena::new(capacity.roster_scratch),
@@ -253,6 +257,7 @@ impl Captured {
         self.orders_sources.reset();
         self.wing_sources.reset();
         self.groups.reset();
+        self.group_names.reset();
         self.group_members.reset();
         self.group_children.reset();
         self.roster_scratch.reset();
@@ -301,6 +306,7 @@ impl Captured {
             + self.result_slots.capacity() * size_of::<cnaval_combat_results::ResultSlot>()
             + self.sunk.allocated_bytes()
             + self.groups.allocated_bytes()
+            + self.group_names.allocated_bytes()
             + self.group_members.allocated_bytes()
             + self.group_children.allocated_bytes()
             + self.roster_scratch.allocated_bytes()
@@ -331,6 +337,7 @@ impl Captured {
         self.result_countries.grow(&mut capacity.rows[12]);
         self.sunk.grow(&mut capacity.rows[13]);
         self.groups.grow(&mut capacity.rows[14]);
+        self.group_names.grow(&mut self.group_name_capacity);
         self.group_members.grow(&mut capacity.rows[15]);
         self.group_children.grow(&mut capacity.rows[16]);
         self.roster_scratch.grow(&mut capacity.roster_scratch);
@@ -441,6 +448,20 @@ impl Captured {
                 }; 3]
             }
         };
+        self.group_names.reset();
+        for row in &mut self.groups.rows[..outcomes[0].len()] {
+            if let Ok((start, len)) = corders_group::copy_name(
+                memory,
+                row.pointer,
+                &mut self.group_names.first,
+                &mut self.group_names.len,
+                &mut self.group_names.required,
+            ) {
+                row.name_start = start;
+                row.name_len = len;
+                row.name_known = true;
+            }
+        }
         self.groups.outcome = outcomes[0];
         self.group_members.outcome = outcomes[1];
         self.group_children.outcome = outcomes[2];
@@ -879,6 +900,15 @@ impl Captured {
                     parent: r.parent,
                     leader: r.leader,
                     hq_provider: r.hq_provider,
+                    name: if r.name_known {
+                        self.group_names
+                            .first
+                            .get(r.name_start..r.name_start + r.name_len)
+                            .map(|bytes| owned_vec(copy_vec(bytes)))
+                    } else {
+                        None
+                    }
+                    .into(),
                 }
             }),
             table::<tables::OrdersGroupMembers, _>(outcomes[15], &self.group_members.rows, |r| {

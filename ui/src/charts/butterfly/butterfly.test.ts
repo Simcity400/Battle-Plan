@@ -17,6 +17,7 @@ test('symmetric layout keeps exact values apart from labels and ratio', () => {
 test('scale fits the largest shown side, with missing distinct from zero', () => {
   assert.equal(butterflyScale([{ id: 'x', left: 100, right: 20 }, { id: 'y', left: null, right: 400 }]), 420);
   assert.equal(butterflyScale([{ id: 'x', left: null, right: 0 }]), 1);
+  assert.equal(butterflyScale([{ id: 'correction', left: -400, right: 20 }]), 420);
 });
 test('ratio formatting keeps zero and unknown denominators missing and exact large integers', () => {
   assert.equal(formatRatio(185, 100), '1.85 : 1');

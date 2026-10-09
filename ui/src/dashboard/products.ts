@@ -61,20 +61,20 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
   const content = useContentRevision(client);
   // Every request uses the current content revision, never its array index.
   const key = JSON.stringify(requests.map(request => productKey(request, content)));
-  const [state, setState] = useState<{ key: string; data?: T[]; error?: string }>();
+  const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T[]; error?: string }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || !requests.length) return;
     const controller = new AbortController();
     void Promise.all(requests.map(request => loadProduct<T>(client, request, controller.signal, validate))).then(
-      data => { if (!controller.signal.aborted) setState({ key, data }); },
-      error => { if (!controller.signal.aborted) setState({ key, error: error instanceof Error ? error.message : String(error) }); },
+      data => { if (!controller.signal.aborted) setState({ client, key, data }); },
+      error => { if (!controller.signal.aborted) setState({ client, key, error: error instanceof Error ? error.message : String(error) }); },
     );
     return () => controller.abort();
     // The structured key names the requests and their order.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, key, active, attempt]);
-  const current = requests.length && state?.key === key ? state : undefined;
+  const current = requests.length && state?.client === client && state.key === key ? state : undefined;
   return { data: current?.data, error: current?.error, retry: () => { setState(undefined); setAttempt(value => value + 1); } };
 }
 
@@ -82,20 +82,20 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
 export function useProduct<T>(client: DashboardClient, request: ProductRequest | null, active: boolean, validate?: (data: unknown) => T): ProductState<T> {
   const content = useContentRevision(client);
   const key = request ? productKey(request, content) : null;
-  const [state, setState] = useState<{ key: string; data?: T; error?: string }>();
+  const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T; error?: string }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || !request || !key) return;
     const controller = new AbortController();
     void loadProduct<T>(client, request, controller.signal, validate).then(
-      data => { if (!controller.signal.aborted) setState({ key, data }); },
-      error => { if (!controller.signal.aborted) setState({ key, error: error instanceof Error ? error.message : String(error) }); },
+      data => { if (!controller.signal.aborted) setState({ client, key, data }); },
+      error => { if (!controller.signal.aborted) setState({ client, key, error: error instanceof Error ? error.message : String(error) }); },
     );
     return () => controller.abort();
     // The request object is recreated each render; its key is the identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, client, key, attempt]);
-  const current = state?.key === key ? state : undefined;
+  const current = state?.client === client && state.key === key ? state : undefined;
   return {
     data: current?.data,
     error: current?.error,

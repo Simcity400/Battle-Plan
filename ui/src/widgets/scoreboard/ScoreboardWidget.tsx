@@ -72,8 +72,11 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
       value: row => names.get(nameKey(row.hour, row.tag)) ?? null, renderMissing: true,
       render: row => <CountryCell {...labelAt(row.hour)(row.tag)} /> },
     ...shown.map(column => ({ key: column.key, header: column.label, label: column.label, numeric: true, width: 'max-content', bar: 'visible' as const,
-      hint: column.reason ?? undefined, value: (row: ScoreboardRow) => row.cells.get(column.key)?.amount,
-      render: (row: ScoreboardRow) => formatCell(column, row.cells.get(column.key)?.amount ?? null) })),
+      hint: column.reason ?? column.note, value: (row: ScoreboardRow) => row.cells.get(column.key)?.amount,
+      render: (row: ScoreboardRow) => {
+        const cell = row.cells.get(column.key);
+        return formatCell(column, cell?.amount ?? null, cell?.atLeast);
+      } })),
   ], [shown, names, labelAt, resolved.top]);
   const tooltip = useCallback((row: ScoreboardRow) => fitTooltip([scoreboardTooltip(row, shown, labelAt(row.hour)(row.tag).name)], viewport), [shown, labelAt, viewport]);
   const setTableOption = useCallback<NonNullable<WidgetProps['setOption']>>((key, value) => {

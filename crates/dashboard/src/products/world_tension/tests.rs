@@ -74,6 +74,43 @@ fn tension_frame(
 }
 
 #[test]
+fn world_tension_sum_overflow_is_refused_instead_of_saturated() {
+    use crate::products::world_tension::scan;
+    let slot = tension_slot(10);
+    for (aggregates, sources, reason) in [
+        (vec![(7, i64::MAX), (8, 1)], vec![], "contribution sum"),
+        (
+            vec![],
+            vec![
+                (11, slot, b"First".as_slice(), i64::MAX, 0),
+                (21, slot, b"Second".as_slice(), 1, 0),
+            ],
+            "source sum",
+        ),
+    ] {
+        let frame = tension_frame(slot, true, true, 100_000, &aggregates, &sources);
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+        let error = match scan(&replay, 1, &AtomicBool::new(false)) {
+            Ok(_) => panic!("An overflowing sum was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(reason), "{error}");
+    }
+}
+
+#[test]
+#[ignore = "large event history beyond the former event ceiling"]
+fn world_tension_retains_every_event_beyond_the_former_count_ceiling() {
+    use crate::products::world_tension::scan;
+    let slot = tension_slot(10);
+    let sources = vec![(11, slot, b"Synthetic event".as_slice(), 0, 0); 200_001];
+    let frame = tension_frame(slot, true, true, 0, &[], &sources);
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+    let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(scanned.events.len(), sources.len());
+}
+
+#[test]
 fn world_tension_reads_carry_contributions_and_events_exactly_and_never_cross_gaps() {
     use crate::products::world_tension::scan;
     let slot = tension_slot(500);

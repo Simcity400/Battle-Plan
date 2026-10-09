@@ -7,6 +7,119 @@ use replay::{
     },
 };
 
+#[test]
+fn occupation_trend_manual_roots_clip_aliases_to_all_selected_native_holders() {
+    let mut histories = RecordedHistories::default();
+    for (tag, entries) in [
+        ("root", vec![(100, 101, 7, 11), (104, 105, 8, 22)]),
+        ("alias", vec![(98, 99, 7, 11), (102, 103, 9, 33)]),
+        ("before its measure", vec![(96, 97, 7, 11)]),
+    ] {
+        let mut recorded = country_history::RecordedCountry::default();
+        recorded.identities = std::sync::Arc::new(
+            entries
+                .into_iter()
+                .map(
+                    |(first_hour, last_hour, slot, country_id)| CountryIdentityRun {
+                        first_hour,
+                        last_hour,
+                        slot,
+                        country_id,
+                    },
+                )
+                .collect(),
+        );
+        histories.countries.insert(tag.into(), recorded);
+    }
+    let run = OccupationTrendRun {
+        first_hour: 96,
+        last_hour: 105,
+        read_hour: 96,
+        starts_segment: true,
+        resistance_raw: "12345".into(),
+        compliance_raw: "0".into(),
+        states: 1,
+        held_states: 1,
+        held_complete: true,
+        collaboration: vec![],
+    };
+    let history = History {
+        series: BTreeMap::from([
+            ("root".into(), vec![run.clone()]),
+            ("alias".into(), vec![run]),
+        ]),
+        ..Default::default()
+    };
+    let params = OccupationTrendParams {
+        branch_id: "1".into(),
+        tags: vec!["root".into()],
+        top: None,
+        collaboration: false,
+    };
+    let reply = reply_with_histories(
+        "1",
+        &history,
+        &params,
+        vec![],
+        &AtomicBool::new(false),
+        Some(&histories),
+    )
+    .unwrap();
+    let alias = reply
+        .series
+        .iter()
+        .find(|series| series.tag == "alias")
+        .unwrap();
+    assert_eq!(
+        alias
+            .runs
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour))
+            .collect::<Vec<_>>(),
+        [(98, 99)]
+    );
+    assert_eq!(
+        alias
+            .identities
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|run| run.country_id)
+            .collect::<Vec<_>>(),
+        [11]
+    );
+    assert_eq!(
+        reply
+            .series
+            .iter()
+            .find(|series| series.tag == "root")
+            .unwrap()
+            .identities
+            .as_ref()
+            .unwrap()
+            .len(),
+        2
+    );
+    let before = reply
+        .series
+        .iter()
+        .find(|series| series.tag == "before its measure")
+        .unwrap();
+    assert!(before.runs.is_empty());
+    assert_eq!(before.identities.as_ref().unwrap()[0].first_hour, 96);
+    assert!(
+        reply_with_histories(
+            "1",
+            &history,
+            &params,
+            vec!["x".repeat(MAX_PRODUCT_REPLY_BYTES)],
+            &AtomicBool::new(false),
+            Some(&histories)
+        )
+        .is_err()
+    );
+}
+
 fn frame(hour: i32, values: &[(u32, i64, i64)], held: &[(u32, u32)]) -> DecodedFrame {
     let mut frame = crate::test_fixtures::source(1, hour, None);
     *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
@@ -167,6 +280,71 @@ fn occupation_trend_dates_reads_gaps_and_disappearing_occupiers() {
     );
     assert!(runs.iter().all(|run| run.starts_segment));
     assert_eq!(runs[2].first_hour, 106);
+}
+
+#[test]
+fn occupation_trend_held_collaboration_keeps_its_native_actor_after_tag_reuse() {
+    let first = frame(100, &[(1, 3000000, 9000000)], &[(1, 1)]);
+    let mut reused = first.clone();
+    reused.hour = 101;
+    reused.metrics.table_ns.fill(0);
+    if let TableView::Complete(TableRows::Countries(countries)) =
+        &mut *reused.tables[TableId::Countries.index()]
+    {
+        countries[2].id = 7;
+    }
+    *reused.tables[TableId::CountryLinks.index()] =
+        link_table(&[(1, 11), (2, 12), (3, 13), (7, 13)]);
+    let history = scan(vec![first, reused]);
+    let runs = &history.series["Opaque country 1"];
+    assert_eq!(runs.len(), 2);
+    let initial = &runs[0].collaboration[0];
+    let held = &runs[1].collaboration[0];
+    assert_eq!(initial.actor.as_ref().unwrap().name_hour, Some(100));
+    assert_eq!(held.tag.as_deref(), Some("Opaque country 3"));
+    assert_eq!(held.raw.as_deref(), Some("12345"));
+    assert_eq!(held.read_hour, Some(100));
+    assert_eq!(
+        held.actor.as_ref().unwrap(),
+        &OccupationCollaborationActor {
+            slot: 13,
+            country_id: 3,
+            name_hour: None,
+        }
+    );
+    assert_eq!(runs[1].read_hour, 100);
+    assert_eq!(runs[1].resistance_raw, runs[0].resistance_raw);
+    assert!(
+        history
+            .collaboration_warnings
+            .iter()
+            .any(|warning| warning
+                .contains("occupied native country naming identity is unavailable"))
+    );
+}
+
+#[test]
+fn occupation_trend_unnamed_collaboration_retains_the_numeric_row() {
+    let mut first = frame(100, &[(1, 10, 20)], &[(1, 1)]);
+    if let TableView::Complete(TableRows::Countries(countries)) =
+        &mut *first.tables[TableId::Countries.index()]
+    {
+        countries[2].tag.clear();
+    }
+    let history = scan(vec![first]);
+    let collaboration = &history.series["Opaque country 1"][0].collaboration;
+    assert_eq!(collaboration.len(), 1);
+    assert_eq!(collaboration[0].tag, None);
+    assert_eq!(collaboration[0].raw.as_deref(), Some("12345"));
+    assert_eq!(collaboration[0].read_hour, Some(100));
+    assert_eq!(
+        collaboration[0].actor.as_ref().unwrap(),
+        &OccupationCollaborationActor {
+            slot: 13,
+            country_id: 3,
+            name_hour: None,
+        }
+    );
 }
 
 #[test]
@@ -528,12 +706,12 @@ fn occupation_trend_collaboration_is_only_shipped_and_split_when_requested() {
     let with = reply("1", &history, &params, vec![], &AtomicBool::new(false)).unwrap();
     assert_eq!(with.series[0].runs.len(), 2);
     assert_eq!(
-        with.series[0].runs[0].collaboration[0].tag,
-        "Opaque country 3"
+        with.series[0].runs[0].collaboration[0].tag.as_deref(),
+        Some("Opaque country 3")
     );
     assert_eq!(
-        with.series[0].runs[1].collaboration[0].tag,
-        "Changed occupied tag"
+        with.series[0].runs[1].collaboration[0].tag.as_deref(),
+        Some("Changed occupied tag")
     );
     assert_eq!(with.series[0].runs[1].collaboration[0].read_hour, Some(100));
 }

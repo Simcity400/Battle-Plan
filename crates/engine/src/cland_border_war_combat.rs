@@ -16,3 +16,8 @@ pub const BODY: usize = 0x10;
 pub const COMBAT_WIDTH: usize = 0xd8;
 /// Transfer-state byte tested by the border tooltip tail at 1413D69D0.
 pub const TRANSFER_STATE: usize = 0xf0;
+
+/// Finalizer 1413D93F0 tests these three u8s at +0xF1..+0xF3 in priority
+/// order: forced attacker victory, forced defender victory, cancellation.
+/// Otherwise it calls both combatants' participation predicate 1413DA800.
+pub const END_FLAGS: usize = 0xf1;

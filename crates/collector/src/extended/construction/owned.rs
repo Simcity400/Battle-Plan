@@ -63,6 +63,28 @@ impl Captured {
         } else {
             None
         };
+        let group_error = if job.group_laws_required > self.group_laws.rows.len() {
+            let additional = job.group_laws_required - self.group_laws.rows.len();
+            match reserve(&mut self.group_laws.rows, additional) {
+                Ok(()) => {
+                    self.group_laws
+                        .rows
+                        .resize(job.group_laws_required, Default::default());
+                    None
+                }
+                Err(_) => Some("occupied-country law allocation failed"),
+            }
+        } else {
+            None
+        };
+        if job.equipment_required > self.equipment.first.len() {
+            let additional = job.equipment_required - self.equipment.first.len();
+            if reserve(&mut self.equipment.first, additional).is_ok() {
+                self.equipment
+                    .first
+                    .resize(job.equipment_required, Default::default());
+            }
+        }
         let occupation = ccountry_occupation_status::walk_with_occupied(
             &recorded,
             base,
@@ -70,15 +92,22 @@ impl Captured {
             ccountry_occupation_status::Buffers {
                 settings: &mut self.settings.rows,
                 laws: &mut self.laws.rows,
+                group_laws: &mut self.group_laws.rows,
                 garrisons: &mut self.garrisons.rows,
                 manpower: &mut self.assigned_manpower.rows,
                 reserve_manpower: &mut self.reserve_manpower.rows,
                 names: &mut self.law_bytes.first,
+                equipment: &mut self.equipment.first,
             },
             &mut self.occupied.first,
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
+        self.group_laws.outcome = occupation.group_laws;
+        self.fallback_law = occupation.fallback_law;
+        if let Some(reason) = group_error {
+            self.group_laws.outcome = Outcome::Unavailable { reason };
+        }
         self.garrisons.outcome = occupation.garrisons;
         self.assigned_manpower.outcome = occupation.manpower;
         self.reserve_manpower.outcome = occupation.reserve_manpower;
@@ -86,6 +115,8 @@ impl Captured {
         self.law_bytes.required = occupation.required_bytes;
         self.occupied.len = occupation.occupied_len;
         self.occupied.required = occupation.required_occupied;
+        self.equipment.len = occupation.equipment_len;
+        self.equipment.required = occupation.required_equipment.max(job.equipment_required);
         if law_error.is_none() {
             self.law_bytes.required = self.law_bytes.required.max(job.law_bytes_required);
         }
@@ -95,6 +126,10 @@ impl Captured {
             && !matches!(self.settings.outcome, Outcome::Unavailable { .. })
         {
             self.settings.outcome = Outcome::Unavailable { reason };
+        }
+        if let Some(reason) = law_error {
+            self.group_laws.outcome = Outcome::Unavailable { reason };
+            self.fallback_law = None;
         }
         if let Some(reason) = law_error
             && !matches!(self.laws.outcome, Outcome::Unavailable { .. })
@@ -168,7 +203,9 @@ pub(crate) struct ConstructionRestJob {
     pub game_state: usize,
     pub(super) census: Vec<ConstructionRestCountry>,
     pub(super) settings_required: usize,
+    pub(super) group_laws_required: usize,
     pub(super) law_bytes_required: usize,
+    pub(super) equipment_required: usize,
     pub(super) law_demand_overflowed: bool,
     pub(super) capacity_charge: crate::raw_memory::Charge,
 }
@@ -189,7 +226,9 @@ impl ConstructionRestJob {
             game_state: 0,
             census: owned_vec(vec(crate::country_scale::census_rows(512))),
             settings_required: 0,
+            group_laws_required: 0,
             law_bytes_required: 0,
+            equipment_required: 0,
             law_demand_overflowed: false,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
@@ -203,7 +242,9 @@ impl ConstructionRestJob {
         self.game_state = 0;
         self.census.clear();
         self.settings_required = 0;
+        self.group_laws_required = 0;
         self.law_bytes_required = 0;
+        self.equipment_required = 0;
         self.law_demand_overflowed = false;
     }
 
@@ -881,14 +922,41 @@ fn copy_construction_target(
 /// robin-hood occupation table with law/state entries plus garrison and
 /// manpower rows. All spans carry the combined occupation mask, matching the
 /// walk's shared root failure domain (conservative for leaf-scoped faults).
+#[allow(clippy::too_many_arguments)]
 fn copy_occupation_walk(
     log: &mut RawLog<10>,
     memory: &impl Memory,
     base: usize,
     census: &[ConstructionRestCountry],
+    groups_required: &mut usize,
     required: &mut usize,
     demand_overflowed: &mut bool,
+    equipment_required: &mut usize,
 ) {
+    // 14039D930 / 140FE2FE0: keep the actual database fallback, not a guessed vanilla law.
+    if let Some(at) = cspan(
+        log,
+        memory,
+        base.checked_add(coccupation_law::DATABASE_RVA),
+        8,
+        M_C_OCC,
+    ) && let Ok(database) = usize::try_from(c_pool_u64(log, at))
+        && database != 0
+        && let Some(at) = cspan(
+            log,
+            memory,
+            database.checked_add(coccupation_law::DATABASE_FALLBACK),
+            8,
+            M_C_OCC,
+        )
+        && let Ok(law) = usize::try_from(c_pool_u64(log, at))
+        && law != 0
+    {
+        let _ = cspan(log, memory, Some(law), 8, M_C_OCC);
+        if let Some(name) = law.checked_add(coccupation_law::NAME) {
+            copy_construction_string(log, memory, name, M_C_OCC, required, demand_overflowed);
+        }
+    }
     for country in census {
         let Some(ptr_start) = cspan(
             log,
@@ -975,7 +1043,16 @@ fn copy_occupation_walk(
         // identity, law table and garrison table are mirrored below so the
         // replay derives identical rows and reasons.
         if let Some(table) = status.checked_add(ccountry_occupation_status::OCCUPATION_DATA_TABLE) {
-            copy_occupation_entries(log, memory, base, table, required, demand_overflowed);
+            copy_occupation_entries(
+                log,
+                memory,
+                base,
+                table,
+                groups_required,
+                required,
+                demand_overflowed,
+                equipment_required,
+            );
         }
         // Appended-field faults belong to its optional value, not the existing
         // occupation tables. These spans therefore carry no table failure bit.
@@ -1071,18 +1148,53 @@ fn copy_pdx_visit(
 }
 
 /// Outer occupation-data entries with nested law and garrison walks.
+#[allow(clippy::too_many_arguments)]
 fn copy_occupation_entries(
     log: &mut RawLog<10>,
     memory: &impl Memory,
     base: usize,
     table: usize,
+    groups_required: &mut usize,
     required: &mut usize,
     demand_overflowed: &mut bool,
+    equipment_required: &mut usize,
 ) {
     let Some(entries) = copy_pdx_visit(log, memory, table, M_C_OCC) else {
         return;
     };
+    if let Some(total) = groups_required.checked_add(entries.len()) {
+        *groups_required = total;
+    } else {
+        log.overflowed = true;
+        return;
+    }
     for (key, value) in entries {
+        if let Some(at) = cspan(
+            log,
+            memory,
+            value.checked_add(ccountry_occupation_data::OCCUPIED_COUNTRY_POINTER),
+            8,
+            M_C_OCC,
+        ) && let Ok(country) = usize::try_from(c_pool_u64(log, at))
+            && country != 0
+        {
+            let _ = cspan(log, memory, Some(country), 8, M_C_OCC);
+            let _ = cspan(log, memory, country.checked_add(ccountry::ID), 4, M_C_OCC);
+        }
+        if let Some(at) = cspan(
+            log,
+            memory,
+            value.checked_add(ccountry_occupation_data::GROUP_LAW),
+            8,
+            M_C_OCC,
+        ) && let Ok(law) = usize::try_from(c_pool_u64(log, at))
+            && law != 0
+        {
+            let _ = cspan(log, memory, Some(law), 8, M_C_OCC);
+            if let Some(name) = law.checked_add(coccupation_law::NAME) {
+                copy_construction_string(log, memory, name, M_C_OCC, required, demand_overflowed);
+            }
+        }
         // Identity: exact 20-byte span (vtable, parent, occupied). The
         // occupied link resolution reads the country link table; record it
         // explicitly so novel occupied indices are covered beyond the shared
@@ -1130,7 +1242,7 @@ fn copy_occupation_entries(
             && let Some(garrisons) = copy_pdx_visit(log, memory, gar_table, M_C_OCC)
         {
             for (gkey, garrison) in garrisons {
-                copy_garrison_object(log, memory, base, gkey, garrison, value);
+                copy_garrison_object(log, memory, base, gkey, garrison, value, equipment_required);
                 if log.overflowed {
                     return;
                 }
@@ -1151,6 +1263,7 @@ fn copy_garrison_object(
     key: u32,
     garrison: usize,
     parent: usize,
+    equipment_required: &mut usize,
 ) {
     let _ = base;
     let _ = parent;
@@ -1163,6 +1276,7 @@ fn copy_garrison_object(
         16,
         M_C_OCC,
     );
+    copy_garrison_equipment(log, memory, garrison, equipment_required);
     // Scalars: exact 1+4+16 spans mirroring `copy_scattered`.
     let _ = cspan(
         log,
@@ -1203,6 +1317,114 @@ fn copy_garrison_object(
                     let _ = cspan(log, memory, addr, manpower_value_entry::STRIDE, M_C_OCC);
                 }
             }
+        }
+    }
+}
+
+/// Copy the two live-sized native containers and the exact equipment fields
+/// queried by 140B8A4E0/140FF9760/140FF97C0. Decode owns all arithmetic.
+fn copy_garrison_equipment(
+    log: &mut RawLog<10>,
+    memory: &impl Memory,
+    garrison: usize,
+    required: &mut usize,
+) {
+    use engine::{
+        allocation_equipment_row as allocation, cequipment_type as ty,
+        cequipment_variant_pool as pool, garrison_equipment_pool,
+    };
+    let Some(requirements) = garrison.checked_add(cstate_garrison_data::REQUIRED_EQUIPMENT) else {
+        return;
+    };
+    let _ = cspan(log, memory, Some(requirements), 8, M_C_OCC);
+    let Some(at) = cspan(
+        log,
+        memory,
+        requirements.checked_add(garrison_equipment_pool::DATA),
+        16,
+        M_C_OCC,
+    ) else {
+        return;
+    };
+    let Some(array) = Array::from_header(log.bytes[at..at + 16].try_into().unwrap(), 16) else {
+        return;
+    };
+    let Some(demand) = required.checked_add(array.count as usize) else {
+        log.overflowed = true;
+        return;
+    };
+    *required = demand;
+    if array.count == 0 {
+        return;
+    }
+    for ordinal in 0..array.count {
+        let Some(at) = cspan(log, memory, array.element(ordinal, 16), 16, M_C_OCC) else {
+            continue;
+        };
+        let equipment = c_pool_u64(log, at) as usize;
+        for (offset, len) in [(0, 8), (ty::TOKEN, 4), (ty::BUILD_COST_IC, 8)] {
+            let _ = cspan(log, memory, equipment.checked_add(offset), len, M_C_OCC);
+        }
+        if let Some(at) = cspan(
+            log,
+            memory,
+            equipment.checked_add(ty::ARCHETYPE),
+            8,
+            M_C_OCC,
+        ) {
+            let archetype = c_pool_u64(log, at) as usize;
+            for (offset, len) in [
+                (0, 8),
+                (ty::TOKEN, 4),
+                (ty::ACTIVE, 1),
+                (ty::ARCHETYPE_ID, 4),
+            ] {
+                let _ = cspan(log, memory, archetype.checked_add(offset), len, M_C_OCC);
+            }
+        }
+        if log.overflowed {
+            return;
+        }
+    }
+    let Some(allocated) = garrison.checked_add(cstate_garrison_data::LOCAL_EQUIPMENT) else {
+        return;
+    };
+    let _ = cspan(log, memory, Some(allocated), 8, M_C_OCC);
+    let Some(at) = cspan(
+        log,
+        memory,
+        allocated.checked_add(pool::ALLOCATIONS),
+        16,
+        M_C_OCC,
+    ) else {
+        return;
+    };
+    let Some(array) = Array::from_header(
+        log.bytes[at..at + 16].try_into().unwrap(),
+        allocation::STRIDE,
+    ) else {
+        return;
+    };
+    for ordinal in 0..array.count {
+        if let Some(at) = cspan(
+            log,
+            memory,
+            array.element(ordinal, allocation::STRIDE),
+            allocation::STRIDE,
+            M_C_OCC,
+        ) {
+            let archetype = c_pool_u64(log, at) as usize;
+            let _ = cspan(log, memory, Some(archetype), 8, M_C_OCC);
+            let _ = cspan(
+                log,
+                memory,
+                archetype.checked_add(ty::ARCHETYPE_ID),
+                4,
+                M_C_OCC,
+            );
+        }
+        if log.overflowed {
+            return;
         }
     }
 }
@@ -1315,6 +1537,8 @@ impl Captured {
             .fail(Outcome::Unavailable { reason });
         self.settings.fail(Outcome::Unavailable { reason });
         self.laws.fail(Outcome::Unavailable { reason });
+        self.group_laws.fail(Outcome::Unavailable { reason });
+        self.fallback_law = None;
         self.garrisons.fail(Outcome::Unavailable { reason });
         self.assigned_manpower.fail(Outcome::Unavailable { reason });
         self.reserve_manpower.fail(Outcome::Unavailable { reason });
@@ -1356,8 +1580,10 @@ fn copy_construction_rest_pass(
         memory,
         base,
         &job.census,
+        &mut job.group_laws_required,
         &mut job.law_bytes_required,
         &mut job.law_demand_overflowed,
+        &mut job.equipment_required,
     );
     if job.log.overflowed {
         return;

@@ -11,6 +11,7 @@ pub(crate) fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
 
         limits: [0; 3],
         naval_limit: job.wing_limit(),
+        game_score: false,
     };
     assert!(crate::extended::air::copy_air_refresh(memory, context, &mut wings).raw_ok);
     job.install_wings(&wings);

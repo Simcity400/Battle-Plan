@@ -365,3 +365,47 @@ fn linked_instant_and_missing_building_operands_are_named_limitations() {
             .any(|r| r.contains("health/level operands missing"))
     );
 }
+
+#[test]
+fn native_completion_self_check_refuses_live_or_future_outcomes() {
+    use replay::rows::{ConstructionCompletion, Recorded};
+    let mut f = frame(124, 35, 35, 1, true);
+    output(&mut f).ended = true;
+    output(&mut f).completion = Recorded::Value(Some(ConstructionCompletion {
+        hour: 120,
+        cancelled: true,
+    }));
+    assert_eq!(checked(&[f.clone()]).differences.len(), 1); // still in queue
+    *f.tables[TableId::RailwayConstruction.index()] =
+        TableView::Complete(TableRows::RailwayConstruction(Vec::new()));
+    let report = checked(&[f.clone()]);
+    assert!(report.differences.is_empty());
+    assert_eq!(
+        report.compared_tables["ConstructionLineOutput native cancellation consistency"],
+        1
+    );
+    output(&mut f).completion = Recorded::Value(Some(ConstructionCompletion {
+        hour: 125,
+        cancelled: false,
+    }));
+    assert_eq!(checked(&[f]).differences.len(), 1);
+}
+
+#[test]
+fn signed_construction_and_native_progress_wrap_are_exact_self_checks() {
+    let signed = [frame(100, 0, 100, 1, false), frame(124, -25, 75, 1, false)];
+    assert!(checked(&signed).differences.is_empty());
+    let wrapped = [
+        frame(100, 0, i64::MAX, 1, false),
+        frame(124, 1, i64::MIN, 1, false),
+    ];
+    assert!(checked(&wrapped).differences.is_empty());
+    let mut bank = [
+        frame(100, 0, 0, 1, false),
+        frame(124, i64::MAX, i64::MIN, 1, false),
+    ];
+    output(&mut bank[1]).bank_raw = 1;
+    assert!(checked(&bank).differences.is_empty());
+    output(&mut bank[1]).bank_raw = 2;
+    assert_eq!(checked(&bank).differences.len(), 1);
+}

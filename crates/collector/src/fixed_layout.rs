@@ -130,9 +130,11 @@ mod tests {
                     | TableId::CombatLogState
                     | TableId::AirSortieModifierMetadata
                     | TableId::LocalPlayer
+                    | TableId::GameScoreMultipliers
+                    | TableId::EventFeedHistory
             ) {
                 TableInput::Sampled(TableView::Unavailable {
-                    reason: "fixture has no clock or campaign".into(),
+                    reason: "outside fixed-layout fixture".into(),
                 })
             } else if table == TableId::ReservedCountryNaming {
                 TableInput::SharedComplete(std::sync::Arc::new(TableRows::ReservedCountryNaming(

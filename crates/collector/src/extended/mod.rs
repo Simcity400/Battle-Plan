@@ -2,6 +2,7 @@
 //! individual packs keep compact local arrays. Allocation is off-thread.
 
 mod output_continuity;
+pub(crate) mod rocket_output;
 
 use crate::{
     division_census::UnitInputs,
@@ -26,6 +27,7 @@ use std::sync::Arc;
 #[cfg(test)]
 pub(crate) mod bench_world;
 pub(crate) mod daily_intel;
+pub(crate) mod division_land;
 
 mod attrition_inputs;
 mod border_inputs;
@@ -39,7 +41,8 @@ pub(crate) use packs::{
 const MISSING: Outcome = Outcome::Unavailable {
     reason: "acquisition source not supplied",
 };
-const DIVISION_SOURCE_TABLES: [TableId; 11] = [
+const DIVISION_SOURCE_TABLES: [TableId; 12] = [
+    TableId::DivisionLandInputs,
     TableId::DivisionCensus,
     TableId::DivisionEquipment,
     TableId::ArmyUpgradeGroups,
@@ -155,16 +158,18 @@ macro_rules! packs {
         #[derive(Clone, Copy, PartialEq, Eq)]
         pub struct Capacities {
             $(pub $pack: $pack::Capacities,)+
+            pub fuel_awards: fuel_awards::Capacities,
             pub division_sources: usize,
             pub variant_registry: usize,
         }
         impl Default for Capacities {
             fn default() -> Self {
-                Self { $($pack: Default::default(),)+ division_sources: 8192, variant_registry: 8192 }
+                Self { $($pack: Default::default(),)+ fuel_awards: Default::default(), division_sources: 8192, variant_registry: 8192 }
             }
         }
         pub struct Captured {
             $($pack: $pack::Captured,)+
+            fuel_awards: fuel_awards::Captured,
             divisions: Divisions,
             unit_inputs: Option<Arc<UnitInputs>>,
             governance_report: Option<governance::CaptureReport>,
@@ -205,6 +210,7 @@ macro_rules! packs {
             pub fn with_capacities(capacity: &Capacities) -> Self {
                 let mut captured = Self {
                     $($pack: $pack::Captured::with_capacities(&capacity.$pack),)+
+                    fuel_awards: fuel_awards::Captured::with_capacities(&capacity.fuel_awards),
                     divisions: Divisions::new(capacity.division_sources),
                     unit_inputs: None,
                     governance_report: None,
@@ -242,6 +248,7 @@ macro_rules! packs {
             /// source visitation and capture().
             pub fn reset(&mut self) {
                 $(self.$pack.reset();)+
+                self.fuel_awards.reset();
                 self.divisions.reset(); self.registry.reset();
                 self.release_unit_inputs(); self.governance_report = None; self.presentation_report = None; self.eta_inputs_report = None;
                 self.variants_ticks = None;
@@ -258,13 +265,14 @@ macro_rules! packs {
                 self.air_root = None; self.overhead = [0; TABLE_COUNT];
             }
             pub fn allocated_bytes(&self) -> usize {
-                0 $(+ self.$pack.allocated_bytes())+ + self.divisions.allocated_bytes() + self.registry.allocated_bytes() + self.spare_bytes()
+                0 $(+ self.$pack.allocated_bytes())+ + self.fuel_awards.allocated_bytes() + self.divisions.allocated_bytes() + self.registry.allocated_bytes() + self.spare_bytes()
             }
             /// Spool-thread metadata for this buffer's native row and scratch
             /// allocations. Excludes core tables, encoded frames and queues.
             pub fn allocated_by_pack(&self) -> std::io::Result<Vec<(&'static str, usize)>> {
                 copy_vec(&[
                     $((stringify!($pack), self.$pack.allocated_bytes()),)+
+                    ("fuel_awards", self.fuel_awards.allocated_bytes()),
                     ("division_sources", self.divisions.allocated_bytes()),
                     ("variant_registry", self.registry.allocated_bytes()),
                     ("acquisition_spares", self.spare_bytes()),
@@ -273,6 +281,7 @@ macro_rules! packs {
             pub fn grow(&mut self, capacity: &mut Capacities) {
                 let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
                 $(self.$pack.grow(&mut capacity.$pack);)+
+                self.fuel_awards.grow(&mut capacity.fuel_awards);
                 self.divisions.grow(&mut capacity.division_sources);
                 self.division_presentation.reserve_sources(capacity.division_sources);
                 self.division_presentation.grow_name_groups(
@@ -384,8 +393,10 @@ pub(crate) mod air_sorties;
 pub mod active_abilities;
 pub mod air;
 pub mod air_histories;
+pub mod air_losses;
 pub mod air_relations;
 pub mod army_icon_inputs;
+pub mod building_bombing;
 pub mod character_inputs;
 pub mod character_portraits;
 pub mod characters;
@@ -405,13 +416,19 @@ pub mod division_presentation;
 pub mod division_templates;
 pub mod economy;
 pub mod equipment_destruction;
+pub mod event_feed;
+pub mod experience_gains;
 pub mod faction_theatres;
 pub mod fog;
+pub(crate) mod fuel_awards;
+mod fuel_demand;
+pub mod game_score;
 pub mod governance;
 pub mod group_counters;
 pub mod hired_advisors;
 pub mod industrial_organisations;
 pub mod intel;
+pub mod land_events;
 pub mod leader_paths;
 pub mod leader_portraits;
 pub mod lexical;
@@ -428,9 +445,15 @@ pub mod naval_details;
 pub mod naval_history;
 pub mod naval_mission_inputs;
 pub mod naval_result_details;
+pub mod naval_result_sources;
 pub mod new_divisions;
+pub mod operation_outcomes;
+pub mod peace_bids;
+pub mod peace_settlements;
 pub mod plans;
+pub mod politics;
 pub mod production;
+pub mod production_modifiers;
 pub mod projects;
 pub mod province_unit_order;
 pub mod raid_launch_inputs;
@@ -444,6 +467,7 @@ pub mod slice_reads;
 pub mod state_flags;
 pub mod supply_trains;
 pub mod visibility;
+pub mod war_overview;
 pub mod weather;
 
 packs!(
@@ -455,9 +479,15 @@ packs!(
     railway_guns,
     active_abilities,
     country_counters,
+    game_score,
     group_counters,
     saved_event_targets,
     equipment_destruction,
+    naval_result_sources,
+    experience_gains,
+    event_feed,
+    air_losses,
+    building_bombing,
     leader_paths,
     country_appearance,
     ship_models,
@@ -481,6 +511,7 @@ packs!(
     fog,
     governance,
     intel,
+    operation_outcomes,
     lexical,
     map_names,
     naval_history,
@@ -503,8 +534,14 @@ packs!(
     combat_log,
     division_counts,
     country_factories,
+    war_overview,
     industrial_organisations,
+    production_modifiers,
     line_output,
+    politics,
+    peace_settlements,
+    peace_bids,
+    land_events,
     construction_ic,
     country_stability,
     new_divisions,
@@ -514,16 +551,67 @@ packs!(
 );
 
 impl Capacities {
+    /// Independent off-thread hints must retry after load even if the registry
+    /// did not grow. One failed family cannot withhold another family's demand.
+    pub(crate) fn presize_live_inputs(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+    ) -> Result<(), &'static str> {
+        let mut failure = None;
+        for result in [
+            crate::country_scale::observe_advisor_modifiers(memory, base).map(|demand| {
+                if let Some(demand) = demand
+                    && characters::advisors::note_modifier_demand(demand)
+                {
+                    crate::decode::presize_advisor_pools();
+                }
+            }),
+            crate::country_scale::observe_production_modifiers(memory, base).map(|demand| {
+                if let Some(demand) = demand {
+                    self.production_modifiers.raise_for_demand(demand);
+                }
+            }),
+            crate::country_scale::observe_land_event_words(memory, base).map(|demand| {
+                if let Some(words) = demand {
+                    crate::land_events::presize(words);
+                    self.land_events.words =
+                        self.land_events.words.max(crate::land_events::capacity());
+                }
+            }),
+        ] {
+            if let Err(reason) = result {
+                failure.get_or_insert(reason);
+            }
+        }
+        if let Some(regions) = engine::cgame_state::read_strategic_region_count(memory, base) {
+            self.raise_for_regions(regions as usize);
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    pub(crate) fn raise_for_regions(&mut self, regions: usize) {
+        crate::country_scale::raise(&mut self.air.scores.regions, regions);
+    }
+
     /// Presize every table whose rows scale with the number of country slots,
     /// so a large mod's first hour is not truncated. Never lowers a capacity.
     pub fn raise_for_countries(&mut self, slots: usize) {
+        crate::country_scale::raise(
+            &mut self.event_feed.events,
+            crate::country_scale::rows(slots, 2),
+        );
+        self.experience_gains = self.experience_gains.max(slots);
         self.country_appearance.raise_for_countries(slots);
         self.country_counters.raise_for_countries(slots);
+        self.game_score.raise_for_countries(slots);
         self.combat_details.raise_for_countries(slots);
         self.economy.raise_for_countries(slots);
         self.governance.raise_for_countries(slots);
         self.intel.raise_for_countries(slots);
+        self.operation_outcomes.raise_for_countries(slots);
         self.air.raise_for_countries(slots);
+        self.air_losses.raise_for_countries(slots);
         self.session.raise_for_countries(slots);
         self.projects.raise_for_countries(slots);
         self.supply_trains.raise_for_countries(slots);
@@ -537,8 +625,11 @@ impl Capacities {
         self.model_inputs.raise_for_countries(slots);
         self.hired_advisors.raise_for_countries(slots);
         self.country_factories.raise_for_countries(slots);
+        self.politics.raise_for_countries(slots);
+        self.war_overview.raise_for_countries(slots);
         self.division_counts.raise_for_countries(slots);
         self.industrial_organisations.raise_for_countries(slots);
+        self.production_modifiers.raise_for_countries(slots);
         self.country_stability.raise_for_countries(slots);
         self.country_tactic_unlocks.raise_for_countries(slots);
         self.naval_mission_inputs.raise_for_countries(slots);
@@ -579,8 +670,25 @@ impl Capacities {
     /// Presize the political tables from their live demand
     /// (`country_scale::observe_politics`).
     pub fn raise_for_politics(&mut self, demand: crate::country_scale::PoliticsDemand) {
+        self.war_overview.raise_for_demand(demand.war_overview);
         characters::advisors::note_modifier_demand(demand.advisor_modifiers);
         crate::country_scale::raise(&mut self.intel.agency_names, demand.agency_name_bytes);
+        crate::country_scale::raise(&mut self.intel.rows[17], demand.agency_upgrade_rows);
+        crate::country_scale::raise(
+            &mut self.intel.agency_upgrade_definitions,
+            demand.agency_upgrade_definitions,
+        );
+        crate::country_scale::raise(&mut self.intel.rows[9], demand.operation_rows);
+        self.operation_outcomes
+            .raise_for_operations(demand.operation_rows);
+        crate::country_scale::raise(&mut self.intel.rows[10], demand.operation_assignments);
+        crate::country_scale::raise(
+            &mut self.intel.operation_descriptions,
+            demand.operation_description_bytes,
+        );
+        crate::country_scale::raise(&mut self.intel.rows[4], demand.operative_memberships);
+        crate::country_scale::raise(&mut self.intel.operative_names, demand.operative_name_bytes);
+
         self.hired_advisors
             .raise_for_character_records(demand.active_characters, demand.retired_characters);
         self.character_inputs
@@ -617,6 +725,15 @@ impl Capacities {
 }
 
 impl Captured {
+    pub(crate) fn game_score_pilot(&mut self) -> &mut game_score::Captured {
+        &mut self.game_score
+    }
+    pub(crate) fn game_score_status(&self) -> &game_score::Captured {
+        &self.game_score
+    }
+}
+
+impl Captured {
     /// The CountryIntel buffer this frame uses; `None` only while the intel
     /// pack is out on a residual job.
     pub(crate) fn country_intel_home(&self) -> Option<daily_intel::Home> {
@@ -628,17 +745,48 @@ impl Captured {
         self.intel.share_country_intel(home);
     }
 
+    pub(crate) fn capture_operation_outcomes(&mut self) {
+        self.overhead[TableId::OperationCompletions.index()] += self.operation_outcomes.capture();
+    }
+    pub(crate) fn operation_outcomes(&self) -> &operation_outcomes::Captured {
+        &self.operation_outcomes
+    }
     /// Freeze this callback's primary activity before any shared source visitor.
     /// Hand the production line hook log over into this frame, from the
     /// clocked callback (`line_output::drain`).
     pub(crate) fn drain_line_output(&mut self) {
         self.line_output.drain();
     }
+    pub(crate) fn drain_event_feed(&mut self, hour: i32, partial: bool) {
+        self.event_feed.drain(hour, partial);
+    }
+    pub(crate) fn discard_event_feed(&mut self) {
+        self.event_feed.discard();
+    }
+    pub(crate) fn event_feed(&self) -> &event_feed::Captured {
+        &self.event_feed
+    }
+    pub(crate) fn drain_fuel_awards(&mut self) {
+        self.fuel_awards.drain();
+    }
+    pub(crate) fn fuel_awards(&self) -> &fuel_awards::Captured {
+        &self.fuel_awards
+    }
+
+    pub(crate) fn drain_peace_settlements(&mut self, continuous: bool) {
+        self.peace_settlements.drain(continuous);
+    }
 
     /// The sample's load signal, which names the session the Combat Log's
     /// kept rows belong to.
     pub(crate) fn set_load_signal(&mut self, signal: i64) {
         self.combat_log.set_signal(signal);
+    }
+
+    pub(crate) fn drain_land_events(&mut self, hour: i32, invalidating: bool) -> u64 {
+        let ticks = self.land_events.drain(hour, invalidating);
+        self.overhead[TableId::LandEventCoverage.index()] += ticks;
+        ticks
     }
 
     /// The production ticks this frame handed over, for the spool's totals.
@@ -760,6 +908,15 @@ impl Captured {
 
     pub(crate) fn observe_variable_seeds(&self, work: &mut intel::SeedWork) {
         self.intel.observe_seeds(work);
+    }
+
+    /// Seal native observations before the hourly acquisition workers run.
+    pub(crate) fn capture_politics(&mut self) {
+        self.overhead[TableId::PoliticsCaptureCoverage.index()] += self.politics.capture();
+    }
+
+    pub(crate) fn politics(&self) -> &politics::Captured {
+        &self.politics
     }
 
     /// Final scoped scalar acquisition, after the existing States, Provinces,
@@ -2148,7 +2305,16 @@ impl Captured {
             )+};
         }
         // StateFlags was read by the States worker; capture consumes its ticks.
-        ordinary!(weather, state_flags, equipment_destruction);
+        ordinary!(
+            weather,
+            state_flags,
+            equipment_destruction,
+            naval_result_sources,
+            experience_gains,
+            event_feed,
+            air_losses,
+            building_bombing
+        );
         if let Some(done) = self.ordinary_ticks.take() {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
@@ -2164,6 +2330,7 @@ impl Captured {
             }
         } else {
             staggered!(
+                peace_bids,
                 map_names,
                 division_templates,
                 visibility,
@@ -2176,7 +2343,9 @@ impl Captured {
                 logistics,
                 combat_log,
                 country_factories,
-                industrial_organisations
+                war_overview,
+                industrial_organisations,
+                production_modifiers
             );
             // No loaned fingerprint store: only the hour's slice is read.
             let cost = self.country_stability.capture(
@@ -2409,6 +2578,9 @@ impl<M: Memory> MapSources for Sources<'_, M> {
     fn finish_land(&mut self, outcome: Outcome) -> u64 {
         let begin = qpc();
         self.captured.combat_progress.finish(outcome);
+        self.captured
+            .land_events
+            .lost_casualty_reads(self.captured.combat_progress.lost_reads());
         self.attribute_overhead(TableId::LandCombatProgress, begin, 0)
     }
     fn begin_air(&mut self) -> u64 {
@@ -2417,6 +2589,7 @@ impl<M: Memory> MapSources for Sources<'_, M> {
         }
         let begin = qpc();
         self.captured.air.begin_wings();
+        self.captured.game_score.begin_air();
         self.attribute_overhead(TableId::WingEquipment, begin, 0)
     }
     fn air(&mut self, pointer: usize, pool: usize, row: &cair_wing::Row) -> u64 {
@@ -2439,6 +2612,41 @@ impl<M: Memory> MapSources for Sources<'_, M> {
         }
         let charged = self.wing_ticks().saturating_sub(before);
         self.attribute_overhead(TableId::WingEquipment, begin, charged)
+    }
+    fn air_score_limit(&self) -> Option<usize> {
+        if self.air_raw {
+            None
+        } else {
+            self.captured.game_score.wing_limit()
+        }
+    }
+    fn air_score(&mut self, pointer: usize, row: &cair_wing::ScoreLeaf) -> u64 {
+        if self.air_raw {
+            return 0;
+        }
+        let _reads = crate::read_accounting::table(TableId::AirWingGameScoreStats);
+        let started = qpc();
+        self.captured.game_score.wing(self.memory, pointer, row);
+        self.attribute_overhead(TableId::AirWingGameScoreStats, started, 0)
+    }
+    fn finish_air_score(&mut self, outcome: Outcome) -> u64 {
+        if self.air_raw {
+            return 0;
+        }
+        let started = qpc();
+        self.captured.game_score.finish_air(outcome);
+        self.attribute_overhead(TableId::AirWingGameScoreStats, started, 0)
+    }
+    fn air_owner(&mut self, slot: u32, entry: Option<usize>) -> u64 {
+        if self.air_raw {
+            return 0;
+        }
+        let _reads = crate::read_accounting::table(TableId::CountryGameScoreInputs);
+        let begin = qpc();
+        self.captured
+            .game_score
+            .owner(self.memory, self.base, slot, entry);
+        self.attribute_overhead(TableId::CountryGameScoreInputs, begin, 0)
     }
     fn finish_air(&mut self, outcome: Outcome) -> u64 {
         if self.air_raw && self.naval_raw {

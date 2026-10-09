@@ -1,7 +1,8 @@
-import { useEffect, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
 import CountryRaceView from '../../charts/race/CountryRaceView';
+import CountryPartsDrill from '../../charts/race/CountryPartsDrill';
 import { linesTooltip } from '../../charts/race/lines';
 import { mixCountry } from '../../charts/race/options';
 import type { RaceView } from '../../charts/race/options';
@@ -16,19 +17,21 @@ import { contentKey, contentSet, resolveOptions } from '../../dashboard/options'
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { EquipmentProducedReply } from '../../generated/dashboard';
+import { NumericReply } from '../../dashboard/numericReply';
+import { groupNumbers } from '../../dashboard/groupsReply';
+import type { CountryGroupReply, EquipmentProducedReply } from '../../generated/dashboard';
 import { definition, OPTIONS } from './definition';
-import { bandLabel, bandValue, foldsPerCountry, emptyRace, formatUnits, keyBands, MEASURES, mixBands, producedAt, producedModel, producedRequest, producedTooltips,
+import { bandLabel, bandValue, equipmentBandValue, foldsPerCountry, emptyRace, formatUnits, keyBands, MEASURES, mixBands, producedAt, producedModel, producedRequest, producedTooltips,
   raceEntries, rankProduced, seriesBands, totalRuns, validateProducedReply } from './producedData';
 import type { Grouping, KeyBand, Measure } from './producedData';
+import { producedDrillData, producedDrillNumbers } from './producedDrill';
 import './equipmentProduced.css';
-
-const NO_WARNINGS: string[] = [];
 
 /** Equipment each country produced (spec 4.2 Equipment produced): a race re-ranked
  * every hour, the same values as lines over time, or one country's equipment stacked
  * by group. */
-export default function EquipmentProducedWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+export default function EquipmentProducedWidget(props: WidgetProps) {
+  const { widget, runtime, active, onDiagnostics } = props;
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
@@ -47,16 +50,25 @@ export default function EquipmentProducedWidget({ widget, runtime, active, onDia
   const lastHour = track?.branch.lastHour ?? 0;
   const grouped = widget.countries.kind === 'group' && widget.countries.group.type !== 'top';
   const groupReply = useCountryGroups(runtime, track, active && grouped);
+  const retainedGroups = useMemo(() => new NumericReply<CountryGroupReply>(), [runtime.client]);
+  const groupScope = JSON.stringify([track?.source.id, track?.branch.id, widget.countries]);
+  const numericGroups = retainedGroups.update(groupScope, groupReply.data, groupNumbers);
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupReply.data, lastHour, definition.countries.max),
-    [widget.countries, fallback, groupReply.data, lastHour]);
+  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], numericGroups, lastHour, definition.countries.max),
+    [widget.countries, fallback, numericGroups, lastHour]);
   // Only what the widget draws is asked for: the chosen countries, or the top N, which
   // the product ranks at every hour and cuts to the hours each was among them.
   const params = track ? producedRequest(track.branch.id, resolved, measure, grouping, included, refits) : null;
   const request = track && params && (params.top || params.tags.length)
     ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced', params } : null;
   const { data, error, retry } = useProduct<EquipmentProducedReply>(runtime.client, request, active, validateProducedReply);
-  const model = useMemo(() => data ? producedModel(data) : null, [data]);
+  const numeric = useMemo(() => new NumericReply<EquipmentProducedReply>(), [runtime.client]);
+  const pickScope = JSON.stringify([track?.source.id, track?.branch.id, view, widget.countries, params]);
+  const pickNumbers = numeric.update(pickScope, data, producedDrillNumbers);
+  const shownReply = data ?? pickNumbers;
+  const model = useMemo(() => shownReply ? producedModel(shownReply) : null, [shownReply]);
+  const pickGroups = grouped ? numericGroups : undefined;
+  const pickOwner = useMemo(() => ({ scope: pickScope, numbers: pickNumbers, membership: pickGroups }), [pickScope, pickNumbers, pickGroups]);
   const bands = useMemo(() => model ? keyBands(model, tokens.categories, tokens.muted) : [], [model, tokens]);
   // A country's bands: by exact variant each keeps its own largest in colour (user
   // decision, 29 Sep), else the reply's, the same for every country.
@@ -83,11 +95,12 @@ export default function EquipmentProducedWidget({ widget, runtime, active, onDia
   const mixTag = mixCountry(widget.countries, fallback, ranked);
   const shownTags = view === 'race' ? ranked.map(entry => entry.tag) : view === 'lines' ? lineTags : mixTag ? [mixTag] : [];
 
-  useEffect(() => {
-    const warnings = [...(data?.warnings ?? []), ...(groupReply.data?.warnings ?? [])];
-    onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groupReply.data, onDiagnostics]);
+  const warnings = useMemo(() => [...(data?.warnings ?? []), ...(groupReply.data?.warnings ?? [])], [data, groupReply.data]);
+  const drillParams = useCallback((tag: string) => producedRequest(track!.branch.id, { tags: [tag] }, measure, grouping, included, refits),
+    [track, measure, grouping, included, refits]);
+  const decodeDrill = useCallback((reply: EquipmentProducedReply) => producedDrillData(reply === data && model ? model : producedModel(reply)), [data, model]);
+  const pickDrillTag = (hour: number) => model ? mixCountry(widget.countries, fallback,
+    rankProduced(model, rankedCandidates(resolved, hour, model.tags), hour, slots, produced)) : null;
 
   const split = options.split === true;
   const entries = useMemo(() => model ? raceEntries(model, ranked, { split, bands: bandsFor, unknown: tokens.muted }) : [],
@@ -122,8 +135,8 @@ export default function EquipmentProducedWidget({ widget, runtime, active, onDia
     if (grouped && groupReply.error) return <WidgetState kind="error" message={`Country groups are unavailable: ${groupReply.error}`} onRetry={groupReply.retry} />;
     if (resolved.reason) return <WidgetState kind="empty" icon="layers" message={resolved.reason} />;
     // A group's members are not known until its history arrives; nothing is shown as empty meanwhile.
-    if (!data || !model || (grouped && !groupReply.data)) return <WidgetState kind="loading" label="Loading equipment produced…" />;
-    if (!data.reads.length) return <WidgetState kind="unavailable" message="Not in this recording: it has no count of the equipment production lines delivered." />;
+    if (!shownReply || !model || (grouped && !numericGroups)) return <WidgetState kind="loading" label="Loading equipment produced…" />;
+    if (!shownReply.reads.length) return <WidgetState kind="unavailable" message="Not in this recording: it has no count of the equipment production lines delivered." />;
     // A shorter branch has no week/month value, which is not the same as no production.
     if (!produced && !model.tags.length) return <WidgetState kind="unavailable" message={measure === 'total' ? 'No production was recorded for these countries in this branch.'
       : `No ${measureInfo.label.toLowerCase()} value yet: each needs a read of the same country a ${measure === 'week' ? 'week' : 'month'} before, and this branch has none that long.`} />;
@@ -140,7 +153,9 @@ export default function EquipmentProducedWidget({ widget, runtime, active, onDia
   const mixSeries = model && mixTag ? model.series.get(mixTag) : null;
   const mixParts = mixKeyBands.map(band => {
     const value = mixAt && mixSeries ? bandValue(mixSeries, band, mixAt.index) : Number.NaN;
-    return { id: band.id, label: bandLabel(model!, band, moment), color: band.color, value: Number.isNaN(value) ? '—' : formatUnits(value) };
+    const equipment = Number.isNaN(value) && mixAt && mixSeries ? equipmentBandValue(mixSeries, band, mixAt.index) : Number.NaN;
+    return { id: band.id, label: bandLabel(model!, band, moment), color: band.color,
+      value: Number.isNaN(value) ? Number.isNaN(equipment) ? 'Not known' : `Not known · Equipment lines: ${formatUnits(equipment)}` : formatUnits(value) };
   });
   const window_ = measure === 'week' ? 'week' : 'month';
   // The top N show a country once it has produced something; say so when none has.
@@ -150,7 +165,12 @@ export default function EquipmentProducedWidget({ widget, runtime, active, onDia
     : measure === 'total' ? `No production recorded on ${dayLabel(moment)}.`
       : `Nothing to show on ${dayLabel(moment)}: ${measureInfo.label.toLowerCase()} needs unbroken reads over the ${window_} before.`;
 
-  return <CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead} state={state}
+  return <CountryPartsDrill {...props} widget={widget} runtime={runtime} active={active} onDiagnostics={onDiagnostics} track={track}
+    options={options} extent={extent} playhead={playhead} moment={moment} product="equipment-produced" params={drillParams}
+    validate={validateProducedReply} decode={decodeDrill} numbers={producedDrillNumbers} defaultTag={mixTag} pickTag={pickDrillTag} title="Equipment produced breakdown" measure={measureInfo.label}
+    virtual positiveGeometry warnings={warnings} state={state}
+    resetKey={JSON.stringify([track?.source.id, track?.branch.id, measure, grouping, included, refits, widget.countries])}
+    main={(onPick, visible) => <CountryRaceView runtime={runtime} track={track} active={active && visible} options={options} view={view} extent={extent} playhead={playhead} state={state}
     moment={moment} slots={slots} ranked={entries} lines={lines} countryTags={shownTags} parts={parts}
     mix={mix ? { ...mix, parts: mixParts } : null} partsLabel="Equipment"
     raceLegendParts={split && model && !foldsPerCountry(model) && bands.length > 1 ? parts : []}
@@ -162,9 +182,9 @@ export default function EquipmentProducedWidget({ widget, runtime, active, onDia
       mix: name => `Equipment of ${name} ${measureInfo.unit}, by ${grouping}`, actions: 'Equipment produced actions' }}
     presentation={{ exact: false, held: false,
       strongMixName: true, mixKeyHours: 'starts', raceEmptyState: false, linePadding: CHART_LAYOUT.countryEndLabels, resetTimeView: true }}
-    lineEmpty={{ icon: 'layers', message: 'No countries to draw. Choose countries in the widget settings.' }}
+    pickOwner={pickOwner} lineEmpty={{ icon: 'layers', message: 'No countries to draw. Choose countries in the widget settings.' }}
     mixEmpty={{ icon: 'layers', message: widget.countries.kind === 'group'
       ? `No country of this group was recorded on ${dayLabel(moment)}.` : 'Choose a country in the widget settings.',
       unavailable: name => `No production was recorded for ${name} in this branch.` }}
-    resetKey={`${track?.source.id ?? ''}:${track?.branch.id ?? ''}:${measure}:${grouping}`} />;
+    resetKey={`${track?.source.id ?? ''}:${track?.branch.id ?? ''}:${measure}:${grouping}`} onPick={onPick} />} />;
 }

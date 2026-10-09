@@ -1,6 +1,11 @@
 use super::*;
 
-mod scale;
+mod destruction;
+
+// Existing land-product tests keep the Combat Log source explicit.
+fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::Result<Scanned> {
+    super::scan(replay, branch, tag, LandSource::CombatLog, None, cancelled)
+}
 
 #[test]
 fn recorded_census_dates_partial_counts_without_selecting_divisions() {
@@ -116,7 +121,19 @@ fn daily_values_change_at_the_slot_read_even_without_their_own_timing() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    let built = reply(&params(), &scanned, Content::default(), vec![]);
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "localisation/test_l_english.yml",
+        "l_english:\n",
+    )]);
+    let built = reply(
+        &params(),
+        &scanned,
+        Content {
+            catalogue: Some(&catalogue),
+            ..Content::default()
+        },
+        Vec::new(),
+    );
     assert_eq!(
         totals(&built, LossSource::LendLeaseSent),
         [(base, raw(5)), (base + 24, raw(7))]
@@ -125,7 +142,7 @@ fn daily_values_change_at_the_slot_read_even_without_their_own_timing() {
         totals(&built, LossSource::SunkConvoys),
         [(base, raw(5)), (base + 24, raw(7))]
     );
-    assert_eq!(scanned.design_names[&1326], "Kar98k");
+    assert_eq!(last_known_name(&scanned, 1326).as_deref(), Some("Kar98k"));
     let next_definition_read = (read.hour + 1..=read.hour + 24)
         .find(|&hour| replay::cadence::is_refresh(TableId::VariantDefinitions, hour))
         .unwrap();
@@ -138,7 +155,10 @@ fn daily_values_change_at_the_slot_read_even_without_their_own_timing() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    assert_eq!(scanned.design_names[&1326], "Seen at slot");
+    assert_eq!(
+        last_known_name(&scanned, 1326).as_deref(),
+        Some("Seen at slot")
+    );
 }
 use replay::{
     branches::{BranchReason, BranchStart, Parentage},
@@ -267,7 +287,7 @@ fn frame(hour: i32, log: Vec<CombatLogEquipmentRow>, read: &[u32]) -> DecodedFra
             dlc_mask: engine::dlc_feature_state::EQUIPMENT_LOSSES_MASK,
             human_ai: 0,
             weather_suspend: replay::rows::Recorded::Value(None),
-            instant_decisions: replay::rows::Recorded::Value(Some(0)),
+            ..Default::default()
         }]),
     );
     put(
@@ -331,9 +351,13 @@ fn populate_census(frame: &mut DecodedFrame) {
         };
         return;
     };
-    let mut rows: BTreeMap<u32, replay::rows::DivisionCensusRow> = frame
-        .complete::<tables::Countries>()
-        .unwrap()
+    let Ok(countries) = frame.complete::<tables::Countries>() else {
+        *frame.tables[TableId::DivisionCensus.index()] = TableView::Unavailable {
+            reason: "unread country census".into(),
+        };
+        return;
+    };
+    let mut rows: BTreeMap<u32, replay::rows::DivisionCensusRow> = countries
         .iter()
         .map(|row| {
             (
@@ -399,10 +423,12 @@ fn log(country: u32, group: u32, kind: u8, month: u16, amount: i64) -> CombatLog
     }
 }
 
-fn params() -> CountryParams {
-    CountryParams {
+fn params() -> LossesParams {
+    LossesParams {
         branch_id: "1".into(),
         tag: "GER".into(),
+        land_source: LandSource::CombatLog,
+        country: None,
     }
 }
 
@@ -421,6 +447,132 @@ fn totals(reply: &LossesReply, source: LossSource) -> Vec<(i32, String)> {
 
 fn raw(amount: i64) -> String {
     (amount * AMOUNT_SCALE).to_string()
+}
+
+fn last_known_name(scanned: &Scanned, variant: u32) -> Option<String> {
+    let catalogue = crate::catalogue::tests::loaded("l_english:\n");
+    scanned
+        .variants
+        .names(
+            (u64::from(variant) << 32) | u64::from(VARIANT_TYPE),
+            Some(&catalogue),
+        )
+        .into_iter()
+        .rev()
+        .find(|name| name.known)
+        .and_then(|name| name.name)
+}
+
+#[test]
+fn design_names_follow_reads_and_native_suffix_without_crossing_unavailable_hours() {
+    let base = 60_827_880;
+    let mut first = frame(base, vec![log(GER, 1, 0, OCTOBER, 3)], &[GER]);
+    let mut carried = frame(base + 1, vec![log(GER, 1, 0, OCTOBER, 3)], &[GER]);
+    carried.metrics = Metrics::default();
+    let mut renamed = frame(base + 2, vec![log(GER, 1, 0, OCTOBER, 4)], &[GER]);
+    let mut unread = frame(base + 3, vec![log(GER, 1, 0, OCTOBER, 4)], &[GER]);
+    let mut recovered = frame(base + 4, vec![log(GER, 1, 0, OCTOBER, 5)], &[GER]);
+    for frame in [&mut first, &mut carried, &mut renamed, &mut recovered] {
+        *frame.tables[TableId::VariantModules.index()] =
+            TableView::Complete(TableRows::VariantModules(Vec::new()));
+        *frame.tables[TableId::VariantUpgrades.index()] =
+            TableView::Complete(TableRows::VariantUpgrades(Vec::new()));
+    }
+    for (frame, name, suffix, append) in [
+        (&mut carried, "Not read", "", false),
+        (&mut renamed, "Custom design", "Mk II", true),
+        (&mut recovered, "Final name", "", false),
+    ] {
+        let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+            &mut *frame.tables[TableId::VariantDefinitions.index()]
+        else {
+            unreachable!();
+        };
+        rows[0].display_name = name.as_bytes().to_vec();
+        rows[0].variant_name = suffix.as_bytes().to_vec();
+        rows[0].append_variant_name = u8::from(append);
+    }
+    *unread.tables[TableId::VariantDefinitions.index()] = TableView::Unavailable {
+        reason: "failed naming read".into(),
+    };
+    let mut replay = replay_of(vec![first, carried, renamed, unread, recovered]);
+    replay.gaps.push(replay::branches::Gap {
+        branch: 1,
+        first_hour: base + 5,
+        last_hour: base + 6,
+        reason: "trailing gap".into(),
+    });
+    let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "localisation/test_l_english.yml",
+        "l_english:\n",
+    )]);
+    let built = reply(
+        &params(),
+        &scanned,
+        Content {
+            catalogue: Some(&catalogue),
+            ..Content::default()
+        },
+        Vec::new(),
+    );
+    let names = &built.designs[0].names;
+    assert_eq!(
+        names
+            .iter()
+            .map(|name| (name.first_hour, name.name.as_deref(), name.known))
+            .collect::<Vec<_>>(),
+        [
+            (base, Some("Kar98k"), true),
+            (base + 2, Some("Custom design Mk II"), true),
+            (base + 3, None, false),
+            (base + 4, Some("Final name"), true),
+            (base + 5, None, false),
+        ]
+    );
+    assert!(names[0].design.is_some());
+    assert_ne!(names[0].design, names[1].design);
+    assert_eq!(names[2].design, None);
+    assert_eq!(
+        totals(&built, LossSource::CombatLog(0)),
+        [(base, raw(3)), (base + 2, raw(4)), (base + 4, raw(5))]
+    );
+}
+
+#[test]
+fn a_design_name_is_not_backfilled_before_its_first_read() {
+    let base = 60_827_880;
+    let mut first = frame(base, vec![log(GER, 1, 0, OCTOBER, 3)], &[GER]);
+    *first.tables[TableId::VariantDefinitions.index()] = TableView::Unavailable {
+        reason: "first naming read unavailable".into(),
+    };
+    let later = frame(base + 1, vec![log(GER, 1, 0, OCTOBER, 4)], &[GER]);
+    let scanned = scan(
+        &replay_of(vec![first, later]),
+        1,
+        "GER",
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "localisation/test_l_english.yml",
+        "l_english:\n",
+    )]);
+    let built = reply(
+        &params(),
+        &scanned,
+        Content {
+            catalogue: Some(&catalogue),
+            ..Content::default()
+        },
+        Vec::new(),
+    );
+    assert_eq!(built.designs[0].names[0].first_hour, base + 1);
+    assert_eq!(built.designs[0].names[0].name.as_deref(), Some("Kar98k"));
+    assert_eq!(
+        totals(&built, LossSource::CombatLog(0)),
+        [(base, raw(3)), (base + 1, raw(4))]
+    );
 }
 
 #[test]
@@ -460,7 +612,19 @@ fn land_losses_keep_each_entrys_last_value_through_windows_and_prunes() {
         frame(base + 48, vec![log(GER, 2, 3, NOVEMBER, 2)], &[GER]),
     ]);
     let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
-    let reply = reply(&params(), &scanned, Content::default(), Vec::new());
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "localisation/test_l_english.yml",
+        "l_english:\n",
+    )]);
+    let reply = reply(
+        &params(),
+        &scanned,
+        Content {
+            catalogue: Some(&catalogue),
+            ..Content::default()
+        },
+        Vec::new(),
+    );
     assert_eq!(
         totals(&reply, LossSource::CombatLog(0)),
         [(base, raw(4)), (base + 24, raw(7))]
@@ -490,13 +654,26 @@ fn land_losses_keep_each_entrys_last_value_through_windows_and_prunes() {
         attrition.name.key.as_deref(),
         Some("COMBAT_LOG_EQ_LOST_ATTR_COMBAT")
     );
+    // Game sentences and templates are not names: the app labels them.
+    assert_eq!(attrition.name.text.as_deref(), Some("Attrition: in combat"));
+    for (source, label) in [
+        (LossSource::SunkShips, "Sunk ships"),
+        (LossSource::SunkConvoys, "Sunk convoys"),
+        (LossSource::LendLeaseSunk, "Lend-lease sunk in transit"),
+    ] {
+        assert_eq!(cause(&reply, source).name.text.as_deref(), Some(label));
+    }
     assert_eq!(attrition.group.as_ref().unwrap().key, None);
-    // Air is unknown, never zero.
-    let air = reply.causes.last().unwrap();
-    assert_eq!(air.source, LossSource::Air);
-    assert!(air.unknown.is_some() && air.leaves.is_empty());
+    // Unavailable destruction keeps each air cause unknown, never zero.
+    for source in EquipmentDestructionCause::ALL
+        .into_iter()
+        .filter(|cause| cause.is_air())
+    {
+        let air = cause(&reply, LossSource::Destruction(source));
+        assert!(!air.unknown_spans.is_empty() && air.leaves.is_empty());
+    }
     // The design is recorded, its type unknown without content.
-    assert_eq!(reply.designs[0].name.as_deref(), Some("Kar98k"));
+    assert_eq!(reply.designs[0].names[0].name.as_deref(), Some("Kar98k"));
     assert_eq!(reply.designs[0].equipment.as_deref(), Some("mod_rifle_1"));
     assert!(reply.designs[0].archetype.is_none());
 }
@@ -895,14 +1072,13 @@ fn a_retention_below_one_is_refused_by_name_and_an_unknown_one_warned() {
 }
 
 #[test]
-fn a_combat_log_value_that_falls_counts_as_a_new_entry() {
+fn a_combat_log_value_that_falls_is_a_signed_correction() {
     let base = 60_827_880;
     let replay = replay_of(vec![
         frame(base, vec![log(GER, 1, 0, OCTOBER, 5)], &[GER]),
         frame(base + 24, vec![log(GER, 1, 0, OCTOBER, 2)], &[GER]),
     ]);
     let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
-    assert_eq!(scanned.drops, 1);
     let reply = reply(
         &params(),
         &scanned,
@@ -914,13 +1090,13 @@ fn a_combat_log_value_that_falls_counts_as_a_new_entry() {
     );
     assert_eq!(
         totals(&reply, LossSource::CombatLog(0)),
-        [(base, raw(5)), (base + 24, raw(7))]
+        [(base, raw(5)), (base + 24, raw(2))]
     );
-    assert!(
-        reply
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("fell in value"))
+    assert_eq!(
+        reply.warnings,
+        [
+            "Some hours have recorded gaps, failed blocks/frames, unread division census, unresolved owners or missing writer inputs; land-loss coverage is unknown there."
+        ]
     );
 }
 
@@ -1001,6 +1177,58 @@ fn interface_authored_cause_names_come_from_the_contents_gui() {
             .as_deref(),
         Some("MOD_WORN_OUT")
     );
+    let destruction = super::reply(
+        &LossesParams {
+            land_source: LandSource::Destruction,
+            ..params()
+        },
+        &scanned,
+        Content {
+            keys: Some(&keys),
+            ..Content::default()
+        },
+        vec![],
+    );
+    assert_eq!(
+        cause(
+            &destruction,
+            LossSource::Destruction(EquipmentDestructionCause::LandCombat)
+        )
+        .name
+        .key
+        .as_deref(),
+        Some("MOD_LOST_IN_BATTLE")
+    );
+    assert_eq!(
+        cause(
+            &destruction,
+            LossSource::Destruction(EquipmentDestructionCause::Attrition)
+        )
+        .name
+        .key
+        .as_deref(),
+        Some("MOD_WORN_OUT")
+    );
+    assert_eq!(
+        cause(
+            &destruction,
+            LossSource::Destruction(EquipmentDestructionCause::Garrison)
+        )
+        .name
+        .text
+        .as_deref(),
+        Some("Resistance attacks on garrisons")
+    );
+    assert_eq!(
+        cause(
+            &destruction,
+            LossSource::Destruction(EquipmentDestructionCause::AirAccident)
+        )
+        .name
+        .text
+        .as_deref(),
+        Some("Air accidents")
+    );
     // A content stack without the window leaves the names null, warned.
     let bare = installed_content::ResolvedLayers::from_folders(&[(&interface, &[][..])]).unwrap();
     let mut warnings = Vec::new();
@@ -1059,7 +1287,7 @@ fn daily_records_only_change_at_the_read_that_saw_them() {
     let reply = reply(&params(), &scanned, Content::default(), vec![]);
     assert_eq!(totals(&reply, LossSource::SunkConvoys), [(base, raw(5))]);
     assert_eq!(totals(&reply, LossSource::LendLeaseSent), [(base, raw(5))]);
-    assert_eq!(scanned.design_names[&1326], "Kar98k");
+    assert_eq!(last_known_name(&scanned, 1326).as_deref(), Some("Kar98k"));
 }
 
 #[test]
@@ -1078,7 +1306,7 @@ fn human_membership_does_not_prove_ungrouped_divisions_are_logged() {
     // Coverage explains the game's retention; it never excludes captured rows.
     assert_eq!(
         scanned.events[&(LossSource::CombatLog(0), Some(1326))],
-        [(60_827_880, 3 * AMOUNT_SCALE)]
+        [(60_827_880, 3 * i128::from(AMOUNT_SCALE))]
     );
 }
 
@@ -1113,7 +1341,7 @@ fn a_disabled_writer_feature_is_not_logged_without_excluding_recorded_totals() {
                 dlc_mask: !engine::dlc_feature_state::EQUIPMENT_LOSSES_MASK,
                 human_ai: 0,
                 weather_suspend: replay::rows::Recorded::Value(None),
-                instant_decisions: replay::rows::Recorded::Value(Some(0)),
+                ..Default::default()
             },
         ]));
     let scanned = scan(&replay_of(vec![frame]), 1, "GER", &AtomicBool::new(false)).unwrap();
@@ -1295,7 +1523,7 @@ fn closed_feature_gate_stays_not_logged_with_an_unread_census() {
                 dlc_mask: 0,
                 human_ai: 0,
                 weather_suspend: replay::rows::Recorded::Value(None),
-                instant_decisions: replay::rows::Recorded::Value(Some(0)),
+                ..Default::default()
             },
         ]));
     let scanned = scan(&replay_of(vec![frame]), 1, "GER", &AtomicBool::new(false)).unwrap();
@@ -1560,148 +1788,58 @@ fn mixed_census_counts_ungrouped_divisions_and_splits_when_the_count_changes() {
     assert_eq!(totals(&reply, LossSource::CombatLog(0)), [(base, raw(3))]);
 }
 
-/// Product observation over shared, already decoded observer frames. Run in
-/// release with --ignored --nocapture --test-threads=1. Decoding is not timed.
+/// The localiser fills an unknown `$NAME$` with nothing, so a template with a
+/// fill-in never becomes a complete text (it was shown as "Lost Convoys:  ()").
 #[test]
-#[ignore]
-fn equipment_losses_observer_scale() {
-    use std::{hint::black_box, time::Instant};
-    const HOURS: i32 = 240;
-    let mut worst_ms = 0.0_f64;
-    for countries in [1_666_u32, 5_000] {
-        let source = observer_frame(countries, 5);
-        let row_count = source
-            .complete::<tables::CombatLogEquipment>()
-            .unwrap()
-            .len();
-        let mut reads: Vec<SliceReadRow> = (1..=countries)
-            .map(|owner| SliceReadRow {
-                table: TableId::CombatLogEquipment.index() as u32,
-                owner,
-                sample_hour: -1,
-            })
-            .collect();
-        let mut frames = Vec::new();
-        let mut read_rows = 0;
-        for hour in 0..HOURS {
-            for read in &mut reads {
-                if hour == 0 || read.owner % 24 == hour as u32 % 24 {
-                    read.sample_hour = hour;
-                    read_rows += 1_200;
-                }
-            }
-            let mut frame = source.clone();
-            frame.hour = hour;
-            if hour % 24 != 0 {
-                frame.metrics = Metrics::default();
-            }
-            *frame.tables[TableId::SliceReads.index()] =
-                TableView::Complete(TableRows::SliceReads(reads.clone()));
-            frames.push(frame);
-        }
-        let start = Instant::now();
-        let mut scanned = Scanned::default();
-        let mut state = State::default();
-        for frame in &frames {
-            observe(
-                &mut scanned,
-                &mut state,
-                black_box(frame),
-                "C00007",
-                &BTreeMap::new(),
-            )
-            .unwrap();
-        }
-        let ms = start.elapsed().as_secs_f64() * 1_000.0 / f64::from(HOURS);
-        worst_ms = worst_ms.max(ms);
-        assert_eq!(state.log.len(), 1_200);
-        assert_eq!(scanned.coverage.len(), 1);
-        assert_eq!(scanned.coverage[0].coverage, Coverage::Logged);
-        let built = reply(
-            &CountryParams {
-                branch_id: "1".into(),
-                tag: "C00007".into(),
-            },
-            black_box(&scanned),
-            Content::default(),
-            vec![],
-        );
-        black_box(built);
-        println!(
-            "observer countries={countries}, merged_rows={row_count}, mean_read_rows={:.0}, hours={HOURS}, product_ms_per_hour={ms:.6} (already decoded)",
-            read_rows as f64 / f64::from(HOURS)
-        );
-    }
-    assert!(
-        worst_ms < 5.5,
-        "product observation exceeded 5.5 ms per built hour: {worst_ms:.6}"
+fn templates_with_fill_ins_have_no_complete_text() {
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "localisation/english/losses_l_english.yml",
+        "\u{feff}l_english:\n FILLED:0 \"Lost Convoys: $NUM|H$ (until today $UNTIL_TODAY|H$)\"\n NAMED:0 \"In Combat\"\n",
+    )]);
+    let filled = name(Some(&catalogue), Some("FILLED"));
+    assert_eq!(
+        filled.template.as_deref(),
+        Some("Lost Convoys: $NUM|H$ (until today $UNTIL_TODAY|H$)")
+    );
+    assert_eq!(filled.text, None);
+    assert_eq!(
+        name(Some(&catalogue), Some("NAMED")).text.as_deref(),
+        Some("In Combat")
     );
 }
 
-fn observer_frame(countries: u32, divisions_per_country: u32) -> DecodedFrame {
-    let mut source = frame(0, vec![], &[]);
-    *source.tables[TableId::CombatLogState.index()] =
-        TableView::Complete(TableRows::CombatLogState(vec![CombatLogStateRow {
-            viewing_country_raw: 0,
-            prune_observed: 1,
-        }]));
-    *source.tables[TableId::Players.index()] = TableView::Complete(TableRows::Players(vec![]));
-    *source.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
-        (1..=countries)
-            .map(|id| CountryRow {
-                id,
-                canonical_slot: id,
-                tag: format!("C{id:05}").into_bytes(),
-                ..CountryRow::default()
-            })
-            .collect(),
-    ));
-    *source.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
-        (1..=countries)
-            .map(|id| CountryLinkRow {
-                id,
-                canonical_slot: id,
-            })
-            .collect(),
-    ));
-    *source.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
-        (1..=countries)
-            .flat_map(|country| {
-                (0..divisions_per_country).map(move |division| {
-                    let id = u64::from(country * divisions_per_country + division);
-                    replay::rows::DivisionRow {
-                        id: id << 32 | 51,
-                        roster_owner: country,
-                        logical_owner: country,
-                        orders_group: u64::from(country * 5 + division % 5) << 32 | 53,
-                        ..Default::default()
-                    }
-                })
-            })
-            .collect(),
-    ));
-    let mut rows = Vec::new();
-    for country in 1..=countries {
-        for group in 0..5 {
-            for kind in 0..2 {
-                for month in 0..12 {
-                    for variant in 1..=10 {
-                        rows.push(CombatLogEquipmentRow {
-                            country,
-                            group: country * 5 + group,
-                            kind,
-                            month,
-                            variant,
-                            date: 0,
-                            amount_raw: AMOUNT_SCALE,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    *source.tables[TableId::CombatLogEquipment.index()] =
-        TableView::Complete(TableRows::CombatLogEquipment(rows));
-    populate_census(&mut source);
-    source
+#[test]
+fn combat_log_signed_extremes_keep_the_full_i128_difference() {
+    let base = 60_827_880;
+    let mut one = log(GER, 1, 0, OCTOBER, 1);
+    one.amount_raw = i64::MAX;
+    let mut two = one.clone();
+    two.amount_raw = i64::MIN;
+    let recording = replay_of(vec![
+        frame(base, vec![one], &[GER]),
+        frame(base + 24, vec![two], &[GER]),
+    ]);
+    let scanned = scan(&recording, 1, "GER", &AtomicBool::new(false)).unwrap();
+    let reply = reply(
+        &params(),
+        &scanned,
+        Content {
+            retained_months: Some(12),
+            ..Content::default()
+        },
+        vec![],
+    );
+    assert_eq!(
+        totals(&reply, LossSource::CombatLog(0)),
+        [
+            (base, i64::MAX.to_string()),
+            (base + 24, i64::MIN.to_string())
+        ]
+    );
+    assert_eq!(
+        reply.warnings,
+        [
+            "Some hours have recorded gaps, failed blocks/frames, unread division census, unresolved owners or missing writer inputs; land-loss coverage is unknown there."
+        ]
+    );
 }

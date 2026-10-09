@@ -360,11 +360,143 @@ fn focus_progress_runs_compress_equal_hours_and_never_bridge_gaps() {
 }
 
 #[test]
-fn focus_budget_is_per_requested_country_not_per_recording() {
+fn focus_completion_projection_keeps_only_previous_orders() {
+    use super::FocusCompletionProjection;
     use replay::rows::{CompletedFocusRow, FocusRow};
-    const COUNTRIES: u32 = 5_000;
-    // An hourly change for every country: 105,000 segments across the
-    // recording, more than one scan may hold, but 21 for any one country.
+    const COUNTRIES: u32 = 3;
+    let mut projection = FocusCompletionProjection::default();
+    for step in 0..21 {
+        let mut frame = scale_frame(1, 100 + step, COUNTRIES);
+        *frame.tables[TableId::Focus.index()] = TableView::Complete(TableRows::Focus(
+            (0..COUNTRIES)
+                .map(|index| FocusRow {
+                    country: 100_000 + index,
+                    completed_count: step,
+                    ..FocusRow::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::CompletedFocuses.index()] =
+            TableView::Complete(TableRows::CompletedFocuses(
+                (0..COUNTRIES)
+                    .flat_map(|index| {
+                        (0..step).map(move |ordinal| CompletedFocusRow {
+                            country: 100_000 + index,
+                            ordinal: ordinal as u32,
+                            token: format!("focus_{ordinal}").into_bytes(),
+                        })
+                    })
+                    .collect(),
+            ));
+        let events = projection.observe(&frame);
+        assert_eq!(events.len(), if step == 0 { 0 } else { COUNTRIES as usize });
+        for (event, index) in events.iter().zip(0..COUNTRIES) {
+            assert_eq!(event.tag, String::from_utf8(scale_tag(index)).unwrap());
+            assert_eq!(event.token, format!("focus_{}", step - 1));
+            assert_eq!(event.hour, 100 + step);
+        }
+        assert_eq!(projection.previous.len(), COUNTRIES as usize);
+        assert_eq!(
+            projection
+                .previous
+                .values()
+                .map(|order| order.completed.len())
+                .sum::<usize>(),
+            COUNTRIES as usize * step as usize
+        );
+    }
+    assert!(projection.observed);
+    assert!(projection.unavailable.is_empty());
+}
+
+#[test]
+fn focus_completion_projection_matches_topic_bounds_repeats_gaps_and_resets() {
+    use super::FocusCompletionProjection;
+    let frames = vec![
+        focus_countries_frame(1, 100, (9001, 7, &["old"]), &[]),
+        focus_countries_frame(1, 101, (9001, 7, &["old", "repeat"]), &[]),
+        focus_countries_frame(1, 104, (9001, 7, &["old", "repeat", "repeat"]), &[]),
+        focus_countries_frame(1, 105, (9001, 7, &["reset"]), &[]),
+        focus_countries_frame(1, 106, (9001, 7, &["reset", "later"]), &[]),
+    ];
+    let mut projection = FocusCompletionProjection::default();
+    let events: Vec<_> = frames
+        .iter()
+        .flat_map(|frame| projection.observe(frame))
+        .collect();
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| (event.token.as_str(), event.hour))
+            .collect::<Vec<_>>(),
+        [("repeat", 101), ("repeat", 104), ("later", 106)]
+    );
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let history = crate::focus_history(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    for event in &events {
+        assert!(
+            history
+                .at(event.hour)
+                .unwrap()
+                .completed
+                .iter()
+                .any(|entry| {
+                    entry.token == event.token && entry.completed_by_hour == Some(event.hour)
+                })
+        );
+    }
+    assert_eq!(projection.unavailable.values().sum::<usize>(), 1);
+}
+
+#[test]
+fn focus_completion_projection_dates_new_tag_and_counts_incomplete_observation() {
+    use super::FocusCompletionProjection;
+    let mut projection = FocusCompletionProjection::default();
+    assert!(
+        projection
+            .observe(&focus_countries_frame(1, 100, (9001, 7, &[]), &[]))
+            .is_empty()
+    );
+    let mut missing = focus_countries_frame(1, 101, (9001, 7, &["new"]), &[]);
+    *missing.tables[TableId::CompletedFocuses.index()] = TableView::Unavailable {
+        reason: "synthetic missing completed order".into(),
+    };
+    assert!(projection.observe(&missing).is_empty());
+    let mut renamed = focus_countries_frame(1, 104, (9001, 7, &["new"]), &[]);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *renamed.tables[TableId::Countries.index()]
+    {
+        rows[0].tag = b"renamed/tag".to_vec();
+    }
+    let events = projection.observe(&renamed);
+    assert_eq!(
+        events,
+        [super::FocusCompletion {
+            tag: "renamed/tag".into(),
+            token: "new".into(),
+            hour: 104,
+        }]
+    );
+    assert_eq!(projection.unavailable.values().sum::<usize>(), 1);
+    // A different native identity starts an undated baseline, even if its tag
+    // and list match the previous country's presentation.
+    assert!(
+        projection
+            .observe(&focus_countries_frame(
+                1,
+                105,
+                (9002, 7, &["new", "another"]),
+                &[]
+            ))
+            .is_empty()
+    );
+}
+
+#[test]
+fn focus_topic_cache_keeps_selected_countries_independent() {
+    use replay::rows::{CompletedFocusRow, FocusRow};
+    const COUNTRIES: u32 = 3;
+    // Hourly changes stay in each selected country's independent cache entry.
     let frames = (0..21)
         .map(|step| {
             let mut frame = scale_frame(1, 100 + step, COUNTRIES);
@@ -393,14 +525,55 @@ fn focus_budget_is_per_requested_country_not_per_recording() {
     let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     let cancel = AtomicBool::new(false);
     let mut cache = crate::FocusCache::default();
-    for index in [0, 2_777, COUNTRIES - 1] {
+    for index in [0, 1, COUNTRIES - 1] {
         let tag = String::from_utf8(scale_tag(index)).unwrap();
         let (history, progress_stopped) = cache.get(&replay, 1, &tag, &cancel).unwrap();
         assert_eq!(progress_stopped, None);
         assert_eq!(history.segments.len(), 21);
         assert_eq!(history.at(120).unwrap().completed[0].token, "focus_20");
     }
-    // The same recording scanned for every country at once exceeds the scan
-    // budget, which is why a request never scans other countries.
-    assert!(crate::focus_branch(&replay, 1, None, &cancel).is_err());
+    let all = crate::focus_branch(&replay, 1, None, &cancel).unwrap();
+    assert_eq!(all.countries.len(), COUNTRIES as usize);
+    assert!(
+        all.countries
+            .values()
+            .all(|history| history.segments.len() == 21)
+    );
+}
+
+#[test]
+fn focus_completion_projection_skips_shared_views_and_checks_each_dependency() {
+    let mut projection = super::FocusCompletionProjection::default();
+    let mut frame = focus_countries_frame(1, 100, (9001, 7, &[]), &[]);
+    assert!(projection.observe(&frame).is_empty());
+    assert_eq!(projection.changed_frames, 1);
+    for hour in 101..125 {
+        frame.hour = hour;
+        assert!(projection.observe(&frame).is_empty());
+    }
+    assert_eq!(projection.changed_frames, 1);
+    // Equal rows in a new allocation must invalidate the cached identity too.
+    for table in [
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::Focus,
+        TableId::CompletedFocuses,
+    ] {
+        let rows = (*frame.tables[table.index()]).clone();
+        frame.tables[table.index()] = rows.into();
+        frame.hour += 1;
+        assert!(projection.observe(&frame).is_empty());
+    }
+    assert_eq!(projection.changed_frames, 5);
+    assert!(projection.unavailable.is_empty());
+    let addition = focus_countries_frame(1, frame.hour + 1, (9001, 7, &["new"]), &[]);
+    assert_eq!(
+        projection.observe(&addition),
+        [super::FocusCompletion {
+            tag: "GER".into(),
+            token: "new".into(),
+            hour: addition.hour,
+        }]
+    );
+    assert_eq!(projection.changed_frames, 6);
 }

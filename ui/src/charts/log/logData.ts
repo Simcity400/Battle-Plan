@@ -6,11 +6,17 @@ import { gameDate, monthIndex, monthNames } from '../../dashboard/calendar.ts';
 import type { MovingRow } from '../rowMotion';
 
 /** The moving rows to draw: those at a slot in [start, end), and any `keep` says
- * must stay (the keyboard's row). A row that is gone fades out only while rows
- * animate; without animation it goes at once, never left over its replacement. */
+ * must stay (the keyboard's row). Rows may fade out while motion is on. Cards
+ * leave immediately, so a backward seek never retains a future conference. */
 export function shownMotion<T>(rows: readonly MovingRow<T>[], start: number, end: number, animate: boolean,
-  keep: (row: MovingRow<T>) => boolean = () => false): MovingRow<T>[] {
-  return rows.filter(row => (animate || row.phase !== 'leaving') && ((row.slot >= start && row.slot < end) || keep(row)));
+  keep: (row: MovingRow<T>) => boolean = () => false, layout: 'row' | 'card' = 'row'): MovingRow<T>[] {
+  return rows.filter(row => (animate && layout === 'row' || row.phase !== 'leaving') && ((row.slot >= start && row.slot < end) || keep(row)));
+}
+
+/** Cards enter only when their key is new to the committed log. Keeping every
+ * committed key stops a card replaying its entry after scrolling or seeking. */
+export function newCardKeys<T>(rows: readonly MovingRow<T>[], known: ReadonlySet<string>, enabled = true): string[] {
+  return enabled ? rows.filter(row => row.phase === 'entering' && !known.has(row.key)).map(row => row.key) : [];
 }
 
 /** One dated row of a log. `hour` places it (newest first) and is the date it
@@ -18,7 +24,27 @@ export function shownMotion<T>(rows: readonly MovingRow<T>[], start: number, end
  * earlier). `key` identifies it across updates: a new key flashes in. `id` is what
  * the row is about when that outlives its key (a project whose row re-enters as it
  * changes): the keyboard's row and a tooltip follow it; the key when absent. */
-export interface LogRow<T> { key: string; id?: string; hour: number; by?: boolean; item: T }
+export interface LogRow<T> {
+  key: string;
+  id?: string;
+  hour: number;
+  /** The read that first revealed this row, when its displayed date predates
+   * that read. Live entry motion uses this hour; defaults to `hour`. */
+  revealedHour?: number;
+  by?: boolean;
+  item: T;
+}
+
+/** A stable server window. Absent rows occupy `count` virtual rows until wanted;
+ * a caller can retain a filtered count after releasing the window's payload. */
+export interface LogPage<T> {
+  key: string;
+  start: number;
+  end: number;
+  count: number;
+  rows?: readonly LogRow<T>[];
+  error?: string;
+}
 
 /** Tracks after the date, shared by every row or chosen from that row's content. */
 export type LogColumns<T> = string | ((row: LogRow<T>) => string);
@@ -53,6 +79,44 @@ export function tipRow<T>(tip: Pick<LogTip, 'id'> | null, rows: ReadonlyMap<stri
 
 export type LogDensity = 'comfortable' | 'compact';
 
+/** Intrinsic card heights apply only to the layout width and density measured. */
+export interface CardMeasurements { width: number; density: LogDensity; font?: string; heights: ReadonlyMap<string, number> }
+const NO_HEIGHTS: ReadonlyMap<string, number> = new Map();
+
+export const cardHeightsAt = (measured: CardMeasurements, width: number, density: LogDensity, font = ''): ReadonlyMap<string, number> =>
+  measured.width === width && measured.density === density && (measured.font ?? '') === font ? measured.heights : NO_HEIGHTS;
+
+/** Merge one observed batch, discarding stale wrapping after layout changes and
+ * released page keys when supplied. Unchanged measurements keep their identity. */
+export function updateCardHeights(measured: CardMeasurements, width: number, density: LogDensity,
+  sizes: readonly { key: string; height: number }[], font = '', held?: ReadonlySet<string>): CardMeasurements {
+  const sameLayout = measured.width === width && measured.density === density && (measured.font ?? '') === font;
+  const previous = cardHeightsAt(measured, width, density, font);
+  let next: Map<string, number> | undefined;
+  if (held) for (const key of previous.keys()) if (!held.has(key)) {
+    next ??= new Map(previous);
+    next.delete(key);
+  }
+  for (const { key, height } of sizes) {
+    if (held && !held.has(key)) continue;
+    if (height <= 0 || !Number.isFinite(height) || previous.get(key) === height) continue;
+    next ??= new Map(previous);
+    next.set(key, height);
+  }
+  return sameLayout && !next ? measured : { width, density, font, heights: next ?? previous };
+}
+
+interface TipElement { getAttribute(name: string): string | null; parentElement: TipElement | null }
+
+/** A chip or other row part with its own tooltip takes hover from the row. */
+export function hasLogPartTip(target: TipElement | null, row: TipElement): boolean {
+  for (let at = target; at && at !== row; at = at.parentElement) {
+    const text = at.getAttribute('data-tooltip');
+    if (text != null) return text.length > 0;
+  }
+  return false;
+}
+
 /** Row and divider heights in layout pixels (log.css draws them at these). */
 export const ROW_HEIGHT: Readonly<Record<LogDensity, number>> = { comfortable: 38, compact: 28 };
 export const MONTH_HEIGHT = 24;
@@ -76,13 +140,31 @@ export function monthOf(hour: number): number | null {
 
 /** What a log draws in order: its rows, with a divider before each month's first
  * row when `months` is on. Dividers are keyed by their month, so they hold still. */
-export type LogItem<T> = { kind: 'month'; key: string; label: string } | { kind: 'row'; key: string; row: LogRow<T> };
+export type LogItem<T> = { kind: 'month'; key: string; label: string; pageKey?: string }
+  | { kind: 'row'; key: string; row: LogRow<T>; pageKey?: string; pageOffset?: number }
+  | { kind: 'page'; key: string; page: LogPage<T> };
+
+export type LogEntry<T> = { kind: 'row'; row: LogRow<T>; pageKey?: string; pageOffset?: number } | { kind: 'page'; page: LogPage<T> };
 
 export function logItems<T>(rows: readonly LogRow<T>[], months: boolean): LogItem<T>[] {
+  return logEntryItems(rows.map(row => ({ kind: 'row', row })), months);
+}
+
+/** Ordinary and paged logs share month sections. An unloaded window interrupts
+ * a section: no month is assigned to rows whose dates have not been loaded. */
+export function logEntryItems<T>(entries: readonly LogEntry<T>[], months: boolean): LogItem<T>[] {
   const items: LogItem<T>[] = [];
   const sections = new Map<number | null, number>();
   let month: number | null | undefined;
-  for (const row of rows) {
+  for (const entry of entries) {
+    if (entry.kind === 'page') {
+      if (entry.page.count > 0) {
+        items.push({ kind: 'page', key: JSON.stringify(['page', entry.page.key]), page: entry.page });
+        month = undefined;
+      }
+      continue;
+    }
+    const { row, pageKey, pageOffset } = entry;
     if (months) {
       const next = monthOf(row.hour);
       if (next !== month) {
@@ -90,19 +172,23 @@ export function logItems<T>(rows: readonly LogRow<T>[], months: boolean): LogIte
         // Pinned running rows can precede a newer finished section of the same month.
         const section = sections.get(next) ?? 0;
         sections.set(next, section + 1);
-        items.push({ kind: 'month', key: `month:${next ?? 'undated'}${section ? `:${section}` : ''}`, label: monthLabel(row.hour) });
+        items.push({ kind: 'month', key: `month:${next ?? 'undated'}${section ? `:${section}` : ''}`, label: monthLabel(row.hour), ...(pageKey == null ? {} : { pageKey }) });
       }
     }
-    items.push({ kind: 'row', key: row.key, row });
+    items.push({ kind: 'row', key: row.key, row, ...(pageKey == null ? {} : { pageKey, pageOffset }) });
   }
   return items;
 }
 
 /** Where each item starts, and the whole height: `offsets[i]` is item i's top and
  * `offsets[items.length]` the list's height. */
-export function logOffsets(items: readonly LogItem<unknown>[], density: LogDensity): number[] {
+export function logOffsets<T>(items: readonly LogItem<T>[], density: LogDensity, rowHeight?: (row: LogRow<T>) => number): number[] {
   const offsets = [0];
-  for (const item of items) offsets.push(offsets[offsets.length - 1] + (item.kind === 'month' ? MONTH_HEIGHT : ROW_HEIGHT[density]));
+  for (const item of items) {
+    const requested = item.kind === 'row' ? rowHeight?.(item.row) : item.kind === 'page' ? ROW_HEIGHT[density] * item.page.count : MONTH_HEIGHT;
+    const height = requested != null && Number.isFinite(requested) && requested > 0 ? requested : ROW_HEIGHT[density];
+    offsets.push(offsets[offsets.length - 1] + height);
+  }
   return offsets;
 }
 
@@ -127,26 +213,33 @@ export function visibleRange(offsets: readonly number[], top: number, height: nu
 export function scrollToShow(offsets: readonly number[], index: number, top: number, height: number, stickyTop = 0): number {
   const start = offsets[index];
   const end = offsets[index + 1];
+  // A card taller than the viewport stays at its heading on successive keys.
+  if (end - start > height - stickyTop) return Math.max(0, start - stickyTop);
   if (start - stickyTop < top) return Math.max(0, start - stickyTop);
   if (end > top + height) return end - height;
   return top;
 }
 
+/** Page through variable-height cards by a viewport of layout pixels, with at
+ * least one row of progress. `slots` maps keyboard rows to their log items. */
+export function cardPageTarget(offsets: readonly number[], slots: readonly number[], index: number, height: number, direction: 1 | -1): number {
+  if (!slots.length) return 0;
+  const at = Math.max(0, Math.min(slots.length - 1, index));
+  const goal = offsets[slots[at]] + direction * Math.max(0, height);
+  let low = 0;
+  let high = slots.length - 1;
+  while (low < high) {
+    const middle = direction === 1 ? (low + high + 1) >> 1 : (low + high) >> 1;
+    if (direction === 1) {
+      if (offsets[slots[middle]] <= goal) low = middle; else high = middle - 1;
+    } else if (offsets[slots[middle]] >= goal) high = middle; else low = middle + 1;
+  }
+  return direction === 1 ? Math.min(slots.length - 1, Math.max(at + 1, low)) : Math.max(0, Math.min(at - 1, low));
+}
+
 /** Where a key moves the keyboard's row among `count` rows (null: the key is not
  * the list's). `page` is how many rows a page holds. */
-export function keyTarget(key: string, index: number, count: number, page: number): number | null {
-  if (count <= 0) return null;
-  const clamp = (value: number) => Math.max(0, Math.min(count - 1, value));
-  switch (key) {
-    case 'ArrowDown': return clamp(index + 1);
-    case 'ArrowUp': return clamp(index - 1);
-    case 'PageDown': return clamp(index + Math.max(1, page));
-    case 'PageUp': return clamp(index - Math.max(1, page));
-    case 'Home': return 0;
-    case 'End': return count - 1;
-    default: return null;
-  }
-}
+export { keyTarget } from '../rowNavigation.ts';
 
 /** The date column of a row: day and month, and the year under it. */
 export function logDate(hour: number): { day: string; year: string } {
@@ -163,7 +256,30 @@ export function anchoredScrollTop<T>(previous: readonly LogItem<T>[], before: re
   let at = before.length - 1;
   while (at > 0 && before[at] > top) at--;
   at = Math.max(0, at);
-  const key = previous[at]?.key;
-  const index = key === undefined ? -1 : next.findIndex(item => item.key === key);
-  return index < 0 ? top : Math.max(0, after[index] + top - before[at]);
+  const item = previous[at];
+  if (!item) return top;
+  const clampWithin = (index: number, within: number) => Math.min(within, Math.max(0, after[index + 1] - after[index] - 1));
+  const index = next.findIndex(candidate => candidate.key === item.key
+    && (item.kind !== 'month' || candidate.kind === 'month' && candidate.pageKey === item.pageKey));
+  if (index >= 0) return Math.max(0, after[index] + clampWithin(index, top - before[at]));
+  // Page load/release changes item keys. Keep its logical row offset, including
+  // loaded month headings, without retaining an offset beyond a shrinking card.
+  const pageKey = item.kind === 'page' ? item.page.key : item.pageKey;
+  if (pageKey == null) return top;
+  const delta = top - before[at];
+  const step = item.kind === 'page' ? (before[at + 1] - before[at]) / item.page.count : before[at + 1] - before[at];
+  const offset = item.kind === 'page' ? Math.floor(delta / step) : item.kind === 'row' ? item.pageOffset ?? 0 : 0;
+  const within = item.kind === 'month' ? 0 : item.kind === 'page' ? delta - offset * step : delta;
+  let target = -1;
+  for (let i = 0; i < next.length; i++) {
+    const candidate = next[i];
+    if (candidate.kind === 'page' && candidate.page.key === pageKey) {
+      const height = (after[i + 1] - after[i]) / candidate.page.count;
+      return Math.max(0, after[i] + Math.min(candidate.page.count - 1, offset) * height + Math.min(within, Math.max(0, height - 1)));
+    }
+    if (candidate.kind !== 'row' || candidate.pageKey !== pageKey) continue;
+    target = i;
+    if ((candidate.pageOffset ?? 0) >= offset) break;
+  }
+  return target < 0 ? top : Math.max(0, after[target] + clampWithin(target, within));
 }

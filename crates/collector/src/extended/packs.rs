@@ -2,11 +2,12 @@ use super::{
     Captured, Divisions, MISSING, active_abilities, air, army_icon_inputs, character_inputs,
     combat_details, combat_log, construction, country_appearance, country_counters,
     country_factories, country_stability, country_tactic_unlocks, division_templates,
-    faction_theatres, fog, group_counters, hired_advisors, industrial_organisations, leader_paths,
-    leader_portraits, logistics, map_facilities, map_names, model_inputs, modifier_definitions,
-    naval_bases, naval_combat_sources, naval_counters, naval_details, naval_history,
-    naval_mission_inputs, naval_result_details, projects, raid_launch_inputs, raid_state_inputs,
-    raid_target_statuses, railway_guns, saved_event_targets, scatter, unpublished, visibility,
+    faction_theatres, fog, game_score, group_counters, hired_advisors, industrial_organisations,
+    leader_paths, leader_portraits, logistics, map_facilities, map_names, model_inputs,
+    modifier_definitions, naval_bases, naval_combat_sources, naval_counters, naval_details,
+    naval_history, naval_mission_inputs, naval_result_details, peace_bids, production_modifiers,
+    projects, raid_launch_inputs, raid_state_inputs, raid_target_statuses, railway_guns,
+    saved_event_targets, scatter, unpublished, visibility, war_overview,
 };
 use crate::{division_census::UnitInputs, map_capture::Orders};
 use engine::{Memory, walk::Outcome};
@@ -80,6 +81,8 @@ impl Captured {
         std::mem::swap(&mut self.railway_guns, &mut packs.railway_guns);
         std::mem::swap(&mut self.active_abilities, &mut packs.active_abilities);
         std::mem::swap(&mut self.country_counters, &mut packs.country_counters);
+        // The map's typed air fallback runs before Ordinary joins.
+        self.game_score.swap_country(&mut packs.game_score);
         std::mem::swap(&mut self.group_counters, &mut packs.group_counters);
         std::mem::swap(
             &mut self.saved_event_targets,
@@ -342,6 +345,7 @@ impl Captured {
     }
 
     fn swap_slow(&mut self, packs: &mut SlowPacks) {
+        std::mem::swap(&mut self.peace_bids, &mut packs.peace_bids);
         std::mem::swap(&mut self.map_names, &mut packs.map_names);
         std::mem::swap(&mut self.division_templates, &mut packs.division_templates);
         std::mem::swap(&mut self.visibility, &mut packs.visibility);
@@ -356,9 +360,14 @@ impl Captured {
         std::mem::swap(&mut self.logistics, &mut packs.logistics);
         std::mem::swap(&mut self.combat_log, &mut packs.combat_log);
         std::mem::swap(&mut self.country_factories, &mut packs.country_factories);
+        std::mem::swap(&mut self.war_overview, &mut packs.war_overview);
         std::mem::swap(
             &mut self.industrial_organisations,
             &mut packs.industrial_organisations,
+        );
+        std::mem::swap(
+            &mut self.production_modifiers,
+            &mut packs.production_modifiers,
         );
         std::mem::swap(&mut self.country_stability, &mut packs.country_stability);
         std::mem::swap(
@@ -487,6 +496,7 @@ pub(crate) struct OrdinaryPacks {
     pub(crate) railway_guns: railway_guns::Captured,
     pub(crate) active_abilities: active_abilities::Captured,
     pub(crate) country_counters: country_counters::Captured,
+    pub(crate) game_score: game_score::Captured,
     pub(crate) group_counters: group_counters::Captured,
     pub(crate) saved_event_targets: saved_event_targets::Captured,
     pub(crate) ticks: [u64; TABLE_COUNT],
@@ -506,6 +516,7 @@ impl OrdinaryPacks {
         &railway_guns::TABLES,
         &active_abilities::TABLES,
         &country_counters::TABLES,
+        &game_score::COUNTRY_TABLES,
         &group_counters::TABLES,
         &saved_event_targets::TABLES,
     ];
@@ -523,6 +534,7 @@ impl OrdinaryPacks {
             + self.railway_guns.allocated_bytes()
             + self.active_abilities.allocated_bytes()
             + self.country_counters.allocated_bytes()
+            + self.game_score.allocated_bytes()
             + self.group_counters.allocated_bytes()
             + self.saved_event_targets.allocated_bytes()
     }
@@ -539,6 +551,7 @@ impl OrdinaryPacks {
         self.railway_guns.reset();
         self.active_abilities.reset();
         self.country_counters.reset();
+        self.game_score.fail(reason);
         self.group_counters.reset();
         self.saved_event_targets.reset();
         self.ticks = [0; TABLE_COUNT];
@@ -562,6 +575,7 @@ impl OrdinaryPacks {
             railway_guns: railway_guns::Captured::vacant(),
             active_abilities: active_abilities::Captured::vacant(),
             country_counters: country_counters::Captured::vacant(),
+            game_score: game_score::Captured::vacant(),
             group_counters: group_counters::Captured::vacant(),
             saved_event_targets: saved_event_targets::Captured::vacant(),
             ticks: [0; TABLE_COUNT],
@@ -589,6 +603,7 @@ impl OrdinaryPacks {
             railway_guns,
             active_abilities,
             country_counters,
+            game_score,
             group_counters,
             saved_event_targets
         );
@@ -628,6 +643,7 @@ impl RaidStateStores {
 /// table keeps its own [`replay::cadence`]: the
 /// template dictionary is daily, its counter inputs hourly.
 pub(crate) struct SlowPacks {
+    pub(crate) peace_bids: peace_bids::Captured,
     pub(crate) map_names: map_names::Captured,
     pub(crate) division_templates: division_templates::Captured,
     pub(crate) visibility: visibility::Captured,
@@ -639,7 +655,9 @@ pub(crate) struct SlowPacks {
     pub(crate) logistics: logistics::Captured,
     pub(crate) combat_log: combat_log::Captured,
     pub(crate) country_factories: country_factories::Captured,
+    pub(crate) war_overview: war_overview::Captured,
     pub(crate) industrial_organisations: industrial_organisations::Captured,
+    pub(crate) production_modifiers: production_modifiers::Captured,
     pub(crate) country_stability: country_stability::Captured,
     pub(crate) country_tactic_unlocks: country_tactic_unlocks::Captured,
     pub(crate) naval_mission_inputs: naval_mission_inputs::Captured,
@@ -788,6 +806,7 @@ impl RaidLaunchPacks {
 
 impl SlowPacks {
     fn fail(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.peace_bids.fail_capture(hour, force_full, reason);
         self.map_names.fail_capture(hour, force_full, reason);
         self.division_templates
             .fail_capture(hour, force_full, reason);
@@ -802,7 +821,10 @@ impl SlowPacks {
         self.combat_log.fail_capture(hour, force_full, reason);
         self.country_factories
             .fail_capture(hour, force_full, reason);
+        self.war_overview.fail_capture(hour, force_full, reason);
         self.industrial_organisations
+            .fail_capture(hour, force_full, reason);
+        self.production_modifiers
             .fail_capture(hour, force_full, reason);
         self.country_stability
             .fail_capture(hour, force_full, reason);
@@ -815,6 +837,7 @@ impl SlowPacks {
 
     pub(super) fn allocated_bytes(&self) -> usize {
         size_of::<Self>()
+            + self.peace_bids.allocated_bytes()
             + self.map_names.allocated_bytes()
             + self.division_templates.allocated_bytes()
             + self.visibility.allocated_bytes()
@@ -826,7 +849,9 @@ impl SlowPacks {
             + self.logistics.allocated_bytes()
             + self.combat_log.allocated_bytes()
             + self.country_factories.allocated_bytes()
+            + self.war_overview.allocated_bytes()
             + self.industrial_organisations.allocated_bytes()
+            + self.production_modifiers.allocated_bytes()
             + self.country_stability.allocated_bytes()
             + self.country_tactic_unlocks.allocated_bytes()
             + self.naval_mission_inputs.allocated_bytes()
@@ -837,6 +862,7 @@ impl SlowPacks {
             return None;
         }
         Some(Box::new(Self {
+            peace_bids: peace_bids::Captured::vacant(),
             map_names: map_names::Captured::vacant(),
             division_templates: division_templates::Captured::vacant(),
             visibility: visibility::Captured::vacant(),
@@ -848,7 +874,9 @@ impl SlowPacks {
             logistics: logistics::Captured::vacant(),
             combat_log: combat_log::Captured::vacant(),
             country_factories: country_factories::Captured::vacant(),
+            war_overview: war_overview::Captured::vacant(),
             industrial_organisations: industrial_organisations::Captured::vacant(),
+            production_modifiers: production_modifiers::Captured::vacant(),
             country_stability: country_stability::Captured::vacant(),
             country_tactic_unlocks: country_tactic_unlocks::Captured::vacant(),
             naval_mission_inputs: naval_mission_inputs::Captured::vacant(),
@@ -877,6 +905,7 @@ impl SlowPacks {
             )+};
         }
         staggered!(
+            peace_bids,
             map_names,
             division_templates,
             visibility,
@@ -889,7 +918,9 @@ impl SlowPacks {
             logistics,
             combat_log,
             country_factories,
-            industrial_organisations
+            war_overview,
+            industrial_organisations,
+            production_modifiers
         );
         let cost = self.country_stability.capture(
             memory,

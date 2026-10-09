@@ -58,6 +58,27 @@ fn autonomy_frame(hour: i32, statuses: &[Status]) -> DecodedFrame {
 }
 
 #[test]
+fn autonomy_accepts_country_selections_at_design_and_stress_scales() {
+    use crate::products::{
+        Product,
+        autonomy::{Autonomy, AutonomyParams},
+    };
+    for count in [1_500, 5_000] {
+        let tags = (0..count)
+            .map(|index| format!("synthetic/{index}"))
+            .collect::<Vec<_>>();
+        assert!(
+            Autonomy::validate(&AutonomyParams {
+                branch_id: "1".into(),
+                overlords: tags.clone(),
+                subjects: tags,
+            })
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn autonomy_runs_join_equal_hours_mark_level_changes_and_never_cross_gaps() {
     use crate::products::autonomy::scan;
     let puppet: Status = (

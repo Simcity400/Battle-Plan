@@ -328,9 +328,11 @@ export class FactRequests<V> {
  * countries, and the value per country its reply gives. */
 export interface FactSpec<V> {
   product: string;
+  /** Caller scope when the same product keys facts within a country. */
+  identity?: string;
   perRequest: number;
   params: (branchId: string, hour: number, tags: readonly string[]) => unknown;
-  extract: (data: unknown) => ReadonlyMap<string, V>;
+  extract: (data: unknown, params?: unknown) => ReadonlyMap<string, V>;
 }
 
 /** Reads a plan on the transient path, one request at a time, reporting each
@@ -341,9 +343,9 @@ export async function readFacts<V>(client: DashboardClient, source: { sourceId: 
     let found: ReadonlyMap<string, V> | null = null;
     let retryable = false;
     try {
-      const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product,
-        params: spec.params(source.branchId, hour, tags) }, signal);
-      found = spec.extract(data);
+      const params = spec.params(source.branchId, hour, tags);
+      const data = await loadTransientProduct<unknown>(client, { sourceId: source.sourceId, revision: source.revision, product: spec.product, params }, signal);
+      found = spec.extract(data, params);
     } catch (error) {
       retryable = transientError(error);
     }

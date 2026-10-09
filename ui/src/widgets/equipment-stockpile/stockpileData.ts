@@ -13,8 +13,9 @@ import type { AmountRun, Domain, EquipmentStockpileReply, StockVariant } from '.
  * lines, and its logistics record: the game's own surplus or shortage per equipment
  * type (the Logistics screen's "Stored" column) with the stock that record counted
  * (see `crates/dashboard/src/products/equipment_stockpile.rs` for what each value is
- * and the evidence). What is needed is `max(0, stock) − balance`, exact for a type
- * whose available stock is its recorded stock; the product says where it is not.
+ * and the evidence). Need uses the available operand of the same native
+ * balance write. Older ordinary types derive it from max(0, stock); missing
+ * convoy/truck/train observations keep their explicit unknown reason.
  * The game computes the balance only for player-controlled countries. */
 
 const RAW = /^-?\d{1,20}$/;
@@ -47,7 +48,7 @@ export function validateStockpileReply(data: unknown): EquipmentStockpileReply {
     && ascending(reply.reads)
     && Array.isArray(reply.stockHours) && ordered(reply.stockHours) && Array.isArray(reply.lineHours) && ordered(reply.lineHours)
     && Array.isArray(reply.logistics) && reply.logistics.every(item => typeof item.key === 'string'
-      && (item.key.startsWith(UNRESOLVED_MARK) || reply.types.some(type => type.key === item.key)) && amounts(item.balance) && amounts(item.stock))
+      && (item.key.startsWith(UNRESOLVED_MARK) || reply.types.some(type => type.key === item.key)) && amounts(item.balance) && amounts(item.stock) && amounts(item.available))
     && new Set(reply.logistics.map(item => item.key)).size === reply.logistics.length
     && ascending(reply.logisticsReads) && ascending(reply.lineReads) && Array.isArray(reply.balanceHours) && ordered(reply.balanceHours)
     && Array.isArray(reply.aiHours) && ordered(reply.aiHours) && RAW.test(reply.needBoundRaw)
@@ -167,7 +168,7 @@ export function stockGroups(reply: EquipmentStockpileReply, grouping: Grouping, 
   const listed = reply.logistics.filter(item => !included.length || included.includes(item.key)).map(item => {
     const domain = typeIndex.get(item.key)?.domain ?? null;
     return { item, domain, key: grouping === 'domain' ? domain ?? UNRESOLVED_ARM : item.key,
-      nonzero: [...item.balance, ...item.stock].some(run => run.amountRaw !== '0') };
+      nonzero: [...item.balance, ...item.stock, ...item.available].some(run => run.amountRaw !== '0') };
   });
   for (const entry of listed) if (entry.nonzero) groupOf(entry.item.key, entry.domain);
   for (const entry of listed) {
@@ -244,9 +245,9 @@ const UNRESOLVED_NEED = 'Its equipment type is not resolved from content, so wha
 const UNRESOLVED_ARM_NEED = 'An equipment type content does not resolve is listed, and whether its stock holds unrecorded supply terms cannot be told, so this arm’s need is not derived.';
 const BOUND_NEED = 'The game’s sum reached its saturation bound here, so what is needed is not a real sum.';
 
-/** A group's logistics at an hour: the game's surplus (positive) or shortage, the
- * stock the same record counted, and what is needed, `max(0, stock) − balance` per
- * type, with why not where a type's need cannot be derived. */
+/** A group's logistics at an hour: surplus or shortage, stock, and signed need
+ * from the same native available operand; older ordinary types derive it from
+ * stock. Missing supply/convoy observations retain their reason. */
 export interface GroupBalance { balance: bigint; stock: bigint; need: bigint | null; needNote: string | null }
 
 /** A group's logistics where the balance is known at the hour; null elsewhere and for
@@ -276,7 +277,7 @@ export function typesComplete(reply: EquipmentStockpileReply, group: Partial<Pic
   }));
 }
 
-export function balanceAt(reply: EquipmentStockpileReply, group: Pick<StockGroup, 'types'> & Partial<Pick<StockGroup, 'kind' | 'key' | 'scope'>>, hour: number): GroupBalance | null {
+export function balanceOperandsAt(reply: EquipmentStockpileReply, group: Pick<StockGroup, 'types'> & Partial<Pick<StockGroup, 'kind' | 'key' | 'scope'>>, hour: number): (GroupBalance & { available: bigint | null }) | null {
   if (!group.types.length || balanceMode(reply, hour) !== 'player') return null;
   // Every measure summed from the record (balance, stock, need, share) is unknown
   // wherever the group's types cannot all be told.
@@ -284,6 +285,7 @@ export function balanceAt(reply: EquipmentStockpileReply, group: Pick<StockGroup
   const bound = BigInt(reply.needBoundRaw);
   const index = indexOf(reply);
   let [balance, stock, need] = [0n, 0n, 0n as bigint | null];
+  let availableTotal: bigint | null = 0n;
   let needNote: string | null = null;
   for (const key of group.types) {
     const item = index.logistics.get(key);
@@ -296,18 +298,34 @@ export function balanceAt(reply: EquipmentStockpileReply, group: Pick<StockGroup
     balance += typeBalance;
     stock += typeStock;
     const type = index.types.get(key);
-    const note = type ? type.needNote : UNRESOLVED_NEED;
-    const typeNeed = (typeStock > 0n ? typeStock : 0n) - typeBalance;
+    const observed = item && runAt(item.available, hour);
+    const available = observed?.amountRaw != null ? BigInt(observed.amountRaw) : null;
+    const note = available != null ? null : type ? type.needNote : UNRESOLVED_NEED;
+    // Native SUB@141360174/141360972 wraps its i64 register. Recover the
+    // same signed clamped need from the observed operand and stored result.
+    const nativeAvailable = available ?? (typeStock > 0n ? typeStock : 0n);
+    if (note) availableTotal = null;
+    else if (availableTotal != null) availableTotal += nativeAvailable;
+    const typeNeed = BigInt.asIntN(64, nativeAvailable - typeBalance);
     const reason = note ?? ((typeNeed < 0n ? -typeNeed : typeNeed) >= bound ? BOUND_NEED : null);
     if (reason) { need = null; needNote ??= reason; } else if (need != null) need += typeNeed;
   }
   // A resolved arm's need: an unresolved type listed now, even at zero, may hold
   // unrecorded supply terms in its available stock, so its zeros prove no zero need.
-  if (need != null && group.kind === 'domain' && group.key !== UNRESOLVED_ARM
+  if (group.kind === 'domain' && group.key !== UNRESOLVED_ARM
     && unresolvedIn(reply, group).some(item => runAt(item.balance, hour) != null || runAt(item.stock, hour) != null)) {
     need = null;
+    availableTotal = null;
     needNote ??= UNRESOLVED_ARM_NEED;
   }
+  return { balance, stock, need, needNote, available: availableTotal };
+}
+
+/** Preserve the existing overview's independent stock/balance/need contract. */
+export function balanceAt(reply: EquipmentStockpileReply, group: Pick<StockGroup, 'types'> & Partial<Pick<StockGroup, 'kind' | 'key' | 'scope'>>, hour: number): GroupBalance | null {
+  const value = balanceOperandsAt(reply, group, hour);
+  if (!value) return null;
+  const { balance, stock, need, needNote } = value;
   return { balance, stock, need, needNote };
 }
 
@@ -341,7 +359,7 @@ export function shareRuns(reply: EquipmentStockpileReply, group: Pick<StockGroup
   // completeness (an unresolved type, for a resolved arm) changes.
   for (const item of reply.logistics) {
     if (!group.types.includes(item.key) && !decidesCompleteness(group, item.key)) continue;
-    for (const run of [...item.balance, ...item.stock]) { hours.add(run.firstHour); hours.add(run.lastHour + 1); }
+    for (const run of [...item.balance, ...item.stock, ...item.available]) { hours.add(run.firstHour); hours.add(run.lastHour + 1); }
   }
   const changes = [...hours].sort((a, b) => a - b);
   for (const span of reply.balanceHours) {
@@ -411,13 +429,13 @@ export function barExtent(reply: EquipmentStockpileReply, groups: readonly Stock
 
 /** Hours at which a group's logistics values can change: each balance span's start and
  * every run edge of its types and of the types that decide its completeness. */
-function balanceChangeHours(reply: EquipmentStockpileReply, group: Pick<StockGroup, 'types'> & Partial<Pick<StockGroup, 'kind' | 'key' | 'scope'>>): number[] {
+export function balanceChangeHours(reply: EquipmentStockpileReply, group: Pick<StockGroup, 'types'> & Partial<Pick<StockGroup, 'kind' | 'key' | 'scope'>>): number[] {
   const hours = new Set<number>(reply.balanceHours.map(span => span.firstHour));
   const index = indexOf(reply);
   const items = [...group.types.map(key => index.logistics.get(key)), ...(group.kind === 'domain' && group.key !== UNRESOLVED_ARM ? unresolvedIn(reply, group) : [])];
   for (const item of items) {
     if (!item) continue;
-    for (const run of [...item.balance, ...item.stock]) { hours.add(run.firstHour); hours.add(run.lastHour + 1); }
+    for (const run of [...item.balance, ...item.stock, ...item.available]) { hours.add(run.firstHour); hours.add(run.lastHour + 1); }
   }
   return [...hours].sort((a, b) => a - b);
 }
@@ -484,8 +502,8 @@ export function automaticLines(reply: EquipmentStockpileReply, groups: readonly 
  * for their common parent: the name column as wide as the longest label (within
  * reason), the amount column as wide as the longest amount. */
 export function columnVars(labels: readonly string[], amounts: readonly string[]): Record<'--stockpile-name' | '--stockpile-amount', string> {
-  const name = Math.min(28, Math.max(8, ...labels.map(label => label.length)));
-  const amount = Math.max(4, ...amounts.map(text => text.length));
+  const name = Math.min(28, labels.reduce((width, label) => Math.max(width, label.length), 8));
+  const amount = amounts.reduce((width, text) => Math.max(width, text.length), 4);
   return { '--stockpile-name': `calc(${name}ch + 38px)`, '--stockpile-amount': `${amount + 1}ch` };
 }
 

@@ -1,10 +1,18 @@
-//! Agency-upgrade branch definition; the archived reader did not establish its RTTI name.
-//!
-//! Source: `extractor/native/lanes/diplomacy_intel_operatives_live/src/agency_upgrade_controller.rs`.
-//! Its inherited authored identity uses `cgame_item`.
+//! CAgencyUpgradeBranch definitions owned by CAgencyUpgradeDatabase.
+//! Loader@140617860 reuses a branch across files; reader@140618C40 rebuilds an
+//! existing same-name definition within its exact branch. Authored identity
+//! comes from the live lexical dictionary, never a vanilla catalog.
 
+/// Loader@140617860 constructs this primary vtable; confirmed pinned RTTI.
+pub const VTABLE_RVA: usize = 0x027c_8cc0;
+/// Loader@140617860 stores the lexer token returned by AddOrFindDynamicToken.
+pub const TOKEN: usize = 0x08;
+/// Loader@140617860 constructs non-null branches with a nonzero valid byte.
+pub const VALID: usize = 0x10;
+
+/// Reader@140618C40 owns this member-pointer array; unlike the DB, it has no sentinel.
 pub const UPGRADES: usize = 0x40;
-/// Branch definition upgrade count, native u32; confirmed by observe_filtered_branch (source:20,144).
+/// Signed live count, reader@140618C40. CPdxArray validation admits its nonnegative range.
 pub const UPGRADE_COUNT: usize = 0x4c;
-/// Branch definition upgrade entries are native 64-bit pointers; confirmed by observe_filtered_branch (source:157).
+/// Reader@140618C40 indexes definition pointers by eight bytes.
 pub const UPGRADE_STRIDE: usize = 8;

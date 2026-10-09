@@ -26,6 +26,7 @@ fn input(handle: u32, progress: i64) -> ResearchInputRow {
         ..Default::default()
     }
 }
+
 fn observe(country: &mut Country, hour: i32, row: &ResearchInputRow) {
     country.observe_inputs((7, 7), hour, &[row], None, Some(&[]), None);
 }

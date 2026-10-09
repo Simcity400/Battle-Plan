@@ -18,7 +18,8 @@ export type CountryGroup = { type: 'humans' } | { type: 'faction'; id: string } 
 /** Whose membership counts: at each hour (joins and leaves show), at the end, or anyone ever a member. */
 export type GroupMembership = 'hour' | 'end' | 'ever';
 export type CountrySelection = { kind: 'selected' } | { kind: 'all' } | { kind: 'tags'; tags: string[] }
-  | { kind: 'group'; group: CountryGroup; membership: GroupMembership; aggregate: boolean };
+  | { kind: 'group'; group: CountryGroup; membership: GroupMembership; aggregate: boolean }
+  | { kind: 'factions'; count: number; membership: GroupMembership };
 export type WidgetTime = { mode: 'follow' } | { mode: 'campaign' }
   | ({ mode: 'range' } & OffsetWindow)
   | { mode: 'pin'; windows: Record<string, OffsetWindow> };

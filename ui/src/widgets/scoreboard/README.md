@@ -1,31 +1,28 @@
 # Scoreboard
 
-The moment table follows playback through the shared ten-refresh-per-second
-table clock. Settings choose the columns, countries, exact sort, density,
-cell bars and rank markers. The default is the numerical top ten, re-ranked
-when the recorded sort measure changes. There is no combined score.
+## What it shows
 
-The `scoreboard` product owns the single column registry and reuses the
-single-stat products' shared measures. The UI retains every recorded decimal,
-shows missing amounts as a dash and dates held values through `dashboard/reads`.
-Country names and flags are requested at each row's shown hour; country keys
-retain recorded native identity across tag changes, while ties use current tags.
+A moment table comparing selected country statistics; it has no combined score.
 
-Army size, casualties, planes and ships stay in the default set, with their
-shared Military measures' pending reasons in header hints and row tooltips.
-They each have one backend adapter ready for the Military branches. Right-click
-has no app actions; the browser menu remains available for copying selectable
-table text. Sorting Country alphabetises the numerical top N; its measure
-can be changed under Countries settings and defaults to factories.
-Sorting an unavailable measure retains that available Top N measure, descending,
-while displayed rows tie by current tags.
+## Products it reads
 
-Country requests are not capped or batched. Manual picks, groups and Top N use
-one request; only the shared `MAX_PRODUCT_REPLY_BYTES` budget refuses an oversized
-reply by name. Country and column choices have no shared count or token-length
-cap, and large selections survive saved-layout reloads.
+[`scoreboard`](../../../../crates/dashboard/src/products/scoreboard.rs) owns the column registry and reuses individual products’ measures. Shared dated country facts supply names and flags.
 
-`charts/table` owns the style-5 header, faint scaled bars, exact missing-last
-sorting, rank markers, moving rows and viewport windowing. Node fixtures cover
-missing values, exact values, reads, identity changes and 5,000 countries.
-Browser layout/paint and live recordings remain separate checks.
+## Settings
+
+Follow or Pin, columns, countries/groups/Top N, ranking measure, exact sorting and shared table presentation. Default selection is Top 10.
+
+## Notable behaviour
+
+- Keep exact decimal values and supplying dates; missing values are dashes, never zero. Native country keys survive tag changes; ties use current tags.
+- Sorting Country alphabetises the numerical Top N; its ranking measure is separate. One request retains all country/column choices, subject only to the shared reply budget.
+- Casualties are signed land/naval/air counters. Taken excludes losses without a recorded attacker. Legacy atLeast means Recorded subtotal, not a mathematical bound because omissions can include corrections.
+- Use the shared table clock and viewport rows. This table defines no app context-menu actions; selectable text retains the browser menu.
+
+## Files
+
+| File | Responsibility |
+|---|---|
+| [ScoreboardWidget.tsx](ScoreboardWidget.tsx) | Registry/value requests and shared table. |
+| [scoreboardData.ts](scoreboardData.ts) | Exact columns, rows, identities and sorting; adjacent tests. |
+| [definition.ts](definition.ts), [index.ts](index.ts), [scoreboard.css](scoreboard.css) | Options, content choices, registration and layout. |

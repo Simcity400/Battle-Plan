@@ -533,3 +533,32 @@ fn compatibility_nested_field_limitations_are_counted_after_table_aggregation() 
         Some(&0)
     );
 }
+
+#[test]
+fn every_limitation_subject_prints_in_existing_reason_and_subject_order() {
+    let mut report = Report::default();
+    report.limitation("zeta", "last reason");
+    for index in (0..5_000).rev() {
+        report.limitation("alpha", format!("MOD_COUNTRY_{index}"));
+    }
+    // Repeated subjects remain evidence of separate limitation occurrences.
+    report.limitation("alpha", "MOD_COUNTRY_0");
+    let mut lines = report.limitation_lines();
+    assert_eq!(lines.next(), Some("Limitations:".to_owned()));
+    assert_eq!(lines.next(), Some("  alpha: 5001 entries".to_owned()));
+    for index in (0..5_000).rev() {
+        assert_eq!(lines.next(), Some(format!("    MOD_COUNTRY_{index}")));
+    }
+    assert_eq!(lines.next(), Some("    MOD_COUNTRY_0".to_owned()));
+    assert_eq!(lines.next(), Some("  zeta: 1 entries".to_owned()));
+    assert_eq!(lines.next(), Some("    last reason".to_owned()));
+    assert_eq!(lines.next(), None);
+}
+
+#[test]
+fn a_report_without_limitations_keeps_the_existing_header() {
+    assert_eq!(
+        Report::default().limitation_lines().collect::<Vec<_>>(),
+        ["Limitations:"]
+    );
+}

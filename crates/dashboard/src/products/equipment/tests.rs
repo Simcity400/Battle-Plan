@@ -69,6 +69,11 @@ impl Texts for Fixture {
             .find(|(k, _)| *k == key)
             .map(|(_, v)| (*v).to_owned())
     }
+    fn stored_text(&self, text: &str, what: &str) -> Result<String, String> {
+        let mut localisation = installed_content::localisation::Localisation::default();
+        localisation.language = "english".into();
+        crate::scripted_text::stored_text(&localisation, "english", text.as_bytes(), what)
+    }
 }
 
 #[test]
@@ -97,10 +102,158 @@ fn variant_names_follow_get_display_name() {
         ..raw.clone()
     };
     assert_eq!(
-        variant_names(&designed, None).0.as_deref(),
+        variant_names(&designed, Some(&texts)).0.as_deref(),
         Some("Panzer II Ausf. F")
     );
+    assert_eq!(variant_names(&designed, None), (None, None));
     assert_eq!(variant_names(&raw, None), (None, None));
+}
+
+#[test]
+fn cached_variant_names_and_suffixes_require_the_recorded_language() {
+    let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+        "localisation/english/equipment_l_english.yml",
+        "\u{feff}l_english:\n type:0 \"Viewer type\"\n cached_name:0 \"Resolved key\"\n",
+    )]);
+    let raw = RawVariant {
+        id: 17,
+        token: "type".into(),
+        ..Default::default()
+    };
+    catalogue.recorded_language = "german".into();
+    // Genuine authored keys resolve in the viewer language even for another recording language.
+    assert_eq!(
+        variant_names(&raw, Some(&catalogue)),
+        (Some("Viewer type".into()), Some("Viewer type".into()))
+    );
+    let own = RawVariant {
+        display_name: "cached_name".into(),
+        ..raw.clone()
+    };
+    assert_eq!(variant_names(&own, Some(&catalogue)).0, None);
+    let suffix = RawVariant {
+        suffix: "cached_name".into(),
+        append: true,
+        ..raw.clone()
+    };
+    assert_eq!(variant_names(&suffix, Some(&catalogue)).0, None);
+    let warnings = catalogue.refusal_lines();
+    assert!(
+        warnings
+            .iter()
+            .any(|why| why.contains("equipment display name")
+                && why.contains("german")
+                && why.contains("17"))
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|why| why.contains("equipment variant suffix") && why.contains("17"))
+    );
+    catalogue.recorded_language = "english".into();
+    // Stored text is copied by GetDisplayName, even when its spelling also names a key.
+    assert_eq!(
+        variant_names(&own, Some(&catalogue)).0.as_deref(),
+        Some("cached_name")
+    );
+    assert_eq!(
+        variant_names(&suffix, Some(&catalogue)).0.as_deref(),
+        Some("Viewer type cached_name")
+    );
+}
+
+#[test]
+fn invalid_variant_bytes_refuse_names_and_fingerprints_without_dropping_identity() {
+    let hour = slot_hour(TableId::VariantDefinitions);
+    for field in [
+        "display name",
+        "suffix",
+        "token",
+        "name tag",
+        "type tag",
+        "design",
+    ] {
+        let mut frame = named_frame(hour, Some(b"Stored name"));
+        *frame.tables[TableId::VariantModules.index()] =
+            TableView::Complete(TableRows::VariantModules(vec![]));
+        *frame.tables[TableId::VariantUpgrades.index()] =
+            TableView::Complete(TableRows::VariantUpgrades(vec![]));
+        if let TableView::Complete(TableRows::VariantDefinitions(rows)) =
+            &mut *frame.tables[TableId::VariantDefinitions.index()]
+        {
+            match field {
+                "display name" => rows[0].display_name = vec![0xff],
+                "suffix" => {
+                    rows[0].variant_name = vec![0xff];
+                    rows[0].append_variant_name = 1;
+                }
+                "name tag" => rows[0].display_name.clear(),
+                _ => {}
+            }
+        }
+        if field == "token" || field == "design" {
+            if let TableView::Complete(TableRows::LexicalTokens(rows)) =
+                &mut *frame.tables[TableId::LexicalTokens.index()]
+            {
+                if field == "token" {
+                    rows[0].literal = vec![0xff];
+                } else {
+                    rows.push(LexicalTokenRow {
+                        token: 99,
+                        literal: vec![0xff],
+                    });
+                }
+            }
+            if field == "design" {
+                *frame.tables[TableId::VariantUpgrades.index()] =
+                    TableView::Complete(TableRows::VariantUpgrades(vec![VariantUpgradeRow {
+                        variant: 20,
+                        source_ordinal: 0,
+                        definition_token: 99,
+                        level: 1,
+                    }]));
+            }
+        }
+        if (field == "name tag" || field == "type tag")
+            && let TableView::Complete(TableRows::Countries(rows)) =
+                &mut *frame.tables[TableId::Countries.index()]
+        {
+            if field == "name tag" {
+                rows[0].tag = vec![0xff];
+            } else {
+                rows.push(CountryRow {
+                    canonical_slot: 0,
+                    tag: vec![0xff],
+                    ..Default::default()
+                });
+            }
+        }
+        let mut variants = VariantCatalogue::default();
+        variants.observe(&frame);
+        let raw = variants.current(20).unwrap();
+        assert_eq!(raw.id, 20, "{field}");
+        assert!(
+            raw.refusals.iter().any(|(name, _)| *name == field),
+            "{field}: {:?}",
+            raw.refusals
+        );
+        assert!(
+            !raw.token.contains('\u{fffd}')
+                && !raw.display_name.contains('\u{fffd}')
+                && !raw.suffix.contains('\u{fffd}')
+        );
+        if ["display name", "suffix", "token", "design"].contains(&field) {
+            assert_eq!(raw.design, None, "{field}");
+        }
+        assert!(
+            variants
+                .warnings()
+                .iter()
+                .any(|why| why.contains("1 equipment variants") && why.contains("20")),
+            "{field}"
+        );
+        assert!(variants.names(20, None)[0].known, "{field}");
+    }
 }
 
 #[test]

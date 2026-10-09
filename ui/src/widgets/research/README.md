@@ -1,13 +1,29 @@
 # Research
 
-One column per research slot. History (the default) lists each slot's completed technologies in order. Live, or a pinned moment, adds the slot's assignment at that hour above that list, styled like the current national focus, with the game's days-left estimate and a progress line from the recorded progress over the base cost (`researchProgressAt`; no line without a sample at that hour). An empty slot shows as idle with any saved days. Rows and the current card have one fixed height and names clamp to two lines, so research done at the same time lines up across slots.
+## What it shows
 
-Every row and the current card open, via their chevron, to the completion (or start) date, a time comparison and the game's description. The comparison has two rows on one axis. Expected is the base time plus the ahead-of-time penalty. Took is the time spent, followed by each modifier's effect: time a modifier saved fills the gap back to Expected, and time one added extends the row. Juggled saved days, progress before the recording, unfinished work and time out of a slot have their own segments. Hovering a segment highlights it and names it with its days underneath.
+Research-slot histories and current assignments, with recorded progress, days-left estimates and an expected/took time explanation.
 
-`researchTimeSplit` builds this from the recorded periods and credits, and `researchModifierParts` lists every additive modifier down to its named sources (spirits, focuses, laws, design teams, scientists, sharing). Research bonuses add together before dividing, so each modifier saves exactly its own value for each day it applied. What a component's sources don't account for stays as that component's own part, and time recovered by the minimum research speed is shown separately. Time a technology spent out of any slot extends the row rather than replacing research time. Progress made before its first witnessed assignment is only a cause when that start was not witnessed; a surplus after a witnessed start, incomplete saved-days records, a recording gap or a changed cost shows no comparison rather than a guess.
+## Products it reads
 
-**Product:** `research` (`crates/dashboard/src/products/research.rs`), parameters `branchId` and `tag`. The reply holds the branch's slot histories, states and progress plus artwork; `researchAt` and `researchStateAt` resolve the playback hour locally.
+[`research`](../../../../crates/dashboard/src/products/research.rs) supplies slot states, journeys, modifier credits and content artwork; playback resolves them locally.
 
-**Rules:** dates are observation bounds; an outcome is never shown before it was observed. Research rows are read one country slice per hour: a country's progress and modifiers refresh once a day, while a new, cancelled or completed assignment, a slot change and a new country are read within the hour; a modifier-only change (idea, law, advisor, decision, scientist, licence or sharing) waits for the country's next daily read. Bounds are therefore up to a day wide for modifier-only changes. The technology inventory is also read in the country's slice, so a completion is confirmed at that read, up to a day after the assignment ended. Slots that appear later start offset below their neighbours. Rewinding hides later slots, assignments and outcomes. Fixed-point operands stay exact as decimal strings; floating point is only for layout.
+## Settings
 
-**Remaining:** fresh-save agreement for the sliced research tables is not yet validated by an oracle run.
+Country and campaign/follow/pin; Whole campaign is the default. No widget-specific options.
+
+## Notable behaviour
+
+- Dates are observation bounds. A later technology-inventory read can confirm completion, but the row stays hidden until confirmation. Jump retains the recorded ending bound.
+- The product’s sliced observations govern progress/modifiers; modifier-only changes wait for the next country read. Never invent fresher samples or interpolate through gaps.
+- Expected/took attribution keeps saved-day juggling, prior work, unfinished work, out-of-slot time, minimum-speed recovery and unexplained residuals separate. Additive bonuses are not independent multiplicative discounts.
+- Current-card Jump uses the earliest joined assignment observation, including earlier slots. No pre-recording start is inferred. Enter/Space open details.
+
+## Files
+
+| File | Responsibility |
+|---|---|
+| [ResearchWidget.tsx](ResearchWidget.tsx), [researchData.ts](researchData.ts) | Slot cards, rows and local lookups. |
+| [researchJourney.ts](researchJourney.ts), [researchBreakdown.ts](researchBreakdown.ts) | Joined assignments and exact time/modifier parts; adjacent tests. |
+| [ResearchExplanation.tsx](ResearchExplanation.tsx), [researchTimeBar.ts](researchTimeBar.ts) | Shared explanation rows and segment presentation. |
+| [definition.ts](definition.ts), [index.ts](index.ts), [research.css](research.css) | Metadata, registration and layout. |

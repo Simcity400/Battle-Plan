@@ -184,6 +184,8 @@ pub(super) struct Report {
     pub(super) membership_skips: BTreeMap<String, usize>,
     pub(super) compared_tables: BTreeMap<String, usize>,
     pub(super) recorded_tables: BTreeMap<TableId, Result<usize, String>>,
+    /// A validated pending publication, never an assumed empty table.
+    pub(super) deferred_tables: BTreeMap<TableId, String>,
     pub(super) failed_comparisons: BTreeMap<String, String>,
     pub(super) difference_groups: BTreeMap<String, usize>,
     pub(super) active_comparison: Option<String>,
@@ -293,8 +295,8 @@ impl Report {
 
     pub(super) fn unavailable_tables(&self) -> usize {
         self.recorded_tables
-            .values()
-            .filter(|rows| rows.is_err())
+            .iter()
+            .filter(|(table, rows)| rows.is_err() && !self.deferred_tables.contains_key(*table))
             .count()
     }
 
@@ -452,6 +454,15 @@ impl Report {
             lines.extend(differences.iter().map(|line| format!("    {line}")));
         }
         lines
+    }
+
+    pub(super) fn limitation_lines(&self) -> impl Iterator<Item = String> + '_ {
+        std::iter::once("Limitations:".to_owned()).chain(self.limitations.iter().flat_map(
+            |(reason, subjects)| {
+                std::iter::once(format!("  {reason}: {} entries", subjects.len()))
+                    .chain(subjects.iter().map(|subject| format!("    {subject}")))
+            },
+        ))
     }
 
     pub(super) fn recorded<'a, T>(
@@ -657,7 +668,12 @@ impl Report {
             for (table, rows) in &self.recorded_tables {
                 match rows {
                     Ok(rows) => println!("  {table:?}: {rows} rows"),
-                    Err(reason) => println!("  {table:?}: {reason}"),
+                    Err(reason) => match self.deferred_tables.get(table) {
+                        Some(deferred) => {
+                            println!("  {table:?}: publication deferred ({deferred})")
+                        }
+                        None => println!("  {table:?}: {reason}"),
+                    },
                 }
             }
         }
@@ -682,19 +698,8 @@ impl Report {
         for line in &self.boundary_witness {
             println!("  {line}");
         }
-        println!("Limitations:");
-        for (reason, subjects) in &self.limitations {
-            const EXAMPLES: usize = 5;
-            println!("  {reason}: {} entries", subjects.len());
-            for subject in subjects.iter().take(EXAMPLES) {
-                println!("    {subject}");
-            }
-            if subjects.len() > EXAMPLES {
-                println!(
-                    "    {} additional entries omitted",
-                    subjects.len() - EXAMPLES
-                );
-            }
+        for line in self.limitation_lines() {
+            println!("{line}");
         }
     }
 }

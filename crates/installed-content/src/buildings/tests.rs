@@ -317,7 +317,7 @@ fn shared_buckets_keep_database_order_and_repeats_are_ambiguous() {
 #[test]
 fn factory_flags_are_signed_integers_and_differing_repeats_are_ambiguous() {
     let buildings = parse(
-        b"buildings={arms={military_production=1 naval_production=0} mod_works={general_production=2 military_production=-1 military_production=3} depot={} yard={naval_production=1} yard={naval_production=1} odd={general_production=1} odd={general_production=0}}",
+        b"buildings={arms={military_production=1 naval_production=0} mod_works={general_production=2 military_production=-1 military_production=3 rocket_production=-1 rocket_production=2} depot={rocket_launch_capacity=3} yard={naval_production=1} yard={naval_production=1} odd={general_production=1} odd={general_production=0} repeat={rocket_production=0} repeat={rocket_production=1} retired={rocket_production=-2}}",
     )
     .unwrap();
     let flags = |name: &str| buildings.factory_flags[name];
@@ -329,17 +329,23 @@ fn factory_flags_are_signed_integers_and_differing_repeats_are_ambiguous() {
             military_production: 3,
             naval_production: 0,
             general_production: 2,
+            rocket_production: 2,
         }
     );
+    assert!(flags("mod_works").rocket());
     assert_eq!(flags("depot"), FactoryFlags::default());
+    assert_eq!(buildings.types["depot"].rocket_launch_capacity, 3);
+    assert!(!flags("retired").rocket());
     assert!(flags("yard").naval());
     assert_eq!(
         buildings.ambiguous_factory_types,
-        BTreeSet::from(["odd".to_owned()])
+        BTreeSet::from(["odd".to_owned(), "repeat".to_owned()])
     );
     // The game's `%i` scan stores the leading integer of a decimal.
-    let decimal = parse(b"buildings={arms={military_production=1.5}}").unwrap();
+    let decimal =
+        parse(b"buildings={arms={military_production=1.5 rocket_production=2.5}}").unwrap();
     assert_eq!(decimal.factory_flags["arms"].military_production, 1);
+    assert_eq!(decimal.factory_flags["arms"].rocket_production, 2);
 }
 
 /// Factory flags reach the merged content from every building file, and a

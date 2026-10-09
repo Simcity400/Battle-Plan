@@ -14,9 +14,11 @@ mod acquisition_jobs;
 mod acquisition_states;
 mod acquisition_wars;
 mod advisor_changes;
+mod air_losses;
 mod allocation;
 #[cfg(test)]
 mod allocation_failure_tests;
+mod building_bombing;
 #[cfg(feature = "callback_profile")]
 mod callback_profile;
 mod combat_log_prune;
@@ -26,17 +28,35 @@ mod decode;
 mod division_census;
 mod division_detail;
 mod equipment_destruction;
+mod event_feed_history;
+mod event_feed_observer;
+mod event_ledger;
+mod experience_gains;
 mod extended;
 mod fixed_layout;
+#[cfg(all(test, feature = "tap-foreign-probe"))]
+#[path = "../../../tools/tap-foreign-unwind/runtime.rs"]
+mod foreign_unwind_probe;
+mod fuel_awards;
 mod history;
 mod history_changes;
 mod hook;
+#[cfg(test)]
+mod land_census_scale;
+mod land_events;
 mod line_output;
+mod logistics_balance;
 mod map_capture;
 mod map_spool;
+mod naval_result_sources;
+mod operation_outcomes;
 mod opinion_changes;
 mod output_hooks;
 mod output_log;
+#[cfg(test)]
+mod peace_settlement_tests;
+mod peace_settlements;
+mod politics_changes;
 mod portrait_changes;
 mod projection;
 mod raw;
@@ -56,6 +76,7 @@ mod table_capture;
 #[cfg(test)]
 mod unit_scale_tests;
 mod watch_registry;
+mod world_lifetime;
 
 /// How long a test waits on another thread before failing instead of hanging.
 /// Only a hang guard, never a timing check: a full build saturates every core

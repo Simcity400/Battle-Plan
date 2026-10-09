@@ -44,6 +44,51 @@ pub(crate) fn content_identity(
 
 pub(crate) const CAMPAIGN: &[u8] = b"analytics-test";
 
+/// Open frames against an English synthetic content root.
+pub(crate) fn source_with_content(
+    frames: Vec<DecodedFrame>,
+    root: &std::path::Path,
+) -> (crate::Source, crate::products::LoadContext) {
+    std::fs::create_dir_all(root.join("user")).unwrap();
+    for (path, text) in [
+        ("hoi4.exe", "test"),
+        (
+            "user/settings.txt",
+            "language=l_english force_pow2_textures=no",
+        ),
+        (
+            "user/dlc_load.json",
+            r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+        ),
+    ] {
+        std::fs::write(root.join(path), text).unwrap();
+    }
+    let (options, identity) = content_identity(root);
+    let mut input = records(1, frames);
+    let Record::SessionStart(session) = &mut input[0] else {
+        unreachable!()
+    };
+    session.identity = identity;
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "content-fixture".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        std::sync::Arc::new(
+            replay::container::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap(),
+        ),
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    (
+        source,
+        crate::products::LoadContext {
+            content: Some(options),
+        },
+    )
+}
+
 pub(crate) fn ownership_frame(branch: u64, hour: i32, owner: u32) -> DecodedFrame {
     let mut frame = source(branch, hour, Some(1));
     if let TableView::Complete(TableRows::Countries(rows)) =
@@ -170,6 +215,31 @@ pub(crate) fn records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
                 Record::Frame(encoder.encode(frame, false).unwrap())
             }),
     );
+    out
+}
+
+/// A new segment of an existing branch repeats its original context before a
+/// fresh keyframe; its first hour does not redefine when the branch began.
+pub(crate) fn continuation_records(
+    replay: &replay::container::Replay,
+    branch: u64,
+    frames: Vec<DecodedFrame>,
+) -> Vec<Record> {
+    let start = replay
+        .branches
+        .iter()
+        .find(|start| start.id == branch)
+        .unwrap();
+    let mut out = records(branch, frames);
+    out[0] = Record::SessionStart(
+        replay
+            .sessions
+            .iter()
+            .find(|session| session.id == start.session)
+            .unwrap()
+            .clone(),
+    );
+    out[1] = Record::BranchStart(start.clone());
     out
 }
 
@@ -660,6 +730,7 @@ pub(crate) fn production_frame(
                         observed_since_creation: line != 5,
                         ended,
                         exact,
+                        ..Default::default()
                     },
                 )
                 .collect(),

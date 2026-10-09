@@ -138,6 +138,11 @@ pub struct Row {
     pub balance_raw: i64,
     /// Series 15: the stock the day's update counted.
     pub stock_raw: i64,
+    /// Acquisition-only identity of the exact balance record; never serialized.
+    pub balance_history: usize,
+    pub balance_values: usize,
+    /// Filled only by the collector observer for this exact native write.
+    pub available_raw: Option<i64>,
 }
 
 /// Reads the current daily record of the stock and balance series of every
@@ -205,7 +210,8 @@ fn walk_inner(
         if control.autonomous(memory, base, &countries, country.id, country.canonical_slot)? {
             continue;
         }
-        let [stock, balance] = read_records(memory, &vtables, country)?;
+        let records = read_records(memory, &vtables, country)?;
+        let [stock, balance] = records.values;
         let list = match &archetypes {
             Some(archetypes) => archetypes.list,
             None => {
@@ -242,6 +248,9 @@ fn walk_inner(
         for (archetype, row) in (0..).zip(block.iter_mut()) {
             row.country = country.id;
             row.archetype = archetype;
+            row.balance_history = records.balance_history;
+            row.balance_values = balance.data;
+            row.available_raw = None;
         }
         len += count;
     }
@@ -253,11 +262,16 @@ fn walk_inner(
 
 /// Follows one country's status to the current daily record of the stock
 /// and balance series, returning each record's value array.
+struct Records {
+    values: [Array; 2],
+    balance_history: usize,
+}
+
 fn read_records(
     memory: &impl Memory,
     vtables: &Vtables,
     country: ccountry::Country,
-) -> Result<[Array; 2], &'static str> {
+) -> Result<Records, &'static str> {
     let status = pointer_at(memory, country.pointer, ccountry::LOGISTICS_STATUS)
         .filter(|&status| status != 0)
         .ok_or("logistics status pointer unreadable or null")?;
@@ -324,22 +338,25 @@ fn read_records(
     {
         return Err("logistics current record unreadable");
     }
-    Ok([
-        check_record(
-            histories[0],
-            &stock,
-            &stock_slot,
-            &stock_record,
-            &stock_history,
-        )?,
-        check_record(
-            histories[1],
-            &balance,
-            &balance_slot,
-            &balance_record,
-            &balance_history,
-        )?,
-    ])
+    Ok(Records {
+        values: [
+            check_record(
+                histories[0],
+                &stock,
+                &stock_slot,
+                &stock_record,
+                &stock_history,
+            )?,
+            check_record(
+                histories[1],
+                &balance,
+                &balance_slot,
+                &balance_record,
+                &balance_history,
+            )?,
+        ],
+        balance_history: histories[1],
+    })
 }
 
 /// Authenticates a series and returns its daily window.
@@ -579,3 +596,205 @@ fn i32_at(bytes: &[u8], offset: usize) -> i32 {
 
 #[cfg(test)]
 mod tests;
+
+/// Metadata used to size the balance operand observer off-thread. A country
+/// without balance rows is omitted by the same native AI predicate as `walk`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BalanceOwner {
+    pub country: u32,
+    pub history: usize,
+    pub fields: u32,
+}
+
+pub fn owner_capacity(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+) -> Result<usize, &'static str> {
+    Ok(ccountry::Reader::new(memory, base, game_state)?.count() as usize)
+}
+
+pub fn walk_balance_owners(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    owners: &mut [BalanceOwner],
+) -> Outcome {
+    let mut walk = || -> Result<(usize, u32), &'static str> {
+        let countries = ccountry::Reader::new(memory, base, game_state)?;
+        let mut control = cgame_state::AiControl::read(memory, game_state)?;
+        let address = |rva| {
+            base.checked_add(rva)
+                .map(|a| a as u64)
+                .ok_or("logistics module address overflow")
+        };
+        let vtables = Vtables {
+            status: address(VTABLE_RVA)?,
+            history: address(cloop_history::VTABLE_RVA)?,
+            window: address(window::VTABLE_RVA)?,
+        };
+        let mut len = 0;
+        let mut unread_rows = 0_u32;
+        let mut archetypes = None;
+        let mut found = false;
+        for slot in 1..countries.count() {
+            let Some(country) = countries.at(slot)? else {
+                continue;
+            };
+            found = true;
+            if control.autonomous(memory, base, &countries, country.id, country.canonical_slot)? {
+                continue;
+            }
+            let records = read_records(memory, &vtables, country)?;
+            let archetypes = match archetypes {
+                Some(count) => count,
+                None => {
+                    let count = read_archetype_list(memory, base)?.count;
+                    archetypes = Some(count);
+                    count
+                }
+            };
+            if records.values.iter().any(|array| array.count != archetypes) {
+                return Err("logistics record size differs from the equipment archetype count");
+            }
+            if let Some(owner) = owners.get_mut(len) {
+                *owner = BalanceOwner {
+                    country: country.id,
+                    history: records.balance_history,
+                    fields: archetypes,
+                };
+                len += 1;
+            } else {
+                unread_rows = unread_rows
+                    .checked_add(1)
+                    .ok_or("logistics owner count exceeds u32")?;
+            }
+        }
+        if !found {
+            return Err("logistics country table has no countries");
+        }
+        Ok((len, unread_rows))
+    };
+    match walk() {
+        Ok((len, 0)) => Outcome::Rows { len },
+        Ok((len, unread_rows)) => Outcome::Truncated { len, unread_rows },
+        Err(reason) => Outcome::Unavailable { reason },
+    }
+}
+
+/// Actual operands at the two balance SetValue CALLs. PostDailyUpdate's
+/// CALL@141360194 follows available=[caller RSP+88]; Refresh's CALL@141360992
+/// follows available=[caller RSP+78]. Entry RSP includes the return address.
+/// Both pass record/actual balance/index in RCX/RDX/R8. The native available
+/// getter@14135DBC0 already includes the convoy cache and supply adjustments;
+/// no getter or cache refresh is performed by this read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BalanceWrite {
+    pub history: usize,
+    pub values: usize,
+    pub archetype: u32,
+    pub balance_raw: i64,
+    pub available_raw: i64,
+}
+
+pub const BALANCE_WRITE_RVA: usize = 0x0150_5ab0;
+pub const BALANCE_CALLS: [(usize, [u8; 16], usize); 2] = [
+    (
+        0x0136_0194,
+        [
+            0xe8, 0x17, 0x59, 0x1a, 0, 0x48, 0xff, 0xc6, 0x49, 0x3b, 0xf6, 0x0f, 0x8c, 0x4b, 0xff,
+            0xff,
+        ],
+        0x90,
+    ),
+    (
+        0x0136_0992,
+        [
+            0xe8, 0x19, 0x51, 0x1a, 0, 0x48, 0xff, 0xc6, 0x49, 0x3b, 0xf6, 0x0f, 0x8c, 0x5d, 0xff,
+            0xff,
+        ],
+        0x80,
+    ),
+];
+
+/// Validates the native signed-index store's record identity before the call.
+pub fn balance_identity(
+    memory: &impl Memory,
+    record: usize,
+    archetype: u32,
+) -> Result<(usize, usize), &'static str> {
+    let mut bytes = [0; RECORD_BYTES];
+    if !read_slice(memory, record, &mut bytes) {
+        return Err("logistics balance write record unreadable");
+    }
+    let values = Array::from_header(bytes[..16].try_into().unwrap(), 8)
+        .ok_or("logistics balance write values invalid")?;
+    if archetype > i32::MAX as u32 || values.element(archetype, 8).is_none() {
+        return Err("logistics balance write index outside record");
+    }
+    let history = usize::try_from(u64_at(&bytes, record_fields::HISTORY))
+        .map_err(|_| "logistics history pointer exceeds usize")?;
+    Ok((history, values.data))
+}
+
+pub fn balance_write(
+    memory: &impl Memory,
+    record: usize,
+    balance: i64,
+    archetype: u32,
+    stack: usize,
+    available_offset: usize,
+) -> Result<BalanceWrite, &'static str> {
+    let (history, values) = balance_identity(memory, record, archetype)?;
+    let actual = values
+        .checked_add(archetype as usize * 8)
+        .and_then(|address| read::<i64>(memory, address));
+    if actual != Some(balance) {
+        return Err("logistics balance write did not store its operand");
+    }
+    let available_raw = stack
+        .checked_add(available_offset)
+        .and_then(|address| read::<i64>(memory, address))
+        .ok_or("logistics available operand unreadable")?;
+    if available_raw < 0 {
+        return Err("logistics native available operand is negative");
+    }
+    Ok(BalanceWrite {
+        history,
+        values,
+        archetype,
+        balance_raw: balance,
+        available_raw,
+    })
+}
+
+/// Advance@141504670 zeroes the reused record via1415050B0. Clear@141504CB0
+/// zeroes existing buffers via141504D60. Only these logistics CALLs reach
+/// series16; ResetCountryAppearance's other direct clear is country+FC8.
+/// Other SetValue helpers141360400/4D0 reach series0/3/6, never16
+/// (callers14135F090/14135FE30).
+pub const HISTORY_CALLS: [(usize, [u8; 16], usize); 3] = [
+    (
+        0x0135_ffe8,
+        [
+            0xe8, 0x83, 0x46, 0x1a, 0, 0x48, 0xff, 0xc3, 0x49, 0x3b, 0xde, 0x7c, 0xeb, 0x48, 0x8b,
+            0x45,
+        ],
+        0x0150_4670,
+    ),
+    (
+        0x0135_c2f8,
+        [
+            0xe8, 0xb3, 0x89, 0x1a, 0, 0x48, 0xff, 0xc3, 0x48, 0x3b, 0xde, 0x7c, 0xeb, 0x48, 0x8b,
+            0x5c,
+        ],
+        0x0150_4cb0,
+    ),
+    (
+        0x0136_03c8,
+        [
+            0xe8, 0xe3, 0x48, 0x1a, 0, 0x48, 0x8b, 0x4f, 0x08, 0xba, 0x07, 0, 0, 0, 0x48, 0x8b,
+        ],
+        0x0150_4cb0,
+    ),
+];

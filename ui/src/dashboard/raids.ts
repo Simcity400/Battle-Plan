@@ -1,6 +1,7 @@
 import type { RaidEpisode, RaidPreparationRun, RaidRun, RaidsReply, RaidTypeInfo } from '../generated/dashboard';
 import { drawableIcon } from './artwork.ts';
 import { isOrderedSpans } from '../charts/series.ts';
+import { validCountryIdentityRuns } from './countryIdentity.ts';
 
 /** Both raid widgets and the picker use the same product and content identities. */
 export const RAIDS_AVAILABILITY = { product: 'raids', params: { view: 'catalogue', tags: [], top: null } } as const;
@@ -29,7 +30,7 @@ export function validateRaidsReply(value: unknown): RaidsReply {
         && [run.launched, run.succeeded].every(optionalBoolean)))
     && new Set(reply.episodes.map(episode => episode.id)).size === reply.episodes.length
     && Array.isArray(reply.series) && reply.series.every(series => typeof series.tag === 'string' && isOrderedSpans(series.runs) && isOrderedSpans(series.segments)
-      && (series.membership === null || isOrderedSpans(series.membership))
+      && (series.membership === null || isOrderedSpans(series.membership)) && validCountryIdentityRuns(series.identities)
       && series.runs.every(run => integer(run.readHour) && run.readHour <= run.firstHour && integer(run.launched) && integer(run.succeeded)
         && run.launched >= 0 && run.succeeded >= 0))
     && new Set(reply.series.map(series => series.tag)).size === reply.series.length;

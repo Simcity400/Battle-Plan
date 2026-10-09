@@ -1,0 +1,25 @@
+import { storableToken, UNSTORABLE } from '../dashboard/options.ts';
+import { visibleRange } from './countryList.ts';
+
+export interface ContentChoice { value: string; label: string; icon?: string | null }
+export interface ContentRow extends ContentChoice { search: string; unavailable?: string }
+
+/** Keep the complete inventory and saved choices absent from this campaign. */
+export function contentChoices(choices: readonly ContentChoice[], chosen: readonly string[]): ContentRow[] {
+  const rows = new Map<string, ContentChoice>();
+  for (const choice of choices) if (!rows.has(choice.value)) rows.set(choice.value, choice);
+  for (const value of chosen) if (!rows.has(value)) rows.set(value, { value, label: `${value} (not in this campaign)` });
+  return [...rows.values()].map(choice => ({ ...choice, search: `${choice.label} ${choice.value}`.toLowerCase(),
+    unavailable: storableToken(choice.value) ? undefined : UNSTORABLE }));
+}
+
+export function filterContent(choices: ContentRow[], query: string): ContentRow[] {
+  const needle = query.trim().toLowerCase();
+  return needle ? choices.filter(choice => choice.search.includes(needle)) : choices;
+}
+
+/** Shared with the catalogue renderer: opening it never mounts its whole inventory. */
+export function contentWindow(choices: ContentRow[], scrollTop: number, height: number) {
+  const range = visibleRange(choices.length, scrollTop, height);
+  return { ...range, rows: choices.slice(range.start, range.end) };
+}

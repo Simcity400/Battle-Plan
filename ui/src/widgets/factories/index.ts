@@ -3,6 +3,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
 import type { CountryFactoriesReply } from '../../generated/dashboard';
 import FactoriesWidget from './FactoriesWidget';
+import { PartsCountryChip } from '../../dashboard/CountryChip';
 import { typeChoices, validateFactoriesReply } from './factoriesData';
 
 /** The factory types to choose from: the recording's groups, named by its content
@@ -15,4 +16,4 @@ function useFactoryTypes(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoi
   return { types: typeChoices(data) };
 }
 
-export default { render: FactoriesWidget, useOptionChoices: useFactoryTypes } satisfies WidgetRenderer;
+export default { render: FactoriesWidget, countryChip: PartsCountryChip, useOptionChoices: useFactoryTypes } satisfies WidgetRenderer;

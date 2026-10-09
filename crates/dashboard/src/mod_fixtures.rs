@@ -878,13 +878,22 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
     );
     stack.write(&addon, "common/defines/mod.lua", concat!(
         "NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 15 }, NGame = { COMBAT_LOG_MAX_MONTHS = 6 }, NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = {} }, ",
-        "NOperatives = { CRYPTO_BASE_CRYPTO_LEVEL = 12.5, CRYPTO_CRYPTO_LEVEL_PER_CRYPTO_UPGRADE = 3.25 }, ",
-        "NFocus = { FOCUS_POINT_DAYS = 7 }, NGraphics = { ",
+        "NMilitary = { SUPPLY_GRACE = 10, LOW_SUPPLY = .6 }, NOperatives = { CRYPTO_BASE_CRYPTO_LEVEL = 12.5, CRYPTO_CRYPTO_LEVEL_PER_CRYPTO_UPGRADE = 3.25 }, ",
+        "NNavy = { BATTLE_NAME_VP_FACTOR = 100, BATTLE_NAME_VP_CUTOFF = 1, NAVAL_COMBAT_RESULT_TIMEOUT_YEARS = 1, CONVOY_LOSS_HISTORY_TIMEOUT_MONTHS = 1 }, ",
+        "NFocus = { FOCUS_POINT_DAYS = 7 }, NGraphics = { SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD = .15, SUPPLY_UNIT_COUNTER_LOW_THRESHOLD = .4, ",
         "COUNTRY_FLAG_TEX_WIDTH = 1, COUNTRY_FLAG_TEX_HEIGHT = 1, COUNTRY_FLAG_TEX_MAX_SIZE = 8, ",
         "COUNTRY_FLAG_MEDIUM_TEX_WIDTH = 1, COUNTRY_FLAG_MEDIUM_TEX_HEIGHT = 1, COUNTRY_FLAG_MEDIUM_TEX_MAX_SIZE = 8, ",
         "COUNTRY_FLAG_SMALL_TEX_WIDTH = 1, COUNTRY_FLAG_SMALL_TEX_HEIGHT = 1, COUNTRY_FLAG_SMALL_TEX_MAX_SIZE = 8 } }")
     );
     content_map(&stack, &addon);
+    let mut province_bitmap = vec![0_u8; 58];
+    province_bitmap[..2].copy_from_slice(b"BM");
+    for (at, value) in [(2, 58_u32), (10, 54), (14, 40), (18, 1), (22, 1), (34, 4)] {
+        province_bitmap[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    province_bitmap[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    province_bitmap[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    stack.write(&addon, "map/provinces.bmp", province_bitmap);
     stack.write(&addon, "common/buildings/mod.txt", "buildings = { mod_works = { military_production = 1 naval_production = 1 general_production = 1 icon_frame = 1 } }");
     stack.write(
         &addon,
@@ -960,6 +969,11 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
         " PRODUCTION_MATERIALS_MOD_CRYSTAL:0 \"Mod crystal\"\n YES:0 \"Yes\"\n NO:0 \"No\"\n",
         " mod_tag:0 \"Mod country\"\n mod_works:0 \"Mod works\"\n mod_archetype:0 \"Mod equipment\"\n",
         " mod_level:0 \"Mod level\"\n MOD_STATE:0 \"Mod state\"\n MOD_REGION:0 \"\"\n mod_specialization:0 \"Mod specialization\"\n mod_project:0 \"Mod project\"\n")
+    );
+    stack.write(
+        &addon,
+        "localisation/naval_l_english.yml",
+        "l_english:\n NAVAL_BATTLE_TITLE:0 \"Engagement $NAME$\"\n",
     );
     stack.write(&addon, "localisation/intelligence_l_english.yml",
         "l_english:\n MOD_COVERT:0 \"Mod covert operation\"\n AGENCY_NAME:0 \"Mod agency\"\n AGENCY_DEFENSE_LEVEL:0 \"$LEVEL|.1$ mod defense\"\n");
@@ -1185,13 +1199,23 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
             .any(|finding| finding.kind == Kind::Fallback
                 && finding.subject == "operation mod_covert")
     );
+    // LocalizeOperationName@140A6DF00 preserves the definition's empty name.
+    let changed_intelligence =
+        products::intelligence_content::IntelligenceContent::load(Arc::clone(&changed_raids))
+            .unwrap();
+    assert_eq!(
+        changed_intelligence
+            .operation_artwork("mod_unnamed_covert")
+            .0
+            .name
+            .as_deref(),
+        Some("")
+    );
     assert!(
-        operation_findings
+        !operation_findings
             .iter()
             .any(|finding| finding.kind == Kind::Fallback
-                && finding.subject == "operation mod_unnamed_covert"
-                && finding.message
-                    == "operation has no usable authored name; the reply name is unknown"),
+                && finding.subject == "operation mod_unnamed_covert"),
         "{operation_findings:#?}"
     );
     assert!(
@@ -1416,6 +1440,7 @@ fn offline_ideas_report_traits_scripted_names_and_recorded_name_operands() {
         products::country_stability::CountryStability::KEY,
         products::stability_parts::StabilityParts::KEY,
     ] {
+        let scripted_example = "idea scoped: localisation scoped holds the scripted expression \"[ROOT.GetName]\", which the game evaluates for the country the text is shown for, and recorded country context is unavailable offline";
         assert_eq!(
             checks
                 .iter()
@@ -1697,13 +1722,13 @@ fn an_iconless_focus_draws_the_engine_s_unknown_goal_or_says_it_cannot() {
         .unwrap();
     assert_eq!(
         missing.message,
-        "focus fallback sprite is undeclared; a placeholder is shown"
+        "icon is unavailable; a placeholder is shown"
     );
     assert_eq!(missing.count, Some(1));
     assert_eq!(
         missing.examples,
         [
-            "focus mod_focus: focus declares no icon and its fallback GFX_goal_unknown is undeclared; a placeholder is shown"
+            "focus mod_focus: sprite GFX_goal_unknown is undeclared or has no texture; a placeholder is shown"
         ]
     );
     assert!(
@@ -1937,18 +1962,22 @@ fn corpus_separates_recording_context_engine_names_and_uncited_technology_fallba
             .findings
     };
     let focuses = findings("national-focus");
-    assert!(focuses.iter().any(|finding| finding.kind == Kind::Unsupported && finding.count == Some(2) && finding.message == "scripted localisation is not evaluated because this product does not pass a country"), "{focuses:?}");
     assert!(
-        focuses
-            .iter()
-            .any(|finding| finding.kind == Kind::Unsupported
-                && finding.message
-                    == "trigger-chosen focus icon is not evaluated; a placeholder is shown"),
+        focuses.iter().any(|finding| finding.kind == Kind::Offline
+            && finding.count == Some(2)
+            && finding.message
+                == "scripted localisation needs recorded country context; unavailable offline"),
+        "{focuses:?}"
+    );
+    assert!(
+        focuses.iter().any(|finding| finding.kind == Kind::Offline
+            && finding.message == "focus icon requires recorded context"
+            && finding.count == Some(1)),
         "{focuses:?}"
     );
     assert!(
         focuses.iter().any(|finding| finding.kind == Kind::Fallback
-            && finding.message == "focus fallback sprite is undeclared; a placeholder is shown"
+            && finding.message == "icon is unavailable; a placeholder is shown"
             && finding.count == Some(1)
             && finding
                 .examples
@@ -1960,6 +1989,12 @@ fn corpus_separates_recording_context_engine_names_and_uncited_technology_fallba
         finding.kind == Kind::Unsupported
             && finding.message == "scripted localisation is not evaluated because this product does not pass a country"
     }));
+    assert!(
+        focuses
+            .iter()
+            .flat_map(|finding| &finding.examples)
+            .all(|example| !example.contains("this product does not pass"))
+    );
     for key in ["land-owners", "country-styles"] {
         assert!(
             findings(key)
@@ -1975,17 +2010,20 @@ fn corpus_separates_recording_context_engine_names_and_uncited_technology_fallba
             findings(key)
         );
     }
-    assert!(
-        findings("research").iter().any(|finding| {
-            finding.kind == Kind::Fallback
-                && finding.examples.iter().any(|example| {
-                    example.contains("equipment localisation mod_equipment is shown")
-                })
-                && finding.message == "localisation key is missing; equipment localisation is shown"
-                && finding.count == Some(1)
-        }),
-        "{:?}",
-        checks.iter().find(|check| check.key == "research").unwrap()
+    assert_eq!(
+        findings("research"),
+        &[
+            crate::content_check::Finding::new(
+                Kind::Content,
+                "technology mod_tech",
+                "localisation mod_tech is missing; the key is shown"
+            ),
+            crate::content_check::Finding::new(
+                Kind::Content,
+                "technology mod_tech",
+                "localisation mod_tech_desc is missing; the key is shown"
+            ),
+        ]
     );
 }
 
@@ -2151,9 +2189,8 @@ fn live_catalogue_does_not_accumulate_product_findings() {
     assert_eq!(first[0].name, second[0].name);
     assert_eq!(first[0].icon, second[0].icon);
     assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.contains("trigger-chosen focus icon")),
+        warnings.iter().any(|warning| warning
+            .contains("focus icon requires recorded country/hour trigger operands")),
         "{warnings:?}"
     );
     assert_eq!(second_warnings, warnings);
@@ -2222,16 +2259,17 @@ fn trigger_chosen_focus_icons_are_one_counted_finding() {
     let icons: Vec<_> = focuses
         .findings
         .iter()
-        .filter(|finding| {
-            finding.message == "trigger-chosen focus icon is not evaluated; a placeholder is shown"
-        })
+        .filter(|finding| finding.message == "focus icon requires recorded context")
         .collect();
     assert_eq!(icons.len(), 1, "{focuses:?}");
-    assert_eq!(icons[0].kind, Kind::Unsupported);
+    assert_eq!(icons[0].kind, Kind::Offline);
     assert_eq!(icons[0].count, Some(2));
     assert_eq!(
         icons[0].examples,
-        ["focus mod_focus_one", "focus mod_focus_two"]
+        [
+            "focus mod_focus_one: focus icon requires recorded country/hour trigger operands",
+            "focus mod_focus_two: focus icon requires recorded country/hour trigger operands"
+        ]
     );
 }
 
@@ -2579,12 +2617,20 @@ fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
     let stack = Stack::new("all_shared_note_owners");
     let addon = stack.addon();
     content_map(&stack, &addon);
+    let mut bitmap = vec![0_u8; 58];
+    bitmap[..2].copy_from_slice(b"BM");
+    for (at, value) in [(2, 58_u32), (10, 54), (14, 40), (18, 1), (22, 1), (34, 4)] {
+        bitmap[at..at + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    bitmap[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bitmap[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    stack.write(&addon, "map/provinces.bmp", bitmap);
     stack.write(
         &addon,
         "common/terrain/fixture.txt",
         "categories = { fixture = {} }",
     );
-    stack.write(&addon, "common/defines/mod.lua", "NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 15 }, NGame = { COMBAT_LOG_MAX_MONTHS = 30 }, NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = {} }, NOperatives = { CRYPTO_BASE_CRYPTO_LEVEL = 12.5, CRYPTO_CRYPTO_LEVEL_PER_CRYPTO_UPGRADE = 3.25 }, NGraphics = { COUNTRY_FLAG_TEX_WIDTH = 1, COUNTRY_FLAG_TEX_HEIGHT = 1, COUNTRY_FLAG_TEX_MAX_SIZE = 8, COUNTRY_FLAG_MEDIUM_TEX_WIDTH = 1, COUNTRY_FLAG_MEDIUM_TEX_HEIGHT = 1, COUNTRY_FLAG_MEDIUM_TEX_MAX_SIZE = 8, COUNTRY_FLAG_SMALL_TEX_WIDTH = 1, COUNTRY_FLAG_SMALL_TEX_HEIGHT = 1, COUNTRY_FLAG_SMALL_TEX_MAX_SIZE = 8 } }");
+    stack.write(&addon, "common/defines/mod.lua", "NDefines = { NBuildings = { MAX_BUILDING_LEVELS = 15 }, NGame = { COMBAT_LOG_MAX_MONTHS = 30 }, NNavy = { BATTLE_NAME_VP_FACTOR = 10, BATTLE_NAME_VP_CUTOFF = 1 }, NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = {} }, NMilitary = { SUPPLY_GRACE = 10, LOW_SUPPLY = .6 }, NOperatives = { CRYPTO_BASE_CRYPTO_LEVEL = 12.5, CRYPTO_CRYPTO_LEVEL_PER_CRYPTO_UPGRADE = 3.25 }, NGraphics = { SUPPLY_UNIT_COUNTER_VERY_LOW_THRESHOLD = .15, SUPPLY_UNIT_COUNTER_LOW_THRESHOLD = .4, COUNTRY_FLAG_TEX_WIDTH = 1, COUNTRY_FLAG_TEX_HEIGHT = 1, COUNTRY_FLAG_TEX_MAX_SIZE = 8, COUNTRY_FLAG_MEDIUM_TEX_WIDTH = 1, COUNTRY_FLAG_MEDIUM_TEX_HEIGHT = 1, COUNTRY_FLAG_MEDIUM_TEX_MAX_SIZE = 8, COUNTRY_FLAG_SMALL_TEX_WIDTH = 1, COUNTRY_FLAG_SMALL_TEX_HEIGHT = 1, COUNTRY_FLAG_SMALL_TEX_MAX_SIZE = 8 } }");
     stack.write(
         &addon,
         "common/buildings/mod.txt",
@@ -2720,6 +2766,20 @@ fn every_shared_preparation_note_has_one_owner_and_its_producer_kind() {
         assert_eq!(copies.len(), 1, "{owner}: {note:?}: {copies:?}");
         assert_eq!(copies[0].0, owner);
         assert_eq!(copies[0].1.kind, note.kind);
+    }
+    let retention = crate::products::sinkings::retention(
+        &crate::products::sinkings::Scanned::default(),
+        Some(&cat),
+    );
+    assert_eq!(retention.warnings.len(), 2);
+    for message in retention.warnings {
+        let copies: Vec<_> = emitted
+            .iter()
+            .filter(|(_, note)| note.message == message)
+            .collect();
+        assert_eq!(copies.len(), 1, "{message}: {copies:?}");
+        assert_eq!(copies[0].0, "naval-losses");
+        assert_eq!(copies[0].1.kind, Kind::Warning);
     }
     for (kind, text) in [
         (Kind::Unsupported, "Deferred effect `free_operative`"),

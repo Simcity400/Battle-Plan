@@ -1,12 +1,179 @@
-//! Peace action object field read through a peace claim by the old D97 producer.
-//!
-//! The descriptive name does not assert a resolved RTTI class. The old producer
-//! read the token without establishing a complete action-state walk or proving
-//! that the object remains valid at the hourly boundary.
-//!
-//! Source: archive tag `archive/pre-rewrite-2026-09-09`,
-//! `extractor/native/lanes/design_catalog_context_live/src/a40_peace_evidence.rs`,
-//! lines 133-134 and 930-945. Its 0x200 evidence capture was not a struct-size proof.
+//! Authenticated owned peace-action operands before history destruction.
+//! Concrete allocation sizes and vtables belong to each action's struct file.
 
-/// Peace action +0x08, raw u32 token; old capture_claim read it from the action pointer obtained at claim+0x08.
+/// Raw token; 14150DD00 serializes it and 141506C80 initializes it.
 pub const TOKEN: usize = 0x08;
+/// Cached native type name: 141506C80 initializes it; 14150D430 can load a
+/// saved override. This is not the contextual virtual demand label.
+pub const CACHED_NAME: usize = 0x10;
+
+pub(crate) fn cached_name(
+    memory: &impl Memory,
+    pointer: usize,
+) -> Result<crate::msvc_string::Descriptor, &'static str> {
+    let address = pointer
+        .checked_add(CACHED_NAME)
+        .ok_or("peace name address overflow")?;
+    crate::msvc_string::Descriptor::read(memory, address)
+}
+
+use crate::{Memory, cstate_peace_action as state, read};
+
+/// Raw country references: 14150DD00 writes all three, 141506C80 initializes them.
+pub const TAKER: usize = 0x30;
+pub const GIVER: usize = 0x34;
+pub const NEGOTIATOR: usize = 0x38;
+/// Signed status; 14150C8D0 excludes exactly 3 and 4 from 140E245D0's rebuild.
+pub const STATUS: usize = 0x3c;
+/// Signed cost; 14150DD00 writes it without a fixed-point conversion.
+pub const COST: usize = 0x40;
+
+/// Native layouts, independent of the token spelling. Unknown vtables fail
+/// the conference rather than making a new token look like an empty deal.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Form {
+    #[default]
+    TakeState,
+    Liberate,
+    Puppet,
+    Government,
+    Navy,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub token: u32,
+    pub taker: u32,
+    pub giver: u32,
+    pub negotiator: u32,
+    pub status: i32,
+    pub cost: i32,
+    pub form: Form,
+    pub state: Option<i32>,
+    pub flags: Option<[u8; 4]>,
+    pub country_operand: Option<u32>,
+    pub puppet_auxiliary: Option<u64>,
+    /// None for a non-navy form, Some(0) for the native null selection.
+    pub ship: Option<u64>,
+    pub ratio: Option<i64>,
+    /// Pinned native image literal, including its terminator.
+    pub name_key: Option<[u8; crate::ctake_navy_peace_action::LABEL_LITERAL_BYTES]>,
+}
+
+impl Row {
+    pub fn included_in_settlement(self) -> bool {
+        !matches!(self.status, 3 | 4)
+    }
+}
+
+/// Copy only proven fields. Authentication precedes form-specific reads;
+/// tokens are retained without a numeric-token or spelling whitelist.
+pub fn copy(memory: &impl Memory, base: usize, pointer: usize) -> Result<Row, &'static str> {
+    use crate::{
+        cforce_government_action as government, cliberate_country_action as liberate,
+        cpuppet_country_action as puppet, ctake_navy_peace_action as navy,
+        ctake_state_action as take,
+    };
+    let header = read::<[u8; 12]>(memory, pointer).ok_or("peace action header unreadable")?;
+    let vtable = u64::from_le_bytes(header[..8].try_into().unwrap()) as usize;
+    let form = [
+        (take::VTABLE_RVA, Form::TakeState),
+        (liberate::VTABLE_RVA, Form::Liberate),
+        (puppet::VTABLE_RVA, Form::Puppet),
+        (government::VTABLE_RVA, Form::Government),
+        (navy::VTABLE_RVA, Form::Navy),
+    ]
+    .into_iter()
+    .find_map(|(rva, form)| (base.checked_add(rva) == Some(vtable)).then_some(form))
+    .ok_or("peace action vtable unsupported")?;
+    let at = |offset| {
+        pointer
+            .checked_add(offset)
+            .ok_or("peace action address overflow")
+    };
+    // Authenticate first, then copy all operands in one guarded span. The
+    // government form ends before the puppet auxiliary; never read past it.
+    let end = match form {
+        Form::TakeState => state::FLAGS + 4,
+        Form::Liberate => liberate::LIBERATE + 4,
+        Form::Government => government::COUNTRY + 4,
+        Form::Puppet => puppet::AUXILIARY + 8,
+        Form::Navy => navy::RATIO + 8,
+    };
+    let mut bytes = [0_u8; puppet::AUXILIARY + 8 - TAKER];
+    if memory.copy_scattered([at(TAKER)?], &mut [&mut bytes[..end - TAKER]]) != 1 {
+        return Err("peace action operands unreadable");
+    }
+    let word = |offset: usize| {
+        u32::from_le_bytes(
+            bytes[offset - TAKER..offset - TAKER + 4]
+                .try_into()
+                .unwrap(),
+        )
+    };
+    let wide = |offset: usize| {
+        u64::from_le_bytes(
+            bytes[offset - TAKER..offset - TAKER + 8]
+                .try_into()
+                .unwrap(),
+        )
+    };
+    let mut row = Row {
+        token: u32::from_le_bytes(header[8..].try_into().unwrap()),
+        taker: word(TAKER),
+        giver: word(GIVER),
+        negotiator: word(NEGOTIATOR),
+        status: word(STATUS) as i32,
+        cost: word(COST) as i32,
+        form,
+        ..Default::default()
+    };
+    if form == Form::Navy {
+        let key = base
+            .checked_add(navy::LABEL_LITERAL_RVA)
+            .and_then(|at| read::<[u8; navy::LABEL_LITERAL_BYTES]>(memory, at))
+            .ok_or("peace navy naming key unreadable")?;
+        if !key.contains(&0) {
+            return Err("peace navy naming literal has no terminator");
+        }
+        row.name_key = Some(key);
+        let selected = wide(navy::SHIP);
+        row.ship = Some(if selected == 0 {
+            0
+        } else {
+            let identity = read::<[u8; 16]>(memory, selected as usize)
+                .ok_or("peace selected ship identity unreadable")?;
+            if base
+                .checked_add(crate::cship::VTABLE_RVA)
+                .map(|value| value as u64)
+                != Some(u64::from_le_bytes(identity[..8].try_into().unwrap()))
+            {
+                return Err("peace selected ship vtable mismatch");
+            }
+            let reference = u64::from_le_bytes(identity[8..].try_into().unwrap());
+            if reference == 0 {
+                return Err("peace selected ship has null reference");
+            }
+            reference
+        });
+        row.ratio = Some(wide(navy::RATIO) as i64);
+    } else {
+        row.state = Some(word(state::STATE) as i32);
+        row.flags = Some(
+            bytes[state::FLAGS - TAKER..state::FLAGS - TAKER + 4]
+                .try_into()
+                .unwrap(),
+        );
+        row.country_operand = match form {
+            Form::Liberate => Some(word(liberate::LIBERATE)),
+            Form::Puppet => Some(word(puppet::PUPPET)),
+            Form::Government => Some(word(government::COUNTRY)),
+            _ => None,
+        };
+        if form == Form::Puppet {
+            row.puppet_auxiliary = Some(wide(puppet::AUXILIARY));
+        }
+    }
+    Ok(row)
+}

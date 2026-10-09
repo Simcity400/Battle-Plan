@@ -4,7 +4,10 @@ use crate::metadata::IdentityTrack;
 use crate::products::{
     country_groups::HourSpan,
     country_history::{Identity, observe_identity},
-    occupation_trend::{History, OccupationCollaboration, OccupationTrendRun, same_value},
+    occupation_trend::{
+        History, OccupationCollaboration, OccupationCollaborationActor, OccupationTrendRun,
+        same_value,
+    },
 };
 
 #[derive(Default)]
@@ -239,20 +242,31 @@ impl TrendScan {
                     .get(identity)
                     .into_iter()
                     .flat_map(|total| &total.occupied)
-                    .filter_map(|occupied| {
-                        names
-                            .get(occupied)
-                            .or_else(|| self.read_names.names.get(occupied))
-                            .map(|tag| {
-                                // P: StartResistance 140F85ED0 reads the occupied country's
-                                // +0xFD8 relation toward its controller; source is occupied.
-                                let read = self.collaboration.get(&(*occupied, *identity));
-                                OccupationCollaboration {
-                                    tag: tag.clone(),
-                                    raw: read.map(|(raw, _)| raw.to_string()),
-                                    read_hour: read.map(|(_, hour)| *hour),
-                                }
-                            })
+                    .map(|occupied| {
+                        let current = names.get(occupied);
+                        let tag = current.or_else(|| self.read_names.names.get(occupied));
+                        // The held tag cannot name a later holder at hover time.
+                        // Current native keys remain proved until names_changed
+                        // splits this run; an unnamed actor retains its amount.
+                        if current.is_none() {
+                            self.collaboration_refused.note(
+                                "occupied native country naming identity is unavailable",
+                                format!("slot {}, country {}", occupied.0, occupied.1),
+                            );
+                        }
+                        // P: StartResistance 140F85ED0 reads the occupied country's
+                        // +0xFD8 relation toward its controller; source is occupied.
+                        let read = self.collaboration.get(&(*occupied, *identity));
+                        OccupationCollaboration {
+                            tag: tag.cloned(),
+                            raw: read.map(|(raw, _)| raw.to_string()),
+                            read_hour: read.map(|(_, hour)| *hour),
+                            actor: Some(OccupationCollaborationActor {
+                                slot: occupied.0,
+                                country_id: occupied.1,
+                                name_hour: current.map(|_| hour),
+                            }),
+                        }
                     })
                     .collect();
                 sample

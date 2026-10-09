@@ -41,7 +41,7 @@ pub fn detail_demand(
         let Some(border) = reader.class(pointer)? else {
             continue;
         };
-        let (id, attackers, defenders) = reader.header(pointer, border)?;
+        let (id, attackers, defenders, sides) = reader.header_with_sides(pointer, border)?;
         let mut arenas = DetailArenas::new(&mut [], &mut [], &mut [], &mut [], &mut [], &mut []);
         arenas.verify_headers = true;
         read_details(
@@ -50,6 +50,7 @@ pub fn detail_demand(
             Source {
                 pointer,
                 id,
+                sides,
                 attackers,
                 defenders,
                 provinces,
@@ -58,7 +59,7 @@ pub fn detail_demand(
             &mut Commanders::default(),
             &mut arenas,
         )?;
-        if reader.header(pointer, border)? != (id, attackers, defenders)
+        if reader.header_with_sides(pointer, border)? != (id, attackers, defenders, sides)
             || reader.element(registry, index)? != pointer
         {
             return Err("land detail demand combat changed");

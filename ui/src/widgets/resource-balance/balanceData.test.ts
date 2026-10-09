@@ -5,10 +5,24 @@ import { OPTIONS } from './definition.ts';
 import type { PoolRun, ResourceBalanceReply, TradeRun } from '../../generated/dashboard';
 import { clipToSpans, runAt } from '../../charts/series.ts';
 import { tooltipHeight, tooltipRoom, tooltipText } from '../../charts/tooltip.ts';
+import { formatAmount } from '../../charts/valueAxis.ts';
+import { HourStore, planRequests } from '../../dashboard/countryFacts.ts';
 import { automaticResource, balanceOf, barScale, breakdownRows, changeHours, chosenLines, chosenResources, dealsKnown, FULL_BREAKDOWN_MAX, MAX_DEALS, orderResources, overTimeTooltip,
-  partnersAt, resourceName, resourceTooltip, supplyDemandRuns, toggleChosen, tradeIndex, tradesAt, validateResourceBalanceReply } from './balanceData.ts';
+  resourceName, resourcePartGroups, resourceParts, resourceTooltip, supplyDemandRuns, toggleChosen, tooltipPartners, tradeIndex, tradesAt, validateResourceBalanceReply } from './balanceData.ts';
+import { visibleRange } from '../../components/countryList.ts';
+import { dealAccounting, dealWindow } from './resourceDeals.ts';
 
 const U = 100000;
+
+test('signed resource parts preserve native net even when availability has a rounding residual', () => {
+  const run = pools(1, 2, { producedRaw: 9, importedRaw: 2, subjectsRaw: -1, toExportRaw: 3, availableRaw: 7.00001,
+    afterProjectsRaw: 5.00001, productionRaw: -4 });
+  const parts = resourceParts(run);
+  assert.equal(parts.at(-1)!.raw, 1n);
+  assert.equal(parts.reduce((total, part) => total + part.raw, 0n), balanceOf(run).net);
+  assert.equal(parts.find(part => part.id === 'projects')!.raw, -200000n);
+  assert.equal(parts.find(part => part.id === 'overlord')!.raw, -100000n);
+});
 /** Germany's steel in the part-G save (per day): produced 301, reserve 75, 72 bought, lines need 30. */
 const pools = (firstHour: number, lastHour: number, values: Partial<Record<keyof PoolRun, number>>, startsSegment = true): PoolRun => {
   const raw = (key: keyof PoolRun) => String(Math.round((values[key] as number | undefined ?? 0) * U));
@@ -29,6 +43,31 @@ const REPLY: ResourceBalanceReply = {
     { id: 7, runs: [RUBBER] }],
   trades: [trade('SPR', 'export', 40), trade('SAU', 'export', 8), trade('ITA', 'import', 2, 7)],
 };
+
+test('moment groups preserve negative supply and reversed demand operands', () => {
+  const run = pools(100, 123, { producedRaw: -2, importedRaw: -3, toExportRaw: -4, availableRaw: -1, afterProjectsRaw: 1, productionRaw: 2 });
+  const groups = resourcePartGroups(run);
+  assert.equal(groups[0].values.find(part => part.id === 'produced')!.raw, -200000n);
+  assert.equal(groups[0].values.find(part => part.id === 'imported')!.raw, -300000n);
+  assert.equal(groups[1].values.find(part => part.id === 'projects')!.raw, -200000n);
+  assert.equal(groups[1].values.find(part => part.id === 'production')!.raw, -200000n);
+  assert.equal(groups[1].values.find(part => part.id === 'exported')!.raw, -400000n);
+  for (const group of groups) assert.equal(group.values.reduce((sum, part) => sum + part.raw, 0n), group.total);
+});
+
+test('five thousand deals keep all exact accounting while only visible rows ask for partners', () => {
+  const deals = Array.from({ length: 5000 }, (_, index) => trade(`C${index}`, 'import', index === 4999 ? -1 : 2));
+  assert.equal(dealAccounting(deals).total, 9997n * BigInt(U));
+  assert.equal(dealAccounting(deals).widest, 2n * BigInt(U));
+  const range = visibleRange(deals.length, 4990 * 32, 240, 32, 0);
+  const window = dealWindow(deals, range, 110);
+  assert.equal(window.wanted.length, window.shown.length);
+  assert.ok(window.wanted.length < 10);
+  assert.ok(window.wanted.some(partner => partner.tag === 'C4997'));
+  const last = dealWindow(deals, visibleRange(deals.length, 4999 * 32, 240, 32, 0), 110);
+  assert.equal(last.shown.at(-1)!.deliveredRaw, String(-U));
+  assert.equal(last.wanted.at(-1)!.tag, 'C4999');
+});
 
 test('the game’s surplus is what is left after projects minus what the lines need', () => {
   const steel = balanceOf(STEEL);
@@ -55,13 +94,29 @@ test('the breakdown lists each partner, the unattributed rest and the game’s t
     ['Not from a listed deal', '+24'], ['Set aside, not bought', '3'],
     ['Available', '226'], ['Needed by production lines', '−30'], ['Surplus', '+196'],
   ]);
-  assert.equal(rows[3].icon, 'flag:SPR');
+  assert.equal(rows[3].countryFlag?.flag, 'flag:SPR');
+  assert.equal(rows[4].countryFlag?.flag, 'flag:SAU');
   assert.equal(rows.at(-1)!.tone, 'positive');
   const rubber = breakdownRows(balanceOf(RUBBER), tradesAt(tradeIndex(REPLY), 7, 110), 5, tag => ({ name: tag }));
   // 2 delivered by a deal but nothing imported: the pool is what the country has.
   assert.deepEqual(rubber.filter(row => row.indent).map(row => [row.label, row.value]), [['ITA · 1 civilian factory', '2'], ['Not from a listed deal', '−2']]);
   assert.equal(rubber.at(-1)!.label, 'Deficit');
   assert.equal(rubber.at(-1)!.tone, 'negative');
+});
+
+test('resource partners retain their pending and refused flag status without changing delivered amounts', () => {
+  const pending = { name: 'SPR name', flagPending: true };
+  const refused = { name: 'SAU name', flagPending: false, flagReason: 'Recorded flag unavailable' };
+  const rows = breakdownRows(balanceOf(STEEL), tradesAt(tradeIndex(REPLY), 5, 110), 5, tag => {
+    assert.ok(tag === 'SPR' || tag === 'SAU');
+    return tag === 'SPR' ? pending : refused;
+  });
+  assert.deepEqual(rows[3].countryFlag, pending);
+  assert.equal(rows[3].value, '40');
+  assert.deepEqual(rows[4].countryFlag, refused);
+  assert.equal(rows[4].value, '8');
+  assert.equal(rows[3].icon, undefined);
+  assert.equal(rows[4].icon, undefined);
 });
 
 test('rows can follow the game’s order, the biggest shortfall or the largest volume', () => {
@@ -168,10 +223,10 @@ test('the keyboard stops where the pools or the deal table stop being recorded, 
   assert.deepEqual(changeHours(gaps, []), []);
 });
 
-test('partners are the countries trading at the hour, each once', () => {
-  assert.deepEqual(partnersAt(tradeIndex(REPLY), 110), ['SPR', 'SAU', 'ITA']);
-  assert.deepEqual(partnersAt(tradeIndex(REPLY), 110, [7]), ['ITA']);
-  assert.deepEqual(partnersAt(tradeIndex(REPLY), 99), []);
+test('tooltip partners belong to the shown resource and follow the displayed deal order', () => {
+  const tip = resourceTooltip({ title: 'Steel' }, balanceOf(STEEL), tradesAt(tradeIndex(REPLY), 5, 110), 5, tag => ({ name: tag }), 1200);
+  assert.deepEqual(tooltipPartners(tip), ['SPR', 'SAU']);
+  assert.deepEqual(tooltipPartners(null), []);
 });
 
 test('a date range cuts the series through the kit, so supply and demand stay inside it', () => {
@@ -227,9 +282,49 @@ test('the limit counts the lines drawn, and a repeated token counts every declar
 test('the reply’s deal index is built once and answers at a run’s edges', () => {
   assert.equal(tradeIndex(REPLY), tradeIndex(REPLY));
   // Hours at a run's edges: its first hour, its last, and the hour after.
-  assert.deepEqual(partnersAt(tradeIndex(REPLY), 100), ['SPR', 'SAU', 'ITA']);
-  assert.deepEqual(partnersAt(tradeIndex(REPLY), 123), ['SPR', 'SAU', 'ITA']);
-  assert.deepEqual(partnersAt(tradeIndex(REPLY), 124), []);
+  assert.deepEqual(tradesAt(tradeIndex(REPLY), 5, 100).exports.map(trade => trade.partner), ['SPR', 'SAU']);
+  assert.deepEqual(tradesAt(tradeIndex(REPLY), 5, 123).exports.map(trade => trade.partner), ['SPR', 'SAU']);
+  assert.deepEqual(tradesAt(tradeIndex(REPLY), 5, 124), { imports: [], exports: [] });
+});
+
+test('five thousand hover partners request names and flags only for the fitted rows', () => {
+  const reply = { ...REPLY, trades: Array.from({ length: 5000 }, (_, index) =>
+    trade(`C${index}`, index % 2 ? 'export' : 'import', index === 4999 ? -1 : 5000 - index, index % 5 ? 5 : 7)) };
+  const deals = tradesAt(tradeIndex(reply), 5, 110);
+  const sum = (list: readonly TradeRun[]) => list.reduce((total, item) => total + BigInt(item.deliveredRaw), 0n);
+  const imported = sum(deals.imports), exported = sum(deals.exports);
+  const balance = { ...balanceOf(STEEL), imported, exported, exportReserve: exported };
+  for (const height of [180, 300, 600, 1200]) {
+    const tip = resourceTooltip(HEAD, balance, deals, 5, tag => ({ name: tag }), height);
+    const tags = tooltipPartners(tip);
+    const rows = tip.rows.filter(row => row.label.includes('civilian factory'));
+    assert.deepEqual(tags, rows.map(row => row.label.split(' · ')[0]));
+    assert.ok(tags.length <= MAX_DEALS * 2);
+    assert.ok(tags.every(tag => Number(tag.slice(1)) % 5 !== 0), 'hidden resource partners are not wanted');
+    for (const list of [deals.imports, deals.exports]) {
+      const shown = tags.filter(tag => list.some(trade => trade.partner === tag));
+      assert.deepEqual(shown, list.slice(0, shown.length).map(trade => trade.partner));
+      assert.ok(shown.length <= MAX_DEALS);
+    }
+    const wanted = tags.map(tag => ({ tag, hour: 110 }));
+    // Both mounted label hooks use this request planner (names and small flags).
+    for (const chunk of [64, 32]) {
+      const plan = planRequests(new HourStore<string>(1), wanted, 1, chunk);
+      assert.equal(plan.flatMap(([, requested]) => requested).length, rows.length);
+      assert.ok(plan.every(([hour]) => hour === 110));
+    }
+    assert.equal(tip.rows.at(-1)!.value, '+196');
+  }
+  const full = resourceTooltip(HEAD, balance, deals, 5, tag => ({ name: tag }), 1200);
+  assert.equal(full.rows.find(row => row.label === 'Imported')!.value, `+${formatAmount(imported, 5)}`);
+  const remainder = full.rows.filter(row => row.label.endsWith('more deals')).map(row => row.value);
+  assert.deepEqual(remainder, [formatAmount(sum(deals.imports.slice(MAX_DEALS)), 5), formatAmount(sum(deals.exports.slice(MAX_DEALS)), 5)]);
+  const lines = reply.resources.map(resource => ({ resource, color: 'c', balance,
+    deals: tradesAt(tradeIndex(reply), resource.id, 110) }));
+  const time = overTimeTooltip('t', lines, 5, tag => ({ name: tag }), 1200);
+  assert.deepEqual(tooltipPartners(time), time.rows.filter(row => row.label.includes('civilian factory')).map(row => row.label.split(' · ')[0]));
+  assert.ok(tooltipPartners(time).length <= MAX_DEALS * 2 * FULL_BREAKDOWN_MAX);
+  assert.deepEqual(tooltipPartners(overTimeTooltip('t', lines, 5, tag => ({ name: tag }), 180)), []);
 });
 
 /** A resource with `count` deals each way, the pools matching them. */

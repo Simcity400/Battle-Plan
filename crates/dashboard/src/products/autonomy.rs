@@ -42,7 +42,7 @@ use replay::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     io,
     sync::{
         Arc,
@@ -55,10 +55,6 @@ pub struct Autonomy;
 
 /// Branches kept per source.
 const CACHED_BRANCHES: usize = 4;
-/// Most countries one request may name, as overlords or as subjects.
-const MAX_TAGS: usize = 64;
-/// Runs kept per branch before the scan refuses.
-const MAX_RUNS: usize = 4_000_000;
 /// Units per point of an autonomy score: fixed5. The status's writer
 /// five-decimal `progress`, which the fresh-save oracle matches with the recorded
 /// integer (`progress=4312.86618`, 431,286,618).
@@ -195,7 +191,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     let mut by_tag: HashMap<String, usize> = HashMap::new();
     // Each subject's identity (slot) and sample at the last hour it was recorded.
     let mut last: Vec<Option<(i32, u32, Sample)>> = Vec::new();
-    let mut runs = 0_usize;
     for block in replay.index.iter().filter(|block| block.branch == branch) {
         if cancelled.load(Ordering::Acquire) {
             return Err(cancel());
@@ -303,12 +298,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 if same && let Some(run) = subject_runs.last_mut() {
                     run.last_hour = hour;
                 } else {
-                    runs += 1;
-                    if runs > MAX_RUNS {
-                        return Err(io::Error::other(
-                            "Autonomy history exceeds its memory budget",
-                        ));
-                    }
                     subject_runs.push(AutonomyRun {
                         first_hour: hour,
                         last_hour: hour,
@@ -448,9 +437,6 @@ impl Product for Autonomy {
         if params.branch_id.parse::<u64>().is_err() {
             return Err("Invalid branch");
         }
-        if params.overlords.len() > MAX_TAGS || params.subjects.len() > MAX_TAGS {
-            return Err("Too many countries");
-        }
         params
             .overlords
             .iter()
@@ -546,13 +532,15 @@ impl Product for Autonomy {
                 scanned.shared_subjects
             ));
         }
+        let subjects: HashSet<_> = params.subjects.iter().map(String::as_str).collect();
+        let overlords: HashSet<_> = params.overlords.iter().map(String::as_str).collect();
         let wanted = |tag: &str, runs: &[AutonomyRun]| {
             (params.subjects.is_empty() && params.overlords.is_empty())
-                || params.subjects.iter().any(|subject| subject == tag)
+                || subjects.contains(tag)
                 || runs.iter().any(|run| {
                     run.overlord
                         .as_ref()
-                        .is_some_and(|overlord| params.overlords.contains(overlord))
+                        .is_some_and(|overlord| overlords.contains(overlord.as_str()))
                 })
         };
         let subjects = scanned
@@ -570,7 +558,7 @@ impl Product for Autonomy {
                     .collect(),
             })
             .collect();
-        Ok(AutonomyReply {
+        let reply = AutonomyReply {
             branch_id: params.branch_id.clone(),
             score_scale: SCORE_SCALE,
             levels,
@@ -578,7 +566,9 @@ impl Product for Autonomy {
             recorded: scanned.recorded.clone(),
             unidentified: scanned.unidentified.clone(),
             warnings,
-        })
+        };
+        super::check_reply_budget(&reply)?;
+        Ok(reply)
     }
 }
 

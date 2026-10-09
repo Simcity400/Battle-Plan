@@ -166,6 +166,29 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     state: 1,
                     demilitarized: 0,
                 }]));
+            tables[TableId::CountryGameScoreInputs.index()] =
+                TableView::Complete(TableRows::CountryGameScoreInputs(vec![
+                    replay::rows::CountryGameScoreInputRow {
+                        country: 101,
+                        army_count: Some(0),
+                        navy_count: Some(0),
+                        land_count: Some(2),
+                        air_state: replay::rows::CountryGameScoreInputRow::AIR_ABSENT,
+                        ..Default::default()
+                    },
+                ]));
+            tables[TableId::GameScoreMultipliers.index()] =
+                TableView::Complete(TableRows::GameScoreMultipliers(vec![
+                    replay::rows::GameScoreMultiplierRow {
+                        total_raw: Some(0),
+                        army_raw: Some(0),
+                        navy_raw: Some(0),
+                        air_raw: Some(0),
+                        industry_raw: Some(0),
+                        land_raw: Some(0),
+                        ..Default::default()
+                    },
+                ]));
             tables.map(Into::into)
         },
     };
@@ -442,6 +465,25 @@ fn add_country(frame: &mut DecodedFrame, save: &mut Save, id: u32, slot: u32, ta
     let mut saved = save.countries[b"GER".as_slice()].clone();
     saved.tag = tag.to_vec();
     save.countries.insert(tag.to_vec(), saved);
+    save.counter_inputs
+        .division_orders
+        .insert(tag.to_vec(), Vec::new());
+    save.counter_inputs
+        .fleet_orders
+        .insert(tag.to_vec(), Vec::new());
+    let TableView::Complete(TableRows::CountryGameScoreInputs(rows)) =
+        &mut *frame.tables[TableId::CountryGameScoreInputs.index()]
+    else {
+        unreachable!()
+    };
+    rows.push(replay::rows::CountryGameScoreInputRow {
+        country: id,
+        army_count: Some(0),
+        navy_count: Some(0),
+        land_count: Some(0),
+        air_state: replay::rows::CountryGameScoreInputRow::AIR_ABSENT,
+        ..Default::default()
+    });
     let TableView::Complete(TableRows::Countries(rows)) =
         &mut *frame.tables[TableId::Countries.index()]
     else {
@@ -697,6 +739,7 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
     let id = *saved.divisions.keys().next().unwrap();
     let path: Vec<u32> = (1..=300).collect();
     saved.divisions.get_mut(&id).unwrap().presentation = save::DivisionPresentation {
+        fuel_requested: None,
         path: path.clone(),
         support_attack: Some(9),
         full_path: vec![9, 8, 9],
@@ -1206,6 +1249,8 @@ fn relations_fixture() -> (
     add_country(&mut frame, &mut save, 201, 8, b"ENG");
     let start = save::GameDate::parse(b"1935.6.1.1").unwrap();
     save.war_relations.push(save::WarRelation {
+        first_goals: Vec::new(),
+        second_goals: Vec::new(),
         roster_owner: b"GER".to_vec(),
         target: b"ENG".to_vec(),
         first: b"GER".to_vec(),
@@ -1434,6 +1479,121 @@ fn nested_comparison_counts_assign_each_difference_once_and_retain_failure() {
 }
 
 #[test]
+fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes() {
+    use replay::rows::{
+        GarrisonEquipment, GarrisonEquipmentInputs, LexicalTokenRow, StateGarrisonRow,
+        VariantDefinitionRow,
+    };
+    let (mut frame, mut saved, membership, equipment) = fixture();
+    let parsed = installed_content::parser::parse(
+        br#"
+        countries={GER={occupation_status={occupation={GER={state_garrison_data={
+            1={equipment={equipment={id={id=9 type=70} amount=0.6} allow_zero_entries=no}
+               equipment_need={mod_weapon=2}}
+        }}}}}} states={} provinces={}
+        "#,
+    )
+    .unwrap();
+    saved.construction = save::construction::parse(&parsed.items).unwrap();
+    *frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 700,
+            literal: b"mod_weapon".to_vec(),
+        }]));
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: (9_u64 << 32) | 70,
+            archetype_token: 700,
+            ..Default::default()
+        }]));
+    *frame.tables[TableId::StateGarrisons.index()] =
+        TableView::Complete(TableRows::StateGarrisons(vec![StateGarrisonRow {
+            controller: 101,
+            occupied: 101,
+            state: 1,
+            equipment: Recorded::Value(GarrisonEquipmentInputs {
+                rows: vec![GarrisonEquipment {
+                    equipment_token: 700,
+                    archetype_token: 700,
+                    archetype_active: 1,
+                    required_raw: 100_000,
+                    required_lookup_raw: 100_000,
+                    allocated_raw: 50_000,
+                    weight_raw: 100_000,
+                }],
+                failure: None,
+            }),
+            ..Default::default()
+        }]));
+    let read_hour = 96
+        + match replay::cadence::cadence(TableId::StateGarrisons) {
+            replay::cadence::Cadence::Daily(slot) => slot as Hour,
+            other => panic!("StateGarrisons is {other:?}"),
+        };
+    let group = "construction equipment StateGarrisons";
+    // The same mismatched inventory is compared on its slot or a forced read,
+    // but retained daily rows are not compared against a later save.
+    for (hour, forced, carried) in [
+        (read_hour, false, false),
+        (read_hour + 1, false, true),
+        (read_hour + 1, true, false),
+    ] {
+        frame.hour = hour;
+        frame.metrics.table_ns[TableId::StateGarrisons.index()] = u64::from(forced);
+        let mut report = Report {
+            read_hours: Some(BTreeMap::from([(
+                TableId::StateGarrisons,
+                if forced { hour } else { read_hour },
+            )])),
+            ..Report::default()
+        };
+        report.record_tables(&frame);
+        compare_extended(
+            &frame,
+            &saved,
+            ExtendedContent {
+                membership: Ok(&membership),
+                base_resources: Err("outside the garrison fixture".into()),
+                railway_adjacency: Err("outside the garrison fixture".into()),
+                buildings: Err("outside the garrison fixture".into()),
+                raid_graph: Err("outside the garrison fixture".into()),
+                equipment: Ok(&equipment),
+                leader_traits: Err("outside the garrison fixture".into()),
+                intelligence: Err("outside the garrison fixture".into()),
+            },
+            &mut report,
+        );
+        assert!(!report.failed_comparisons.contains_key(group));
+        assert_eq!(
+            report.carried.get(group).copied(),
+            carried.then_some(Some(read_hour))
+        );
+        assert_eq!(
+            report.difference_groups.get(group).copied().unwrap_or(0),
+            if carried { 0 } else { 2 }
+        );
+        assert_eq!(
+            report
+                .compared_tables
+                .get("StateGarrisons equipment")
+                .copied(),
+            (!carried).then_some(1)
+        );
+        if !carried {
+            for field in ["requirements", "allocation[0]"] {
+                assert!(
+                    report
+                        .difference_owners
+                        .iter()
+                        .zip(&report.differences)
+                        .any(|(owner, difference)| owner == group && difference.contains(field))
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn failed_content_reads_preserve_independent_map_and_pack_diagnostics() {
     let (frame, saved, membership, equipment) = fixture();
     let mut report = compare(&frame, &saved, &membership, &equipment).unwrap();
@@ -1449,6 +1609,7 @@ fn failed_content_reads_preserve_independent_map_and_pack_diagnostics() {
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
+            intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
         },
         &mut report,
     );
@@ -1548,6 +1709,7 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
+            intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
         },
         &mut report,
     );
@@ -1584,6 +1746,7 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
+            intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
         },
         &mut report,
     );
@@ -1974,6 +2137,74 @@ fn incomplete_or_wrong_relation_and_faction_tables_never_pass() {
 }
 
 #[test]
+fn game_score_extended_oracle_compares_every_country_and_records_empty_wings() {
+    let (mut frame, mut saved, membership, _) = fixture();
+    add_country(&mut frame, &mut saved, 201, 8, b"BBB");
+    let run = |frame: &DecodedFrame| {
+        let mut report = Report::default();
+        report.record_tables(frame);
+        compare_extended(
+            frame,
+            &saved,
+            ExtendedContent {
+                membership: Ok(&membership),
+                base_resources: Err("unused".into()),
+                railway_adjacency: Err("unused".into()),
+                buildings: Err("unused".into()),
+                raid_graph: Err("unused".into()),
+                equipment: Err("unused".into()),
+                leader_traits: Err("unused".into()),
+                intelligence: Err("unused".into()),
+            },
+            &mut report,
+        );
+        report
+    };
+    let report = run(&frame);
+    assert_eq!(
+        report.compared_tables["CountryGameScoreInputs saved rosters"],
+        2
+    );
+    assert_eq!(
+        report.compared_tables["CountryGameScoreInputs.land_count"],
+        2
+    );
+    assert_eq!(report.compared_tables["AirWingGameScoreStats.planes"], 0);
+    for group in [
+        "CountryGameScoreInputs",
+        "CountryGameScoreInputs.land_count",
+        "AirWingGameScoreStats",
+        "GameScoreMultipliers",
+    ] {
+        assert!(!report.failed_comparisons.contains_key(group));
+        assert_eq!(report.difference_groups.get(group).copied().unwrap_or(0), 0);
+    }
+    let TableView::Complete(TableRows::CountryGameScoreInputs(rows)) =
+        &mut *frame.tables[TableId::CountryGameScoreInputs.index()]
+    else {
+        unreachable!()
+    };
+    rows.pop();
+    let report = run(&frame);
+    assert_eq!(report.difference_groups["CountryGameScoreInputs"], 1);
+    assert_eq!(
+        report.difference_groups["CountryGameScoreInputs.land_count"],
+        1
+    );
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("BBB.game_score"))
+    );
+    assert!(
+        !report
+            .failed_comparisons
+            .contains_key("AirWingGameScoreStats")
+    );
+}
+
+#[test]
 fn full_comparison_resolves_aliases_and_independent_map_membership() {
     let (frame, save, membership, equipment) = fixture();
     let report = compare(&frame, &save, &membership, &equipment).unwrap();
@@ -2126,6 +2357,7 @@ fn state_rename_compares_with_the_saved_name_and_the_owner_name_is_a_limitation(
     }
     let (mut frame, mut save, membership, equipment) = fixture();
     first(&mut frame).owner_name = b"not in the save".to_vec();
+    first(&mut frame).continent = Recorded::Value(Some(999));
     let report = compare(&frame, &save, &membership, &equipment).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     assert!(
@@ -2133,6 +2365,12 @@ fn state_rename_compares_with_the_saved_name_and_the_owner_name_is_a_limitation(
             .limitations
             .values()
             .any(|subjects| subjects.iter().any(|s| s == "States.owner_name"))
+    );
+    assert!(
+        report
+            .limitations
+            .values()
+            .any(|subjects| subjects.iter().any(|subject| subject == "States.continent"))
     );
     first(&mut frame).custom_name = b"Sudetenland".to_vec();
     let report = compare(&frame, &save, &membership, &equipment).unwrap();
@@ -2639,6 +2877,10 @@ fn combat_progress_joins_all_saved_units_and_keeps_the_exact_complement() {
                     defender_progress: complement,
                     direction_attacker: first,
                     direction_province: province,
+                    attacker_manpower_loss: replay::rows::Recorded::NotRecorded,
+                    defender_manpower_loss: replay::rows::Recorded::NotRecorded,
+                    attacker_equipment_losses: replay::rows::Recorded::NotRecorded,
+                    defender_equipment_losses: replay::rows::Recorded::NotRecorded,
                 },
             ]));
     };
@@ -3139,6 +3381,8 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
         country: b"GER".to_vec(),
         ordinal: 0,
         modifier: None,
+        female: false,
+        portrait: 0,
         alive: true,
         handled: false,
         kill_type: 0,
@@ -3186,12 +3430,15 @@ fn naval_fixture() -> (
             id: fleet,
             owner: b"GER".to_vec(),
             home_base: Some(2),
+            name: Some(b"Fixture Fleet".to_vec()),
+            leader: None,
         },
     );
     saved.task_forces.insert(
         force,
         save::TaskForce {
             id: force,
+            name: None,
             fleet,
             roster_owner: b"GER".to_vec(),
             logical_owner: b"SOV".to_vec(),
@@ -3222,6 +3469,8 @@ fn naval_fixture() -> (
             id: fleet,
             owner: 102,
             home_base: 2,
+            name: replay::rows::Recorded::Value(Some(b"Fixture Fleet".to_vec())),
+            leader: replay::rows::Recorded::Value(Some(0)),
         }]));
     *frame.tables[TableId::TaskForces.index()] =
         TableView::Complete(TableRows::TaskForces(vec![replay::rows::TaskForceRow {
@@ -3800,6 +4049,8 @@ fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
         country: country.to_vec(),
         ordinal: 0,
         modifier: None,
+        female: false,
+        portrait: 0,
         alive,
         handled: false,
         kill_type: 0,

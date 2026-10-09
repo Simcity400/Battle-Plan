@@ -1,10 +1,12 @@
 import type { CountryGroupReply, HourSpan, MembershipRun } from '../generated/dashboard';
 import { clipToSpans } from '../charts/series.ts';
+import { withoutHours } from '../charts/timeline/runState.ts';
 import { factionNameLabel } from './factionNames.ts';
 import { compareTags } from './tagOrder.ts';
 import type { Run } from '../charts/series';
 import type { CountryGroup, CountrySelection, GroupMembership } from './model';
-import type { Lineage } from './identity';
+import { countryIdentityIndex } from './countryIdentity.ts';
+import type { CountryIdentityIndex } from './countryIdentity.ts';
 
 /** Smart country groups, resolved from the recording's own history: human players,
  * any recorded faction (including ones founded or dissolved partway through),
@@ -68,6 +70,23 @@ export function membershipChanges(runs: readonly MembershipRun[], firstHour: num
 /** How many countries a top-N group holds unless the user chooses. */
 export const DEFAULT_TOP = 10;
 
+/** Shared selection choices for ranked country and faction widgets. */
+export function countrySelectionModes(limits: { factions?: boolean; all?: boolean }): { value: string; label: string }[] {
+  return [...(limits.all ? [{ value: 'all', label: 'All' }] : []), { value: 'countries', label: 'Countries' }, { value: 'group', label: 'Group' },
+    ...(limits.factions ? [{ value: 'factions', label: 'Factions' }] : [])];
+}
+
+export function countrySelectionMode(selection: CountrySelection): string {
+  return selection.kind === 'all' ? 'all' : selection.kind === 'factions' ? 'factions' : selection.kind === 'group' ? 'group' : 'countries';
+}
+
+/** New choices use the same hourly membership rule and top count everywhere. */
+export function countrySelectionFor(mode: string, max: number): CountrySelection {
+  const count = Math.min(DEFAULT_TOP, max);
+  return mode === 'all' ? { kind: 'all' } : mode === 'factions' ? { kind: 'factions', count, membership: 'hour' }
+    : mode === 'group' ? { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } : { kind: 'selected' };
+}
+
 /** The `count` countries with the highest values, highest first; a country with
  * no value this hour is left out rather than ranked as zero. */
 export function topCountries(values: ReadonlyMap<string, number | null>, count: number): string[] {
@@ -112,8 +131,12 @@ function unrecorded(membership: GroupMembership): string {
 export interface WorldFilter {
   tags: ReadonlySet<string> | null;
   reason: string | null;
-  /** When a lineage is supplied: countries resolved at the hours membership counts. */
+  /** Native identity keys resolved at the hours membership counts. */
   countryIds?: ReadonlySet<string> | null;
+}
+
+function identitiesFor(groups: CountryGroupReply | undefined, index: CountryIdentityIndex | null | undefined): CountryIdentityIndex | null {
+  return index === undefined ? groups && Array.isArray(groups.countryIdentities) ? countryIdentityIndex(groups.countryIdentities) : null : index;
 }
 
 /** The countries a widget about the whole world (`countries.all`) narrows to: null for
@@ -121,36 +144,33 @@ export interface WorldFilter {
  * chosen group's members under its membership setting (`groupMembers`): at `hour`,
  * the moment shown; at the branch's `lastHour`; or anyone ever a member. `reason`
  * says why the set is empty or not known: a membership not recorded at the hour it is
- * counted is unknown, never an empty group. With `lineage`, `countryIds` resolves
- * each member at the hour counted, or through its own runs for anyone ever. */
+ * counted is unknown, never an empty group. Native keys resolve smart members at
+ * the counted dates; manual picks include all holders ever carrying their tags. */
 export function worldFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined,
-  hour: number, lastHour: number, lineage?: Lineage): WorldFilter {
-  const result = (tags: ReadonlySet<string> | null, reason: string | null, at = hour, runs?: readonly MembershipRun[]): WorldFilter => {
-    if (!lineage) return { tags, reason };
-    const countryIds = tags && new Set<string>();
-    if (countryIds) {
-      if (runs) for (const run of runs) {
-        countryIds.add(lineage.countryAt(run.tag, run.firstHour));
-        for (const changed of lineage.changeHours(run.tag, run.firstHour + 1, run.lastHour)) countryIds.add(lineage.countryAt(run.tag, changed));
-      }
-      else for (const tag of tags!) countryIds.add(lineage.countryAt(tag, at));
-    }
-    return { tags, reason, countryIds };
-  };
-  if (selection.kind === 'all') return result(null, null);
+  hour: number, lastHour: number, index?: CountryIdentityIndex | null): WorldFilter {
+  if (selection.kind === 'all') return { tags: null, reason: null };
+  const identities = identitiesFor(groups, index);
+  const empty = (reason: string | null): WorldFilter => ({ tags: new Set(), countryIds: new Set(), reason });
   if (selection.kind !== 'group') {
     const tags = selection.kind === 'tags' ? selection.tags : fallback;
-    return result(new Set(tags), tags.length ? null : 'Choose a country in the widget settings.');
+    if (!tags.length) return empty('Choose a country in the widget settings.');
+    if (!identities) return empty(null);
+    const countryIds = identities.selected(tags);
+    return { tags: new Set(identities.aliasesAt(countryIds, hour)), countryIds,
+      reason: countryIds.size ? null : 'The chosen countries have no recorded native identity in this campaign branch.' };
   }
-  if (!groups) return result(new Set(), null);
+  if (!groups || !identities) return empty(null);
   const runs = groupRuns(groups, selection.group);
-  if (!runs) return result(new Set(), 'This group is not in this campaign branch.');
+  if (!runs) return empty('This group is not in this campaign branch.');
   const members = groupMembers(runs, selection.membership, hour, lastHour, Infinity, groupUnobserved(groups, selection.group));
-  if (!members) return result(new Set(), unrecorded(selection.membership));
-  return result(new Set(members), members.length ? null
+  if (!members) return empty(unrecorded(selection.membership));
+  const at = selection.membership === 'hour' ? hour : lastHour;
+  const countryIds = selection.membership === 'ever' ? identities.keysDuring(runs)
+    : identities.keysDuring(members.map(tag => ({ tag, firstHour: at, lastHour: at })));
+  return { tags: new Set(identities.aliasesAt(countryIds, hour)), countryIds, reason: members.length
+    ? countryIds.size ? null : 'The group members have no recorded native identity at the membership dates counted.'
     : selection.membership === 'ever' ? 'This group has no members in this campaign branch.'
-      : selection.membership === 'end' ? 'This group has no members at the end of this campaign branch.' : 'This group has no members at this moment.',
-  selection.membership === 'hour' ? hour : lastHour, selection.membership === 'ever' ? runs : undefined);
+      : selection.membership === 'end' ? 'This group has no members at the end of this campaign branch.' : 'This group has no members at this moment.' };
 }
 
 /** Whether a dated row of a country passes a widget's country choice, for logs, whose
@@ -158,22 +178,34 @@ export function worldFilter(selection: CountrySelection, fallback: readonly stri
  * countries, or a group's members under its rule, at the row's own hour, else as
  * `worldFilter` counts them at the branch end or ever. `ready` is false while the
  * group history loads; a row whose group membership at its hour was not recorded
- * does not pass. */
+ * does not pass. Manual picks include all native holders of their literal tags;
+ * rows resolve at their own hours. Null means identity history is still loading. */
 export interface CountryMatch { ready: boolean; matches: (tag: string, hour: number) => boolean; reason: string | null }
 
-export function countryMatch(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number): CountryMatch {
+export function countryMatch(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
+  index?: CountryIdentityIndex | null): CountryMatch {
+  if (selection.kind === 'all') return { ready: true, matches: () => true, reason: null };
+  const identities = identitiesFor(groups, index);
+  if (!identities) return { ready: false, matches: () => false, reason: null };
   if (selection.kind === 'group' && !groups) return { ready: false, matches: () => false, reason: null };
   if (selection.kind === 'group' && selection.membership === 'hour') {
     const runs = groupRuns(groups!, selection.group);
     if (!runs) return { ready: true, matches: () => false, reason: 'This group is not in this campaign branch.' };
     const unobserved = groupUnobserved(groups!, selection.group);
     const byTag = new Map<string, MembershipRun[]>();
-    for (const run of runs) byTag.set(run.tag, [...(byTag.get(run.tag) ?? []), run]);
+    for (const run of runs) {
+      const history = byTag.get(run.tag);
+      if (history) history.push(run); else byTag.set(run.tag, [run]);
+    }
     const hidden = (hour: number) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
-    return { ready: true, matches: (tag, hour) => !hidden(hour) && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), reason: null };
+    return { ready: true, matches: (tag, hour) => identities.keyAt(tag, hour) !== null && !hidden(hour)
+      && (byTag.get(tag) ?? []).some(run => run.firstHour <= hour && hour <= run.lastHour), reason: null };
   }
-  const { tags, reason } = worldFilter(selection, fallback, groups, lastHour, lastHour);
-  return { ready: true, matches: tag => tags === null || tags.has(tag), reason };
+  const { countryIds, reason } = worldFilter(selection, fallback, groups, lastHour, lastHour, identities);
+  return { ready: true, matches: (tag, hour) => {
+    const key = identities.keyAt(tag, hour);
+    return key !== null && countryIds?.has(key) === true;
+  }, reason };
 }
 
 export interface ResolvedCountries {
@@ -189,6 +221,16 @@ export interface ResolvedCountries {
   /** For a top-N group: N, at most the widget's limit. The widget ranks every
    * country itself at each hour (`rankedCandidates`), so `tags` is empty. */
   top?: number;
+  /** A summed faction reads the shared server total instead of country lines. */
+  factionId?: string;
+}
+
+/** A complete world total cannot prove a smart group's missing membership. */
+export function groupShareReason(resolved: ResolvedCountries, membership: GroupMembership, hour: number): string | null {
+  if (resolved.reason) return resolved.reason;
+  if (membership === 'ever' && resolved.unobserved.length) return 'This group’s full member set was not recorded for this campaign branch.';
+  if (membership === 'hour' && resolved.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour)) return unrecorded(membership);
+  return null;
 }
 
 /** The countries a ranked widget (a race) may show at `hour`, before it ranks them
@@ -202,7 +244,11 @@ export function rankedCandidates(resolved: ResolvedCountries, hour: number, all:
 
 /** The countries a multi-country widget draws: chosen tags, or a group's members
  * under its rule, at most `max` (the widget's own limit). */
-export function resolveCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number, max: number): ResolvedCountries {
+export function resolveCountries(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number, max: number, factionTotals = false): ResolvedCountries {
+  if (selection.kind === 'factions') return { tags: [], membership: null, unobserved: [], dropped: 0, reason: 'This widget does not show faction totals.' };
+  if (factionTotals && selection.kind === 'group' && selection.aggregate && selection.group.type === 'faction') {
+    return { tags: [], membership: null, unobserved: [], dropped: 0, reason: null, factionId: selection.group.id };
+  }
   if (selection.kind !== 'group') {
     const tags = selection.kind === 'tags' ? selection.tags : fallback;
     return { tags: tags.slice(0, max), membership: null, unobserved: [], dropped: Math.max(0, tags.length - max), reason: tags.length ? null : 'Choose a country in the widget settings.' };
@@ -217,29 +263,100 @@ export function resolveCountries(selection: CountrySelection, fallback: string[]
   // Unknown is not empty: the membership counted was not recorded.
   if (!members) return { tags: [], membership: null, unobserved, dropped: 0, reason: unrecorded(selection.membership === 'end' ? 'end' : 'ever') };
   const tags = members.slice(0, max);
-  const membership = selection.membership === 'hour'
-    ? new Map(tags.map(tag => [tag, runs.filter(run => run.tag === tag)])) : null;
+  const membership = selection.membership === 'hour' ? new Map(tags.map(tag => [tag, [] as MembershipRun[]])) : null;
+  if (membership) for (const run of runs) membership.get(run.tag)?.push(run);
   return { tags, membership, unobserved, dropped: Math.max(0, members.length - max), reason: members.length ? null : 'This group has no members in this campaign branch.' };
+}
+
+/** Drawing projection only: keep the original resolved tags as backend roots. */
+export function projectResolvedCountries(resolved: ResolvedCountries, filter: ReturnType<typeof countryMatchFilter>): ResolvedCountries {
+  if (resolved.reason || resolved.top != null || resolved.factionId != null || filter.membership === null) return resolved;
+  const membership = new Map<string, MembershipRun[]>();
+  const known = filter.unobserved.length ? withoutHours([...filter.membership].sort((a, b) => a.firstHour - b.firstHour),
+    [...filter.unobserved].sort((a, b) => a.firstHour - b.firstHour)) : filter.membership;
+  for (const run of known) {
+    const runs = membership.get(run.tag);
+    if (runs) runs.push(run); else membership.set(run.tag, [run]);
+  }
+  const unobserved = new Map(resolved.unobserved.map(span => [JSON.stringify([span.firstHour, span.lastHour]), span]));
+  for (const span of filter.unobserved) unobserved.set(JSON.stringify([span.firstHour, span.lastHour]), span);
+  return { ...resolved, tags: [...membership.keys()], membership,
+    unobserved: [...unobserved.values()].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour) };
+}
+
+/** Sum a resolved group's clipped lines once. Every expected member must have a
+ * recorded value, and unknown rosters remain gaps. Events avoid rescanning all
+ * members at each change; a member's identity break also breaks the total. */
+export function aggregateGroupRuns(lines: readonly { tag: string; runs: readonly Run[] }[], resolved: ResolvedCountries, range: HourSpan): Run[] {
+  if (resolved.factionId != null) throw new Error('Summed faction groups must read the faction-totals product.');
+  type Change = { expected: number; recorded: number; value: number; unknown: number; breaks: boolean };
+  const events = new Map<number, Change>();
+  const event = (hour: number) => {
+    let change = events.get(hour);
+    if (!change) { change = { expected: 0, recorded: 0, value: 0, unknown: 0, breaks: false }; events.set(hour, change); }
+    return change;
+  };
+  event(range.firstHour); event(range.lastHour + 1);
+  for (const tag of resolved.tags) {
+    for (const span of resolved.membership?.get(tag) ?? [range]) {
+      const first = Math.max(range.firstHour, span.firstHour);
+      const last = Math.min(range.lastHour, span.lastHour);
+      if (first <= last) { event(first).expected++; event(last + 1).expected--; }
+    }
+  }
+  for (const line of lines) for (const run of line.runs) {
+    event(run.firstHour).recorded++; event(run.firstHour).value += run.value;
+    event(run.firstHour).breaks ||= run.breakBefore === true;
+    event(run.lastHour + 1).recorded--; event(run.lastHour + 1).value -= run.value;
+  }
+  for (const span of resolved.membership ? resolved.unobserved : []) {
+    const first = Math.max(range.firstHour, span.firstHour);
+    const last = Math.min(range.lastHour, span.lastHour);
+    if (first <= last) { event(first).unknown++; event(last + 1).unknown--; }
+  }
+  let expected = 0, recorded = 0, value = 0, unknown = 0;
+  const hours = [...events.keys()].sort((a, b) => a - b);
+  const runs: Run[] = [];
+  hours.forEach((hour, index) => {
+    const change = events.get(hour)!;
+    expected += change.expected; recorded += change.recorded; value += change.value; unknown += change.unknown;
+    const lastHour = hours[index + 1] - 1;
+    if (index + 1 === hours.length || expected === 0 || unknown > 0 || expected !== recorded || !Number.isSafeInteger(value)) return;
+    const previous = runs.at(-1);
+    if (previous && !change.breaks && previous.lastHour + 1 === hour && previous.value === value) previous.lastHour = lastHour;
+    else runs.push({ firstHour: hour, lastHour, value, ...(change.breaks ? { breakBefore: true } : {}) });
+  });
+  return runs;
 }
 
 export interface WorldRequestTags { tags: string[]; ready: boolean; reason: string | null }
 /** A whole-branch world's request: [] means all, chosen countries stay chosen,
  * and an hourly group requests its branch-wide union before local filtering.
  * Pending or empty choices never accidentally request the entire world. */
-export function worldRequestTags(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number): WorldRequestTags {
+export function worldRequestTags(selection: CountrySelection, fallback: string[], groups: CountryGroupReply | undefined, lastHour: number,
+  index?: CountryIdentityIndex | null): WorldRequestTags {
   if (selection.kind === 'all' || (selection.kind === 'group' && selection.group.type === 'top')) return { tags: [], ready: true, reason: null };
-  if (selection.kind === 'group' && !groups) return { tags: [], ready: false, reason: null };
+  const identities = identitiesFor(groups, index);
+  if (!identities || selection.kind === 'group' && !groups) return { tags: [], ready: false, reason: null };
   const resolved = resolveCountries(selection, fallback, groups, lastHour, Number.MAX_SAFE_INTEGER);
-  return { tags: resolved.tags, ready: resolved.reason === null && resolved.tags.length > 0, reason: resolved.reason };
+  const counted = selection.kind === 'group' && selection.membership === 'hour' ? { ...selection, membership: 'ever' as const } : selection;
+  const reason = resolved.reason ?? worldFilter(counted, fallback, groups, lastHour, lastHour, identities).reason;
+  // Backends expand these literal roots; an alias is never a new manual pick.
+  return { tags: resolved.tags, ready: reason === null && resolved.tags.length > 0, reason };
 }
 
-/** Serializable countryMatch predicate for a server-ranked top N. Filtering after
- * top N could discard the actual leaders; logs continue to filter locally. */
-export function countryMatchFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number) {
+/** Serializable countryMatch predicate. Native alias runs bound every holder. */
+export function countryMatchFilter(selection: CountrySelection, fallback: readonly string[], groups: CountryGroupReply | undefined, lastHour: number,
+  index?: CountryIdentityIndex | null, firstHour = -2147483648): {
+    tags: string[] | null; membership: MembershipRun[] | null; unobserved: HourSpan[];
+  } {
+  if (selection.kind === 'all') return { tags: null, membership: null, unobserved: [] };
+  const identities = identitiesFor(groups, index);
+  if (!identities) return { tags: null, membership: [], unobserved: [] };
   if (selection.kind === 'group' && selection.membership === 'hour') {
-    return { tags: null, membership: groups ? groupRuns(groups, selection.group) ?? [] : [],
+    return { tags: null, membership: groups ? identities.membershipRuns(groupRuns(groups, selection.group) ?? [], firstHour, lastHour) : [],
       unobserved: groups ? groupUnobserved(groups, selection.group) : [] };
   }
-  const { tags } = worldFilter(selection, fallback, groups, lastHour, lastHour);
-  return { tags: tags === null ? null : [...tags], membership: null, unobserved: [] };
+  const { countryIds } = worldFilter(selection, fallback, groups, lastHour, lastHour, identities);
+  return { tags: null, membership: identities.aliasRuns(countryIds ?? new Set(), firstHour, lastHour), unobserved: [] };
 }

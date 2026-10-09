@@ -475,6 +475,7 @@ impl Captured {
                         .map(|values| owned_vec(copy_vec(values))),
                 ),
                 owned_state_count: replay::rows::Recorded::Value(r.owned_state_count),
+                dynamic_tag_boundary: replay::rows::Recorded::Value(Some(r.dynamic_tag_boundary)),
             },
         )
     }

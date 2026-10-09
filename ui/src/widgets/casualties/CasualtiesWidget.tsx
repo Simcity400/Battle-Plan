@@ -18,7 +18,7 @@ import { usePlaybackHour, usePlaybackSpeed } from '../../dashboard/playback';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { CasualtyReply } from '../../generated/dashboard';
-import { casualtiesAt, casualtyIndex, casualtyLookSegments, casualtyRaceEntries, casualtyRequest, casualtyRatio, casualtyTooltip, GAP_NOTE, formatCasualties, selectCasualties, validateCasualtyReply } from './casualtiesData';
+import { casualtiesAt, casualtyBarStretch, casualtyBarValue, casualtyIndex, casualtyLookSegments, casualtyRaceEntries, casualtyRequest, casualtyRatio, casualtyTooltip, GAP_NOTE, SUBTOTAL_NOTE, formatCasualties, selectCasualties, validateCasualtyReply } from './casualtiesData';
 import type { CountryCasualties } from './casualtiesData';
 import { OPTIONS } from './definition';
 import './casualties.css';
@@ -58,8 +58,9 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
     return selected.map(row => {
       const at = row.readHour ?? row.hour;
       return { id: row.id, label: looks.name(row.tag, at), flag: looks.flag(row.tag, at),
-        color: country(row.tag, at), left: row.taken == null ? null : Number(row.taken), right: row.dealt == null ? null : Number(row.dealt),
-        leftText: formatCasualties(row.taken, row.atLeast), rightText: formatCasualties(row.dealt, row.atLeast), ratioText: casualtyRatio(row), segment: row.segment, data: row };
+        countryFlag: { flag: looks.flag(row.tag, at), flagReason: looks.flagReason?.(row.tag, at), flagPending: looks.flagPending?.(row.tag, at) },
+        color: country(row.tag, at), left: casualtyBarValue(row.taken), right: casualtyBarValue(row.dealt),
+        leftText: formatCasualties(row.taken, row.atLeast), rightText: formatCasualties(row.dealt, row.atLeast), ratioText: casualtyRatio(row), segment: casualtyBarStretch(row), data: row };
     });
   }, [selected, looks, country]);
   useEffect(() => {
@@ -74,13 +75,15 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
   if (chosen?.reason) return <WidgetState kind="unavailable" message={chosen.reason} />;
   if (!request && !(widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && !groups.data)) return <WidgetState kind="empty" message="No casualties yet." />;
   if (!data || widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && !groups.data) return <WidgetState kind="loading" label="Loading casualties…" />;
-  const withGap = (content: React.ReactNode) => <div className="casualties">{content}{data.hasGap && <p className="chart-line-key">{GAP_NOTE}</p>}</div>;
+  const notes = <>{data.hasGap && <p className="chart-line-key">{GAP_NOTE}</p>}
+    {selected.some(row => row.atLeast) && <p className="chart-line-key">{SUBTOTAL_NOTE}</p>}</>;
+  const withGap = (content: React.ReactNode) => <div className="casualties">{content}{notes}</div>;
   const groupAt = widget.countries.kind === 'group' && widget.countries.membership === 'end' ? track.branch.lastHour : hour;
   if (widget.countries.kind === 'group' && widget.countries.group.type !== 'top' && widget.countries.membership !== 'ever' && groups.data
     && groupUnobserved(groups.data, widget.countries.group).some(span => span.firstHour <= groupAt && groupAt <= span.lastHour)) return withGap(<WidgetState kind="unavailable" message="This group’s members were not recorded at this moment." />);
   if (!data.observed.length || !items.length && !runAt(data.observed, hour)) return withGap(<WidgetState kind="unavailable" message="Casualties were not recorded at this moment." />);
   if (race && !runAt(data.observed, hour)) return withGap(<WidgetState kind="unavailable" message="Casualties were not recorded at this moment." />);
-  if (!snapshot.length && data.series.length) return withGap(<WidgetState kind="unavailable" message="No casualty sample is available at this moment. Casualties are sampled once a day." />);
+  if (!snapshot.length && data.series.length) return withGap(<WidgetState kind="unavailable" message="No casualty reading is available at this moment." />);
   if (!items.length) return withGap(<WidgetState kind="empty" message="No casualties yet." />);
   if (race) return <div className="casualties">
     <CountryRaceView key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])}
@@ -94,7 +97,7 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
       tooltip={(tag, _hour, name) => { const row = rowsByTag.get(tag); return row ? [casualtyTooltip(row, name, includeUnknown, data.unknownLabel, data.hasGap)] : null; }} />
     {selected.some(row => row.taken === null) && <p className="chart-line-key casualties-unknown themed-scrollbar">Taken is unknown for {selected.filter(row => row.taken === null)
       .map(row => looks.name(row.tag, row.readHour ?? row.hour)).join(', ')}; losses with no recorded attacker cannot be recovered exactly.</p>}
-    {data.hasGap && <p className="chart-line-key">{GAP_NOTE}</p>}
+    {notes}
   </div>;
   return <div className="casualties">
     <ButterflyChart key={JSON.stringify([track.source.id, track.source.revision, track.branch.id])} label="Casualties dealt and taken" items={items}
@@ -103,6 +106,6 @@ export default function CasualtiesWidget({ widget, runtime, active, onDiagnostic
       labelCandidates={campaignLabels}
       tooltip={item => casualtyTooltip(item.data, item.label, includeUnknown, data.unknownLabel, data.hasGap)}
       contextItems={item => item.data.readHour == null ? [] : [jumpItem(runtime, track.id, item.data.readHour)]} />
-    {data.hasGap && <p className="chart-line-key">{GAP_NOTE}</p>}
+    {notes}
   </div>;
 }

@@ -7,7 +7,7 @@ export interface FactionName { name: string | null; reason: string | null }
 /** A faction's name from the read at this hour. Gaps never take a later or earlier
  * name. Without an hour, use its latest recorded summary (campaign editors).
  * A user's display name applies throughout the campaign and takes precedence. */
-export function factionNameAt(faction: FactionGroup, hour?: number, override?: string): FactionName {
+export function factionNameAt(faction: Pick<FactionGroup, 'name' | 'nameReason' | 'names'>, hour?: number, override?: string): FactionName {
   if (override) return { name: override, reason: null };
   if (hour == null) return { name: faction.name, reason: faction.nameReason };
   if (!Number.isFinite(hour)) return { name: null, reason: 'Not recorded' };
@@ -15,7 +15,7 @@ export function factionNameAt(faction: FactionGroup, hour?: number, override?: s
   return run ? { name: run.name, reason: run.reason } : { name: null, reason: 'Not recorded' };
 }
 
-export function factionNameLabel(faction: FactionGroup, hour?: number, override?: string): string {
+export function factionNameLabel(faction: Pick<FactionGroup, 'name' | 'nameReason' | 'names'>, hour?: number, override?: string): string {
   return factionNameAt(faction, hour, override).name ?? UNNAMED_FACTION;
 }
 

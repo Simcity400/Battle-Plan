@@ -17,6 +17,7 @@ pub(in crate::oracle) fn compare_output(
     report: &mut Report,
 ) -> io::Result<()> {
     report.limitation("the save keeps no per-line construction spending; branch self-checks validate progress and repair cadence, not the exact repair rate", "ConstructionLineOutput");
+    report.limitation("the save does not retain deleted lines or their daily completion events; completion timestamps require the native-hook smoke comparison", "ConstructionLineOutput.completion");
     let rows = super::complete::<tables::ConstructionLineOutput>(frame)?;
     let Some(since) = rows.first().map(|row| row.since_hour) else {
         report.limitation(
@@ -83,6 +84,8 @@ pub(super) struct OutputCheck {
     shared_railways: usize,
     seen: BTreeSet<u64>,
     output_handles: BTreeSet<u64>,
+    completions: usize,
+    cancellations: usize,
 }
 
 impl OutputCheck {
@@ -105,6 +108,34 @@ impl OutputCheck {
                 .chain(railways.iter().map(|r| r.id)),
         );
         self.output_handles.extend(rows.iter().map(|r| r.line));
+        for row in rows {
+            if let replay::rows::Recorded::Value(Some(event)) = row.completion {
+                let absent = !buildings.iter().any(|r| r.id == row.line)
+                    && !railways.iter().any(|r| r.id == row.line);
+                if !row.ended
+                    || !absent
+                    || event.hour < row.since_hour
+                    || event.hour > frame.hour
+                    || (event.cancelled && !row.railway)
+                {
+                    report.difference(
+                        format!(
+                            "ConstructionLineOutput {} native completion consistency",
+                            row.line
+                        ),
+                        format!(
+                            "ended={}, absent={absent}, hour={}, cancelled={}",
+                            row.ended, event.hour, event.cancelled
+                        ),
+                        "deleted line with an observed outcome between observation and publication",
+                    );
+                } else if event.cancelled {
+                    self.cancellations += 1;
+                } else {
+                    self.completions += 1;
+                }
+            }
+        }
         let state = super::complete::<tables::StateBuildings>(frame).ok();
         let province = super::complete::<tables::ProvinceBuildings>(frame).ok();
         // 1419EEEA0 looks progress up by province pair; 140E7DF25/3D and
@@ -271,7 +302,10 @@ impl OutputCheck {
                 let valid = if b.railway {
                     carry >= 0 && spent >= expected && spent - expected <= carry
                 } else {
-                    carry == 0 && spent == expected
+                    // Progress ADD at 140F557F5/813 and completed-level
+                    // subtraction at 140F55BA4 store native qwords. Compare
+                    // their bit patterns after widening all aggregate arithmetic.
+                    carry == 0 && spent as u64 == expected as u64
                 };
                 if valid {
                     if b.railway {
@@ -290,6 +324,14 @@ impl OutputCheck {
         Ok(())
     }
     pub(super) fn finish(self, report: &mut Report) {
+        report.compared(
+            "ConstructionLineOutput native completion consistency",
+            self.completions,
+        );
+        report.compared(
+            "ConstructionLineOutput native cancellation consistency",
+            self.cancellations,
+        );
         report.compared("ConstructionLineOutput", self.buildings + self.railways);
         report.compared("ConstructionLineOutput new buildings", self.buildings);
         report.compared("ConstructionLineOutput railways", self.railways);

@@ -1,18 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { FuelRead, FuelReply } from '../../generated/dashboard';
-import { dayAmounts, formatFuel, fuelRuns, fuelTooltips, fuelView, percentFull, validateFuelReply } from './fuelData.ts';
+import type { FuelAwardTotals, FuelAwardsReply, FuelAwardHistoryReply, FuelLabel, FuelRead, FuelReply } from '../../generated/dashboard';
+import { dayAmounts, formatFuel, formatFuelPart, fuelAwardBasis, fuelChoiceKey, fuelHistoryRow, fuelLabel, fuelPartHistory, fuelParts, fuelPartShare, fuelRecipientAmount, fuelRuns, fuelTooltips, fuelView, percentFull, validateFuelReply, validateFuelAwardsReply, validateFuelAwardHistory } from './fuelData.ts';
 
 const Q = 32_768;
+const label = (key: string): FuelLabel => ({ key, template: `${key}: {NUM}`, arguments: ['NUM'], reason: null });
+
+test('fuel candidate ownership changes with comparisons, membership policy/spans and visible capacity', () => {
+  const countries = { tags: ['GER', 'ITA'], membership: null };
+  const first = fuelChoiceKey({ kind: 'tags', tags: countries.tags }, countries, true);
+  assert.equal(first, fuelChoiceKey({ kind: 'tags', tags: ['GER', 'ITA'] }, { ...countries, tags: ['GER', 'ITA'] }, true));
+  assert.notEqual(first, fuelChoiceKey({ kind: 'tags', tags: ['ENG', 'FRA'] }, { tags: ['ENG', 'FRA'], membership: null }, true));
+  assert.notEqual(first, fuelChoiceKey({ kind: 'tags', tags: countries.tags }, countries, false));
+  const group = { kind: 'group' as const, group: { type: 'humans' as const }, membership: 'hour' as const, aggregate: false };
+  const member = { ...countries, membership: new Map([['GER', [{ tag: 'GER', firstHour: 0, lastHour: 50 }]]]) };
+  const hourly = fuelChoiceKey(group, member, true);
+  assert.notEqual(hourly, fuelChoiceKey({ ...group, membership: 'ever' }, { ...countries, membership: null }, true));
+  assert.notEqual(hourly, fuelChoiceKey(group, { ...member, membership: new Map([['GER', [{ tag: 'GER', firstHour: 0, lastHour: 60 }]]]) }, true));
+});
 const read = (firstHour: number, lastHour: number, fuel: number, capacity: number, day: [number, number] | 'overlaps' | 'notUpdated' | 'ownershipNotRecorded', startsSegment = false): FuelRead => ({
+  country: '7', countryInstance: null, continuityStartHour: null, awardsReason: 'Applied fuel source and recipient history not recorded',
   firstHour, lastHour, startsSegment, fuelRaw: String(fuel), capacityRaw: String(capacity), lendLeaseRaw: '0',
-  day: Array.isArray(day) ? { gainedRaw: String(day[0]), burnedRaw: String(day[1]) } : null,
+  day: Array.isArray(day) ? { gainedRaw: String(day[0]), burnedRaw: String(day[1]), receivedRaw: ['0', '0', '0'], otherRaw: '0', awards: null } : null,
   leftOut: Array.isArray(day) ? null : day,
 });
 // Day 1: 10 fuel of 20, gained 3.5, burned 1.25. A refresh two hours later overlaps it.
 // Day 2 (after a gap): full at 20, gained 2, burned 0. Then a read after a day without states.
 const REPLY: FuelReply = {
-  branchId: '1', tag: 'GER', quantityScale: Q, gainScale: 100_000, dayHours: 24, warnings: [],
+  branchId: '1', tag: 'GER', quantityScale: Q, gainScale: 100_000, dayHours: 24, detailHours: 720, warnings: [],
+  gainLabels: [label('base'), label('states'), label('oil'), label('negative-flat')],
+  transferLabels: [label('incoming'), label('outgoing'), label('flat')],
+  consumerNames: ['Land', 'Air', 'Sea'],
   reads: [
     read(1017, 1018, 10 * Q, 20 * Q, [350_000, 1.25 * Q], true),
     read(1019, 1040, 10.5 * Q, 20 * Q, 'overlaps'),
@@ -28,6 +46,22 @@ const forms = (hour: number) => {
 };
 const tip = (hour: number) => forms(hour)[0];
 
+test('burn parts preserve fixed5 receipts and the signed tank-conversion residual', () => {
+  const sample = read(1, 1, 10, 20, [17, 32769]);
+  sample.day!.receivedRaw = ['50001', '25000', '24999'];
+  sample.day!.otherRaw = '1';
+  const burn = fuelParts(REPLY, sample, 'burn')!;
+  assert.equal(burn.scale, 100000n * 32768n);
+  assert.equal(burn.total, 32769n * 100000n);
+  assert.deepEqual(burn.parts.map(part => part.raw), [50001n * 32768n, 25000n * 32768n, 24999n * 32768n, 100000n, 0n]);
+  sample.day!.burnedRaw = '32768';
+  const truncated = fuelParts(REPLY, sample, 'burn')!;
+  assert.equal(truncated.parts.at(-1)!.raw, -100000n);
+  assert.equal(truncated.parts.reduce((sum, part) => sum + part.raw, 0n), truncated.total);
+  assert.equal(fuelParts(REPLY, sample, 'gain')!.parts[0].raw, 17n);
+  assert.equal(fuelParts(REPLY, REPLY.reads[1], 'burn'), null);
+});
+
 test('the reply must have its reads in order, each with its day or the reason it is left out', () => {
   assert.equal(validateFuelReply(REPLY), REPLY);
   const bad = (change: (reply: FuelReply) => unknown) => {
@@ -36,6 +70,9 @@ test('the reply must have its reads in order, each with its day or the reason it
     assert.throws(() => validateFuelReply(copy), /malformed/);
   };
   bad(reply => { reply.reads[1].firstHour = 1018; });
+  bad(reply => { (reply.reads[0].day as unknown as { receivedRaw: unknown[] }).receivedRaw = [1, '0', '0']; });
+  bad(reply => { (reply.reads[0].day as unknown as { receivedRaw: unknown[] }).receivedRaw = ['0', '0']; });
+  bad(reply => { reply.consumerNames = [null, null, '']; delete (reply as Partial<FuelReply>).consumerNames; });
   bad(reply => { reply.reads[0].leftOut = 'overlaps'; });
   bad(reply => { reply.reads[1].leftOut = null; });
   bad(reply => { reply.reads[0].fuelRaw = '1.5'; });
@@ -43,6 +80,31 @@ test('the reply must have its reads in order, each with its day or the reason it
   bad(reply => { reply.quantityScale = 0; });
   bad(reply => { (reply.reads[1] as { leftOut: string }).leftOut = 'later'; });
   bad(reply => { (reply.reads[1] as { leftOut: string }).leftOut = 'toString'; });
+});
+
+test('daily raw strings accept 24 native i64 updates and exact signed i128 boundaries without clipping', () => {
+  const max = (1n << 127n) - 1n;
+  const min = -max - 1n;
+  const nativeMaxDay = 24n * ((1n << 63n) - 1n);
+  const nativeMinDay = 24n * -(1n << 63n);
+  assert.equal(nativeMaxDay.toString(), '221360928884514619368');
+  for (const raw of [nativeMaxDay, nativeMinDay, max, min]) {
+    const copy = structuredClone(REPLY);
+    const day = copy.reads[0].day!;
+    day.gainedRaw = raw.toString(); day.burnedRaw = raw.toString(); day.otherRaw = raw.toString();
+    day.receivedRaw = [raw.toString(), '0', '0'];
+    assert.equal(validateFuelReply(copy), copy);
+    assert.equal(BigInt(day.gainedRaw), raw);
+  }
+  for (const raw of [max + 1n, min - 1n]) {
+    const copy = structuredClone(REPLY);
+    copy.reads[0].day!.gainedRaw = raw.toString();
+    assert.throws(() => validateFuelReply(copy), /malformed/);
+  }
+  // Decimal wire fields remain strings, even when their numeric value is small.
+  const malformed = structuredClone(REPLY);
+  (malformed.reads[0].day as unknown as { gainedRaw: unknown }).gainedRaw = 1;
+  assert.throws(() => validateFuelReply(malformed), /malformed/);
 });
 
 test('a date range cuts the reads, keeps every read hour for dating, and keeps only the days read inside it', () => {
@@ -81,7 +143,7 @@ test('the tooltip lists the tank, then the day before its read, and dates a carr
   assert.match(day.note!, /^Read .*; fuel is read once a day\. Gained and burned in the 24 hours before the read; lend-lease fuel received is not included\.$/);
   // Without lend-lease at the read nothing more is said; with it, its last hour is named, never a day's total.
   assert.doesNotMatch(day.note!, /arriving/);
-  assert.match(tip(1065).note!, /Lend-lease fuel was arriving at the read \(\+1\.5 in its last hour\); the tank gains it, but these figures leave it out\./);
+  assert.match(tip(1065).note!, /Lend-lease fuel was arriving at the read \(\+1\.5 in its last hour\); its daily total was not recorded\./);
   assert.match(tip(1017).note!, /^Gained and burned/);
   // A full tank says why the level did not rise by the net.
   assert.match(tip(1065).note!, /discards fuel beyond its capacity/);
@@ -99,4 +161,110 @@ test('the tooltip lists the tank, then the day before its read, and dates a carr
 
 test('the compact tooltip form keeps the tank level and the net', () => {
   assert.deepEqual(forms(1018)[1].rows.map(row => row.label), ['Fuel', 'Net']);
+});
+
+const awards = (): FuelAwardTotals => ({ gainsRaw: ['400000', '-50000', '0', '17'], ownGainRaw: '350017',
+  ownGainQuantityRaw: '114695', transfersRaw: ['8000', '100', '200', '303'], consumedRaw: '32769', receivedRaw: ['50001', '25000', '24999'] });
+const actual = (firstHour = 100, lastHour = 123): FuelRead => {
+  const totals = awards();
+  return { ...read(firstHour, lastHour, Q, 2 * Q, [0, 0]), countryInstance: 9, continuityStartHour: 77, awardsReason: null,
+    day: { gainedRaw: totals.ownGainRaw, burnedRaw: totals.consumedRaw, receivedRaw: totals.receivedRaw, otherRaw: totals.transfersRaw[3], awards: totals } };
+};
+
+test('actual sources, transfers and per-hour quantity operands stay exact without counting Other twice', () => {
+  const source = actual(), gain = fuelParts(REPLY, source, 'gain')!, burn = fuelParts(REPLY, source, 'burn')!;
+  assert.deepEqual(gain.parts.map(part => part.raw), [400000n, -50000n, 0n, 17n]);
+  assert.equal(gain.parts.reduce((sum, part) => sum + part.raw, 0n), gain.total);
+  assert.equal(gain.transfer!.raw, 8000n);
+  assert.equal(gain.total, 350017n); // Incoming LL is outside this own-production denominator.
+  assert.deepEqual(burn.parts.slice(3, 6).map(part => part.raw), [10000000n, 20000000n, 300000n]);
+  assert.equal(burn.parts.reduce((sum, part) => sum + part.raw, 0n), burn.total);
+  assert.equal(burn.parts.at(-1)!.raw, (32769n - 303n) * 100000n - 100000n * 32768n);
+  assert.equal(dayAmounts(REPLY, source)!.net, 250n);
+  const rounded = actual();
+  Object.assign(rounded.day!, { gainedRaw: '500', burnedRaw: '0', receivedRaw: ['0', '0', '0'], otherRaw: '0' });
+  Object.assign(rounded.day!.awards!, { ownGainRaw: '500', ownGainQuantityRaw: '151', consumedRaw: '0' });
+  // 23 hourly raw20 conversions + one raw40 give151 Q15, while converting their raw500 sum gives163.
+  assert.deepEqual(dayAmounts(REPLY, rounded), { gained: 1n, burned: 0n, net: 0n });
+  const conversion = burn.parts.at(-1)!;
+  assert.equal(formatFuelPart(conversion.raw, burn.scale), '\u22120.00921630859375');
+  assert.equal(fuelPartShare(-1n, 3n), '\u221233.3%');
+  assert.equal(fuelPartShare(-1n, -3n), '33.3%');
+  assert.equal(fuelPartShare(0n, 0n), '\u2014');
+});
+
+test('the exact supplying day resolves native template NUM; uncaptured historical OIL is never a later count', () => {
+  assert.equal(fuelLabel({ key: 'synthetic-oil', template: '{OIL} oil gives {NUM}', arguments: ['OIL', 'NUM'],
+    reason: 'Historical OIL operand not recorded' }, 350017n, 100000n), '? oil gives 3.50017');
+  assert.equal(fuelLabel({ key: 'missing-mod-content', template: null, arguments: ['NUM'], reason: 'Missing key' }, 3n, 1n), null);
+});
+
+test('source histories keep actual source keys and signed rows across legacy/refused days without false zero attribution', () => {
+  const legacy = read(76, 99, 0, Q, [1, 0]), first = actual(), refused = read(124, 147, 0, Q, [1, 0]), next = actual(148, 171);
+  const reply = { ...REPLY, reads: [legacy, first, refused, next] };
+  const series = fuelPartHistory(reply, 'gain');
+  assert.deepEqual(series.find(part => part.id === 'unidentified')!.runs.map(run => run.firstHour), [76, 124]);
+  assert.deepEqual(series.find(part => part.id === 'gain-0')!.runs.map(run => [run.firstHour, run.breakBefore]), [[100, true], [148, true]]);
+  assert.deepEqual(series.find(part => part.id === 'gain-1')!.runs.map(run => run.value), [0, 0]);
+  assert.equal(fuelParts(reply, first, 'gain')!.parts[1].raw, -50000n);
+  assert.equal(series.find(part => part.id === 'incoming')!.runs[0].value, 8000 / Q);
+  assert.equal(fuelAwardBasis(reply, first)!.hour, 100);
+  assert.equal(fuelAwardBasis(reply, legacy), null);
+  assert.equal(validateFuelReply(reply), reply);
+  const missing = structuredClone(reply); delete (missing.reads[1].day as Partial<NonNullable<FuelRead['day']>>).awards;
+  assert.throws(() => validateFuelReply(missing), /malformed/);
+  const disagreement = structuredClone(reply); disagreement.reads[1].day!.awards!.ownGainRaw = '999';
+  assert.throws(() => validateFuelReply(disagreement), /malformed/);
+});
+
+test('actual daily lend-lease tooltip replaces only the legacy last-hour claim and keeps the compact own net', () => {
+  const source = actual(), reply = { ...REPLY, reads: [source] };
+  const full = fuelTooltips(reply, reply.reads, [100], 123, 'Day', COLORS);
+  assert.ok(full[0].rows.some(row => row.label === 'Lend-lease received (separate)' && row.value === '+0.24'));
+  assert.equal(full[1].rows[1].label, 'Net');
+  assert.ok(!full[0].note!.includes('last hour'));
+});
+
+test('lazy actual recipient replies retain 5000 signed/zero rows, full native limbs and refused names', () => {
+  const reply: FuelAwardsReply = { branchId: '1', tag: 'GER', hour: 100, warnings: ['Names refused: 1'],
+    awards: { totals: awards(), recipients: Array.from({ length: 5000 }, (_, i) => ({ key: `opaque-${i}`, kind: i % 3,
+      reference: String((1n << 63n) + BigInt(i)), owner: '7', host: i === 1 ? String((1n << 63n) + 1n) : '8', firstHour: 77, lastHour: 100,
+      amountRaw: String(i - 2500), recordedName: i === 0 ? null : `Synthetic recipient ${i}`, nameReason: i === 0 ? 'Language mismatch' : null })) } };
+  assert.equal(validateFuelAwardsReply(reply), reply);
+  assert.equal(reply.awards.recipients.length, 5000);
+  assert.equal(reply.awards.recipients[1].kind, 1);
+  assert.equal(reply.awards.recipients[1].host, '9223372036854775809');
+  const invalidHost = structuredClone(reply); invalidHost.awards.recipients[1].host = String(1n << 64n);
+  assert.throws(() => validateFuelAwardsReply(invalidHost), /malformed/);
+  assert.equal(reply.awards.recipients[0].amountRaw, '-2500');
+  const missing = structuredClone(reply); missing.awards.recipients[1].key = missing.awards.recipients[0].key;
+  assert.throws(() => validateFuelAwardsReply(missing), /malformed/);
+});
+
+test('selected recipient detail keeps known zero separate from unknown identity/gap windows', () => {
+  const reply: FuelAwardHistoryReply = { branchId: '1', tag: 'GER', hour: 100, country: '7', countryInstance: 9,
+    continuityStartHour: 77, window: 0, recipientKey: 'opaque', firstHour: 0, lastHour: 719, warnings: [], runs: [
+      { firstHour: 100, lastHour: 123, startsSegment: true, amountRaw: '-1', reason: null },
+      { firstHour: 124, lastHour: 147, startsSegment: false, amountRaw: null, reason: 'Recipient census not recorded' },
+      { firstHour: 148, lastHour: 171, startsSegment: true, amountRaw: '0', reason: null },
+    ] };
+  assert.equal(validateFuelAwardHistory(reply), reply);
+  const inventedZero = structuredClone(reply); inventedZero.runs[1].amountRaw = '0';
+  assert.throws(() => validateFuelAwardHistory(inventedZero), /malformed/);
+});
+
+test('exact recipient table and chart missing-text seam refuse numeric amounts outside hourly group membership', () => {
+  const runs = [{ firstHour: 148, lastHour: 171, startsSegment: true, amountRaw: '123456', reason: null }];
+  const within = [{ firstHour: 100, lastHour: 123 }];
+  const current = fuelRecipientAmount(runs, 150, within, 100000);
+  assert.deepEqual(current, { raw: null, value: null, text: 'Outside the selected group membership' });
+  assert.deepEqual(fuelRecipientAmount(runs, 150, null, 100000), { raw: 123456n, value: 1.23456, text: '1.23456' });
+});
+
+test('an absent non-transfer source does not inherit incoming lend-lease in the actual history label/amount seam', () => {
+  const values = fuelParts(REPLY, actual(), 'gain')!;
+  assert.ok(values.transfer);
+  assert.equal(fuelHistoryRow(values, 'unidentified', false), null);
+  assert.equal(fuelHistoryRow(values, 'incoming', true), values.transfer);
+  assert.equal(fuelHistoryRow(values, 'gain-0', false), values.parts[0]);
 });

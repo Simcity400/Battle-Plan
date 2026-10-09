@@ -70,3 +70,50 @@ test('a full form, when given, is what assistive technology reads whatever is sh
   assert.ok(fitTooltip([capped], 60, { full }).spoken?.includes('Variant 9'));
   assert.equal(fitTooltip([capped], 10000).spoken, undefined);
 });
+
+test('canonical absent-country status participates in tooltip fitting and the retained full description', () => {
+  const content: TooltipContent = { title: 'Pending country', countryFlag: { flagPending: true },
+    rows: [1, 2, 3].map(index => ({ label: `A long recorded country name ${index}`, value: '1', countryFlag: {} })) };
+  const fitted = fitTooltip([content], 160);
+  assert.ok(fitted.rows.length < content.rows.length, 'visible unavailable text needs room even without a backend reason');
+  assert.ok(tooltipHeight(fitted) <= tooltipRoom(160));
+  assert.match(tooltipText(fitted), /Flag loading/);
+  assert.equal((tooltipText(fitted).match(/Flag not available/g) ?? []).length, 3);
+});
+
+test('refitting displayed decode failures preserves original omissions, newly hidden rows and the kept total', () => {
+  const countries: TooltipRow[] = rows(5000, 'Native country').map((row, index) => ({ ...row, countryFlag: { flag: `synthetic-flag-${index}` } }));
+  countries[0] = { ...countries[0], omittedRows: -1 }; // invalid metadata remains an ordinary data row
+  const raw: TooltipContent = { title: 'Native countries', countryFlag: { flag: 'synthetic-header' }, rows: [...countries, total] };
+  const more = (hidden: number) => `${hidden} more participants`;
+  const first = fitTooltip([raw], 360, { keep: 1, more });
+  const firstSummary = first.rows.find(row => row.tone === 'muted')!;
+  const firstVisible = first.rows.filter(row => row.countryFlag).length;
+  const originallyOmitted = countries.length - firstVisible;
+  assert.equal(firstSummary.label, more(originallyOmitted));
+  assert.equal(first.rows[0], countries[0]);
+  assert.equal(first.rows.at(-1), total);
+  assert.equal(first.spoken, tooltipText(raw));
+
+  const failure = { flagReason: 'Synthetic displayed image decoding was refused with a detailed recorded explanation', flagPending: false };
+  let decoded = 0;
+  const displayed: TooltipContent = { ...first, countryFlag: failure, rows: first.rows.map(row => {
+    if (!row.countryFlag) return row;
+    decoded++;
+    return { ...row, countryFlag: failure };
+  }) };
+  assert.equal(decoded, firstVisible, 'only the initially displayed country rows were decoded');
+  const final = fitTooltip([displayed], 360, { more });
+  const summary = final.rows.find(row => row.tone === 'muted')!;
+  const visible = final.rows.filter(row => row.countryFlag).length;
+  assert.ok(visible < firstVisible, 'the displayed failure text hides additional real rows');
+  assert.equal(summary.label, more(countries.length - visible), 'the displayed count includes old and newly hidden real rows');
+  assert.equal(summary.omittedRows, originallyOmitted + firstVisible - visible);
+  assert.equal(firstSummary.omittedRows, originallyOmitted);
+  assert.equal(visible + summary.omittedRows!, countries.length);
+  assert.equal(final.rows.filter(row => (row.omittedRows ?? 0) > 0).length, 1);
+  assert.equal(final.rows.at(-1), total, 'a second fit inherits the previously kept suffix');
+  assert.equal(final.spoken, first.spoken);
+  assert.equal(tooltipText(final), tooltipText(raw));
+  assert.ok(tooltipHeight(final) <= tooltipRoom(360));
+});

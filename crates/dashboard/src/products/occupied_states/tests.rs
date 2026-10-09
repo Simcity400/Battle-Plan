@@ -41,40 +41,95 @@ fn occupied_is_activation_not_legal_ownership() {
     assert!(!occupied(&row));
 }
 
-#[test]
-fn law_precedence_stops_at_the_missing_group_pointer() {
-    assert_eq!(
-        law_for(Some(b"mod_law"), true, true, Some((true, b"default"))),
-        (Some("mod_law".into()), None)
-    );
-    // A pointer to a law with an empty token is still an explicit override.
-    assert_eq!(
-        law_for(Some(b""), true, true, None),
-        (Some("".into()), None)
-    );
-    for default in [
-        None,
-        Some((false, b"".as_slice())),
-        Some((true, b"default".as_slice())),
-    ] {
-        let (law, reason) = law_for(None, true, true, default);
-        assert!(law.is_none());
-        assert!(reason.unwrap().contains("takes precedence"));
+fn law_inputs<'a>(state: Option<&'a [u8]>, group: GroupLaw<'a>) -> LawInputs<'a> {
+    LawInputs {
+        state,
+        key_resolved: true,
+        overrides_complete: true,
+        group,
+        default: Some((true, b"default")),
+        fallback: Ok(b"mod_fallback"),
     }
+}
+
+#[test]
+fn native_law_precedence_and_default_validation() {
+    for state in [Some(b"mod_law".as_slice()), Some(b"".as_slice())] {
+        let (law, missing) = law_for(
+            law_inputs(state, GroupLaw::Unknown(GROUP_LAW_MISSING.into())),
+            |_| panic!("state override bypasses validation"),
+        );
+        assert_eq!(
+            law.as_deref(),
+            Some(std::str::from_utf8(state.unwrap()).unwrap())
+        );
+        assert!(missing.is_none());
+    }
+    let input = law_inputs(None, GroupLaw::Law(Some(b"group")));
+    assert_eq!(
+        law_for(input, |_| panic!("group override bypasses validation"))
+            .0
+            .as_deref(),
+        Some("group")
+    );
+    let input = law_inputs(None, GroupLaw::Missing);
+    assert_eq!(
+        law_for(input, |_| panic!(
+            "missing occupation data bypasses validation"
+        ))
+        .0
+        .as_deref(),
+        Some("mod_fallback")
+    );
+    for (accepted, expected) in [(true, "default"), (false, "mod_fallback")] {
+        assert_eq!(
+            law_for(law_inputs(None, GroupLaw::Law(None)), |token| {
+                assert_eq!(token, "default");
+                Ok(accepted)
+            })
+            .0
+            .as_deref(),
+            Some(expected)
+        );
+    }
+    let unknown = law_for(law_inputs(None, GroupLaw::Law(None)), |_| {
+        Err("missing trigger input".into())
+    });
+    assert_eq!(unknown, (None, Some("missing trigger input".into())));
+    let mut input = law_inputs(None, GroupLaw::Law(None));
+    input.default = Some((false, b""));
+    assert_eq!(
+        law_for(input, |token| {
+            assert_eq!(token, "mod_fallback");
+            Ok(true)
+        })
+        .0
+        .as_deref(),
+        Some("mod_fallback")
+    );
+    let unknown = law_for(
+        law_inputs(None, GroupLaw::Unknown(GROUP_LAW_MISSING.into())),
+        |_| panic!(),
+    );
+    assert!(unknown.1.unwrap().contains("takes precedence"));
+    let mut input = law_inputs(None, GroupLaw::Law(None));
+    input.overrides_complete = false;
     assert!(
-        law_for(None, true, false, None)
+        law_for(input, |_| panic!())
             .1
             .unwrap()
             .contains("incomplete")
     );
+    let mut input = law_inputs(Some(b"override"), GroupLaw::Law(None));
+    input.key_resolved = false;
     assert!(
-        law_for(None, false, true, None)
+        law_for(input, |_| panic!())
             .1
             .unwrap()
             .contains("unresolved")
     );
     assert!(
-        law_for(Some(&[0xff]), true, true, None)
+        law_for(law_inputs(Some(&[0xff]), GroupLaw::Law(None)), |_| panic!())
             .1
             .unwrap()
             .contains("UTF-8")
@@ -311,6 +366,8 @@ fn frame(hour: i32, read: bool) -> DecodedFrame {
             country: 11,
             law: b"lower_precedence_default".to_vec(),
             default_law_present: 1,
+            group_laws: replay::rows::Recorded::Value(None),
+            fallback_law: replay::rows::Recorded::Value(None),
             ..Default::default()
         }]));
     if read {
@@ -442,7 +499,20 @@ fn partial_resistance_keeps_known_rows_and_does_not_claim_an_empty_inventory() {
 
 #[test]
 fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
-    use replay::rows::TableRows;
+    use replay::rows::{Recorded, ScriptVariableEntry, ScriptVariablesRow, TableRows};
+    let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/synthetic.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/occupation_laws/mod.txt",
+            "synthetic_default={visible={is_in_array={array=arr value=1}}} synthetic_fallback={} synthetic_group_law={}",
+        ),
+    ]);
+    cat.scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
     let mut first = frame(100, true);
     *first.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
         (1..=5000)
@@ -458,6 +528,7 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
                 id,
                 canonical_slot: id + 7000,
                 tag: format!("Mod country {id}").into_bytes(),
+                border_land_doctrine_level: replay::rows::Recorded::Value(None),
                 ..Default::default()
             })
             .collect(),
@@ -484,23 +555,86 @@ fn a_branch_with_five_thousand_states_and_countries_is_not_capped() {
                 })
                 .collect(),
         ));
+    *first.tables[TableId::OccupationSettings.index()] =
+        TableView::Complete(TableRows::OccupationSettings(
+            (1..=5000)
+                .map(|id| replay::rows::OccupationSettingsRow {
+                    country: id,
+                    default_law_present: 1,
+                    law: b"synthetic_default".to_vec(),
+                    group_laws: replay::rows::Recorded::Value(Some(vec![
+                        replay::rows::OccupationGroupLaw {
+                            occupied: id,
+                            scope_country: Some(id),
+                            law: (id % 2 == 0).then(|| b"synthetic_group_law".to_vec()),
+                        },
+                    ])),
+                    fallback_law: replay::rows::Recorded::Value(Some(
+                        b"synthetic_fallback".to_vec(),
+                    )),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *first.tables[TableId::StateOccupationLaws.index()] =
+        TableView::Complete(TableRows::StateOccupationLaws(vec![]));
+    *first.tables[TableId::ScriptVariables.index()] =
+        TableView::Complete(TableRows::ScriptVariables(
+            (1..=5000)
+                .map(|id| ScriptVariablesRow {
+                    scope_kind: 1,
+                    scope_id: id,
+                    seed: Recorded::Value(None),
+                    entries: vec![
+                        ScriptVariableEntry {
+                            name: b"arr^0".to_vec(),
+                            value_raw: 100_000,
+                        },
+                        ScriptVariableEntry {
+                            name: b"arr^num".to_vec(),
+                            value_raw: 100_000,
+                        },
+                    ],
+                })
+                .collect(),
+        ));
     let mut second = first.clone();
+    let TableView::Complete(TableRows::ScriptVariables(stores)) =
+        &mut *second.tables[TableId::ScriptVariables.index()]
+    else {
+        unreachable!()
+    };
+    for store in stores {
+        store.entries[0].value_raw = 0;
+    }
     second.hour = 101;
     let replay = Replay::from_records(
         b"analytics-test".to_vec(),
         &[crate::test_fixtures::records(1, vec![first, second])],
     )
     .unwrap();
-    let reply = scan_history(&replay, 1, None, &AtomicBool::new(false))
+    let reply = scan_history(&replay, 1, Some(&cat), &AtomicBool::new(false))
         .unwrap()
         .states;
     assert_eq!(reply.states.len(), 5000);
-    assert!(
-        reply
-            .states
-            .iter()
-            .all(|state| state.runs.len() == 1 && state.runs[0].last_hour == 101)
-    );
+    for state in &reply.states {
+        let default = state.state % 2 == 1;
+        assert_eq!(
+            state.runs[0].value.law.as_deref(),
+            Some(if default {
+                "synthetic_default"
+            } else {
+                "synthetic_group_law"
+            })
+        );
+        assert_eq!(state.runs.len(), if default { 2 } else { 1 });
+        if default {
+            assert_eq!(
+                state.runs[1].value.law.as_deref(),
+                Some("synthetic_fallback")
+            );
+        }
+    }
     assert_eq!(
         reply.states[4999].runs[0].value.occupier.as_deref(),
         Some("Mod country 5000")
@@ -694,6 +828,107 @@ fn native_zero_strength_requires_complete_resolved_manpower_or_the_failure_flag(
 }
 
 #[test]
+fn positive_strength_uses_recorded_native_weights_and_mod_content_at_its_daily_read() {
+    use replay::rows::{
+        GarrisonEquipment, GarrisonEquipmentInputs, LexicalTokenRow, Recorded,
+        StateAssignedManpowerRow, StateGarrisonRow, TableRows,
+    };
+    let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/mod.lua",
+            "NDefines={NResistance={GARRISON_STR_POW_MANPOWER=2, GARRISON_STR_POW_EQUIPMENT=1}, NInterface={GARRISON_STRENGTH_TO_SHOW_RED=0.75}}",
+        ),
+        (
+            "common/units/equipment/mod.txt",
+            "equipments={mod_weapon={is_archetype=yes build_cost_ic=2.00003}}",
+        ),
+    ]);
+    let mut frames = Vec::new();
+    for (hour, allocated, token) in [(100, 50_000, 700), (101, 100_000, 700), (102, 50_000, 701)] {
+        let mut read = frame(hour, true);
+        *read.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![
+                LexicalTokenRow {
+                    token: 700,
+                    literal: b"mod_weapon".to_vec(),
+                },
+                LexicalTokenRow {
+                    token: 701,
+                    literal: b"missing_mod_weapon".to_vec(),
+                },
+            ]));
+        *read.tables[TableId::StateGarrisons.index()] =
+            TableView::Complete(TableRows::StateGarrisons(vec![StateGarrisonRow {
+                controller: 11,
+                occupied: 9001,
+                state: 2000,
+                required_manpower: 100,
+                strength_ratio: 1,
+                garrison_required: 123_999,
+                equipment: Recorded::Value(GarrisonEquipmentInputs {
+                    rows: vec![GarrisonEquipment {
+                        equipment_token: token,
+                        archetype_token: token,
+                        archetype_active: 1,
+                        required_raw: 100_000,
+                        required_lookup_raw: 100_000,
+                        allocated_raw: allocated,
+                        weight_raw: 200_003,
+                    }],
+                    failure: None,
+                }),
+                ..Default::default()
+            }]));
+        *read.tables[TableId::StateAssignedManpower.index()] =
+            TableView::Complete(TableRows::StateAssignedManpower(vec![
+                StateAssignedManpowerRow {
+                    controller: 11,
+                    occupied: 9001,
+                    state: 2000,
+                    source_country: 11,
+                    amount: 100,
+                    ..Default::default()
+                },
+            ]));
+        frames.push(read);
+    }
+    let replay = Replay::from_records(
+        b"analytics-test".to_vec(),
+        &[crate::test_fixtures::records(1, frames)],
+    )
+    .unwrap();
+    let reply = scan_history(&replay, 1, Some(&cat), &AtomicBool::new(false))
+        .unwrap()
+        .states;
+    let runs = &reply.states[0].runs;
+    assert_eq!(
+        runs[0].value.garrison_strength_raw.as_deref(),
+        Some("49999")
+    );
+    assert_eq!(runs[0].value.garrison_red, Some(true));
+    assert_eq!(
+        runs[1].value.garrison_strength_raw.as_deref(),
+        Some("100000")
+    );
+    assert_eq!(runs[1].value.garrison_red, Some(false));
+    assert_eq!(runs[2].value.garrison_strength_raw, None);
+    assert!(
+        runs[2]
+            .value
+            .garrison_missing
+            .as_ref()
+            .unwrap()
+            .contains("missing_mod_weapon")
+    );
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("missing_mod_weapon"))
+    );
+}
+
+#[test]
 fn a_mod_threshold_uses_native_fixed5_and_missing_garrisons_are_not_zero() {
     use replay::rows::{StateGarrisonRow, TableRows};
     let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[(
@@ -872,4 +1107,417 @@ fn long_campaign_scan_at_design_scale() {
                 .all(|state| state.runs.len() == 1 && state.runs[0].last_hour == hours - 1)
         );
     }
+}
+
+#[test]
+fn occupation_default_validation_uses_native_root_from_and_prev_links() {
+    use crate::triggers::{ContentFacts, World};
+    let mut frame = frame(100, true);
+    *frame.tables[TableId::Countries.index()] =
+        TableView::Complete(replay::rows::TableRows::Countries(vec![
+            CountryRow {
+                id: 2,
+                canonical_slot: 2,
+                tag: b"TGT".to_vec(),
+                ..Default::default()
+            },
+            CountryRow {
+                id: 9001,
+                canonical_slot: 7,
+                tag: b"OCC".to_vec(),
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(replay::rows::TableRows::CountryLinks(vec![
+            CountryLinkRow {
+                id: 2,
+                canonical_slot: 2,
+            },
+            CountryLinkRow {
+                id: 11,
+                canonical_slot: 7,
+            },
+            CountryLinkRow {
+                id: 9001,
+                canonical_slot: 7,
+            },
+        ]));
+    *frame.tables[TableId::CountryCounterInputs.index()] =
+        TableView::Complete(replay::rows::TableRows::CountryCounterInputs(
+            [2, 9001]
+                .map(|country| replay::rows::CountryCounterInputRow {
+                    country,
+                    owned_state_count: 1,
+                    ..Default::default()
+                })
+                .into(),
+        ));
+    let dlcs = std::collections::BTreeSet::new();
+    let triggers = installed_content::trigger_keys::TriggerNames::default();
+    let aliases = Arc::new(installed_content::tag_aliases::TagAliases::default());
+    let world = World::read(
+        &frame,
+        ContentFacts::content_only(&dlcs, &triggers, &aliases),
+    );
+    let laws = installed_content::occupation_laws::parse(
+        b"graph={visible={PREV={tag=OCC} FROM={ROOT={tag=OCC} FROM={tag=TGT}}} available={FROM={tag=TGT}}} hidden={visible={always=no} available={unreached_operand=yes}} self={available={always=no}}",
+        &installed_content::key_names::KeyNames::default(),
+    ).unwrap();
+    assert_eq!(occupation_law_valid(&world, &laws[0], 7, 2), Ok(true));
+    assert_eq!(occupation_law_valid(&world, &laws[1], 7, 2), Ok(false));
+    assert_eq!(occupation_law_valid(&world, &laws[2], 7, 7), Ok(true));
+    assert_eq!(occupation_law_valid(&world, &laws[2], 7, 2), Ok(false));
+}
+
+#[test]
+fn occupation_group_law_and_null_default_are_joined_at_the_supplying_read() {
+    use replay::rows::{OccupationGroupLaw, OccupationSettingsRow, Recorded, TableRows};
+    let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/synthetic.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/occupation_laws/mod.txt",
+            "mod_default={available={always=no}} group_policy={} native_fallback={}",
+        ),
+    ]);
+    let mut first = frame(100, true);
+    *first.tables[TableId::StateOccupationLaws.index()] =
+        TableView::Complete(TableRows::StateOccupationLaws(vec![]));
+    let mut settings = OccupationSettingsRow {
+        country: 11,
+        default_law_present: 1,
+        law: b"mod_default".to_vec(),
+        group_laws: Recorded::Value(Some(vec![OccupationGroupLaw {
+            occupied: 9001,
+            scope_country: Some(9001),
+            law: None,
+        }])),
+        fallback_law: Recorded::Value(Some(b"native_fallback".to_vec())),
+        ..Default::default()
+    };
+    *first.tables[TableId::OccupationSettings.index()] =
+        TableView::Complete(TableRows::OccupationSettings(vec![settings.clone()]));
+    let mut held = first.clone();
+    held.hour = 101;
+    held.metrics.table_ns[TableId::StateResistance.index()] = 0;
+    settings.group_laws = Recorded::Value(Some(vec![OccupationGroupLaw {
+        occupied: 11,
+        scope_country: Some(11),
+        law: Some(b"group_policy".to_vec()),
+    }]));
+    *held.tables[TableId::OccupationSettings.index()] =
+        TableView::Complete(TableRows::OccupationSettings(vec![settings.clone()]));
+    let mut next = held.clone();
+    next.hour = 102;
+    next.metrics.table_ns[TableId::StateResistance.index()] = 1;
+    let mut absent = next.clone();
+    absent.hour = 103;
+    settings.group_laws = Recorded::Value(Some(vec![]));
+    *absent.tables[TableId::OccupationSettings.index()] =
+        TableView::Complete(TableRows::OccupationSettings(vec![settings]));
+    let mut scan = super::scan::Scan::new(1, Some(&cat));
+    for frame in [first, held, next, absent] {
+        scan.push(&frame, frame.hour).unwrap();
+    }
+    let reply = scan.finish().states;
+    let runs = &reply.states[0].runs;
+    assert_eq!(runs.len(), 3);
+    assert_eq!((runs[0].first_hour, runs[0].last_hour), (100, 101));
+    assert_eq!(runs[0].value.law.as_deref(), Some("mod_default"));
+    assert_eq!(runs[1].value.law.as_deref(), Some("group_policy"));
+    assert_eq!(runs[2].value.law.as_deref(), Some("native_fallback"));
+}
+
+#[test]
+fn occupation_default_scope_uses_the_retained_country_pointer_independently_of_membership() {
+    use replay::rows::{OccupationGroupLaw, OccupationSettingsRow, Recorded, TableRows};
+    let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/synthetic.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/occupation_laws/mod.txt",
+            "mod_default={available={always=no}} group_policy={} native_fallback={}",
+        ),
+    ]);
+    cat.scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
+    let mut first = frame(100, true);
+    *first.tables[TableId::StateOccupationLaws.index()] =
+        TableView::Complete(TableRows::StateOccupationLaws(vec![]));
+    let mut countries = first.complete::<tables::Countries>().unwrap().to_vec();
+    countries.push(CountryRow {
+        id: 2,
+        canonical_slot: 8,
+        tag: b"Target".to_vec(),
+        ..Default::default()
+    });
+    countries.sort_unstable_by_key(|row| row.id);
+    *first.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries));
+    let mut links = first.complete::<tables::CountryLinks>().unwrap().to_vec();
+    links.push(CountryLinkRow {
+        id: 2,
+        canonical_slot: 8,
+    });
+    links.sort_unstable_by_key(|row| row.id);
+    *first.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(links));
+    let cases = [
+        (Some(9001), None, Some("mod_default")),
+        (Some(2), None, Some("native_fallback")),
+        (None, None, None),
+        (None, Some(b"group_policy".to_vec()), Some("group_policy")),
+    ];
+    let mut scan = super::scan::Scan::new(1, Some(&cat));
+    for (index, (scope_country, law, _)) in cases.iter().enumerate() {
+        let mut read = first.clone();
+        read.hour += index as i32;
+        *read.tables[TableId::OccupationSettings.index()] =
+            TableView::Complete(TableRows::OccupationSettings(vec![OccupationSettingsRow {
+                country: 11,
+                default_law_present: 1,
+                law: b"mod_default".to_vec(),
+                group_laws: Recorded::Value(Some(vec![OccupationGroupLaw {
+                    occupied: 9001,
+                    scope_country: *scope_country,
+                    law: law.clone(),
+                }])),
+                fallback_law: Recorded::Value(Some(b"native_fallback".to_vec())),
+                ..Default::default()
+            }]));
+        scan.push(&read, read.hour).unwrap();
+    }
+    let reply = scan.finish().states;
+    let runs = &reply.states[0].runs;
+    assert_eq!(runs.len(), cases.len());
+    for (run, (_, _, expected)) in runs.iter().zip(cases) {
+        assert_eq!(run.value.law.as_deref(), expected);
+        if expected.is_none() {
+            assert!(run.value.law_missing.as_deref().unwrap().contains("+0x18"));
+        }
+    }
+}
+
+#[test]
+fn occupation_political_default_does_not_require_unrelated_map_assets() {
+    use replay::rows::{
+        CompletedFocusRow, CountryAppearanceRow, LexicalTokenRow, OccupationGroupLaw,
+        OccupationSettingsRow, PoliticalPartyRow, Recorded, ScriptFlagRow, TableRows,
+    };
+    for visible in [
+        "has_government=mod_party",
+        "original_tag=MDA",
+        "FROM={original_tag=MDA}",
+        "has_country_flag=mod_law_flag",
+        "FROM={has_completed_focus=mod_focus}",
+    ] {
+        let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/defines/synthetic.lua",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            ),
+            (
+                "common/occupation_laws/mod.txt",
+                &format!("mod_default={{visible={{{visible}}}}} native_fallback={{}}"),
+            ),
+            (
+                "common/ideologies/mod.txt",
+                "ideologies={mod_party={types={subtype={}}}}",
+            ),
+        ]);
+        assert!(cat.cached_states().is_err());
+        let mut read = frame(100, true);
+        *read.tables[TableId::StateOccupationLaws.index()] =
+            TableView::Complete(TableRows::StateOccupationLaws(vec![]));
+        *read.tables[TableId::OccupationSettings.index()] =
+            TableView::Complete(TableRows::OccupationSettings(vec![OccupationSettingsRow {
+                country: 11,
+                default_law_present: 1,
+                law: b"mod_default".to_vec(),
+                group_laws: Recorded::Value(Some(vec![OccupationGroupLaw {
+                    occupied: 9001,
+                    scope_country: Some(9001),
+                    law: None,
+                }])),
+                fallback_law: Recorded::Value(Some(b"native_fallback".to_vec())),
+                ..Default::default()
+            }]));
+        *read.tables[TableId::PoliticalParties.index()] =
+            TableView::Complete(TableRows::PoliticalParties(vec![PoliticalPartyRow {
+                country: 9001,
+                id: 7,
+                token: b"mod_party".to_vec(),
+                is_ruling: 1,
+                ..Default::default()
+            }]));
+        *read.tables[TableId::CountryAppearance.index()] =
+            TableView::Complete(TableRows::CountryAppearance(vec![CountryAppearanceRow {
+                country: 9001,
+                name_tag: b"MDA".to_vec(),
+                original_tag_reference: Recorded::Value(Some(0)),
+                ..Default::default()
+            }]));
+        let TableView::Complete(TableRows::Countries(countries)) =
+            &mut *read.tables[TableId::Countries.index()]
+        else {
+            unreachable!()
+        };
+        countries[0].tag = b"MDA".to_vec();
+        *read.tables[TableId::CountryCounterInputs.index()] =
+            TableView::Complete(TableRows::CountryCounterInputs(vec![
+                replay::rows::CountryCounterInputRow {
+                    country: 9001,
+                    owned_state_count: 1,
+                    ..Default::default()
+                },
+            ]));
+        *read.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 901,
+                literal: b"mod_law_flag".to_vec(),
+            }]));
+        *read.tables[TableId::ScriptFlags.index()] =
+            TableView::Complete(TableRows::ScriptFlags(vec![ScriptFlagRow {
+                scope_kind: 1,
+                scope_id: 9001,
+                token: 901,
+                value: 1,
+                ..Default::default()
+            }]));
+        *read.tables[TableId::CompletedFocuses.index()] =
+            TableView::Complete(TableRows::CompletedFocuses(vec![CompletedFocusRow {
+                country: 11,
+                token: b"mod_focus".to_vec(),
+                ..Default::default()
+            }]));
+        *read.tables[TableId::Provinces.index()] = TableView::Unavailable {
+            reason: "unrelated map gap".into(),
+        };
+        let mut scan = super::scan::Scan::new(1, Some(&cat));
+        scan.push(&read, 100).unwrap();
+        assert_eq!(
+            scan.finish().states.states[0].runs[0].value.law.as_deref(),
+            Some("mod_default"),
+            "{visible}"
+        );
+    }
+}
+
+#[test]
+fn occupation_default_continent_reads_the_retained_cache_through_from_capital() {
+    use replay::rows::{
+        LexicalTokenRow, OccupationGroupLaw, OccupationSettingsRow, PoliticsRow, Recorded,
+        TableRows,
+    };
+    let (cat, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/synthetic.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/occupation_laws/mod.txt",
+            "mod_default={visible={FROM={capital_scope={is_on_continent=second_mod_continent}}}} native_fallback={}",
+        ),
+        (
+            "map/default.map",
+            "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=mod_continents.txt",
+        ),
+        (
+            "map/mod_continents.txt",
+            "continents={first_mod_continent second_mod_continent}",
+        ),
+    ]);
+    assert!(cat.cached_states().is_err());
+    let mut read = frame(100, true);
+    *read.tables[TableId::StateOccupationLaws.index()] =
+        TableView::Complete(TableRows::StateOccupationLaws(vec![]));
+    *read.tables[TableId::OccupationSettings.index()] =
+        TableView::Complete(TableRows::OccupationSettings(vec![OccupationSettingsRow {
+            country: 11,
+            default_law_present: 1,
+            law: b"mod_default".to_vec(),
+            group_laws: Recorded::Value(Some(vec![OccupationGroupLaw {
+                occupied: 9001,
+                scope_country: Some(9001),
+                law: None,
+            }])),
+            fallback_law: Recorded::Value(Some(b"native_fallback".to_vec())),
+            ..Default::default()
+        }]));
+    *read.tables[TableId::Politics.index()] =
+        TableView::Complete(TableRows::Politics(vec![PoliticsRow {
+            country: 9001,
+            capital: 2000,
+            ..Default::default()
+        }]));
+    *read.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+            token: 901,
+            literal: b"second_mod_continent".to_vec(),
+        }]));
+    *read.tables[TableId::Provinces.index()] = TableView::Unavailable {
+        reason: "unrelated province gap".into(),
+    };
+    for (continent, expected) in [
+        (Recorded::Value(Some(901)), Some("mod_default")),
+        (Recorded::Value(Some(0)), Some("native_fallback")),
+        (Recorded::Value(None), None),
+        (Recorded::NotRecorded, None),
+    ] {
+        let TableView::Complete(TableRows::States(states)) =
+            &mut *read.tables[TableId::States.index()]
+        else {
+            unreachable!()
+        };
+        states[0].continent = continent;
+        let mut scan = super::scan::Scan::new(1, Some(&cat));
+        scan.push(&read, 100).unwrap();
+        let reply = scan.finish().states;
+        let value = &reply.states[0].runs[0].value;
+        assert_eq!(value.law.as_deref(), expected);
+        if expected.is_none() {
+            assert!(value.law_missing.as_deref().unwrap().contains("continent"));
+        }
+    }
+    let (duplicates, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/synthetic.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/occupation_laws/mod.txt",
+            "mod_default={visible={FROM={capital_scope={is_on_continent=second_mod_continent}}}} native_fallback={}",
+        ),
+        (
+            "map/default.map",
+            "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp continent=mod_continents.txt",
+        ),
+        (
+            "map/mod_continents.txt",
+            "continents={second_mod_continent SECOND_MOD_CONTINENT}",
+        ),
+    ]);
+    let TableView::Complete(TableRows::States(states)) = &mut *read.tables[TableId::States.index()]
+    else {
+        unreachable!()
+    };
+    states[0].continent = Recorded::Value(Some(901));
+    let mut scan = super::scan::Scan::new(1, Some(&duplicates));
+    scan.push(&read, 100).unwrap();
+    let reply = scan.finish().states;
+    let value = &reply.states[0].runs[0].value;
+    assert!(value.law.is_none());
+    assert!(
+        value
+            .law_missing
+            .as_deref()
+            .unwrap()
+            .contains("duplicate continent")
+    );
 }

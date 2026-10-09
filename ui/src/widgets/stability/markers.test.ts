@@ -9,7 +9,7 @@ const names: Record<string, string> = { GER: 'Germany', POL: 'Poland', FRA: 'Fra
 const base = { tag: 'GER', extent: [0, 1000] as const, branch: [0, 1000] as const, countryName: (tag: string) => names[tag] ?? tag };
 
 const groups: CountryGroupReply = {
-  branchId: '1', humans: [], warnings: [],
+  branchId: '1', humans: [], warnings: [], countryIdentities: [],
   factions: [
     { id: '1', name: 'Axis', recordedName: 'Axis', firstHour: 100, lastHour: 1000, nameReason: null, names: [{ firstHour: 100, lastHour: 1000, name: 'Axis', reason: null }], members: [{ tag: 'GER', firstHour: 100, lastHour: 1000 }, { tag: 'ITA', firstHour: 150, lastHour: 1000 }], leaders: [], incomplete: [] },
     { id: '2', name: 'Pact', recordedName: 'Pact', firstHour: 0, lastHour: 1000, nameReason: null, names: [{ firstHour: 0, lastHour: 1000, name: 'Pact', reason: null }], members: [{ tag: 'GER', firstHour: 300, lastHour: 399 }], leaders: [], incomplete: [] },

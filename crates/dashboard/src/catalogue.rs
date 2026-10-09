@@ -37,6 +37,20 @@ pub(crate) fn created_gui_sprite<'a>(
         .map_err(|why| invalid(format!("{name} is not declared, and its fallback: {why}")))
 }
 
+/// CGameBitmapFont::text_icon_lookup@14162E880 searches the executable's
+/// GFX_ prefix before the bare authored alias. A declared but unsupported
+/// sprite is a refusal; only an absent declaration takes the second lookup.
+pub(crate) fn text_icon_sprite<'a>(
+    sprites: &'a SpriteSet,
+    alias: &str,
+) -> io::Result<&'a installed_content::gfx::SpriteType> {
+    let prefixed = format!("GFX_{alias}");
+    if let Some(sprite) = sprites.find(&prefixed).map_err(invalid)? {
+        return Ok(sprite);
+    }
+    sprites.lookup(alias).map_err(invalid)
+}
+
 /// How the game's view of a name treats `[...]` scripted text, settled per
 /// view by tracing it to CTextBase::ProcessString (1412B9CA0), the only
 /// evaluator: a text box itself (`CInstantTextBox::text_setter` 1422B59E0)
@@ -66,6 +80,18 @@ pub enum View {
 /// [`localised_with`] with no arguments.
 pub fn localised(localisation: &Localisation, key: &str, view: View) -> Result<String, String> {
     localised_with(localisation, key, &[], view)
+}
+
+/// Saved native byte strings take the C-string path (142230F20 -> 142528F10):
+/// an embedded NUL ends the key before UTF-8 decoding or content lookup.
+pub fn localised_bytes(
+    localisation: &Localisation,
+    key: &[u8],
+    view: View,
+) -> Result<String, String> {
+    let text = localisation.localise(key).map_err(|why| why.to_string())?;
+    let (text, _) = scripted(&text, view, Kind::Unsupported)?;
+    plain_text(&text)
 }
 
 /// `key` through the game's localiser (`installed_content::localisation`, 142230F20:
@@ -105,7 +131,7 @@ fn localised_with_reason(
     country_kind: Kind,
 ) -> (Result<String, Box<Finding>>, Vec<Finding>) {
     localised_with_renderer(localisation, key, arguments, |text| {
-        scripted(text, view).map_err(|reason| {
+        scripted(text, view, country_kind).map_err(|reason| {
             let aggregate = if country_kind == Kind::Offline {
                 "scripted localisation needs recorded country context; unavailable offline"
             } else {
@@ -165,11 +191,20 @@ fn localised_with_renderer(
 }
 
 /// The text as `view` shows its `[`s ([`View`]).
-fn scripted(text: &str, view: View) -> Result<(String, Option<&'static str>), String> {
+fn scripted(
+    text: &str,
+    view: View,
+    country_kind: Kind,
+) -> Result<(String, Option<&'static str>), String> {
     let Some(open) = text.find('[') else {
         return Ok((text.to_owned(), None));
     };
     let closed = text[open + 1..].find(']');
+    let country_reason = if country_kind == Kind::Offline {
+        "recorded country context is unavailable offline"
+    } else {
+        "this product does not pass that country"
+    };
     match (view, closed) {
         (View::Plain, _) => Ok((text.to_owned(), None)),
         (View::Scripted, None) => Ok((
@@ -177,7 +212,7 @@ fn scripted(text: &str, view: View) -> Result<(String, Option<&'static str>), St
             Some("an unclosed scripted expression; the game omits the text"),
         )),
         (View::Scripted, Some(length)) => Err(format!(
-            "the scripted expression {:?}, which the game evaluates for the country the text is shown for, and this product does not pass that country",
+            "the scripted expression {:?}, which the game evaluates for the country the text is shown for, and {country_reason}",
             &text[open..open + length + 2],
         )),
     }
@@ -197,7 +232,7 @@ pub fn localised_in(
         .map_err(|finding| finding.message)
 }
 
-fn localised_in_details(
+pub(crate) fn localised_in_details(
     localisation: &Localisation,
     key: &str,
     arguments: &[(&str, Argument<'_>)],
@@ -254,6 +289,14 @@ impl Refusals {
             .insert(identity.into());
     }
 
+    /// One counted warning per reason, without enumerating every identity.
+    pub fn counts(&self, what: &str) -> Vec<String> {
+        self.0
+            .iter()
+            .map(|(reason, identities)| format!("{} {what} not shown: {reason}", identities.len()))
+            .collect()
+    }
+
     /// One warning per reason, naming every `what` it affects.
     pub fn lines(&self, what: &str) -> Vec<String> {
         self.diagnostic_lines(&format!("{what} not shown"))
@@ -261,16 +304,96 @@ impl Refusals {
 
     /// Counted issues without implying that the affected values were omitted.
     pub fn diagnostic_lines(&self, what: &str) -> Vec<String> {
+        self.counted_diagnostic_lines(what)
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect()
+    }
+
+    pub(crate) fn counted_diagnostic_lines(&self, what: &str) -> Vec<(String, usize)> {
         self.0
             .iter()
             .map(|(reason, identities)| {
-                format!(
-                    "{} {what}: {reason}; {}",
+                (
+                    format!(
+                        "{} {what}: {reason}; {}",
+                        identities.len(),
+                        identities.iter().cloned().collect::<Vec<_>>().join(", ")
+                    ),
                     identities.len(),
-                    identities.iter().cloned().collect::<Vec<_>>().join(", ")
                 )
             })
             .collect()
+    }
+}
+
+/// Named, counted refusals whose storage is bounded with a product's reply.
+/// Check after each scan step and before turning them into reply warnings.
+/// Reaching the bound refuses the whole product; it never drops individual
+/// warnings to make an otherwise successful reply fit.
+pub(crate) struct BoundedRefusals {
+    refused: Refusals,
+    bytes: usize,
+    overflow: bool,
+    budget: usize,
+}
+
+impl BoundedRefusals {
+    pub(crate) fn new(budget: usize) -> Self {
+        Self {
+            refused: Refusals::default(),
+            bytes: 0,
+            overflow: false,
+            budget,
+        }
+    }
+
+    pub(crate) fn note(&mut self, reason: impl Into<String>, identity: impl Into<String>) {
+        if self.overflow {
+            return;
+        }
+        let reason = reason.into();
+        let identity = identity.into();
+        if self
+            .refused
+            .0
+            .get(&reason)
+            .is_some_and(|identities| identities.contains(&identity))
+        {
+            return;
+        }
+        // Each unique note pays for both JSON strings, including escaping,
+        // and the warning's count/label/separators. Repeated reasons paying
+        // again makes this a conservative bound on Refusals::lines output.
+        let available = self.budget.saturating_sub(self.bytes + 64);
+        let Some(size) = crate::transport::json_len(&(&reason, &identity), available) else {
+            self.overflow = true;
+            return;
+        };
+        let Some(bytes) = self.bytes.checked_add(size + 64) else {
+            self.overflow = true;
+            return;
+        };
+        if bytes > self.budget {
+            self.overflow = true;
+            return;
+        }
+        self.bytes = bytes;
+        self.refused.note(reason, identity);
+    }
+
+    pub(crate) fn check(&self) -> io::Result<usize> {
+        if self.overflow {
+            Err(io::Error::other(
+                "Product refusals exceed the complete-response budget",
+            ))
+        } else {
+            Ok(self.bytes)
+        }
+    }
+
+    pub(crate) fn lines(&self, what: &str) -> Vec<String> {
+        self.refused.lines(what)
     }
 }
 
@@ -309,11 +432,20 @@ pub struct Catalogue {
     /// Scripted localisation names and the recursion limit, read on first
     /// use ([`Catalogue::scripted_content`]).
     scripted: OnceLock<Result<crate::scripted_text::ScriptedContent, String>>,
+    war_names: OnceLock<Result<installed_content::wargoals::Names, String>>,
     /// State templates are usable without the scripted-localisation inputs.
     pub(crate) state_content: Arc<OnceLock<Result<crate::scripted_text::StateContent, String>>>,
 }
 
 impl Catalogue {
+    pub(crate) fn war_names(&self) -> Result<&installed_content::wargoals::Names, String> {
+        self.war_names
+            .get_or_init(|| {
+                installed_content::wargoals::read_names(&self.content.layers).map_err(|e| e.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
     fn load(source: &Source, options: &ContentOptions) -> io::Result<Self> {
         let mut verification = Vec::new();
         let replay = source.replay();
@@ -394,6 +526,7 @@ impl Catalogue {
             refused: Mutex::default(),
             findings: None,
             scripted: OnceLock::new(),
+            war_names: OnceLock::new(),
             state_content: Arc::new(OnceLock::new()),
         })
     }
@@ -535,12 +668,28 @@ impl Catalogue {
     /// The texts refused so far, one warning per reason, and the warnings
     /// of scripted localisation and shared content reads, including lazy reads.
     pub fn refusal_lines(&self) -> Vec<String> {
-        let mut lines = self
+        self.refusal_entries()
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect()
+    }
+
+    /// Text summaries retain their actual identity count; reader warnings have
+    /// no measured affected-item count. Consumers never parse warning prose.
+    pub(crate) fn refusal_entries(&self) -> Vec<(String, Option<usize>)> {
+        let mut lines: Vec<_> = self
             .refused
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .lines("texts are");
-        lines.extend(self.reader_warning_lines());
+            .counted_diagnostic_lines("texts are not shown")
+            .into_iter()
+            .map(|(line, count)| (line, Some(count)))
+            .collect();
+        lines.extend(
+            self.reader_warning_lines()
+                .into_iter()
+                .map(|line| (line, None)),
+        );
         lines
     }
 
@@ -846,6 +995,29 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
+    fn saved_name_bytes_follow_native_nul_and_preserve_empty_authored_text() {
+        let localisation = loaded("l_english:\n KEY:0 \"Native name\"\n EMPTY:0 \"\"\n");
+        assert_eq!(
+            localised_bytes(&localisation, b"KEY\0\xff", View::Plain).unwrap(),
+            "Native name"
+        );
+        assert_eq!(
+            localised_bytes(&localisation, b"EMPTY", View::Plain).unwrap(),
+            ""
+        );
+        assert_eq!(
+            localised_bytes(&localisation, b"\0\xff", View::Plain).unwrap(),
+            ""
+        );
+        assert!(localised_bytes(&localisation, b"\xff", View::Plain).is_err());
+        assert_eq!(
+            localised_bytes(&localisation, b"[ROOT.GetName]", View::Plain).unwrap(),
+            "[ROOT.GetName]"
+        );
+        assert!(localised_bytes(&localisation, b"[ROOT.GetName]", View::Scripted).is_err());
+    }
+
+    #[test]
     fn gui_sprite_binding_uses_native_inheritance_and_kind_local_names() {
         use installed_content::gui::native;
         let gui = native::read(
@@ -894,6 +1066,35 @@ pub(crate) mod tests {
                 .to_string()
                 .contains("noOfFrames")
         );
+    }
+
+    #[test]
+    fn text_icon_sprite_selects_native_prefix_then_bare_and_keeps_named_refusal() {
+        let facts = installed_content::gui::native::sprites::read_sprites(
+            br#"spriteTypes = {
+                spriteType = { name = GFX_mod_alias texturefile = prefixed.dds }
+                spriteType = { name = mod_alias texturefile = bare.dds }
+                spriteType = { name = bare_only texturefile = bare_only.dds }
+                spriteType = { name = GFX_refused noOfFrames = -1 }
+                spriteType = { name = refused texturefile = must_not_stand_in.dds }
+            }"#,
+        );
+        let sprites = SpriteSet::new(&[("interface/synthetic.gfx".to_owned(), facts)]);
+        assert_eq!(
+            text_icon_sprite(&sprites, "mod_alias").unwrap().name,
+            "GFX_mod_alias"
+        );
+        assert_eq!(
+            text_icon_sprite(&sprites, "bare_only").unwrap().name,
+            "bare_only"
+        );
+        assert!(
+            text_icon_sprite(&sprites, "refused")
+                .unwrap_err()
+                .to_string()
+                .contains("noOfFrames")
+        );
+        assert!(text_icon_sprite(&sprites, "missing").is_err());
     }
 
     #[test]
@@ -1020,6 +1221,7 @@ pub(crate) mod tests {
             refused: Mutex::default(),
             findings: None,
             scripted: OnceLock::new(),
+            war_names: OnceLock::new(),
             state_content: Arc::new(OnceLock::new()),
         }
     }
@@ -1218,14 +1420,102 @@ pub(crate) mod tests {
         refusals.note("why", "B");
         refusals.note("why", "A");
         refusals.note("why", "A");
+        assert_eq!(refusals.counts("names are"), ["2 names are not shown: why"]);
         assert_eq!(
             refusals.lines("names are"),
             ["2 names are not shown: why; A, B"]
         );
         assert_eq!(
+            refusals.counted_diagnostic_lines("names are not shown"),
+            [("2 names are not shown: why; A, B".into(), 2)]
+        );
+        assert_eq!(
             refusals.diagnostic_lines("retained values affected"),
             ["2 retained values affected: why; A, B"]
         );
+        assert_eq!(
+            refusals.counted_diagnostic_lines("retained values affected"),
+            [("2 retained values affected: why; A, B".into(), 2)]
+        );
+        refusals.note("another reason", "C");
+        assert_eq!(
+            refusals
+                .counted_diagnostic_lines("names are not shown")
+                .iter()
+                .map(|(_, count)| count)
+                .sum::<usize>(),
+            3
+        );
+    }
+
+    #[test]
+    fn bounded_refusals_deduplicate_and_bound_escaped_warning_output() {
+        let mut refused = BoundedRefusals::new(1024);
+        refused.note("Unsupported \"mod\" form", "operative \"one\"\nfield");
+        let first = refused.check().unwrap();
+        refused.note("Unsupported \"mod\" form", "operative \"one\"\nfield");
+        assert_eq!(refused.check().unwrap(), first);
+        refused.note("Unsupported \"mod\" form", "operative two field");
+        let lines = refused.lines("operative fields");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("2 operative fields not shown:"));
+        assert!(lines[0].contains("operative two field"));
+        assert!(crate::transport::json_len(&lines, refused.check().unwrap()).is_some());
+    }
+
+    #[test]
+    fn bounded_refusals_overflow_refuses_and_stops_storage_growth() {
+        let mut refused = BoundedRefusals::new(1024);
+        refused.note("Known refusal", "operative one field");
+        let before = refused.bytes;
+        let names = refused.refused.0.clone();
+        refused.bytes = refused.budget - 1;
+        refused.note("A new refusal", "operative two field");
+        assert!(refused.check().is_err());
+        assert_eq!(refused.refused.0, names);
+        assert_eq!(refused.bytes, refused.budget - 1);
+        // Into<String> is never called once the overflow flag is set.
+        struct NoConversion;
+        impl From<NoConversion> for String {
+            fn from(_: NoConversion) -> Self {
+                panic!("overflowed refusal must not allocate another note")
+            }
+        }
+        refused.note(NoConversion, NoConversion);
+        assert!(refused.check().is_err());
+        assert!(before > 0);
+    }
+
+    #[test]
+    fn catalogue_refusal_entries_keep_shared_read_warnings_uncounted() {
+        let (catalogue, _folder) =
+            folder_catalogue(&[("outside_policy/synthetic.txt", "independent fixture")]);
+        let reads = catalogue.content.layers.report_uncovered_reads();
+        catalogue
+            .content
+            .layers
+            .read("outside_policy/synthetic.txt")
+            .unwrap();
+        catalogue.refuse("synthetic reason", "synthetic name");
+        let entries = catalogue.refusal_entries();
+        assert_eq!(
+            entries,
+            [
+                (
+                    "1 texts are not shown: synthetic reason; synthetic name".into(),
+                    Some(1)
+                ),
+                (reads.warning().unwrap(), None),
+            ]
+        );
+        assert_eq!(
+            catalogue.refusal_lines(),
+            entries
+                .into_iter()
+                .map(|(line, _)| line)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(catalogue.reader_warning_lines(), [reads.warning().unwrap()]);
     }
 
     #[test]

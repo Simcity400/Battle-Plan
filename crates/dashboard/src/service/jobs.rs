@@ -19,6 +19,20 @@ use std::{
 pub(super) struct Sources {
     next: u64,
     entries: BTreeMap<(PathBuf, String), Weak<Source>>,
+    // Failed openers leave their waiters' gate discoverable; idle gates expire.
+    opening: BTreeMap<(PathBuf, String), Weak<Mutex<()>>>,
+}
+
+impl Sources {
+    pub(super) fn open_gate(&mut self, key: (PathBuf, String)) -> Arc<Mutex<()>> {
+        self.opening.retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = self.opening.get(&key).and_then(Weak::upgrade) {
+            return gate;
+        }
+        let gate = Arc::new(Mutex::new(()));
+        self.opening.insert(key, Arc::downgrade(&gate));
+        gate
+    }
 }
 
 impl Inner {
@@ -29,7 +43,8 @@ impl Inner {
             .clone()
     }
 
-    /// The source lock serializes cold opens, including duplicate map requests.
+    /// Duplicate opens share a per-revision gate. Disk reads and opted-in cache
+    /// inheritance never hold the global sources lock.
     pub(super) fn open(
         &self,
         path: &Path,
@@ -42,29 +57,51 @@ impl Inner {
         if expected.is_some_and(|expected| expected != revision) {
             return Err("The recording changed. Reopen it before requesting another view.".into());
         }
-        let mut sources = self.sources.lock().map_err(|error| error.to_string())?;
-        // A cancelled open may have waited behind another source's cold load.
-        self.check_open(cancelled)?;
-        sources
-            .entries
-            .retain(|_, source| source.strong_count() > 0);
         let cache_key = (path.clone(), revision.clone());
-        if let Some(source) = sources.entries.get(&cache_key).and_then(Weak::upgrade) {
-            return Ok(source);
-        }
-        sources.next = sources
-            .next
-            .checked_add(1)
-            .ok_or("Source identity exhausted")?;
-        let key = SourceKey {
-            source_id: format!("source-{}", sources.next),
-            revision,
+        let (gate, previous) = {
+            let mut sources = self.sources.lock().map_err(|error| error.to_string())?;
+            sources
+                .entries
+                .retain(|_, source| source.strong_count() > 0);
+            if let Some(source) = sources.entries.get(&cache_key).and_then(Weak::upgrade) {
+                return Ok(source);
+            }
+            let previous = sources
+                .entries
+                .iter()
+                .filter(|((old_path, _), _)| old_path == &path)
+                .filter_map(|(_, old)| old.upgrade())
+                .max_by_key(|old| old.replay_ref().index.len());
+            let gate = sources.open_gate(cache_key.clone());
+            (gate, previous)
         };
-        let source = Arc::new(
-            Source::open(key, path.clone(), cancelled).map_err(|error| error.to_string())?,
-        );
+        let _opening = gate.lock().map_err(|error| error.to_string())?;
         self.check_open(cancelled)?;
-        sources.entries.insert(cache_key, Arc::downgrade(&source));
+        let key = {
+            let mut sources = self.sources.lock().map_err(|error| error.to_string())?;
+            if let Some(source) = sources.entries.get(&cache_key).and_then(Weak::upgrade) {
+                return Ok(source);
+            }
+            sources.next = sources
+                .next
+                .checked_add(1)
+                .ok_or("Source identity exhausted")?;
+            SourceKey {
+                source_id: format!("source-{}", sources.next),
+                revision,
+            }
+        };
+        let source =
+            Arc::new(Source::open(key, path, cancelled).map_err(|error| error.to_string())?);
+        if let Some(previous) = previous {
+            source.inherit_append_states(&previous);
+        }
+        self.check_open(cancelled)?;
+        self.sources
+            .lock()
+            .map_err(|error| error.to_string())?
+            .entries
+            .insert(cache_key, Arc::downgrade(&source));
         Ok(source)
     }
 

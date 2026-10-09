@@ -6,7 +6,27 @@ pub const VTABLE_RVA: usize = 0x0292_8218;
 /// COccupationLaw embedded MSVC string token; old D52 read_pdx_string and D66 read_occupation_law_pdx_string read size/capacity within it.
 pub const NAME: usize = 0x10;
 
+/// GetOccupationPolicyDatabase@14039D930 returns this singleton; 140FE2FE0 reads +0x48.
+pub const DATABASE_RVA: usize = 0x0331_6bc8;
+pub const DATABASE_FALLBACK: usize = 0x48;
+
 use crate::{Memory, msvc_string, read, read_slice};
+
+pub(crate) fn fallback(memory: &impl Memory, base: usize) -> Result<Literal, &'static str> {
+    let database = base
+        .checked_add(DATABASE_RVA)
+        .and_then(|p| read::<u64>(memory, p))
+        .and_then(|p| usize::try_from(p).ok())
+        .filter(|&p| p != 0)
+        .ok_or("occupation-law database unavailable")?;
+    let law = database
+        .checked_add(DATABASE_FALLBACK)
+        .and_then(|p| read::<u64>(memory, p))
+        .and_then(|p| usize::try_from(p).ok())
+        .filter(|&p| p != 0)
+        .ok_or("occupation-law database fallback unavailable")?;
+    literal(memory, base, law)
+}
 
 /// A literal law token in game memory, authenticated before any byte copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

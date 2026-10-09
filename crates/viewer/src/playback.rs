@@ -482,6 +482,7 @@ pub(crate) mod tests {
                         id: 1,
                         owner: 1,
                         controller: 1,
+                        continent: replay::rows::Recorded::Value(Some(0)),
                         ..Default::default()
                     }])),
                     TableView::Complete(TableRows::Divisions(vec![DivisionRow {
@@ -541,6 +542,8 @@ pub(crate) mod tests {
                         id: (1_u64 << 32) | 61,
                         owner: 1,
                         home_base: 1,
+                        name: replay::rows::Recorded::Value(Some(Vec::new())),
+                        leader: replay::rows::Recorded::Value(Some(0)),
                     }])),
                     TableView::Complete(TableRows::TaskForces(vec![TaskForceRow {
                         id: (2_u64 << 32) | 51,
@@ -581,6 +584,7 @@ pub(crate) mod tests {
                         base_override: (5_u64 << 32) | 65,
                         planes: hour,
                         mission_region: Some(u32::MAX),
+                        name: replay::rows::Recorded::Value(Some(Vec::new())),
                         ..Default::default()
                     }])),
                     TableView::Complete(TableRows::ArmyOrders(vec![ArmyOrderRow {

@@ -134,7 +134,7 @@ pub(crate) fn construction_frame(
 }
 
 #[test]
-fn construction_projects_start_at_their_read_and_end_as_their_buildings_show() {
+fn construction_projects_keep_runs_and_bound_departures_without_native_outcomes() {
     use crate::products::construction_log::{
         EndKind, LevelsBuilt, ProjectRun, UnknownEnd, tests::timed_scan as scan,
     };
@@ -250,25 +250,51 @@ fn construction_projects_start_at_their_read_and_end_as_their_buildings_show() {
         ("GER", Some(5), 90, 100)
     );
     assert_eq!(one.runs, [run(100, 147, 10, 1, 0)]);
-    assert_eq!(one.built, [built(144, 148)]);
-    assert_eq!(ending("1"), Some((EndKind::Finished, Some(144), 148, None)));
-    assert!(project("2").repair);
+    assert!(one.built.is_empty());
     assert_eq!(
-        project("2").built,
-        [LevelsBuilt {
-            repair: true,
-            ..built(120, 124)
-        }]
+        ending("1"),
+        Some((
+            EndKind::Unknown,
+            None,
+            148,
+            Some(UnknownEnd::CompletionNotRecorded)
+        ))
     );
-    assert_eq!(ending("2"), Some((EndKind::Finished, Some(120), 124, None)));
+    assert!(project("2").repair);
+    assert!(project("2").built.is_empty());
+    assert_eq!(
+        ending("2"),
+        Some((
+            EndKind::Unknown,
+            None,
+            124,
+            Some(UnknownEnd::CompletionNotRecorded)
+        ))
+    );
     assert!(project("3").built.is_empty());
-    assert_eq!(ending("3"), Some((EndKind::Removed, None, 124, None)));
+    assert_eq!(
+        ending("3"),
+        Some((
+            EndKind::Unknown,
+            None,
+            124,
+            Some(UnknownEnd::CompletionNotRecorded)
+        ))
+    );
     assert_eq!(
         project("4").runs,
         [run(100, 123, 15, 2, 0), run(124, 147, 15, 1, 0)]
     );
-    assert_eq!(project("4").built, [built(120, 124), built(144, 148)]);
-    assert_eq!(ending("4"), Some((EndKind::Finished, Some(144), 148, None)));
+    assert_eq!(project("4").built, [built(120, 124)]);
+    assert_eq!(
+        ending("4"),
+        Some((
+            EndKind::Unknown,
+            None,
+            148,
+            Some(UnknownEnd::CompletionNotRecorded)
+        ))
+    );
     assert_eq!(project("5").first_read, 148);
     assert_eq!(
         ending("5"),
@@ -312,7 +338,7 @@ pub(crate) fn railway_line(
 }
 
 #[test]
-fn a_railway_finishes_when_its_last_province_rises_and_is_removed_below_its_level() {
+fn railway_live_amount_falls_are_counted_but_route_rises_do_not_prove_completion() {
     use crate::products::construction_log::{
         EndKind, LevelsBuilt, ProjectKind, tests::timed_scan as scan,
     };
@@ -382,16 +408,17 @@ fn a_railway_finishes_when_its_last_province_rises_and_is_removed_below_its_leve
         count: 1,
         repair: false,
     };
-    assert_eq!(railway.built, [segment(124), segment(148)]);
+    assert_eq!(railway.built, [segment(124)]);
+    assert_eq!(railway.unaccounted, [segment(148)]);
     let end = railway.end.as_ref().unwrap();
     assert_eq!(
         (end.kind, end.hour, end.known_at),
-        (EndKind::Finished, Some(144), 148)
+        (EndKind::Unknown, None, 148)
     );
     let removed = project("11").end.as_ref().unwrap();
     assert_eq!(
         (removed.kind, removed.hour, removed.known_at),
-        (EndKind::Removed, None, 124)
+        (EndKind::Unknown, None, 124)
     );
 }
 
@@ -646,7 +673,12 @@ fn a_railway_recorded_without_a_route_ends_unknown_and_is_counted() {
     let end = log.projects[0].end.as_ref().unwrap();
     assert_eq!(
         (end.kind, end.hour, end.known_at, end.unknown),
-        (EndKind::Unknown, None, 124, Some(UnknownEnd::RouteUnclear))
+        (
+            EndKind::Unknown,
+            None,
+            124,
+            Some(UnknownEnd::CompletionNotRecorded)
+        )
     );
     let source = crate::Source::from_replay(
         crate::SourceKey {
@@ -704,10 +736,10 @@ fn levels_lost_while_the_building_was_not_recorded_are_unaccounted_not_erased() 
         count: 1,
         repair: false,
     };
-    assert_eq!(project.unaccounted, [levels(None, 124)]);
-    assert_eq!(project.built, [levels(Some(144), 148)]);
+    assert_eq!(project.unaccounted, [levels(None, 124), levels(None, 148)]);
+    assert!(project.built.is_empty());
     let end = project.end.as_ref().unwrap();
-    assert_eq!((end.kind, end.hour), (EndKind::Finished, Some(144)));
+    assert_eq!((end.kind, end.hour), (EndKind::Unknown, None));
 }
 
 #[test]
@@ -719,7 +751,7 @@ fn a_project_first_listed_at_the_same_place_makes_a_rise_nobody_s() {
     // Railway R leaves before 124 and S, first listed at 124 (created at 95),
     // starts from R's last province, which rose at 120. But C, whose building rose
     // at the daily update at 120, and railway T, whose last province rose then too,
-    // keep their finishes: the lines first listed beside them (D, U) were created
+    // still have no native completion proof: the lines first listed beside them (D, U) were created
     // only after the rises (121, 122), and a line never builds before it exists.
     let replay = construction_frames(130, |hour, read| {
         let mut lines = Vec::new();
@@ -772,14 +804,36 @@ fn a_project_first_listed_at_the_same_place_makes_a_rise_nobody_s() {
     };
     assert_eq!(
         ending("1"),
-        (EndKind::Unknown, None, Some(UnknownEnd::SharedTarget))
+        (
+            EndKind::Unknown,
+            None,
+            Some(UnknownEnd::CompletionNotRecorded)
+        )
     );
     assert_eq!(
         ending("10"),
-        (EndKind::Unknown, None, Some(UnknownEnd::RouteUnclear))
+        (
+            EndKind::Unknown,
+            None,
+            Some(UnknownEnd::CompletionNotRecorded)
+        )
     );
-    assert_eq!(ending("3"), (EndKind::Finished, Some(120), None));
-    assert_eq!(ending("12"), (EndKind::Finished, Some(120), None));
+    assert_eq!(
+        ending("3"),
+        (
+            EndKind::Unknown,
+            None,
+            Some(UnknownEnd::CompletionNotRecorded)
+        )
+    );
+    assert_eq!(
+        ending("12"),
+        (
+            EndKind::Unknown,
+            None,
+            Some(UnknownEnd::CompletionNotRecorded)
+        )
+    );
 }
 
 /// A little TGA image of side-by-side 2x2 frames, frame k all of `colours[k]`.
@@ -1319,8 +1373,8 @@ fn levels_left_when_a_project_leaves_unknowably_stay_unaccounted_on_every_path()
     };
     for (id, count, why) in [
         ("1", 2, UnknownEnd::NotRecorded),
-        ("10", 1, UnknownEnd::NotRecorded),
-        ("11", 1, UnknownEnd::RouteUnclear),
+        ("10", 1, UnknownEnd::CompletionNotRecorded),
+        ("11", 1, UnknownEnd::CompletionNotRecorded),
     ] {
         let end = project(id).end.as_ref().unwrap();
         assert_eq!(
@@ -1363,15 +1417,13 @@ fn building_types_are_named_once_a_later_dictionary_read_succeeds_and_read_once_
 }
 
 #[test]
-fn a_level_built_while_another_was_added_is_built_and_the_addition_recorded() {
+fn a_progress_fall_keeps_build_and_addition_only_possible() {
     use crate::products::construction_log::{EndKind, LevelsBuilt, tests::timed_scan as scan};
-    // Line 1: one left at 100; the player adds one and the building rises at 120,
-    // so read 124 still shows one left, but its progress fell by about a level's
-    // cost (the completion took `cost` off `produced`); it rises again at 144 and
-    // is gone at 148.
-    // Line 2: one left at 100, rises at 110 (a player's decision: not a daily
-    // update) and at the daily update at 120, gone at 124. Its one level is the
-    // daily rise, never the earlier one.
+    // Line 1: one left at 100 and 124, a progress fall and a target rise at
+    // 120. Completion plus addition is possible, but negative output plus a
+    // focus rise fits the same reads. Another rise and departure prove no count.
+    // Line 2: one left at 100, rises at 110 (not a daily update) and 120, then
+    // gone at 124. Without a native outcome, departure also proves no count.
     let replay = construction_frames(150, |hour, read| {
         let mut lines = Vec::new();
         if hour < 148 {
@@ -1411,16 +1463,17 @@ fn a_level_built_while_another_was_added_is_built_and_the_addition_recorded() {
         repair: false,
     };
     let one = project("1");
-    assert_eq!(one.built, [levels(Some(120), 124), levels(Some(144), 148)]);
-    assert_eq!(one.added, [levels(None, 124)]);
-    assert!(one.unaccounted.is_empty());
+    assert!(one.built.is_empty() && one.added.is_empty());
+    assert_eq!(one.possible, [levels(None, 124)]);
+    assert_eq!(one.unaccounted, [levels(None, 148)]);
     let end = one.end.as_ref().unwrap();
-    assert_eq!((end.kind, end.hour), (EndKind::Finished, Some(144)));
+    assert_eq!((end.kind, end.hour), (EndKind::Unknown, None));
     let two = project("2");
-    assert_eq!(two.built, [levels(Some(120), 124)]);
-    assert!(two.added.is_empty() && two.unaccounted.is_empty());
+    assert!(two.built.is_empty());
+    assert!(two.added.is_empty());
+    assert_eq!(two.unaccounted, [levels(None, 124)]);
     let end = two.end.as_ref().unwrap();
-    assert_eq!((end.kind, end.hour), (EndKind::Finished, Some(120)));
+    assert_eq!((end.kind, end.hour), (EndKind::Unknown, None));
 }
 
 #[test]
@@ -1469,13 +1522,11 @@ fn a_line_that_repairs_then_builds_is_classified_per_stretch() {
         count: 1,
         repair,
     };
-    assert_eq!(
-        project.built,
-        [levels(120, 124, true), levels(144, 148, false)]
-    );
-    assert!(project.added.is_empty() && project.unaccounted.is_empty());
+    assert_eq!(project.built, [levels(120, 124, true)]);
+    assert!(project.added.is_empty());
+    assert_eq!(project.unaccounted[0].count, 1);
     let end = project.end.as_ref().unwrap();
-    assert_eq!((end.kind, end.hour), (EndKind::Finished, Some(144)));
+    assert_eq!((end.kind, end.hour), (EndKind::Unknown, None));
 }
 
 #[test]
@@ -1484,10 +1535,9 @@ fn a_rise_the_line_does_not_show_it_made_is_not_claimed() {
     let cost = 1_080_000_000;
     // Line 1: one left at every read and unchanged progress; a focus raises the
     // building at 120. It may have built and had a level added, or built nothing.
-    // Line 2: one left at 100 and 124, its progress falling by about a level's
-    // cost (a completion that masks a level added); the building rises at 110 (a
-    // player's decision) and at the daily update at 120. The level is the daily
-    // rise's.
+    // Line 2: one left at 100 and 124 with falling progress. A decision raises
+    // the building at 110 and a daily rise follows at 120. Neither progress nor
+    // target rises prove a completion that was hidden by a level added.
     // Line 3: two left at 100, one at 124; a decision raises the building at 110
     // and construction at 120. Its completion is dated 120, not 110.
     // Line 4: one left at 100 and 124, its progress falling, but the building was
@@ -1564,195 +1614,14 @@ fn a_rise_the_line_does_not_show_it_made_is_not_claimed() {
     assert_eq!(one.possible, [levels(None, 124, false)]);
     assert!(one.end.is_none());
     let two = project("2");
-    assert_eq!(two.built, [levels(Some(120), 124, false)]);
-    assert_eq!(two.added, [levels(None, 124, false)]);
-    assert!(two.unaccounted.is_empty());
+    assert!(two.built.is_empty() && two.added.is_empty() && two.unaccounted.is_empty());
+    assert_eq!(two.possible, [levels(None, 124, false)]);
     let three = project("3");
     assert_eq!(three.built, [levels(Some(120), 124, false)]);
     assert!(three.added.is_empty() && three.unaccounted.is_empty());
     let four = project("4");
     assert!(four.built.is_empty() && four.unaccounted.is_empty());
     assert_eq!(four.added, [levels(None, 124, true)]);
-}
-
-#[test]
-fn a_completion_is_dated_or_an_ending_told_only_when_the_rises_allow() {
-    use crate::products::construction_log::{
-        EndKind, LevelsBuilt, UnknownEnd, tests::timed_scan as scan,
-    };
-    let cost: i64 = 1_080_000_000;
-    // The read at 124 fails, so every line's stretch runs from 100 to 148, over
-    // the daily updates at 120 and 144.
-    // 1: one left; a decision raises the building at 110 and the player cancels
-    //    the line at 115. Leaving proves nothing built, and no daily rise could be
-    //    its: removed, nothing built.
-    // 2 and 3: two left, one at 148; both daily updates have a rise. Which was
-    //    theirs is unknown regardless of sampled speed: dated by the read.
-    // 4: one left, gone by 148; rises at both daily updates. Whether either was
-    //    its is not known: its ending is unknown and its level unaccounted.
-    // 5: one left, gone by 148; one rise of two levels at 120: unknown.
-    // 6: one left, gone by 148; one daily rise at 144: finished, however slow
-    //    its sampled speed was.
-    // 7 and 8: a two-level rise at 120; two left finishes, three left is removed.
-    let replay = construction_frames(150, |hour, read| {
-        let line = |id, state, amount, speed| replay::rows::BuildingConstructionRow {
-            speed,
-            ..building_line(id, state, amount, 0, 15)
-        };
-        let mut lines = Vec::new();
-        if hour < 115 {
-            lines.push(line(1, 31, 1, cost));
-        }
-        let fallen = if hour < 124 { 2 } else { 1 };
-        lines.push(line(2, 32, fallen, cost));
-        lines.push(line(3, 33, fallen, cost * 6 / 10));
-        if hour < 145 {
-            lines.push(line(4, 34, 1, cost));
-            lines.push(line(5, 35, 1, cost));
-            lines.push(line(6, 36, 1, cost * 3 / 10));
-            lines.push(line(7, 37, 2, cost));
-            lines.push(line(8, 38, 3, cost));
-        }
-        let rose = |rises: &[(i32, i16)]| {
-            let risen: i16 = rises
-                .iter()
-                .filter(|(at, _)| hour >= *at)
-                .map(|(_, by)| by)
-                .sum();
-            (1 + risen, 1 + risen)
-        };
-        let states = Some(vec![
-            building_at(31, CIVILIAN, rose(&[(110, 1)])),
-            building_at(32, CIVILIAN, rose(&[(120, 1), (144, 1)])),
-            building_at(33, CIVILIAN, rose(&[(120, 1), (144, 1)])),
-            building_at(34, CIVILIAN, rose(&[(120, 1), (144, 1)])),
-            building_at(35, CIVILIAN, rose(&[(120, 2)])),
-            building_at(36, CIVILIAN, rose(&[(144, 1)])),
-            building_at(37, CIVILIAN, rose(&[(120, 2)])),
-            building_at(38, CIVILIAN, rose(&[(120, 2)])),
-        ]);
-        let mut frame = construction_frame(hour, read, lines, Vec::new(), states, Vec::new());
-        if hour == 124 {
-            *frame.tables[TableId::BuildingConstruction.index()] = TableView::Unavailable {
-                reason: "fixture".into(),
-            };
-        }
-        frame
-    });
-    let log = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-    assert_eq!(log.reads, [100, 148]);
-    let project = |id: &str| {
-        log.projects
-            .iter()
-            .find(|project| project.id == id)
-            .unwrap()
-    };
-    let ending = |id: &str| {
-        let end = project(id).end.as_ref().unwrap();
-        (end.kind, end.hour, end.unknown)
-    };
-    let levels = |hour| LevelsBuilt {
-        hour,
-        known_at: 148,
-        count: 1,
-        repair: false,
-    };
-    assert!(project("1").built.is_empty() && project("1").unaccounted.is_empty());
-    assert_eq!(ending("1"), (EndKind::Removed, None, None));
-    assert_eq!(project("2").built, [levels(None)]);
-    assert!(project("2").added.is_empty() && project("2").unaccounted.is_empty());
-    assert_eq!(project("3").built, [levels(None)]);
-    assert!(project("3").unaccounted.is_empty());
-    assert!(project("4").built.is_empty());
-    assert_eq!(project("4").unaccounted, [levels(None)]);
-    assert_eq!(
-        ending("4"),
-        (EndKind::Unknown, None, Some(UnknownEnd::RisesUnclear))
-    );
-    assert!(project("5").built.is_empty());
-    assert_eq!(project("5").unaccounted, [levels(None)]);
-    assert_eq!(
-        ending("5"),
-        (EndKind::Unknown, None, Some(UnknownEnd::RisesUnclear))
-    );
-    assert_eq!(project("6").built, [levels(Some(144))]);
-    assert!(project("6").unaccounted.is_empty());
-    assert_eq!(ending("6"), (EndKind::Finished, Some(144), None));
-    let two = LevelsBuilt {
-        count: 2,
-        ..levels(Some(120))
-    };
-    assert_eq!(project("7").built.as_slice(), std::slice::from_ref(&two));
-    assert_eq!(ending("7"), (EndKind::Finished, Some(120), None));
-    assert_eq!(project("8").built, [two]);
-    assert!(project("8").unaccounted.is_empty());
-    assert_eq!(ending("8"), (EndKind::Removed, None, None));
-}
-
-#[test]
-fn a_repair_is_finished_only_when_its_building_is_fully_healthy_again() {
-    use crate::products::construction_log::{EndKind, LevelsBuilt, tests::timed_scan as scan};
-    // Two repairs of a level-3 building, healthy level 1 and two levels to repair
-    // at 100. Each is repaired to 2 at 120; the read at 124 fails; bombing lowers
-    // the healthy level to 1 at 125. Line 1 repairs back to 2 at 144 and leaves at
-    // 145: its two rises cover the two levels it had, but the building never was
-    // fully healthy, so it was removed. Line 2 repairs to 3 at 144: finished.
-    let replay = construction_frames(150, |hour, read| {
-        let lines = if hour < 145 {
-            vec![building_line(1, 5, 0, 2, 0), building_line(2, 6, 0, 2, 0)]
-        } else {
-            Vec::new()
-        };
-        let health = |last: i16| match hour {
-            ..120 => (3, 1),
-            120..125 => (3, 2),
-            125..144 => (3, 1),
-            _ => (3, last),
-        };
-        let states = Some(vec![
-            building_at(5, INFRASTRUCTURE, health(2)),
-            building_at(6, INFRASTRUCTURE, health(3)),
-        ]);
-        let mut frame = construction_frame(hour, read, lines, Vec::new(), states, Vec::new());
-        if hour == 124 {
-            *frame.tables[TableId::BuildingConstruction.index()] = TableView::Unavailable {
-                reason: "fixture".into(),
-            };
-        }
-        frame
-    });
-    let log = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-    assert_eq!(log.reads, [100, 148]);
-    let project = |id: &str| {
-        log.projects
-            .iter()
-            .find(|project| project.id == id)
-            .unwrap()
-    };
-    let repaired = |hour, count| LevelsBuilt {
-        hour,
-        known_at: 148,
-        count,
-        repair: true,
-    };
-    let one = project("1");
-    assert_eq!(one.built, [repaired(Some(120), 1), repaired(Some(144), 1)]);
-    // The damage at 125 gave it a third level to repair: 2 of 3, then removed.
-    assert_eq!(one.added, [repaired(None, 1)]);
-    assert!(one.unaccounted.is_empty());
-    let end = one.end.as_ref().unwrap();
-    assert_eq!(
-        (end.kind, end.hour, end.known_at),
-        (EndKind::Removed, None, 148)
-    );
-    let two = project("2");
-    assert_eq!(two.built, [repaired(Some(120), 1), repaired(Some(144), 2)]);
-    assert_eq!(two.added, [repaired(None, 1)]);
-    let end = two.end.as_ref().unwrap();
-    assert_eq!(
-        (end.kind, end.hour, end.known_at),
-        (EndKind::Finished, Some(144), 148)
-    );
 }
 
 /// Construction frames for hours 100..=`last`, read at `reads`, whose building
@@ -1779,7 +1648,7 @@ pub(crate) fn construction_frames_failing(
 
 #[test]
 fn a_line_s_opening_work_is_zero_only_when_its_opening_stretch_shows_no_daily_rise() {
-    use crate::products::construction_log::{EndKind, LevelsBuilt, tests::timed_scan as scan};
+    use crate::products::construction_log::{EndKind, tests::timed_scan as scan};
     let replay = construction_frames(150, |hour, read| {
         let mut lines = vec![building_line(3, 7, 1, 0, 15)];
         if hour >= 124 {
@@ -1827,18 +1696,10 @@ fn a_line_s_opening_work_is_zero_only_when_its_opening_stretch_shows_no_daily_ri
     let first = project("1");
     assert!(first.earlier_unknown);
     assert_eq!((first.created_hour, first.first_read), (110, 124));
-    // Its first completion was before it was listed; only the later one is known.
-    assert_eq!(
-        first.built,
-        [LevelsBuilt {
-            hour: Some(144),
-            known_at: 148,
-            count: 1,
-            repair: false,
-        }]
-    );
-    assert_eq!(first.end.as_ref().unwrap().kind, EndKind::Finished);
-    assert!(first.unaccounted.is_empty());
+    // Neither a pre-read rise nor a final between-read rise proves its own work.
+    assert!(first.built.is_empty());
+    assert_eq!(first.end.as_ref().unwrap().kind, EndKind::Unknown);
+    assert_eq!(first.unaccounted[0].count, 1);
     for id in ["3", "4", "5"] {
         assert!(project(id).earlier_unknown, "project {id}");
     }
@@ -1956,7 +1817,7 @@ fn a_railway_s_opening_work_is_checked_over_its_route_and_its_own_reads() {
     assert!(project("1").earlier_unknown);
     assert!(!project("2").earlier_unknown);
     assert!(project("3").earlier_unknown);
-    assert_eq!(project("1").end.as_ref().unwrap().kind, EndKind::Finished);
+    assert_eq!(project("1").end.as_ref().unwrap().kind, EndKind::Unknown);
 
     // A successful building read must not clear a failed railway read's stretch.
     let replay = construction_frames(150, |hour, read| {
@@ -1984,108 +1845,6 @@ fn a_railway_s_opening_work_is_checked_over_its_route_and_its_own_reads() {
     let log = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
     assert_eq!(log.railway_reads, [100, 148]);
     assert!(log.projects[0].earlier_unknown);
-}
-
-#[test]
-fn completions_are_counted_across_intervening_repairs() {
-    use crate::products::construction_log::{EndKind, tests::timed_scan as scan};
-    let replay = construction_frames_failing(
-        223,
-        &[100, 124, 148, 172, 196, 220],
-        &[124, 148, 172, 196],
-        |hour, read| {
-            let lines = if hour < 217 {
-                vec![replay::rows::BuildingConstructionRow {
-                    cost: 100,
-                    produced: 0,
-                    speed: 100,
-                    ..building_line(1, 5, 3, 0, 15)
-                }]
-            } else {
-                Vec::new()
-            };
-            let levels = match hour {
-                ..120 => (1, 1),
-                120..130 => (2, 2),
-                130..144 => (2, 1),
-                144..168 => (2, 2),
-                168..180 => (3, 3),
-                180..192 => (3, 2),
-                192..216 => (3, 3),
-                _ => (4, 4),
-            };
-            construction_frame(
-                hour,
-                read,
-                lines,
-                Vec::new(),
-                Some(vec![building_at(5, CIVILIAN, levels)]),
-                Vec::new(),
-            )
-        },
-    );
-    let log = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-    let project = &log.projects[0];
-    assert_eq!(
-        project
-            .built
-            .iter()
-            .filter(|levels| !levels.repair)
-            .map(|levels| levels.hour)
-            .collect::<Vec<_>>(),
-        [Some(120), Some(168), Some(216)]
-    );
-    let end = project.end.as_ref().unwrap();
-    assert_eq!((end.kind, end.hour), (EndKind::Finished, Some(216)));
-    assert!(project.unaccounted.is_empty());
-}
-
-#[test]
-fn completions_before_and_after_a_repair_are_both_claimed() {
-    use crate::products::construction_log::{EndKind, LevelsBuilt, tests::timed_scan as scan};
-    let replay =
-        construction_frames_failing(175, &[100, 124, 148, 172], &[124, 148], |hour, read| {
-            let lines = if hour < 169 {
-                vec![replay::rows::BuildingConstructionRow {
-                    cost: 100,
-                    produced: 0,
-                    speed: 100,
-                    ..building_line(1, 5, 2, 0, 15)
-                }]
-            } else {
-                Vec::new()
-            };
-            let levels = match hour {
-                ..120 => (1, 1),
-                120..130 => (2, 2),
-                130..144 => (2, 1),
-                144..168 => (2, 2),
-                _ => (3, 3),
-            };
-            construction_frame(
-                hour,
-                read,
-                lines,
-                Vec::new(),
-                Some(vec![building_at(5, CIVILIAN, levels)]),
-                Vec::new(),
-            )
-        });
-    let log = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-    let project = &log.projects[0];
-    let levels = |hour, repair| LevelsBuilt {
-        hour: Some(hour),
-        known_at: 172,
-        count: 1,
-        repair,
-    };
-    assert_eq!(
-        project.built,
-        [levels(144, true), levels(120, false), levels(168, false)]
-    );
-    let end = project.end.as_ref().unwrap();
-    assert_eq!((end.kind, end.hour), (EndKind::Finished, Some(168)));
-    assert!(project.unaccounted.is_empty());
 }
 
 #[test]
@@ -2117,57 +1876,12 @@ fn a_replacement_that_repaired_before_its_first_read_makes_the_repair_nobody_s()
     let end = a.end.as_ref().unwrap();
     assert_eq!(
         (end.kind, end.hour, end.unknown),
-        (EndKind::Unknown, None, Some(UnknownEnd::SharedTarget))
+        (
+            EndKind::Unknown,
+            None,
+            Some(UnknownEnd::CompletionNotRecorded)
+        )
     );
-}
-
-#[test]
-fn a_railway_finishes_at_a_daily_rise_regardless_of_sampled_speed() {
-    use crate::products::construction_log::{EndKind, UnknownEnd, tests::timed_scan as scan};
-    let rail = engine::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
-    // Each railway has its last segment left at 100 and is gone by 124; its last
-    // province rises to the target level:
-    // 20: at 110, a scripted upgrade (not a daily update), and it was cancelled
-    //     at 115: whether it finished is not known.
-    // 21 and 22: at the daily update at 120: finished then, however slow the
-    //     sampled speed was.
-    let replay = construction_frames(130, |hour, read| {
-        let mut rails = Vec::new();
-        if hour < 115 {
-            rails.push(railway_line(20, &[5001, 5002], 1));
-        }
-        if hour < 124 {
-            rails.push(replay::rows::RailwayConstructionRow {
-                speed: 5_600_000,
-                ..railway_line(21, &[5003, 5004], 1)
-            });
-            rails.push(railway_line(22, &[5005, 5006], 1));
-        }
-        let rose = |at: i32| if hour < at { (1, 1) } else { (2, 2) };
-        let provinces = vec![
-            building_at(5001, rail, (2, 2)),
-            building_at(5002, rail, rose(110)),
-            building_at(5003, rail, (2, 2)),
-            building_at(5004, rail, rose(120)),
-            building_at(5005, rail, (2, 2)),
-            building_at(5006, rail, rose(120)),
-        ];
-        construction_frame(hour, read, Vec::new(), rails, Some(Vec::new()), provinces)
-    });
-    let log = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-    let ending = |id: &str| {
-        let project = log
-            .projects
-            .iter()
-            .find(|project| project.id == id)
-            .unwrap();
-        let end = project.end.as_ref().unwrap();
-        (end.kind, end.hour, end.unknown, project.built.len())
-    };
-    let unclear = (EndKind::Unknown, None, Some(UnknownEnd::RouteUnclear), 0);
-    assert_eq!(ending("20"), unclear);
-    assert_eq!(ending("21"), (EndKind::Finished, Some(120), None, 1));
-    assert_eq!(ending("22"), (EndKind::Finished, Some(120), None, 1));
 }
 
 #[test]
@@ -2278,56 +1992,6 @@ fn a_repair_started_and_finished_between_reads_is_counted() {
     assert_eq!(project.built, [repair(Some(120))]);
     assert_eq!(project.added, [repair(None)]);
     assert!(project.unaccounted.is_empty() && project.end.is_none());
-}
-
-#[test]
-fn repairs_count_until_the_line_s_repair_work_is_done() {
-    use crate::products::construction_log::{EndKind, LevelsBuilt, tests::timed_scan as scan};
-    // At 100 one level to repair and one new level. Repaired at 120, damaged at
-    // 125, repaired at 144, the new level built at 168; the reads at 124 and 148
-    // fail and the read at 172 finds it gone. It repaired two levels (the second
-    // after the damage added one) and built one: three, its repair done at 144.
-    let replay =
-        construction_frames_failing(175, &[100, 124, 148, 172], &[124, 148], |hour, read| {
-            let lines = if hour < 169 {
-                vec![replay::rows::BuildingConstructionRow {
-                    building_type: CIVILIAN,
-                    ..building_line(1, 5, 1, 1, 15)
-                }]
-            } else {
-                Vec::new()
-            };
-            let levels = match hour {
-                ..120 => (3, 2),
-                120..125 => (3, 3),
-                125..144 => (3, 2),
-                144..168 => (3, 3),
-                _ => (4, 4),
-            };
-            let states = Some(vec![building_at(5, CIVILIAN, levels)]);
-            construction_frame(hour, read, lines, Vec::new(), states, Vec::new())
-        });
-    let log = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
-    assert_eq!(log.reads, [100, 172]);
-    let project = &log.projects[0];
-    let levels = |hour, repair| LevelsBuilt {
-        hour,
-        known_at: 172,
-        count: 1,
-        repair,
-    };
-    assert_eq!(
-        project.built,
-        [
-            levels(Some(120), true),
-            levels(Some(144), true),
-            levels(Some(168), false)
-        ]
-    );
-    assert_eq!(project.added, [levels(None, true)]);
-    assert!(project.unaccounted.is_empty());
-    let end = project.end.as_ref().unwrap();
-    assert_eq!((end.kind, end.hour), (EndKind::Finished, Some(168)));
 }
 
 #[test]

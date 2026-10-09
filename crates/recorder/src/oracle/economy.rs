@@ -10,7 +10,7 @@ use replay::{
 
 use super::{Report, TokenNames, complete, invalid, required_country_tag};
 
-fn equal<T: std::fmt::Debug + PartialEq>(
+pub(super) fn equal<T: std::fmt::Debug + PartialEq>(
     report: &mut Report,
     label: impl AsRef<str>,
     actual: T,
@@ -21,7 +21,7 @@ fn equal<T: std::fmt::Debug + PartialEq>(
     }
 }
 
-fn compare_text(report: &mut Report, label: &str, actual: &[u8], saved: &[u8]) {
+pub(super) fn compare_text(report: &mut Report, label: &str, actual: &[u8], saved: &[u8]) {
     // Both CAF770's resource name and 1200E10's foreign source use
     // 1424ADF40 -> 1424AF5A0: an MSVC c_str, quoted even when empty,
     // scanned only through the first NUL in text mode.
@@ -43,13 +43,30 @@ pub(super) fn compare(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut all_complete = report.attempt("economy CountryFuel", |report| {
-        compare_fuel(frame, &saved.economy, links, report)
+        compare_fuel(frame, &saved.economy, links, report)?;
+        super::fuel_demand::compare(frame, saved, links, report)
     });
     all_complete &= report.attempt("economy CountryFuelConsumers", |report| {
         compare_fuel_consumers(frame, &saved.economy, links, report)
     });
     all_complete &= report.attempt("economy CountryExperience", |report| {
         compare_experience(frame, &saved.economy, links, report)
+    });
+    all_complete &= report.attempt("economy CountryExperienceGains", |report| {
+        let rows = complete::<tables::CountryExperienceGains>(frame)?;
+        let mut countries = std::collections::BTreeSet::new();
+        for row in rows {
+            let country = links.get(&row.country).ok_or_else(|| invalid("experience gain country is unresolved"))?;
+            if !countries.insert(country.canonical_slot) {
+                return Err(invalid("experience gain country has more than one native instance"));
+            }
+        }
+        let expected = complete::<tables::Countries>(frame)?.iter().map(|row| row.canonical_slot)
+            .collect::<std::collections::BTreeSet<_>>();
+        equal(report, "CountryExperienceGains country census", countries, expected);
+        report.compared("CountryExperienceGains", 0);
+        report.limitation("accepted experience awards and native country-instance words are not serialized; this checks recording census/ownership only, not gain agreement. Daily counters may clamp or reset and bank deltas include spending/caps, so neither is substituted as a gain oracle", format!("CountryExperienceGains: {} rows, zero save comparisons", rows.len()));
+        Ok(())
     });
     all_complete &= report.attempt("economy PurchaseContracts", |report| {
         compare_purchases(frame, &saved.economy, links, report)
@@ -908,6 +925,7 @@ fn compare_fuel(
                 expected,
             );
         }
+        compare_fuel_award_witness(frame.hour, actual, expected, &label, report)?;
     }
     for tag in actual.keys() {
         report.difference(
@@ -929,6 +947,82 @@ fn compare_fuel(
         "the pending fuel history entry (saved index=-1) of the hour in progress is not recorded",
         "CountryFuel",
     );
+    Ok(())
+}
+
+fn compare_fuel_award_witness(
+    hour: i32,
+    row: &replay::rows::CountryFuelRow,
+    saved: &economy::Fuel,
+    label: &str,
+    report: &mut Report,
+) -> io::Result<()> {
+    let replay::rows::Recorded::Value(window) = &row.awards else {
+        report.limitation(
+            "applied fuel source and recipient history not recorded",
+            "CountryFuel",
+        );
+        return Ok(());
+    };
+    let Some(last) = window.hours.last().filter(|last| last.hour == hour) else {
+        report.limitation("applied fuel witness absent at this supplying read; historical or carried witnesses cannot be compared to a current save","CountryFuel");
+        return Ok(());
+    };
+    if !matches!(row.country_instance,replay::rows::Recorded::Value(Some(instance)) if instance == window.country_instance)
+    {
+        report.limitation(
+            "applied fuel witness country identity does not match the supplying read",
+            "CountryFuel",
+        );
+        return Ok(());
+    }
+    // 1410E33D0 decrements the loaded countdown. Only a transition to zero
+    // writes/clears pending; a non-default loaded countdown is not one hour.
+    let index = if last.remaining_hours == 1 {
+        last.history_index
+    } else {
+        -1
+    };
+    let expected = saved
+        .history
+        .iter()
+        .find(|entry| entry.index == index)
+        .ok_or_else(|| invalid("saved fuel award witness history slot absent"))?;
+    for (field, actual, expected) in [
+        ("gain", last.pending_raw[0], expected.gain.raw),
+        ("consumed", last.pending_raw[1], expected.consumed.raw()?),
+        ("other", last.pending_raw[2], expected.other.raw()?),
+    ] {
+        equal(
+            report,
+            format!("{label}.applied_witness.{field}"),
+            actual,
+            expected,
+        );
+    }
+    let (index, remaining) = if last.remaining_hours == 1 {
+        (
+            last.history_index.wrapping_add(1) % economy::FUEL_HISTORY_RING as i32,
+            1,
+        )
+    } else {
+        (last.history_index, last.remaining_hours.wrapping_sub(1))
+    };
+    equal(
+        report,
+        format!("{label}.applied_witness.next_index"),
+        index,
+        saved.history_index,
+    );
+    equal(
+        report,
+        format!("{label}.applied_witness.remaining_hours"),
+        remaining,
+        saved.remaining_hours,
+    );
+    report.limitation("past applied base/state/oil/lend-lease amounts and individual receipts are not independently serialized; this save compares their native completed history witness, not later current rates or bank-net changes","CountryFuel");
+    report.limitation("fuel observation continuity start is recorder-only reset/gap evidence, not a saved monotonic native country identity","CountryFuel");
+    report.limitation("division cached names are unsaved, and historical task-force names and base receipts cannot be compared to later renamed or removed recipients; matched native write/getter verification remains required","CountryFuel");
     Ok(())
 }
 
@@ -1102,6 +1196,9 @@ fn compare_logistics(
                 row.balance_raw,
                 *balance,
             );
+            if matches!(row.available_raw, replay::rows::Recorded::Value(None)) {
+                report.limitation("available_raw is unsaved and no matching native write operand is retained at this read", format!("{label}.available_raw"));
+            }
             count += 1;
         }
     }
@@ -1113,6 +1210,10 @@ fn compare_logistics(
         );
     }
     report.compared("LogisticsEquipment", count);
+    report.limitation(
+        "historical available_raw is a temporary operand at SetValue CALLs141360194/141360992, not a loop-history field; serializer1413609D0 writes only19 histories and never this operand. Current saved convoy/supply state cannot replace it. Validate it independently at matched native writes; all saved stock15/balance16 differences remain fatal",
+        "LogisticsEquipment.available_raw",
+    );
     report.limitation(
         "the save does not name equipment archetypes: rows compare by record index, and the recorded archetype token has no save counterpart",
         "LogisticsEquipment",
@@ -1919,6 +2020,81 @@ mod tests {
     }
 
     #[test]
+    fn applied_fuel_witness_detects_saved_differences_and_respects_loaded_pending_and_dates() {
+        use replay::rows::{FuelAwardHour, FuelAwardWindow, Recorded};
+        let body = fuel_status(
+            "fuel=0 max_fuel=0 fuel_gain=0 fuel_cost=0 fuel_gain_per_oil=0 fuel_gain_from_states=0 fuel_gain_from_lend_lease=0 fuel_consumption_from_lend_lease=0",
+        );
+        let pack = economy::parse(
+            &parser::parse(format!("countries={{GER={{fuel_status={{{body}}}}}}}").as_bytes())
+                .unwrap()
+                .items,
+        )
+        .unwrap();
+        let mut saved = pack.countries[b"GER".as_slice()]
+            .fuel
+            .as_ref()
+            .unwrap()
+            .clone();
+        let witness = |index: i32, remaining_hours| {
+            let entry = saved
+                .history
+                .iter()
+                .find(|entry| entry.index == index)
+                .unwrap();
+            FuelAwardHour {
+                hour: 1000,
+                history_index: if index == -1 { 13 } else { index },
+                remaining_hours,
+                pending_raw: [
+                    entry.gain.raw,
+                    entry.consumed.raw().unwrap(),
+                    entry.other.raw().unwrap(),
+                ],
+                ..Default::default()
+            }
+        };
+        let mut row = CountryFuelRow {
+            country_instance: Recorded::Value(Some(7)),
+            awards: Recorded::Value(FuelAwardWindow {
+                country_instance: 7,
+                hours: vec![witness(12, 1)],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        compare_fuel_award_witness(1000, &row, &saved, "GER", &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        let Recorded::Value(window) = &mut row.awards else {
+            panic!()
+        };
+        window.hours[0].pending_raw[0] += 1;
+        let mut report = Report::default();
+        compare_fuel_award_witness(1000, &row, &saved, "GER", &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        assert!(report.differences[0].contains("applied_witness.gain"));
+        let Recorded::Value(window) = &mut row.awards else {
+            panic!()
+        };
+        window.hours[0] = witness(-1, 7);
+        saved.remaining_hours = 6;
+        let mut report = Report::default();
+        compare_fuel_award_witness(1000, &row, &saved, "GER", &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        saved.remaining_hours = 99;
+        let mut report = Report::default();
+        compare_fuel_award_witness(1001, &row, &saved, "GER", &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("carried witnesses"))
+        );
+    }
+
+    #[test]
     fn fuel_oracle_detects_one_native_unit_and_requires_complete_table() {
         let body = fuel_status(
             "fuel=1.00003 max_fuel=-1.00000 fuel_gain=-0.00001 fuel_cost=0 fuel_gain_per_oil=3.6 fuel_gain_from_states=64.4 fuel_gain_from_lend_lease=0.00003 fuel_consumption_from_lend_lease=-0.00003",
@@ -2312,6 +2488,7 @@ mod tests {
             token: 0x5000 + archetype,
             balance_raw,
             stock_raw,
+            available_raw: replay::rows::Recorded::NotRecorded,
         };
         let matching = vec![
             row(11, 0, -11_200_000, 14_507_500_000),
@@ -2343,6 +2520,20 @@ mod tests {
                 .limitations
                 .keys()
                 .any(|key| key.contains("does not name equipment archetypes"))
+        );
+        let mut observed = matching.clone();
+        for row in &mut observed {
+            row.available_raw = replay::rows::Recorded::Value(Some(0));
+        }
+        assert!(run(observed.clone()).1.differences.is_empty());
+        observed[1].available_raw = replay::rows::Recorded::Value(None);
+        let report = run(observed).1;
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("no matching native write"))
         );
         // One native unit of either series is a difference.
         let mut changed = matching.clone();

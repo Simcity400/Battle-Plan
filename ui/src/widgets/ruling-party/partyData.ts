@@ -3,7 +3,7 @@ import { runAt } from '../../charts/series.ts';
 import { buildStack as buildStackOf, stackedSegments } from '../../charts/stack.ts';
 import type { StackModel } from '../../charts/stack';
 import { fixedNumber, formatFixed } from '../../charts/valueAxis.ts';
-import type { FixedRun, HourSpan, LeaderRun, PartyHistoryReply, PartySeries } from '../../generated/dashboard';
+import type { FixedRun, HourSpan, LeaderRun, LedgerGovernment, PartyHistoryReply, PartySeries } from '../../generated/dashboard';
 
 /** Party popularity as stacked bands in each ideology's content colour, with the
  * ruling party's changes and elections as badges. */
@@ -73,14 +73,17 @@ export { stackedSegments };
 /** Ruling-party changes and elections as badges, and changes of leader when
  * `leaders` is set. A change next to a gap is a gap in the recording, not a change
  * of government or of leader; a leader who is not identified is no change either. */
-export function partyBadges(reply: PartyHistoryReply, name: (token: string) => string, leaders = false): EventBadge[] {
+export function partyBadges(reply: PartyHistoryReply, name: (token: string) => string, leaders = false, governments: readonly LedgerGovernment[] = []): EventBadge[] {
   const hidden = (hour: number, unobserved: readonly HourSpan[]) => unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
   const badges: EventBadge[] = [];
   reply.ruling.forEach((run, index) => {
     const previous = reply.ruling[index - 1];
     // A run after a gap or a new country identity is not a change of government.
     if (previous && !run.startsSegment && previous.lastHour + 1 === run.firstHour && previous.token !== run.token && !hidden(run.firstHour - 1, reply.unobserved)) {
-      badges.push({ hour: run.firstHour, glyph: '⇆', label: `${name(run.token)} took power from ${name(previous.token)}` });
+      // Only exact captured endpoints and their supplying read supersede census.
+      const captured = governments.some(change => change.readHour === run.firstHour
+        && change.beforeToken === previous.token && change.afterToken === run.token);
+      if (!captured) badges.push({ hour: run.firstHour, glyph: '⇆', label: `${name(run.token)} took power from ${name(previous.token)}` });
     }
   });
   for (const hour of reply.elections) badges.push({ hour, glyph: '✓', label: 'Election held' });

@@ -134,6 +134,8 @@ struct Content {
     intelligence:
         OnceLock<Result<Arc<products::intelligence_content::IntelligenceContent>, String>>,
     agency: OnceLock<Result<Arc<products::intelligence_content::IntelligenceContent>, String>>,
+    operatives: OnceLock<Result<Vec<Finding>, String>>,
+    ship_history: OnceLock<Result<(), String>>,
 }
 
 impl Content {
@@ -152,6 +154,8 @@ impl Content {
             ideologies: OnceLock::new(),
             intelligence: OnceLock::new(),
             agency: OnceLock::new(),
+            operatives: OnceLock::new(),
+            ship_history: OnceLock::new(),
         }
     }
 
@@ -202,6 +206,26 @@ impl Content {
             })
             .as_ref()
             .map_err(Clone::clone)
+    }
+
+    fn operatives(&self) -> Result<&Vec<Finding>, String> {
+        self.operatives
+            .get_or_init(|| {
+                products::operative_content::OperativeContent::load(Arc::clone(self.politics()?))
+                    .map(|content| content.check_content())
+                    .map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    fn ship_history(&self) -> Result<(), String> {
+        self.ship_history
+            .get_or_init(|| {
+                products::ships_sunk::check_content(self.catalogue()?)
+                    .map_err(|error| error.to_string())
+            })
+            .clone()
     }
 
     fn tags(
@@ -401,7 +425,7 @@ fn take(catalogue: &Catalogue, subject: &str, findings: &mut Vec<Finding>) {
 fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<String, String> {
     use products::*;
     match key {
-        national_focus::NationalFocus::KEY => {
+        national_focus::NationalFocus::KEY | focus_artwork::FocusArtwork::KEY => {
             artwork_check(content, artwork::Kind::Focus, findings)
         }
         research::Research::KEY => {
@@ -506,6 +530,11 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.extend(prepared.as_ref().map_err(Clone::clone)?.0.iter().cloned());
             Ok("Every authored building and state named, and queue building/repair icons drawn through the shared construction preparation; recorded queue lines, state identities, custom state names and building/progress reads determine active projects and spending.".into())
         }
+        military_air_ledger::MilitaryAirLedger::KEY => {
+            findings.extend(military_air_ledger::check_content(content.catalogue()?)
+                .map_err(|why| why.to_string())?);
+            Ok("Air regions and bombing building names checked through the recorded content stack; native event context determines recorded amounts.".into())
+        }
         equipment_losses::EquipmentLosses::KEY => {
             findings.extend(
                 equipment_losses::check_content(content.catalogue()?, content.equipment()?)
@@ -532,11 +561,21 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             findings.extend(content.intelligence()?.check_operations());
             Ok("Every authored operation name and icon checked through shared intelligence preparation; active episodes, assignments, type tokens, country identities and dates require recorded Operations, OperationAssignments, LexicalTokens, Countries, CountryLinks and Campaign rows.".into())
         }
+        operative_placements::OperativePlacements::KEY => {
+            Ok("Spy counts and saved operative names require recorded OperativeMemberships, SimulationFeatures, Countries and CountryLinks, with Campaign and the supplying membership read dating each observation. Names localise through the recorded content stack; no per-pair network strength is inferred.".into())
+        }
+        operatives_roster::OperativesRoster::KEY => {
+            findings.extend(content.operatives()?.iter().cloned());
+            Ok("Native operative skill definitions, operation assignment names/icons, mission text icons and cooldown/capture-duration content checked through shared operative preparation. Names, experience, assignments, full-reference character portraits, captured state/captor/date and country names require recorded OperativeMemberships, CharacterOperatives, CharacterPortraits, Operations, LexicalTokens, SimulationFeatures, country naming tables and actual supplying reads.".into())
+        }
         agency_comparison::AgencyComparison::KEY => {
             findings.extend(content.agency()?.check_agency());
-            Ok("Uncreated agency name and defense-label template checked through shared intelligence preparation; created names, defense values, agency/operative rosters, country identities and dates require recorded IntelligenceAgencies, OperativeMemberships, Countries, CountryLinks and Campaign rows. Upgrade inventory is not captured by the live product.".into())
+            Ok("Uncreated agency name and defense-label template checked through shared intelligence preparation; created names, defense values, signed acquired upgrade inventory, agency/operative rosters, country identities and dates require recorded IntelligenceAgencies, AgencyUpgradeLevels, LexicalTokens, OperativeMemberships, Countries, CountryLinks and Campaign rows.".into())
         }
-        production_lines::ProductionLines::KEY | production_lines::ProductionLineDetail::KEY => {
+        production_lines::ProductionLines::KEY
+        | production_lines::ProductionLineDetail::KEY
+        | production_lines::ProductionLineBreakdown::KEY
+        | equipment_stockpile::artwork::StockpileArtwork::KEY => {
             let prepared = content.production.get_or_init(|| {
                 production_lines::check_content(
                     Arc::clone(content.catalogue()?),
@@ -558,11 +597,25 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         country_groups::CountryGroups::KEY => {
             Ok("Faction names use recorded keys localised through the content stack; their inventory requires a recording.".into())
         }
+        peace_deals::PeaceDeals::KEY => {
+            Ok("Peace action names use captured native cached type names in the recording client's language; their inventory requires recorded PeaceSettlements, PeaceBids, PeaceConferences and LexicalTokens. Exact event and publication dates, ordered actions, signed state-transfer values and country identities require recorded rows.".into())
+        }
         country_measure::CountryMeasure::KEY => {
             Ok("No content dependency: political and command power balances and their net drops use recorded Countries and CountryLinks rows.".into())
         }
         country_fuel::CountryFuel::KEY => {
             Ok("No content dependency: tank quantities, capacity and daily gain/burn rings use recorded CountryFuel rows and Countries/CountryLinks identities.".into())
+        }
+        country_fuel::CountryFuelAwards::KEY | country_fuel::CountryFuelAwardHistory::KEY => {
+            findings.push(Finding::new(Kind::Offline, key,
+                "receipt inventory, amounts and cached recipient names need supplying recorded fuel-distribution rows and matching recorded language; unavailable offline"));
+            Ok("Fuel award presentation reads recorded receipt rows; no authored receipt-name inventory exists offline.".into())
+        }
+        country_fuel::CountryFuelConsumption::KEY => {
+            Ok("Current required-use rates use recorded FuelDemandRead native rates, independently of completed-day burn and receipts; old or refused inputs remain unknown.".into())
+        }
+        country_fuel::CountryFuelDemand::KEY | country_fuel::CountryFuelDemandHistory::KEY | country_fuel::CountryFuelDemandStack::KEY => {
+            Ok("Individual consumption names are supplying-read stored bytes guarded by the recording language; divisions, commands, fleets, task forces and repeated air-site/wing occurrences require recorded FuelDemandRead. No authored or later names replace missing native names.".into())
         }
         war_casualties::WarCasualties::KEY => {
             let catalogue = content.catalogue()?;
@@ -580,6 +633,16 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
             take(catalogue, &format!("casualty label {label}"), findings);
             Ok("Unknown-casualty label checked; campaign names, casualty counters and rankings require recorded Campaign, WarRelations, country identities and politics rows.".into())
         }
+        wars::Wars::KEY | war_casualties::breakdown::CasualtyBreakdown::KEY => {
+            names_check(content, false, findings)?;
+            let catalogue = content.catalogue()?;
+            catalogue.war_names()?;
+            take(catalogue, "native war naming content", findings);
+            Ok("Native war naming content loaded through the shared Wars catalogue; viewpoint groups, first-goal tokens, naming operands, episode continuity and signed casualty lifetimes require recorded rows. Domain and unknown-attacker attribution are not invented.".into())
+        }
+        war_casualties::pairs::CasualtyPairs::KEY => {
+            Ok("No content dependency: signed country-pair totals use the shared recorded identity and casualty-lifetime scan.".into())
+        }
         scoreboard::Scoreboard::KEY => {
             let catalogue = content.catalogue()?;
             scoreboard::registry(Some(catalogue));
@@ -592,14 +655,136 @@ fn run(key: &str, content: &Content, findings: &mut Vec<Finding>) -> Result<Stri
         country_experience::CountryExperience::KEY => {
             Ok("No content dependency: banked army, navy and air experience and daily changes use recorded CountryExperience rows and Countries/CountryLinks identities.".into())
         }
+        army_size::ArmySize::KEY => {
+            findings.extend(army_size::check_content(content.catalogue()?).map_err(|why| why.to_string())?);
+            Ok("Authored sub-unit groups checked through Army composition preparation; totals, template grids, country identities and supplying dates require recorded army rows.".into())
+        }
+        unit_leaders::UnitLeaders::KEY => {
+            findings.extend(unit_leaders::check_content(Arc::clone(content.catalogue()?), Arc::clone(content.politics()?)).map_err(|why| why.to_string())?);
+            Ok("Leader ranks, attributes, trait names/icons and skill definitions checked through leader preparation; visibility, held traits, participation, decided outcomes, command names and modifier conditions require recorded rows.".into())
+        }
+        unit_leaders::portraits::UnitLeaderPortraits::KEY => {
+            findings.extend(unit_leaders::portraits::check_content(content.politics()?));
+            Ok("Every authored large portrait alternative checked through the shared Politics portrait loader; selected kind/identity, generated portraits and native fallback order require recorded portrait holders.".into())
+        }
+        supply_health::SupplyHealth::KEY => {
+            supply_health::check_content(&content.resolved.layers).map_err(|why| why.to_string())?;
+            Ok("Supply icon thresholds and grace defines checked through the product loader; supply/grace operands, owner attribution and hourly counts require recorded division inputs.".into())
+        }
+        division_log::DivisionLog::KEY | division_log::DivisionLogManifest::KEY => {
+            Ok("Recorded cached division names and template operands require supplying rows; historical naming operands resolve through the shared four-directory name database only when reached.".into())
+        }
+        division_log::DivisionLogTotals::KEY => {
+            Ok("No content dependency: totals count witnessed events with recorded country and template identities.".into())
+        }
         land_battles::LandBattles::KEY
         | land_battles::LandBattlesManifest::KEY
         | land_battles::LandBattlesRanking::KEY => {
             Ok("No content dependency: battle census, observation bounds, participant counts and rankings use recorded Campaign, LandCombats, LandCombatSides and Countries/CountryLinks rows. Place names are resolved by the separate place-names product; casualties and winners remain unavailable without their recorded operands.".into())
         }
+        naval_battles::NavalBattles::KEY
+        | naval_battles::NavalBattlesManifest::KEY
+        | naval_battles::NavalBattlesRanking::KEY => {
+            Ok("No content dependency: live combats and retained results join only through recorded full NavalResultSources references. Peak ships and length use their observed combat reads; place names resolve separately through place-names.".into())
+        }
+        naval_losses::NavalLosses::KEY => {
+            let catalogue = content.catalogue()?;
+            for warning in sinkings::retention(&sinkings::Scanned::default(), Some(catalogue)).warnings {
+                findings.push(Finding::new(Kind::Warning, "naval history retention", warning));
+            }
+            Ok("Native retention defines checked through the shared sinking scan. Signed convoy corrections, ship/convoy read dates, country identities and loss histories require recorded rows.".into())
+        }
+        ships_sunk::ShipsSunk::KEY | naval_battles::NavalBattleDetails::KEY => {
+            content.ship_history()?;
+            Ok("Ship class definitions, strategic-region names and retention checked through shared ship-name preparation. Class tokens, ship/fleet names, recording language and exact battle references require recorded rows.".into())
+        }
+        ships_sunk::ShipsSunkBattleTitles::KEY => {
+            let catalogue = content.catalogue()?;
+            for warning in ships_sunk::battle_titles::check_content(catalogue)? {
+                findings.push(Finding::new(Kind::Warning, "naval battle title", warning));
+            }
+            place_names_check(content, findings)?;
+            Ok("Native naval title geography, content defines and title formatter checked through the production loader. Selected victory points and the current recorded PlaceNames original/reserved-tag name ladder require the supplying read.".into())
+        }
         place_names::PlaceNames::KEY => {
             place_names_check(content, findings)?;
             Ok("Authored state-template and strategic-region names checked through the shared state content, region reader and plain localiser. Province overrides, owner-qualified victory-point names, stored state names and their language require recorded Provinces, ProvinceNames, States, Countries, CountryLinks, CountryAppearance and Campaign context.".into())
+        }
+        territory::Territory::KEY => {
+            installed_content::province_area::ProvinceAreas::read(&content.resolved.layers)
+                .map_err(|error| error.to_string())?;
+            Ok("Native land map-cell weights loaded; totals and owned/controlled identities need recorded States and Provinces rows.".into())
+        }
+        territory_breakdown::TerritoryBreakdown::KEY => {
+            place_names_check(content, findings)?;
+            Ok("State-template names checked; selected ownership, stored names, victory points and values need the supplying recorded rows.".into())
+        }
+        faction_totals::FactionTotals::KEY => {
+            country_factories::content_groups(content.catalogue()?);
+            findings.extend(content.catalogue()?.take_findings());
+            findings.push(Finding::new(Kind::Offline, key,
+                "faction names, membership, native holders and the selected totals need recorded faction and measure rows; unavailable offline"));
+            Ok("Authored factory-group names checked; faction name-template operands and country membership need a recording.".into())
+        }
+        air_aces::AirAces::KEY | air_aces::AirAcePortraits::KEY => {
+            findings.push(Finding::new(Kind::Offline, key,
+                "ace and wing identity, stored names, aircraft variants and selected/cached portrait-pool operands need recorded AirAces and companion rows; unavailable offline"));
+            Ok("No authored ace roster or selected portrait inventory exists offline; supplying recorded operands select content names and sprites.".into())
+        }
+        air_force::AirForceSize::KEY | navy::NavySize::KEY => {
+            let catalogue = content.catalogue()?;
+            if key == air_force::AirForceSize::KEY {
+                content.equipment()?;
+            } else {
+                let units = installed_content::unit_leader::sub_units(&content.resolved.layers)
+                    .map_err(|error| error.to_string())?;
+                for token in units.registered() {
+                    let token = std::str::from_utf8(token).map_err(|error| error.to_string())?;
+                    if catalogue.localisation.get(token).is_some() {
+                        catalogue.localised(token, crate::catalogue::View::Plain);
+                        take(catalogue, token, findings);
+                    }
+                }
+            }
+            findings.push(Finding::new(Kind::Offline, key,
+                "recorded equipment/class tokens and country inventories select displayed labels; unavailable offline"));
+            Ok("Native equipment/sub-unit database prepared; selected composition and supplying dates need recorded inventories.".into())
+        }
+        game_score::GameScore::KEY => {
+            findings.extend(game_score::check_content(content.catalogue()?));
+            Ok("Native score hints and compatible disabled/older-recording multiplier defines checked; current score inputs and identities require recorded rows.".into())
+        }
+        air_superiority::AirSuperiority::KEY => {
+            place_names_check(content, findings)?;
+            findings.push(Finding::new(Kind::Offline, key,
+                "regional scores, faction/war-side assignment, theatres and historical anchors require recorded inputs; unavailable offline"));
+            Ok("Authored strategic-region names checked; country/faction naming and regional observations need a recording.".into())
+        }
+        politics_ledger::PoliticsLedger::KEY => {
+            findings.push(Finding::new(Kind::Offline, key,
+                "spend category/item inventory and captured native descriptions, scopes, costs and names require recorded political-power streams; unavailable offline"));
+            Ok("Ledger presentation selects idea, decision, ability, trait and organisation content from recorded spend operands; no country-independent spend inventory exists offline.".into())
+        }
+        operation_description::OperationDescription::KEY => {
+            Ok("No authored content dependency: cached native operation descriptions use recorded operation-description rows and their captured text.".into())
+        }
+        event_feed::EventFeed::KEY => {
+            findings.push(Finding::new(
+                Kind::Offline,
+                "event feed",
+                "event transitions and their exact or observation-bound dates need the recorded topic histories; unavailable offline",
+            ));
+            findings.push(Finding::new(
+                Kind::Offline,
+                "event row presentation",
+                "row-hour country names, flags and country-scoped item presentation need recorded identities, appearances and event context; unavailable offline",
+            ));
+            findings.push(Finding::new(
+                Kind::Offline,
+                "nuclear stockpile artwork",
+                "nuclear topbar GUI artwork and client visibility are outside the reused topic checks and have not been evaluated offline",
+            ));
+            Ok("Static content diagnostics are reported separately by the existing focus, party, idea, project, subject, country-name and flag checks; the feed reuses their topic helpers without another content inventory. Feed transitions, row-hour presentation and the nuclear indicator remain offline coverage limits.".into())
         }
         _ => Err("No content preparation check is registered for this product.".into()),
     }
@@ -1113,6 +1298,35 @@ fn names_check(content: &Content, plain: bool, findings: &mut Vec<Finding>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operative_content_checks_prepare_roster_and_keep_placements_recording_only() {
+        let (operative, _folder) = products::operative_content::test_content(&[
+            (
+                "common/operations/fixture.txt",
+                "synthetic_operation = { name = SYN_NAME }",
+            ),
+            (
+                "localisation/english/fixture_l_english.yml",
+                "\u{feff}l_english:\n SYN_NAME:0 \"Authored operation\"\n",
+            ),
+        ]);
+        let content = Content::new(Arc::clone(&operative.catalogue.content), "english");
+        let mut findings = Vec::new();
+        let placement = run("operative-placements", &content, &mut findings).unwrap();
+        assert!(placement.contains("supplying membership read"));
+        assert!(content.operatives.get().is_none());
+        let roster = run("operatives-roster", &content, &mut findings).unwrap();
+        assert!(roster.contains("full-reference character portraits"));
+        assert!(content.operatives.get().is_some());
+        assert!(std::ptr::eq(
+            content.operatives().unwrap(),
+            content.operatives().unwrap()
+        ));
+        let agency = run("agency-comparison", &content, &mut findings).unwrap();
+        assert!(agency.contains("AgencyUpgradeLevels"));
+        assert!(!agency.contains("not captured"));
+    }
 
     #[test]
     fn equipment_and_autonomy_preparation_reuse_the_same_loaded_objects() {

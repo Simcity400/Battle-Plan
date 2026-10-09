@@ -284,10 +284,11 @@ test('lines and mix bands keep to the date range shown, however far an axis is d
 
 test('the corner date is a race setting, off by default', () => {
   const field = OPTIONS.find(item => item.key === 'dateOverlay')!;
-  assert.equal(field, DATE_OVERLAY_OPTION);
+  assert.deepEqual({ ...field, visibleWhen: DATE_OVERLAY_OPTION.visibleWhen }, DATE_OVERLAY_OPTION);
   assert.equal(resolveOptions(OPTIONS, {}).dateOverlay, false);
   assert.equal(field.visibleWhen?.(resolveOptions(OPTIONS, {})), true);
   assert.equal(field.visibleWhen?.(resolveOptions(OPTIONS, { view: 'lines' })), false);
+  assert.equal(field.visibleWhen?.(resolveOptions(OPTIONS, { show: 'breakdown' })), false);
   assert.equal(resolveOptions(OPTIONS, {}).count, 'free');
   assert.equal(resolveOptions(OPTIONS, {}).view, 'race');
 });

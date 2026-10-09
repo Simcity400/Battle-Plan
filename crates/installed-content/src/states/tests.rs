@@ -596,6 +596,57 @@ fn a_dated_conditional_in_history_reads_without_diagnostics() {
     assert_eq!(states[0].victory_points, vec![(8049, 3)]);
 }
 
+#[test]
+fn conditional_history_bodies_preserve_following_fields_and_next_state() {
+    let (states, misreads) = parse(
+        br#"state = {
+            id = 7 name = "SYNTHETIC_FIRST"
+            history = {
+                owner = MOD_A
+                if = {
+                    limit = { always = yes }
+                    if = {
+                        limit = { always = no }
+                        transfer_state_to = MOD_B
+                    }
+                }
+                1936.1.1 = {
+                    if = { limit = { always = no } add_core_of = MOD_A }
+                }
+                victory_points = { 11 3 }
+                buildings = { infrastructure = 2 13 = { bunker = 4 } }
+            }
+            provinces = { 11 12 13 }
+        }
+        state = {
+            id = 8 name = "SYNTHETIC_SECOND"
+            history = {
+                if = { limit = { always = no } transfer_state_to = MOD_A }
+                victory_points = { 21 5 }
+                buildings = { infrastructure = 3 22 = { bunker = 1 } }
+            }
+            provinces = { 21 22 }
+        }"#,
+    )
+    .unwrap();
+    assert!(misreads.is_empty(), "{misreads:?}");
+    assert_eq!(states.len(), 2);
+    let first = &states[0];
+    assert_eq!(first.id, 7);
+    assert_eq!(first.name_key.as_deref(), Ok("SYNTHETIC_FIRST"));
+    assert_eq!(first.provinces, [11, 12, 13]);
+    assert_eq!(first.victory_points, [(11, 3)]);
+    assert_eq!(first.buildings["infrastructure"].level, 2);
+    assert_eq!(first.province_buildings[&13]["bunker"].level, 4);
+    let second = &states[1];
+    assert_eq!(second.id, 8);
+    assert_eq!(second.name_key.as_deref(), Ok("SYNTHETIC_SECOND"));
+    assert_eq!(second.provinces, [21, 22]);
+    assert_eq!(second.victory_points, [(21, 5)]);
+    assert_eq!(second.buildings["infrastructure"].level, 3);
+    assert_eq!(second.province_buildings[&22]["bunker"].level, 1);
+}
+
 /// 140AAF580's own readers: `color` skipped only on `{` (1424AD1A0);
 /// `provinces` counts nested braces and keeps only number tokens
 /// (1424A7A90 kind 0xC) through ParseTokenInt32; `impassable_ignored_links`

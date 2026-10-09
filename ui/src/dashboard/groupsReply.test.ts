@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateCountryGroupReply } from './groupsReply.ts';
+import type { CountryGroupReply } from '../generated/dashboard';
 
-const good = {
+const good: CountryGroupReply = {
   branchId: '1', warnings: [], humans: [{ tag: 'GER', firstHour: 0, lastHour: 9 }],
   factions: [{ id: '3', name: null, recordedName: '', firstHour: 0, lastHour: 9, nameReason: 'Faction template not recorded', names: [{ firstHour: 0, lastHour: 9, name: null, reason: 'Faction template not recorded' }], members: [{ tag: 'GER', firstHour: 0, lastHour: 9 }], leaders: [], incomplete: [] }],
   wars: [{ first: 'GER', second: 'POL', firstHour: 5, lastHour: 9 }],
   warStarts: [{ hour: 5, attacking: 'GER', defending: 'POL' }], capitulations: [{ hour: 8, tag: 'POL' }], identityChanges: [{ hour: 7, from: 'AAA', to: 'BBB' }],
+  countryIdentities: ['GER', 'POL'].map((tag, slot) => ({ tag, identities: [{ firstHour: 0, lastHour: 9, slot, countryId: slot + 1 }] })),
   unobserved: { humans: [], factions: [{ firstHour: 2, lastHour: 3 }], wars: [] },
 };
 
@@ -19,6 +21,8 @@ test('a reply missing a list, or with a malformed entry, is refused', () => {
   assert.throws(() => validateCountryGroupReply({ ...older, declarations: [] }), /malformed/);
   assert.throws(() => validateCountryGroupReply({ ...good, capitulations: [{ hour: '8', tag: 'POL' }] }), /malformed/);
   assert.throws(() => validateCountryGroupReply({ ...good, identityChanges: [{ hour: 7, from: 'AAA' }] }), /malformed/);
+  assert.throws(() => validateCountryGroupReply({ ...good, countryIdentities: undefined }), /malformed/);
+  assert.throws(() => validateCountryGroupReply({ ...good, countryIdentities: [{ tag: 'GER', identities: [{ firstHour: 0, lastHour: 9, slot: '0', countryId: 1 }] }] }), /malformed/);
   assert.throws(() => validateCountryGroupReply({ ...good, wars: [{ first: 'GER', second: 'POL', firstHour: 9, lastHour: 5 }] }), /malformed/);
   assert.throws(() => validateCountryGroupReply({ ...good, unobserved: { ...good.unobserved, wars: [{ firstHour: 0, lastHour: Number.MAX_SAFE_INTEGER + 1 }] } }), /malformed/);
   assert.throws(() => validateCountryGroupReply({ ...good, unobserved: { humans: [], factions: [] } }), /malformed/);

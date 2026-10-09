@@ -1,4 +1,5 @@
 .equipment-stockpile { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; padding: var(--space-2) 0 var(--space-2); }
+.stockpile-drill-host { display: flex; flex-direction: column; gap: var(--space-2); height: 100%; min-height: 0; }
 .equipment-stockpile > .chip-set { padding: 0 var(--space-3); }
 .stockpile-caption, .stockpile-empty { margin: 0; padding: 0 var(--space-3); font-size: var(--type-xs); color: var(--muted); }
 /* The bars' parent carries the shared column widths to the header and every row
@@ -14,8 +15,10 @@
 .stockpile-bars > li:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; background: var(--hover); }
 .stockpile-name { display: flex; align-items: center; gap: var(--space-2); min-width: 0; font-size: var(--type-sm); font-weight: 500; color: var(--text); }
 .stockpile-name > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Neutral in place of the game's art, which the recording does not tell (see README). */
+.stockpile-name small { display: block; overflow: hidden; text-overflow: ellipsis; font-size: var(--type-xs); color: var(--muted); font-weight: 400; line-height: 1.1; }
+/* A missing native icon keeps its neutral frame. */
 .stockpile-art { width: 30px; height: 16px; flex: none; border-radius: var(--r-sm); background: color-mix(in srgb, var(--text) 8%, transparent); }
+img.stockpile-art { object-fit: contain; background: transparent; }
 .stockpile-track { position: relative; height: 12px; }
 .stockpile-zero { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--chart-axis); }
 .stockpile-bar { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--accent);

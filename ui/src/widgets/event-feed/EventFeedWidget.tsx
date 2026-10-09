@@ -1,0 +1,106 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChipSet } from '../../components/ChipSet';
+import WidgetState from '../../components/WidgetState';
+import LogList from '../../charts/log/LogList';
+import { logCountryRequests } from '../../charts/log/logData';
+import type { LogRow } from '../../charts/log/logData';
+import { logSettings } from '../../charts/log/logOptions';
+import { jumpItem } from '../../charts/jump';
+import { useChartTokens } from '../../charts/useChartTokens';
+import { CountryFlagUrl } from '../../components/CountryFlag';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import { selectedTags } from '../../dashboard/countrySelection';
+import type { WidgetProps } from '../../dashboard/definitions';
+import { countryMatch } from '../../dashboard/groups';
+import { ideaTargetTags } from '../../dashboard/ideaTooltip';
+import { resolveWindow } from '../../dashboard/model';
+import { resolveOptions } from '../../dashboard/options';
+import { usePlaybackHour } from '../../dashboard/playback';
+import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { CATEGORIES, OPTIONS } from './definition';
+import { eventCountryName, eventDescription, eventSentence, eventTooltip, notRecorded } from './eventFeedData';
+import type { FeedEvent, FeedFilter } from './eventFeedData';
+import { useEventFeed } from './useEventFeed';
+import './eventFeed.css';
+
+const NO_WARNINGS: string[] = [];
+const NO_ROWS: readonly LogRow<FeedEvent>[] = [];
+const COLUMNS = 'calc(var(--space-6) + var(--space-2) + var(--space-1)) minmax(0, 1fr) auto';
+
+export default function EventFeedWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
+  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const options = resolveOptions(OPTIONS, widget.options);
+  const log = logSettings(options);
+  const tokens = useChartTokens();
+  const filtered = widget.countries.kind !== 'all';
+  const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
+  const inBranch = !!track && !!window && window.lastHour >= track.branch.firstHour
+    && (widget.time.mode === 'range' ? window.firstHour <= track.branch.lastHour : window.lastHour <= track.branch.lastHour);
+  const hour = track && window && inBranch ? Math.min(window.lastHour, track.branch.lastHour) : null;
+  const groups = useCountryGroups(runtime, track, active && filtered && inBranch);
+  const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
+  const tagsKey = JSON.stringify(selectedTags(widget.countries, track));
+  const fallback = useMemo<string[]>(() => JSON.parse(tagsKey), [tagsKey]);
+  const match = useMemo(() => countryMatch(widget.countries, fallback, groups.data, track?.branch.lastHour ?? 0),
+    [widget.countries, fallback, groups.data, track?.branch.lastHour]);
+  const categoriesKey = JSON.stringify(CATEGORIES.filter(category => options[category.value] === true).map(category => category.value));
+  const categories = useMemo<ReadonlySet<string>>(() => new Set(JSON.parse(categoriesKey)), [categoriesKey]);
+  const artwork = options.artwork !== false;
+  const filter = useMemo<FeedFilter>(() => ({ categories, country: match.matches, firstHour: from, allCountries: !filtered }),
+    [categories, match, from, filtered]);
+  const filterKey = JSON.stringify([categoriesKey, widget.countries, fallback, from]);
+  const feed = useEventFeed(runtime, track, active && match.ready && inBranch, hour, filter, filterKey, widget.time.mode === 'follow');
+  const [visible, setVisible] = useState<readonly LogRow<FeedEvent>[]>(NO_ROWS);
+  const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.item.event.nameHour,
+    tags: [...row.item.event.tags, ...ideaTargetTags(row.item.item?.idea)] })), [visible]);
+  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && inBranch);
+  const labels = useCallback((row: LogRow<FeedEvent>) => {
+    const at = labelAt(row.item.event.nameHour);
+    return (tag: string) => {
+      const label = at(tag);
+      return { ...label, name: eventCountryName(tag, label) };
+    };
+  }, [labelAt]);
+  const chips = CATEGORIES.map(category => ({ value: category.value, label: category.label,
+    colour: tokens.categories[category.palette] }));
+  useEffect(() => {
+    onDiagnostics(feed.warnings.length ? feed.warnings : NO_WARNINGS);
+    return () => onDiagnostics(NO_WARNINGS);
+  }, [feed.warnings, onDiagnostics]);
+
+  if (!track) return <WidgetState kind="empty" icon="clock" message="Load a campaign to see its key moments." />;
+  if (!inBranch) return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
+  if (filtered && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (feed.error) return <WidgetState kind="error" message={feed.error} onRetry={feed.retry} />;
+  if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
+  if (!feed.data || !match.ready) return <WidgetState kind="loading" label="Loading the event feed…" />;
+
+  const unavailable = notRecorded(feed.data);
+  return <div className="log-widget event-feed-widget">
+    {log.chips && <div className="log-chips"><ChipSet label="Event categories" chips={chips}
+      selected={[...categories]} max={CATEGORIES.length} onToggle={key => setOption?.(key, !categories.has(key))} /></div>}
+    {unavailable.length > 0 && <details className="event-feed-notes"><summary>Not recorded ({unavailable.length})</summary>
+      {unavailable.map((reason, index) => <p key={index}>{reason}</p>)}</details>}
+    <LogList key={feed.identity} pages={feed.pages} label="Event feed" density={log.density} months={log.months}
+      animate={log.animate && widget.time.mode === 'follow'} playhead={widget.time.mode === 'follow' ? hour : null}
+      columns={artwork ? COLUMNS : 'minmax(0, 1fr) auto'} onVisible={setVisible} onWantedPages={feed.onWantedPages}
+      renderRow={row => {
+        const at = row.item;
+        const label = labels(row);
+        const category = CATEGORIES.find(category => category.value === at.event.category)!;
+        return <>
+          {artwork && <span className={`log-art${at.item?.icon ? '' : ' is-missing'}`} aria-hidden="true">
+            {at.item?.icon ? <img src={at.item.icon} alt="" /> : '?'}</span>}
+          <span className="log-text">{eventSentence(at).map((part, index) => 'tag' in part ? <span key={index}>
+            <CountryFlagUrl className="log-flag" url={label(part.tag).flag} reason={label(part.tag).flagReason} pending={label(part.tag).flagPending} /><b>{label(part.tag).name}</b>
+          </span> : <span key={index}>{part.text}</span>)}</span>
+          <span className="log-tag"><i style={{ background: tokens.categories[category.palette] }} />{category.label}</span>
+        </>;
+      }}
+      describe={row => eventDescription(row.item, tag => labels(row)(tag).name)}
+      tooltip={row => eventTooltip(row.item, tag => labels(row)(tag).name)}
+      menu={row => [jumpItem(runtime, track.id, row.hour)]} empty="No recorded events match these settings." />
+    {feed.errors.size > 0 && <div className="event-feed-load">Some event windows could not load. <button type="button" onClick={feed.retryPages}>Retry</button></div>}
+  </div>;
+}

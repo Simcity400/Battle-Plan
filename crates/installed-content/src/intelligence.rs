@@ -22,6 +22,8 @@ pub struct Operation {
     pub token: String,
     pub name: String,
     pub sprite: String,
+    /// Agency operative assignment portrait, COperation+0x4B0 (141E21710).
+    pub map_icon: String,
 }
 
 #[derive(Default)]
@@ -213,6 +215,9 @@ fn parse_operations_with_notes(
                 operation.name = string(field).map_err(|why| note_refusal(notes, why))?;
             } else if field.keyword_is("icon") {
                 operation.sprite = string(field).map_err(|why| note_refusal(notes, why))?;
+            } else if field.keyword_is("map_icon") {
+                // COperation::vf4@140A70140 stores this independently of icon.
+                operation.map_icon = string(field).map_err(|why| note_refusal(notes, why))?;
             }
         }
         operations.push(operation);
@@ -390,15 +395,18 @@ pub fn read_operation_tokens(layers: &ResolvedLayers) -> io::Result<OperationTok
 
 /// CAgencyUpgrade's authored identifier (+0x18), constructed by 140615D50;
 /// 140616BC0 localises it. Its reader 1406188D0 has no name override.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgencyUpgrade {
     pub token: String,
     pub name: String,
+    pub branch: String,
+    pub sprite: String,
 }
 
 #[derive(Default)]
 pub struct AgencyUpgrades {
     pub definitions: BTreeMap<String, AgencyUpgrade>,
+    pub branch_definitions: BTreeMap<(String, String), AgencyUpgrade>,
     pub refusals: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -413,6 +421,31 @@ impl AgencyUpgrades {
                 self.refusals.join("; ")
             ))
         }
+    }
+    pub fn branch_upgrade(
+        &self,
+        branch: &str,
+        token: &str,
+    ) -> Result<Option<&AgencyUpgrade>, String> {
+        self.upgrade(token)?;
+        Ok(self
+            .branch_definitions
+            .get(&(branch.to_ascii_lowercase(), token.to_ascii_lowercase())))
+    }
+
+    pub fn global_upgrade(&self, token: &str) -> Result<Option<&AgencyUpgrade>, String> {
+        self.upgrade(token)
+    }
+
+    pub fn upgrade_branches(&self, token: &str) -> Result<Vec<&AgencyUpgrade>, String> {
+        self.upgrade(token)?;
+        let token = token.to_ascii_lowercase();
+        Ok(self
+            .branch_definitions
+            .iter()
+            .filter(|((_, key), _)| key == &token)
+            .map(|(_, definition)| definition)
+            .collect())
     }
 }
 
@@ -494,10 +527,18 @@ fn parse_agency_upgrades(
         let mut upgrades = Vec::new();
         for field in fields {
             let token = token(field)?;
-            upgrades.push(AgencyUpgrade {
+            let mut upgrade = AgencyUpgrade {
                 name: token.clone(),
                 token,
-            });
+                branch: branch.clone(),
+                ..Default::default()
+            };
+            for member in field.value.items().unwrap_or_default() {
+                if member.keyword_is("picture") {
+                    upgrade.sprite = string(member)?;
+                }
+            }
+            upgrades.push(upgrade);
         }
         result.push((branch, upgrades));
     }
@@ -525,6 +566,9 @@ pub fn read_agency_upgrades(layers: &ResolvedLayers) -> io::Result<AgencyUpgrade
                     for upgrade in upgrades {
                         let key = upgrade.token.to_ascii_lowercase();
                         let owner = owners.entry(key.clone()).or_insert_with(|| branch.clone());
+                        result
+                            .branch_definitions
+                            .insert((branch.clone(), key.clone()), upgrade.clone());
                         if owner == &branch {
                             result.definitions.insert(key, upgrade);
                         }
@@ -541,6 +585,21 @@ pub fn read_agency_upgrades(layers: &ResolvedLayers) -> io::Result<AgencyUpgrade
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operation_map_icon_is_separate_and_keeps_first_native_definition() {
+        let (definitions, _) = parse_operations(
+            b"op = { name = NAME icon = CARD map_icon = MAP } OP = { name = WRONG map_icon = WRONG } other = { name = OTHER }",
+            &KeyNames::default(),
+            &BTreeSet::new(),
+        ).unwrap();
+        assert_eq!(definitions.len(), 2);
+        assert_eq!(definitions[0].name, "NAME");
+        assert_eq!(definitions[0].sprite, "CARD");
+        assert_eq!(definitions[0].map_icon, "MAP");
+        assert_eq!(definitions[1].name, "OTHER");
+        assert!(definitions[1].map_icon.is_empty());
+    }
 
     #[test]
     fn intelligence_operation_token_name_text_icon_and_duplicate_skip() {
@@ -617,11 +676,15 @@ mod tests {
                 vec![
                     AgencyUpgrade {
                         token: "custom".into(),
-                        name: "custom".into()
+                        name: "custom".into(),
+                        branch: "branch".into(),
+                        sprite: "custom_art".into(),
                     },
                     AgencyUpgrade {
                         token: "CUSTOM".into(),
-                        name: "CUSTOM".into()
+                        name: "CUSTOM".into(),
+                        branch: "branch".into(),
+                        sprite: "other".into(),
                     }
                 ]
             )]

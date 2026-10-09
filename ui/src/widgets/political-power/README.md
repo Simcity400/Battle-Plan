@@ -1,36 +1,27 @@
 # Political power
 
-Each country's political power balance over time, one line per country, with the hours its balance fell. The first widget built on the shared chart kit ([charts](../../charts/README.md)); it is the pattern for the other line-chart widgets. It shares its chart, settings and data helpers with [Command power](../command-power/README.md) through [country-measure](../country-measure/README.md).
+## What it shows
 
-## Data
+Country political-power balance lines with payment ticks and daily income/spending details.
 
-- **Product `country-measure`** with `measure: 'politicalPower'` (`crates/dashboard/src/products/country_measure.rs`): `{branchId, measure, tags}` → each country's balance as runs of the exact recorded fixed-point integer (`Countries.political_power_raw`, `decimals` places), and its net drops.
-  - Runs break at a gap, a missing value (never zero) and a change of country identity.
-  - A drop is a fall between two consecutive recorded hours of the same country, never across a gap.
-- **Product `country-styles`**: each country's engine-built name and recorded map colour. It is read once per 30 game days during playback.
-- **Product `country-groups`**, when the widget shows a group.
+## Products it reads
 
-## Look and behaviour
-
-The signed-off look is the balance line from mock-ups politics-1/2:
-- a 2px line, with a light area fill when one country is shown;
-- the exact current value in the header;
-- spend ticks along the bottom;
-- values at the line ends: one country's value and unit ("164.0 PP", mock-up politics-1), or each country's name and value.
-
-Hovering near a tick snaps to it. The tooltip lists each country's exact balance and any net spend that hour.
-
-The chart kit supplies the rest: zoom that holds during playback, axis drags, live hover, and Jump to on right-click.
-
-A group counted at each hour draws a country only while it belongs, with join (+) and leave (−) badges along the top in the country's colour.
+[`country-measure`](../../../../crates/dashboard/src/products/country_measure.rs) (`politicalPower`) supplies balances; [`politics-ledger`](../../../../crates/dashboard/src/products/politics_ledger.rs) supplies daily accounting and matched payments. Shared looks/groups follow the [widget contract](../README.md#contract).
 
 ## Settings
 
-- **Time:** Live, Whole campaign, Pinned or Date range. While following playback the chart can grow to now (default), show the whole campaign with the playhead (stopping there unless **Show after the playhead** is on), or show a recent window.
-- **Options:** spend ticks, area fill, names at line ends.
-- **Axes:** value axis from/to, log scale.
-- **Countries:** chosen countries, or a group.
+Countries, campaign/follow/pin/range and shared [balance options](../country-measure/options.ts): playback/window, ticks, fill, end labels, axes and drills. Whole campaign is the default.
 
-## Not recorded
+## Notable behaviour
 
-- Daily political power income and what it was spent on need new capture (spec, 🆕). Until then spends are **net** falls in the balance, and the widget has no drill-down.
+- Uses [country-measure](../country-measure/README.md); common chart, comparison picks and Pin/Follow behaviour belong there.
+- Runs break at gaps, missing values and replacement holders. A fallback drop needs consecutive reads of the same country and remains explicitly net.
+- Captured evaluated charges stay separate from realized balance changes. Missing income sources remain Other / not identified; later reads never fill earlier unknowns.
+- Names, flags, end labels and membership markers use their own recorded hours.
+
+## Files
+
+| File | Responsibility |
+|---|---|
+| [definition.ts](definition.ts) | Metadata and shared settings. |
+| [index.ts](index.ts) | Configures MeasureWidget for PP. |

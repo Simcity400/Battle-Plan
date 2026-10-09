@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { isMissing } from './logic.ts';
-import type { SortValue } from './logic';
+import type { SortValue, SortDirection } from './logic';
 
 /** One model for text, numbers, portraits and composed cells. */
 export interface TableColumn<T> {
@@ -16,6 +16,8 @@ export interface TableColumn<T> {
   align?: 'start' | 'end';
   numeric?: boolean;
   sortable?: boolean;
+  /** A fixed choice keeps this direction on every header click. */
+  direction?: SortDirection;
   /** Positive maximum in the value's units, or fit this filtered table. */
   bar?: 'visible' | number | bigint;
   /** CSS grid track; max-content shares the widest mounted header/cell across rows. */

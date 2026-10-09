@@ -705,7 +705,7 @@ fn civil_war_heading_and_selected_party_follow_separate_native_operands() {
             None,
         ),
         (
-            "start_civil_war={ideology=syn_new ruling_party=20}",
+            "start_civil_war={ideology=syn_new ruling_party=var:20}",
             1,
             "War New AAA BBB\nPolitics [This.GetTag]\nParty Short [From.GetTag]\nNo elections\n",
             None,

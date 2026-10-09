@@ -1197,13 +1197,9 @@ impl Summary {
 }
 
 fn percentiles(values: &mut [u64]) -> [f64; 3] {
-    if values.is_empty() {
-        return [0.0; 3];
-    }
-    values.sort_unstable();
-    let p50 = values[values.len().div_ceil(2) - 1];
-    let p95 = values[(values.len() * 95).div_ceil(100) - 1];
-    [p50, p95, *values.last().unwrap()].map(|ns| ns as f64 / 1_000_000.0)
+    crate::metrics::percentiles_ns(values)
+        .unwrap_or([0; 3])
+        .map(|ns| ns as f64 / 1_000_000.0)
 }
 
 #[derive(Default)]
@@ -2711,6 +2707,19 @@ mod tests {
                     TableId::ReservedCountryNaming => {
                         TableUpdate::Snapshot(TableRows::ReservedCountryNaming(vec![
                             Default::default(),
+                        ]))
+                    }
+                    TableId::GameScoreMultipliers => TableUpdate::Unavailable {
+                        reason: "score multipliers outside finalization fixture".into(),
+                    },
+                    TableId::EventFeedHistory => {
+                        TableUpdate::Snapshot(TableRows::EventFeedHistory(vec![
+                            replay::rows::EventFeedHistoryRow {
+                                read_hour: hour,
+                                coverage: replay::event_feed_rows::EventFeedCoverage::Complete,
+                                counts: Some(Default::default()),
+                                ..Default::default()
+                            },
                         ]))
                     }
                     _ => TableUpdate::Snapshot(TableRows::empty(TableId::ALL[index])),

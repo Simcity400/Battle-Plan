@@ -1,5 +1,6 @@
 import { contrast, isDark, oklchToRgb, parseColor, rgbToOklch, solveLightness, toHex } from '../shell/appearance/color.ts';
 import type { Oklch, Rgb } from '../shell/appearance/color';
+import { colourDistance, NearestColours } from './paletteDistance.ts';
 
 /** Colours for things that are categories, not countries (slices, stacked parts,
  * advisor types). Countries keep their recorded map colours. The hue order is
@@ -32,11 +33,7 @@ function readable(color: Rgb, background: Rgb, darkSurface: boolean): Rgb {
 
 /** Perceptual distance in OKLab, ×100 (a ΔE of about 2 is barely visible). */
 export function distance(first: Rgb, second: Rgb): number {
-  const a = rgbToOklch(first);
-  const b = rgbToOklch(second);
-  const [ax, ay] = [a.c * Math.cos(a.h * Math.PI / 180), a.c * Math.sin(a.h * Math.PI / 180)];
-  const [bx, by] = [b.c * Math.cos(b.h * Math.PI / 180), b.c * Math.sin(b.h * Math.PI / 180)];
-  return Math.hypot(a.l - b.l, ax - bx, ay - by) * 100;
+  return colourDistance(first, second);
 }
 
 /** Below this chroma a colour reads as grey, which charts reserve for "contested"
@@ -53,12 +50,13 @@ export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance 
   // categorical colour for its position instead of an arbitrary one.
   const fallback = categoricalPalette(toHex(background)).map(hex => parseColor(hex)!);
   const result: Rgb[] = [];
+  const neighbours = new NearestColours(avoid);
   for (const [position, color] of colors.entries()) {
     let base: Oklch = rgbToOklch(color);
     if (base.c < GREY_CHROMA) base = rgbToOklch(fallback[position % fallback.length]);
     let chosen = readable(oklchToRgb(base), background, darkSurface);
     const mark = (candidate: Rgb) => contrast(candidate, background) >= MARK_CONTRAST && rgbToOklch(candidate).c >= GREY_CHROMA;
-    const gap = (candidate: Rgb) => Math.min(...[...avoid, ...result].map(other => distance(candidate, other)));
+    const gap = (candidate: Rgb) => neighbours.gap(candidate);
     if (!(mark(chosen) && gap(chosen) >= minDistance)) {
       const start = rgbToOklch(chosen);
       let best: { color: Rgb; gap: number } | null = null;
@@ -77,6 +75,7 @@ export function nudgeApart(colors: readonly Rgb[], background: Rgb, minDistance 
       if (best) chosen = best.color;
     }
     result.push(chosen);
+    neighbours.add(chosen);
   }
   return result;
 }

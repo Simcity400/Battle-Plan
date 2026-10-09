@@ -1,10 +1,11 @@
 import type { CipherObservation, DecryptionCoverage, DecryptionPair, DecryptionReply, DecryptionRun, DecryptionTagRun } from '../../generated/dashboard';
 import { runAt } from '../../charts/series.ts';
 import { formatAmount } from '../../charts/valueAxis.ts';
-import { formatDate, gameDate } from '../../dashboard/calendar.ts';
+import { formatDate, formatDateTime, gameDate } from '../../dashboard/calendar.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { fitTooltip } from '../../charts/tooltip.ts';
 import type { TooltipContent } from '../../charts/tooltip';
+import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null && !Array.isArray(value);
 const hour = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= -2_147_483_648 && value <= 2_147_483_647;
@@ -144,7 +145,8 @@ export type RaceOrder = 'progress' | 'decryptor';
 export type CountrySide = 'decryptor' | 'target';
 
 /** Exact sparse lookup: future starts, missing pairs and gaps never appear. */
-export function raceRows(reply: DecryptionReply, hour: number, order: RaceOrder, countries: ReadonlySet<string> | null = null, side: CountrySide = 'decryptor'): RaceRow[] {
+export function raceRows(reply: DecryptionReply, hour: number, order: RaceOrder, countries: ReadonlySet<string> | null = null, side: CountrySide = 'decryptor',
+  matches?: (tag: string, hour: number) => boolean): RaceRow[] {
   const rows: RaceRow[] = [];
   if (!Number.isInteger(hour)) return rows;
   for (const pair of reply.pairs) {
@@ -155,6 +157,7 @@ export function raceRows(reply: DecryptionReply, hour: number, order: RaceOrder,
     if (!run || !tags || !(run.started || run.broken === true)) continue;
     const endpoint = side === 'decryptor' ? tags.ownerTag : tags.targetTag;
     if (countries && (endpoint == null || !countries.has(endpoint))) continue;
+    if (matches && (endpoint == null || !matches(endpoint, hour))) continue;
     rows.push({ key: JSON.stringify([pair.ownerId, pair.targetId]), pair, run, tags, broken, hour });
   }
   const progress = (a: RaceRow, b: RaceRow) => {
@@ -195,13 +198,21 @@ export const workingStatus = (run: DecryptionValue, capitalized = false) => {
 export const cipherStatus = (row: RaceRow) => row.run.broken === true ? `${CIPHER_BROKEN} ${observationDate(row.broken, row.hour)}`
   : row.run.broken === null ? `${workingStatus(row.run, true)}; cipher status unknown` : workingStatus(row.run, true);
 
-export function decryptionTooltip(row: RaceRow, ownerName: string, targetName: string, height: number): TooltipContent {
+export function decryptionTooltip(row: RaceRow, owner: ReturnType<CountryLabel>, target: ReturnType<CountryLabel>, height: number, countryHour?: number): TooltipContent {
   const bonus = activeBonusDays(row.run);
-  const content: TooltipContent = { title: `${ownerName} → ${targetName}`, rows: [
+  const content: TooltipContent = { title: `${owner.name} → ${target.name}`, rows: [
+    { label: 'Decryptor', value: owner.name, countryFlag: row.tags.ownerTag === null ? undefined : {
+      flag: owner.flag, flagReason: owner.flagReason, flagPending: owner.flagPending,
+    } },
+    { label: 'Target', value: target.name, countryFlag: row.tags.targetTag === null ? undefined : {
+      flag: target.flag, flagReason: target.flagReason, flagPending: target.flagPending,
+    } },
     { label: 'Progress', value: progressText(row.run) },
     { label: 'Started', value: observationDate(row.run.started, row.hour) },
     { label: 'Bonus days', value: bonus == null ? 'none' : String(bonus) },
     { label: 'Status', value: cipherStatus(row), divider: true },
-  ], note: row.run.thresholdUnknown ?? (row.run.progressPercent == null ? NATIVE_PROGRESS_UNKNOWN : undefined) };
+  ], note: [row.run.thresholdUnknown ?? (row.run.progressPercent == null ? NATIVE_PROGRESS_UNKNOWN : undefined),
+    countryHour !== undefined && countryHour < row.hour ? `Country names and flags at ${formatDateTime(countryHour)}.` : undefined,
+  ].filter(Boolean).join(' ') || undefined };
   return fitTooltip([content], height, { keep: 1 });
 }

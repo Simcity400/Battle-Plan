@@ -47,8 +47,8 @@ export function netSpend(drop: BalanceDrop, decimals: number): string {
 }
 
 /** The drop nearest `hour` within `tolerance` hours, for snapping hover to a tick. */
-export function nearestDrop(drops: readonly BalanceDrop[], hour: number, tolerance: number): BalanceDrop | null {
-  let best: BalanceDrop | null = null;
+export function nearestDrop<T extends { hour: number }>(drops: readonly T[], hour: number, tolerance: number): T | null {
+  let best: T | null = null;
   for (const drop of drops) {
     const distance = Math.abs(drop.hour - hour);
     if (distance <= tolerance && (!best || distance < Math.abs(best.hour - hour))) best = drop;

@@ -318,6 +318,10 @@ pub(super) fn release_air_wing_job(mut job: AirWingJob) {
     if crate::allocation::failed() {
         return;
     }
+    job.presize_game_score();
+    if crate::allocation::failed() {
+        return;
+    }
     job.clear();
     if let Ok(mut pool) = AIR_WING_JOB_POOL.lock()
         && pool.len() < JOB_POOL_KEEP + 1
@@ -952,21 +956,89 @@ pub(super) fn release_capitulation_job(mut job: CapitulationJob) {
 /// after attaching at the main menu). The game thread only `try_lock`s these
 /// pools, so a concurrent callback takes a fresh job instead of waiting.
 pub fn presize_country_pools() {
-    if let Ok(mut pool) = PROJECTS_JOB_POOL.lock() {
-        pool.iter_mut().for_each(ProjectsJob::presize_countries);
+    presize_pool(
+        &AIR_WING_JOB_POOL,
+        AirWingJob::presize_game_score,
+        release_air_wing_job,
+    );
+    presize_pool(
+        &PROJECTS_JOB_POOL,
+        ProjectsJob::presize_countries,
+        release_projects_job,
+    );
+    presize_pool(
+        &PRODUCTION_REST_JOB_POOL,
+        ProductionRestJob::presize_countries,
+        release_production_rest_job,
+    );
+    presize_pool(
+        &CONSTRUCTION_REST_JOB_POOL,
+        ConstructionRestJob::presize_countries,
+        release_construction_rest_job,
+    );
+    presize_pool(
+        &AIR_BASES_JOB_POOL,
+        AirBasesJob::presize_countries,
+        release_air_bases_job,
+    );
+    presize_pool(
+        &NAVAL_JOB_POOL,
+        NavalJob::presize_countries,
+        release_naval_job,
+    );
+}
+
+/// New modifier hints also reach jobs prepared before the campaign loaded.
+pub(crate) fn presize_advisor_pools() {
+    let jobs = match CHARACTERS_JOB_POOL.lock() {
+        Ok(mut pool) => std::mem::take(&mut pool[2]),
+        Err(_) => return,
+    };
+    for mut job in jobs {
+        if job.grow_for_next() {
+            job.grow();
+        }
+        release_characters_job(job);
     }
-    if let Ok(mut pool) = PRODUCTION_REST_JOB_POOL.lock() {
-        pool.iter_mut()
-            .for_each(ProductionRestJob::presize_countries);
+}
+
+fn presize_pool<J>(
+    pool: &Mutex<Vec<J>>,
+    mut presize: impl FnMut(&mut J),
+    mut release: impl FnMut(J),
+) {
+    let jobs = match pool.lock() {
+        Ok(mut pool) => std::mem::take(&mut *pool),
+        Err(_) => return,
+    };
+    for mut job in jobs {
+        presize(&mut job);
+        if crate::allocation::failed() {
+            return;
+        }
+        release(job);
     }
-    if let Ok(mut pool) = CONSTRUCTION_REST_JOB_POOL.lock() {
-        pool.iter_mut()
-            .for_each(ConstructionRestJob::presize_countries);
-    }
-    if let Ok(mut pool) = AIR_BASES_JOB_POOL.lock() {
-        pool.iter_mut().for_each(AirBasesJob::presize_countries);
-    }
-    if let Ok(mut pool) = NAVAL_JOB_POOL.lock() {
-        pool.iter_mut().for_each(NavalJob::presize_countries);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_score_pool_presize_releases_mutex_during_work() {
+        let pool = Mutex::new(vec![1, 2]);
+        let mut grown = 0;
+        presize_pool(
+            &pool,
+            |job| {
+                assert_eq!(pool.try_lock().unwrap().len(), grown);
+                *job += 10;
+                grown += 1;
+            },
+            |job| {
+                pool.lock().unwrap().push(job);
+            },
+        );
+        assert_eq!((grown, pool.into_inner().unwrap()), (2, vec![11, 12]));
     }
 }

@@ -42,3 +42,16 @@ test('static and content sort settings use the same choices and labels', () => {
   assert.deepEqual(field.choices.map(choice => tableSortOf(choice.value, fallback)),
     contentChoices.map(choice => tableSortOf(choice.value, fallback)));
 });
+
+test('fixed sort directions offer only their declared choice while other columns retain both directions', () => {
+  const columns = [{ key: 'date', label: 'Newest first', direction: 'descending' as const },
+    { key: 'name', label: 'Name', direction: 'ascending' as const }, { key: 'amount', label: 'Amount' }];
+  const fallback = { column: 'date', direction: 'descending' } as const;
+  const field = tableSortOptions(columns, fallback)[0];
+  assert.ok(field.kind === 'choice');
+  assert.deepEqual(field.choices.slice(0, 2).map(choice => choice.label), ['Newest first', 'Name']);
+  assert.deepEqual(field.choices.map(choice => tableSortOf(choice.value, fallback)), [fallback,
+    { column: 'name', direction: 'ascending' }, { column: 'amount', direction: 'descending' }, { column: 'amount', direction: 'ascending' }]);
+  assert.deepEqual(tableSortChoices(columns).map(choice => tableSortOf(choice.value, fallback)),
+    field.choices.map(choice => tableSortOf(choice.value, fallback)));
+});

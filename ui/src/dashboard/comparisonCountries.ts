@@ -1,0 +1,25 @@
+import { useMemo } from 'react';
+import { selectedTags } from './countrySelection.ts';
+import type { WidgetRuntime } from './definitions';
+import { resolveCountries } from './groups.ts';
+import { groupNumbers } from './groupsReply.ts';
+import { NumericReply } from './numericReply';
+import type { CountryGroupReply } from '../generated/dashboard';
+import type { WidgetSpec } from './model';
+import { useCountryGroups } from './useCountryGroups.ts';
+
+/** Comparisons retain the branch-wide group union; hourly membership clips each
+ * country's values instead of changing the requested countries while playing. */
+export function useComparisonCountries(widget: WidgetSpec, runtime: WidgetRuntime, active: boolean) {
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const grouped = widget.countries.kind === 'group';
+  const groups = useCountryGroups(runtime, track, active && grouped);
+  const retained = useMemo(() => new NumericReply<CountryGroupReply>(), [runtime.client]);
+  const key = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries]);
+  const numbers = retained.update(key, groups.data, groupNumbers);
+  const countries = useMemo(() => resolveCountries(widget.countries, grouped ? [] : selectedTags(widget.countries, track), numbers,
+    track?.branch.lastHour ?? 0, Number.MAX_SAFE_INTEGER), [widget.countries, grouped ? undefined : track, numbers, track?.branch.lastHour]);
+  return { track, countries, error: groups.error, retry: groups.retry,
+    contentPending: grouped && !!numbers && !groups.data && !groups.error,
+    pending: !!track && grouped && !numbers && !groups.error };
+}

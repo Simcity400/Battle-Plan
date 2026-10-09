@@ -238,7 +238,7 @@ fn presentation_handoff_restores_storage_and_exact_source_leases() {
     let presentation_bytes = captured.division_presentation.allocated_bytes();
     assert!(presentation_bytes > 0);
     let report = division_presentation::CaptureReport {
-        ticks: [89, 97, 5, 101],
+        ticks: [89, 97, 5, 101, 103],
     };
     captured.install_unit_inputs(Some(Arc::clone(&inputs)));
     captured.presentation_report = Some(report);
@@ -367,7 +367,7 @@ fn presentation_terminal_reports_scatter_once_without_live_retry() {
     let inputs = Arc::new(UnitInputs::empty_rows());
     let bytes = captured.allocated_bytes();
     let report = division_presentation::CaptureReport {
-        ticks: [113, 227, 5, 331],
+        ticks: [113, 227, 5, 331, 449],
     };
     for failure in [
         None,
@@ -449,6 +449,7 @@ fn failed_pack_jobs_are_terminal_without_live_retry_or_partial_publication() {
     use replay::frame::TableView;
 
     let slow = [
+        peace_bids::TABLES.as_slice(),
         map_names::TABLES.as_slice(),
         division_templates::TABLES.as_slice(),
         visibility::TABLES.as_slice(),
@@ -1729,6 +1730,20 @@ fn shared_unit_sources_keep_census_faults_and_release_on_reset() {
     assert_eq!(Arc::strong_count(&failed), 1);
     assert_eq!(unit_sources(&captured.unit_inputs).outcome, MISSING);
     assert!(unit_sources(&captured.unit_inputs).rows.is_empty());
+}
+
+#[test]
+fn peace_settlement_packs_are_registered_without_inventing_empty_data() {
+    for table in [TableId::PeaceSettlements, TableId::PeaceBids] {
+        assert_eq!(TABLES.iter().filter(|&&id| id == table).count(), 1);
+    }
+    for view in peace_settlements::Captured::vacant()
+        .tables()
+        .into_iter()
+        .chain(peace_bids::Captured::vacant().tables())
+    {
+        assert!(matches!(view, replay::frame::TableView::Unavailable { .. }));
+    }
 }
 
 #[test]

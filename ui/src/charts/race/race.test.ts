@@ -292,4 +292,6 @@ test('rows are thin (at most 20 px), hovered by the band of their slot, and reac
   assert.equal(keyedEntry('ArrowDown', 'gone', items), 'a');
   assert.equal(keyedEntry('ArrowDown', null, []), null);
   assert.equal(raceText(items, key => key.toUpperCase()), '1. A 10; 2. B 5');
+  const native = [{ ...items[0], key: '[7,101]', tag: 'renamed', hour: 20 }];
+  assert.equal(raceText(native, (_key, entry) => `${entry?.tag} at ${entry?.hour}`), '1. renamed at 20 10');
 });

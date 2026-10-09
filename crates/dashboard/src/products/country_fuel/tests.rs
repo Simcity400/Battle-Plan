@@ -6,11 +6,41 @@ use replay::{
 };
 use std::sync::{Arc, atomic::AtomicBool};
 
+#[test]
+fn day_keeps_receipts_and_other_in_their_recorded_native_units() {
+    let row = replay::rows::CountryFuelRow {
+        ring_gain_raw: 17,
+        ring_consumed_raw: 32769,
+        ring_received_0_raw: 50001,
+        ring_received_1_raw: 25000,
+        ring_received_2_raw: 24999,
+        ring_other_raw: 1,
+        ..Default::default()
+    };
+    let day = super::read_of(&row, 1000, true, None).day.unwrap();
+    assert_eq!(
+        day.received_raw,
+        ["50001", "25000", "24999"].map(str::to_owned)
+    );
+    assert_eq!(day.other_raw, "1");
+    assert_eq!(day.burned_raw, "32769");
+    assert!(
+        super::read_of(&row, 1000, true, Some(super::DayLeftOut::Overlaps))
+            .day
+            .is_none()
+    );
+}
+
 /// A frame with Germany's fuel status (native id `germany`, linked through id 11
 /// too) and Italy's, each owning a state. `read` times a walk of another table of
 /// the fuel slot only, as a shared read times only its anchor. Fuel values are
 /// (current, maximum, ring gain, ring consumed) raw.
-fn fuel_frame(hour: i32, read: bool, germany: u32, fuel: (i64, i64, i64, i64)) -> DecodedFrame {
+pub(super) fn fuel_frame(
+    hour: i32,
+    read: bool,
+    germany: u32,
+    fuel: (i64, i64, i64, i64),
+) -> DecodedFrame {
     use replay::rows::{CountryFuelRow, StateRow};
     let mut frame = source(1, hour, Some(1));
     let country = |id, canonical_slot, tag: &[u8]| CountryRow {
@@ -125,7 +155,7 @@ fn unowned_unknown(mut frame: DecodedFrame) -> DecodedFrame {
 }
 
 /// The fuel slot's hour on day `day`.
-fn fuel_slot(day: i32) -> i32 {
+pub(super) fn fuel_slot(day: i32) -> i32 {
     let replay::cadence::Cadence::Daily(slot) = replay::cadence::cadence(TableId::CountryFuel)
     else {
         panic!("CountryFuel is read in a daily slot");
@@ -421,4 +451,435 @@ fn fuel_replies_with_the_engine_scales_and_answers_again_from_the_cache() {
     let missing = load("XXX");
     assert!(missing.reads.is_empty());
     assert!(missing.warnings[0].starts_with("XXX:"));
+}
+
+#[test]
+fn five_thousand_country_requests_share_one_decode_and_ownership_walk() {
+    use crate::products::{
+        CountryParams, LoadContext, Product,
+        country_fuel::{CountryFuel, CountryFuelConsumption},
+    };
+    use replay::rows::{CountryFuelRow, StateRow};
+    let count = 5_000_u32;
+    let slot = fuel_slot(1000);
+    let frame = |hour| {
+        let mut frame = source(1, hour, Some(1));
+        *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+            (1..=count)
+                .map(|slot| CountryRow {
+                    id: slot + 10_000,
+                    canonical_slot: slot,
+                    tag: format!("C{slot:04}").into_bytes(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(
+                (1..=count)
+                    .map(|slot| CountryLinkRow {
+                        id: slot + 10_000,
+                        canonical_slot: slot,
+                    })
+                    .collect(),
+            ));
+        *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+            (1..=count)
+                .map(|slot| StateRow {
+                    id: slot,
+                    owner: slot + 10_000,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *frame.tables[TableId::CountryFuel.index()] = TableView::Complete(TableRows::CountryFuel(
+            (1..=count)
+                .map(|slot| CountryFuelRow {
+                    country: slot + 10_000,
+                    current_raw: i64::from(slot),
+                    maximum_raw: i64::from(count),
+                    ring_gain_raw: i64::from(slot),
+                    country_instance: replay::rows::Recorded::Value(Some(9)),
+                    demand: replay::rows::Recorded::Value(replay::rows::FuelDemandRead {
+                        hour,
+                        country_instance: Some(9),
+                        divisions: vec![replay::rows::FuelDemandUnit {
+                            reference: u64::from(slot) << 32 | 29,
+                            rate_raw: Some(i64::from(slot)),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        frame.metrics.table_ns[TableId::CountryFuelConsumers.index()] =
+            u64::from(hour == slot || hour == slot + 24);
+        frame
+    };
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, (slot..=slot + 24).map(frame).collect())],
+        )
+        .unwrap(),
+    );
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "fuel-5000".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let branch = super::scanned(&source, 1, &AtomicBool::new(false)).unwrap();
+    for slot in 1..=count {
+        let reply = CountryFuel::load(
+            &source,
+            &CountryParams {
+                branch_id: "1".into(),
+                tag: format!("C{slot:04}"),
+            },
+            &LoadContext { content: None },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(reply.reads.last().unwrap().fuel_raw, slot.to_string());
+        assert_eq!(
+            reply.reads.last().unwrap().day.as_ref().unwrap().gained_raw,
+            slot.to_string()
+        );
+        let demand = CountryFuelConsumption::load(
+            &source,
+            &CountryParams {
+                branch_id: "1".into(),
+                tag: format!("C{slot:04}"),
+            },
+            &LoadContext { content: None },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(
+            demand.reads.last().unwrap().known_daily_raw[0],
+            (i64::from(slot) * 24).to_string()
+        );
+        assert_eq!(
+            demand.reads.last().unwrap().last_hour,
+            reply.reads.last().unwrap().last_hour
+        );
+    }
+    // Revisit the first country after 5,000 requests: no country-cache eviction.
+    let after = super::scanned(&source, 1, &AtomicBool::new(false)).unwrap();
+    assert!(Arc::ptr_eq(&branch, &after));
+    assert_eq!(after.countries.len(), count as usize);
+    assert_eq!(after.decoded_frames, 25);
+    assert_eq!(after.ownership_rows, 25 * count as usize);
+}
+
+#[test]
+fn a_new_tag_has_the_same_absent_sample_evidence_as_a_single_country_scan() {
+    let slot = fuel_slot(1000);
+    let frames = (0..=24)
+        .map(|hour| {
+            let mut frame = fuel_frame(slot + hour, hour == 0 || hour == 24, 9001, (1, 2, 3, 4));
+            if hour < 12
+                && let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *frame.tables[TableId::Countries.index()]
+            {
+                rows.iter_mut().find(|row| row.tag == b"GER").unwrap().tag = b"OLD".to_vec();
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let scanned = super::scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        scanned.reads.last().unwrap().left_out,
+        Some(super::DayLeftOut::NotUpdated)
+    );
+}
+
+pub(super) fn award_row(hour: i32) -> replay::rows::CountryFuelRow {
+    use replay::rows::{
+        CountryFuelRow, FuelAwardHour, FuelAwardRecipient, FuelAwardWindow, Recorded,
+    };
+    CountryFuelRow {
+        country: 11,
+        country_instance: Recorded::Value(Some(9)),
+        ring_gain_raw: 999,
+        awards: Recorded::Value(FuelAwardWindow {
+            country_instance: 9,
+            continuity_start_hour: Some(977),
+            reason: Vec::new(),
+            hours: (hour - 23..=hour)
+                .map(|hour| FuelAwardHour {
+                    hour,
+                    gains_raw: [1, -2, 3, 0],
+                    own_gain_raw: 2,
+                    transfers_raw: [1, -3, 4, 1],
+                    consumed_raw: -1,
+                    received_raw: [-1, 0, 0],
+                    remaining_hours: 7,
+                    recipients: vec![FuelAwardRecipient {
+                        kind: 0,
+                        reference: 7 << 32 | 29,
+                        owner: 37,
+                        amount_raw: -1,
+                        name: Some(if hour % 2 == 0 {
+                            b"before".to_vec()
+                        } else {
+                            b"after".to_vec()
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                })
+                .collect(),
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn completed_award_totals_keep_twenty_four_i64_extremes_and_per_update_conversion_exact() {
+    let mut row = award_row(1000);
+    let replay::rows::Recorded::Value(window) = &mut row.awards else {
+        panic!()
+    };
+    for entry in &mut window.hours {
+        entry.own_gain_raw = i64::MAX;
+        entry.gains_raw = [i64::MAX, i64::MIN, 0, 0];
+        entry.consumed_raw = i64::MIN;
+    }
+    let day = super::read_of(&row, 1000, true, None).day.unwrap();
+    let totals = day.awards.unwrap();
+    assert_eq!(day.gained_raw, "221360928884514619368");
+    assert_eq!(day.burned_raw, (24_i128 * i128::from(i64::MIN)).to_string());
+    assert_eq!(totals.gains_raw[0], day.gained_raw);
+    assert_eq!(totals.gains_raw[1], day.burned_raw);
+    assert_eq!(
+        totals.own_gain_quantity_raw,
+        (24_i128 * i128::from(engine::fuel_awards::quantity(i64::MAX))).to_string()
+    );
+}
+
+#[test]
+fn native_fuel_label_templates_expand_content_and_preserve_unrecorded_oil_operand() {
+    let localisation = crate::catalogue::tests::loaded(
+        "l_english:\n FUEL_DAILY_GAIN_BASE:0 \"$OIL$: $NUM$\"\n OIL:0 \"Content oil label\"\n MOD_BASE:0 \"Synthetic source\"\n FUEL_DAILY_GAIN_FROM_OIL:0 \"$MOD_BASE$: From $OIL$ oil: $NUM|H$\"\n",
+    );
+    let base = super::fuel_label(Some(&localisation), "FUEL_DAILY_GAIN_BASE", false);
+    assert_eq!(base.template.as_deref(), Some("Content oil label: {NUM}"));
+    assert_eq!(base.arguments, ["NUM"]);
+    assert!(base.reason.is_none());
+    let oil = super::fuel_label(Some(&localisation), "FUEL_DAILY_GAIN_FROM_OIL", true);
+    assert_eq!(
+        oil.template.as_deref(),
+        Some("Synthetic source: From {OIL} oil: {NUM}")
+    );
+    assert_eq!(oil.arguments, ["NUM", "OIL"]);
+    assert!(oil.reason.unwrap().contains("Historical OIL count"));
+    let missing = super::fuel_label(Some(&localisation), "FUEL_DAILY_GAIN_FROM_STATES", false);
+    assert!(missing.template.is_none());
+    assert!(
+        missing
+            .reason
+            .unwrap()
+            .contains("FUEL_DAILY_GAIN_FROM_STATES")
+    );
+}
+
+#[test]
+fn applied_updates_override_prefilled_ring_and_stale_ownership_without_inventing_wings() {
+    let row = award_row(1000);
+    let read = super::read_of(
+        &row,
+        1000,
+        true,
+        Some(super::DayLeftOut::OwnershipNotRecorded),
+    );
+    assert_eq!(read.left_out, None);
+    let day = read.day.unwrap();
+    assert_eq!(
+        (day.gained_raw.as_str(), day.burned_raw.as_str()),
+        ("48", "-24")
+    );
+    let totals = day.awards.unwrap();
+    assert_eq!(
+        totals.gains_raw,
+        ["24", "-48", "72", "0"].map(str::to_owned)
+    );
+    assert_eq!(totals.own_gain_quantity_raw, "0");
+    assert_eq!(
+        totals.transfers_raw,
+        ["24", "-72", "96", "24"].map(str::to_owned)
+    );
+    let recipients = super::recipients_of(
+        &row,
+        &AtomicBool::new(false),
+        crate::catalogue::display_text,
+    )
+    .unwrap();
+    assert_eq!(recipients.len(), 2);
+    assert!(
+        recipients
+            .iter()
+            .all(|part| part.amount_raw == "-12" && part.owner == "37")
+    );
+    assert_eq!(
+        recipients
+            .iter()
+            .filter_map(|part| part.recorded_name.as_deref())
+            .collect::<Vec<_>>(),
+        ["after", "before"]
+    );
+    assert!(
+        super::recipients_of(&row, &AtomicBool::new(true), crate::catalogue::display_text).is_err()
+    );
+    let mut row = row;
+    let replay::rows::Recorded::Value(window) = &mut row.awards else {
+        panic!()
+    };
+    window.hours[0].recipients[0].kind = 1;
+    window.hours[0].recipients[0].name = None;
+    let recipients = super::recipients_of(
+        &row,
+        &AtomicBool::new(false),
+        crate::catalogue::display_text,
+    )
+    .unwrap();
+    let air = recipients.iter().find(|part| part.kind == 1).unwrap();
+    assert!(air.recorded_name.is_none());
+    assert!(
+        air.name_reason
+            .as_ref()
+            .unwrap()
+            .contains("no wing receipt")
+    );
+}
+
+#[test]
+fn attribution_requires_the_supplying_hour_and_native_country_identity() {
+    use replay::rows::Recorded;
+    let mut row = award_row(1000);
+    assert!(super::awards_of(&row, 1001).is_err());
+    row.country_instance = Recorded::Value(Some(10));
+    assert!(super::awards_of(&row, 1000).is_err());
+    row.country_instance = Recorded::Value(Some(9));
+    let Recorded::Value(window) = &mut row.awards else {
+        panic!()
+    };
+    window.hours.remove(7);
+    assert!(super::awards_of(&row, 1000).is_err());
+    row.awards = Recorded::NotRecorded;
+    let legacy = super::read_of(&row, 1000, true, None);
+    assert_eq!(legacy.day.unwrap().gained_raw, "999");
+    assert!(legacy.awards_reason.unwrap().contains("not recorded"));
+}
+
+#[test]
+fn cached_receipt_names_obey_viewer_language_without_losing_numeric_receipts() {
+    let row = award_row(1000);
+    let mut localisation = installed_content::localisation::Localisation::default();
+    localisation.language = "french".into();
+    let rows = super::recipients_of(&row, &AtomicBool::new(false), |bytes| {
+        crate::scripted_text::stored_text(
+            &localisation,
+            "english",
+            bytes,
+            "fuel recipient cached name",
+        )
+    })
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| {
+        row.amount_raw == "-12"
+            && row.recorded_name.is_none()
+            && row
+                .name_reason
+                .as_ref()
+                .unwrap()
+                .contains("viewer's language is french")
+    }));
+    localisation.language = "english".into();
+    let rows = super::recipients_of(&row, &AtomicBool::new(false), |bytes| {
+        crate::scripted_text::stored_text(
+            &localisation,
+            "english",
+            bytes,
+            "fuel recipient cached name",
+        )
+    })
+    .unwrap();
+    assert!(rows.iter().all(|row| row.recorded_name.is_some()));
+    const { assert!(<super::CountryFuelAwards as crate::products::Product>::CONTENT_DEPENDENT) };
+}
+
+#[test]
+fn award_product_refuses_carried_dates_replacements_and_cancellation() {
+    use super::{CountryFuelAwards, FuelAwardsParams};
+    use crate::products::{LoadContext, Product};
+    let slot = fuel_slot(1000);
+    let frames = (slot..=slot + 1)
+        .map(|hour| {
+            let mut frame = fuel_frame(hour, hour == slot, 9001, (1, 2, 3, 4));
+            let TableView::Complete(TableRows::CountryFuel(rows)) =
+                &mut *frame.tables[TableId::CountryFuel.index()]
+            else {
+                panic!()
+            };
+            rows[0] = award_row(slot);
+            frame
+        })
+        .collect();
+    let replay = Arc::new(Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap());
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "fuel-awards".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut params = FuelAwardsParams {
+        branch_id: "1".into(),
+        tag: "GER".into(),
+        hour: slot,
+        country: "11".into(),
+        country_instance: 9,
+    };
+    let load = |params: &FuelAwardsParams, cancelled| {
+        CountryFuelAwards::load(
+            &source,
+            params,
+            &LoadContext { content: None },
+            &AtomicBool::new(cancelled),
+        )
+    };
+    let without_content = load(&params, false).unwrap();
+    assert_eq!(without_content.awards.recipients.len(), 2);
+    assert!(
+        without_content
+            .awards
+            .recipients
+            .iter()
+            .all(|row| row.amount_raw == "-12" && row.recorded_name.is_none())
+    );
+    assert!(
+        without_content
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("2 fuel recipient names refused:"))
+    );
+    assert!(load(&params, true).is_err());
+    params.hour += 1;
+    assert!(load(&params, false).is_err());
+    params.hour = slot;
+    params.country_instance += 1;
+    assert!(load(&params, false).is_err());
 }

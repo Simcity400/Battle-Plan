@@ -162,7 +162,7 @@ pub fn link_slot(links: &[CountryLinkRow], raw: u32) -> Option<u32> {
 /// keep the mapping. The views are held, not just their addresses,
 /// so a freed table's address can never be mistaken for them. A link whose
 /// country has no tag, or a tag that is not UTF-8, names no country.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct LinkTags {
     tags: HashMap<u32, String>,
     from: Option<(SharedView, SharedView)>,
@@ -232,6 +232,25 @@ impl LinkTags {
     pub fn iter(&self) -> impl Iterator<Item = (&u32, &String)> {
         self.tags.iter()
     }
+}
+
+/// One raw link's canonical slot only when every row agrees. True aliases
+/// remain valid; a contradictory raw link cannot name any country safely.
+pub fn link_slots(links: &[CountryLinkRow]) -> HashMap<u32, u32> {
+    let mut slots = HashMap::new();
+    let mut ambiguous = std::collections::HashSet::new();
+    for link in links {
+        if slots
+            .insert(link.id, link.canonical_slot)
+            .is_some_and(|slot| slot != link.canonical_slot)
+        {
+            ambiguous.insert(link.id);
+        }
+    }
+    for raw in ambiguous {
+        slots.remove(&raw);
+    }
+    slots
 }
 
 /// A tag's country hour by hour, as (canonical slot, country id): whether this
@@ -313,6 +332,27 @@ pub fn tagged_countries<'a>(
             .or_insert(TaggedCountry::Unresolved);
         if matches!(entry, TaggedCountry::Unresolved)
             && let Ok(slot) = mapped_slot(country, links)
+        {
+            *entry = TaggedCountry::Found(country, slot);
+        }
+    }
+    tagged
+}
+
+/// The same lineage lookup using a caller's raw-link index, for an hourly product
+/// that already aggregates other tables by slot. Each recorded row is visited once.
+pub fn tagged_countries_indexed<'a>(
+    countries: &'a [CountryRow],
+    slots: &HashMap<u32, u32>,
+) -> HashMap<&'a [u8], TaggedCountry<'a>> {
+    let mut tagged = HashMap::new();
+    for country in countries {
+        let entry = tagged
+            .entry(country.tag.as_slice())
+            .or_insert(TaggedCountry::Unresolved);
+        if matches!(entry, TaggedCountry::Unresolved)
+            && let Some(&slot) = slots.get(&country.id)
+            && slot == country.canonical_slot
         {
             *entry = TaggedCountry::Found(country, slot);
         }

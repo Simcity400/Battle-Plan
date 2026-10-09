@@ -52,4 +52,6 @@ Use the worktree's `.cargo-target` and shared `C:\sccache_cache`; never delete t
 
 Keep the root README as an index, shared rules here, component details beside each crate and field evidence beside code. Preserve approved decisions.
 
+A README describes its area for agents working in it: purpose, layout, key concepts and invariants, rules and pitfalls, and how to check a change. Describe what exists now. Change history, status or acceptance records, test results, native evidence dumps and prose copies of code catalogues stay out.
+
 Keep game installation files, copied game source/shader/GUI fixtures, captures and private audit reports outside Git. Use synthetic inputs for tests. Before sharing source or artifacts, follow [publication guidance](docs/publication.md) and run `python tools/check-publication.py` on the staged index; this guard does not audit history or establish rights.

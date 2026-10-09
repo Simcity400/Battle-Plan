@@ -197,6 +197,10 @@ fn identity_membership_and_child_vectors_keep_native_order_and_null_pointers() {
             parent: handle(431, REFERENCE_TYPE),
             leader: handle(279, 4713),
             hq_provider: handle(12456, 4713),
+            pointer: ARMY,
+            name_start: 0,
+            name_len: 0,
+            name_known: false,
         }
     );
     // The army group has no leader, no HQ provider and no parent; those
@@ -214,6 +218,10 @@ fn identity_membership_and_child_vectors_keep_native_order_and_null_pointers() {
             parent: 0,
             leader: 0,
             hq_provider: 0,
+            pointer: GROUP,
+            name_start: 0,
+            name_len: 0,
+            name_known: false,
         }
     );
     assert_eq!(

@@ -4,23 +4,24 @@ import type { Range } from './view.ts';
 /** Who drives a chart's hover. The pointer drives it while it moves over the chart.
  * A navigation key hands it to the keyboard and clears the pointer's hover, so the
  * hour drawn, its tooltip, what is read out and what the keys act on are one hour;
- * moving the pointer again takes it back. */
-export interface HoverState<P> {
+ * moving the pointer again takes it back. Keys default to hours; categorical
+ * charts retain their selected item key. */
+export interface HoverState<P, K = number> {
   pointer: P | null;
-  keyed: number | null;
+  keyed: K | null;
   /** The keys opened a context menu. The browser follows the menu key (or Shift+F10)
    * with its own contextmenu event, at a place of its choosing; that event must not
    * open a second menu at whatever hour lies there. */
   menuKey: boolean;
 }
 
-export type HoverEvent<P> =
+export type HoverEvent<P, K = number> =
   /** The pointer moved over the chart. */
   | { type: 'pointer'; point: P }
   /** The pointer left the chart. */
   | { type: 'pointer-leave' }
-  /** A navigation key chose an hour (null: nothing in view to show). */
-  | { type: 'key'; hour: number | null }
+  /** A navigation key chose an hour or item key (null: nothing in view to show). */
+  | { type: 'key'; hour: K | null }
   /** Escape, or the chart lost focus. */
   | { type: 'key-clear' }
   /** The menu key (or Shift+F10) opened the context menu at the hour shown. */
@@ -30,9 +31,9 @@ export type HoverEvent<P> =
   /** The browser's contextmenu event arrived. */
   | { type: 'contextmenu' };
 
-export const NO_HOVER: HoverState<never> = { pointer: null, keyed: null, menuKey: false };
+export const NO_HOVER: HoverState<never, never> = { pointer: null, keyed: null, menuKey: false };
 
-export function reduceHover<P>(state: HoverState<P>, event: HoverEvent<P>): HoverState<P> {
+export function reduceHover<P, K = number>(state: HoverState<P, K>, event: HoverEvent<P, K>): HoverState<P, K> {
   switch (event.type) {
     case 'pointer': return { ...state, pointer: event.point, keyed: null };
     case 'pointer-leave': return state.pointer == null ? state : { ...state, pointer: null };
@@ -46,7 +47,7 @@ export function reduceHover<P>(state: HoverState<P>, event: HoverEvent<P>): Hove
 
 /** Whether a contextmenu event is the pointer's own (a right-click), to open a menu
  * at the hour under it; else it only follows a menu the keys already opened. */
-export const pointerMenu = (state: HoverState<unknown>) => !state.menuKey;
+export const pointerMenu = (state: Pick<HoverState<unknown>, 'menuKey'>) => !state.menuKey;
 
 /** What the hover shows: whatever the pointer is over (`pointed`) while it drives,
  * else the keyboard's hour while it is in view and not after `until`. */

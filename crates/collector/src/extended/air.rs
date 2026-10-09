@@ -95,6 +95,11 @@ impl Default for ScoreCapacities {
 }
 
 impl Capacities {
+    pub(crate) fn raise_for_names(&mut self, demand: crate::country_scale::AceNamesDemand) {
+        self.rows[5] = self.rows[5].max(demand.aces);
+        self.ace_names = self.ace_names.max(demand.ace_bytes);
+    }
+
     /// Every strategic-air country holds a RaidAirScores witness row; its
     /// nonzero pairs grow the table on demand.
     pub fn raise_for_countries(&mut self, slots: usize) {
@@ -932,6 +937,18 @@ impl Captured {
                 name: text(r.name),
                 surname: text(r.surname),
                 callsign: text(r.callsign),
+                presentation: rows::Recorded::Value(r.presentation.map(|value| {
+                    rows::AirAcePresentation {
+                        gender: value.gender,
+                        pool_index: value.pool_index,
+                        definition: value.definition.map(text),
+                        portrait: value.portrait.map(|value| rows::AirAcePortraitInputs {
+                            cached: value.cached.map(text),
+                            culture: value.culture.map(text),
+                            fallback: value.fallback.map(text),
+                        }),
+                    }
+                })),
             }
         })
     }
@@ -1234,7 +1251,7 @@ fn patrol_combats(
     Ok((outcome, (count, regions)))
 }
 
-fn require_parent(parent: Outcome, child: Outcome) -> Outcome {
+pub(super) fn require_parent(parent: Outcome, child: Outcome) -> Outcome {
     match parent {
         Outcome::Rows { .. } => child,
         Outcome::Unavailable { reason } => Outcome::Unavailable { reason },
@@ -1316,7 +1333,24 @@ fn valid_names(outcome: Outcome, rows: &[cace::Row], bytes: &[u8], len: usize) -
     len <= bytes.len()
         && rows.get(..outcome.len()).is_some_and(|rows| {
             rows.iter().all(|row| {
-                [row.name, row.surname, row.callsign].iter().all(|range| {
+                [
+                    Some(row.name),
+                    Some(row.surname),
+                    Some(row.callsign),
+                    row.presentation.and_then(|value| value.definition),
+                    row.presentation
+                        .and_then(|value| value.portrait)
+                        .and_then(|value| value.cached),
+                    row.presentation
+                        .and_then(|value| value.portrait)
+                        .and_then(|value| value.culture),
+                    row.presentation
+                        .and_then(|value| value.portrait)
+                        .and_then(|value| value.fallback),
+                ]
+                .into_iter()
+                .flatten()
+                .all(|range| {
                     range
                         .start
                         .checked_add(range.len)

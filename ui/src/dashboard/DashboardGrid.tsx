@@ -14,7 +14,7 @@ import type { WidgetRuntime } from './definitions';
 import { OptionDraft } from './optionDraft';
 import type { OptionValue } from './options';
 import WidgetSettingsMenu from './WidgetSettingsMenu';
-import CountryChip from './CountryChip';
+import DefaultCountryChip from './CountryChip';
 import { WidgetBody } from './widgets';
 
 interface Props {
@@ -56,6 +56,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   const [active, setActive] = useState(true);
   const [diagnostics, setDiagnostics] = useState<string[]>([]);
   const [headerSlot, setHeaderSlot] = useState<HTMLSpanElement | null>(null);
+  const [countrySlot, setCountrySlot] = useState<HTMLSpanElement | null>(null);
   useEffect(() => {
     const target = element.current;
     if (!target) return;
@@ -79,6 +80,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   } : undefined;
   const missing = widget.trackIds.filter((id) => !runtime.tracks.some((track) => track.id === id));
   const HeaderControls = definition?.headerControls;
+  const CountryChip = definition?.countryChip ?? DefaultCountryChip;
   const canFollow = !!definition?.history && definition.timeModes.includes('follow') && definition.timeModes.includes('campaign');
   const live = widget.time.mode === 'follow';
   // Name the campaign only when several are open; one campaign needs no label.
@@ -90,7 +92,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
       <span className="dash-widget-icon" aria-hidden="true"><Icon name={definition?.icon ?? 'grid'} /></span>
       <div className="dash-widget-title"><h2>{widget.title}<span className="dash-widget-summary" ref={setHeaderSlot} /></h2>
         {source && <span className="dash-widget-subtitle">{recordingName(source.path).replace(/\.(?:battleplan|hoi4replay)$/i, '')}</span>}</div>
-      {definition?.data !== false && <CountryChip widget={widget} runtime={runtime} />}
+      {definition?.data !== false && definition?.countrySelection !== false && <CountryChip widget={widget} runtime={runtime} onSlot={setCountrySlot} />}
       <div className="dash-widget-actions">
       {canFollow && <button type="button" role="switch" aria-checked={live} className="live-toggle" aria-label={`${widget.title}: follow playback`}
         data-tooltip={live ? 'Following the timeline. Switch off to see the whole campaign.' : 'Showing the whole campaign. Switch on to follow the timeline.'}
@@ -105,7 +107,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     </header>
     {missing.length > 0 && runtime.tracks.some((track) => widget.trackIds.includes(track.id)) && <div className="dash-inline-warning"><Icon name="alert" />{missing.map((id) => template.tracks.find((track) => track.id === id)?.label ?? id).join(', ')} unavailable</div>}
     <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
-      <WidgetBody widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} onDiagnostics={setDiagnostics} setOption={saveOption} />
+      <WidgetBody widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} onDiagnostics={setDiagnostics} setOption={saveOption} />
     </div></div>
   </article>;
 }

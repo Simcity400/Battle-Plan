@@ -225,15 +225,17 @@ pub(super) struct EnvironmentInputs {
     pub warnings: Vec<String>,
     pub(super) state_names: BTreeMap<u32, Result<String, String>>,
     state_provinces: BTreeMap<u32, Vec<u32>>,
+    state_error: Option<String>,
+    continents: Result<Vec<String>, String>,
     impassable: BTreeSet<u32>,
     neighbors: Result<BTreeMap<u32, Vec<u32>>, String>,
     terrain: Option<installed_content::movement::MovementMap>,
     terrain_names: Result<Vec<Vec<u8>>, String>,
     dlcs: BTreeSet<String>,
-    triggers: installed_content::trigger_keys::TriggerNames,
+    triggers: Result<installed_content::trigger_keys::TriggerNames, String>,
     aliases: std::sync::Arc<installed_content::tag_aliases::TagAliases>,
-    buildings: installed_content::buildings::Buildings,
-    bonuses: [i64; 2],
+    buildings: Result<installed_content::buildings::Buildings, String>,
+    bonuses: Result<[i64; 2], String>,
     roles: Result<LeaderRoles, String>,
     invasion_days: Result<i32, String>,
     constants: Result<installed_content::script_constants::Constants, String>,
@@ -245,29 +247,58 @@ impl EnvironmentInputs {
     fn read(content: &ScriptedContent, environment: &Environment) -> std::io::Result<Self> {
         let layers = &content.layers.layers;
         let defines = environment.defines();
-        let StateContent {
-            states,
-            names: state_names,
-            warnings,
-            ..
-        } = content.cached_states().map_err(crate::invalid)?;
-        let states = states.definitions();
-        let state_provinces = states
-            .iter()
-            .map(|(&id, s)| (id, s.provinces.clone()))
-            .collect();
-        let buildings = installed_content::buildings::read(layers)?;
-        let neighbors = installed_content::province_graph::ProvinceGraph::read(layers)
-            .and_then(|(graph, _)| graph.neighbor_states(&state_provinces))
-            .map_err(|e| e.to_string());
+        // Map and count content failures belong to the predicates that read
+        // them. A recorded political predicate needs none of those assets.
+        let mut warnings = Vec::new();
+        let mut state_provinces = BTreeMap::new();
+        let mut state_names = BTreeMap::new();
+        let mut impassable = BTreeSet::new();
+        let state_error = match content.cached_states() {
+            Ok(content) => {
+                warnings.extend(live_state_warnings(&content.warnings).map(str::to_owned));
+                state_names.clone_from(&content.names);
+                for (&id, state) in content.states.definitions() {
+                    state_provinces.insert(id, state.provinces.clone());
+                    if state.impassable {
+                        impassable.insert(id);
+                    }
+                }
+                None
+            }
+            Err(why) => Some(why.to_owned()),
+        };
+        let buildings = installed_content::buildings::read(layers).map_err(|why| why.to_string());
+        let triggers = installed_content::scripted_triggers::read(layers)
+            .map(|scripted| {
+                let counts = buildings.as_ref().ok().and_then(|buildings| {
+                    let ideologies = environment.ideologies().ok()?;
+                    let resources = installed_content::resources::read(layers).ok()?;
+                    Some(installed_content::trigger_keys::CountTriggerNames::new(
+                        buildings,
+                        ideologies,
+                        &resources.0,
+                    ))
+                });
+                installed_content::trigger_keys::TriggerNames { scripted, counts }
+            })
+            .map_err(|why| why.to_string());
+        let neighbors = match &state_error {
+            Some(why) => Err(why.clone()),
+            None => installed_content::province_graph::ProvinceGraph::read(layers)
+                .and_then(|(graph, _)| graph.neighbor_states(&state_provinces))
+                .map_err(|e| e.to_string()),
+        };
+        let continents = installed_content::terrain::read_default_map(layers)
+            .and_then(|map| layers.read(&map.file("continent")?))
+            .and_then(|bytes| installed_content::equipment_graphics::context::continent_names(&bytes))
+            .map_err(|why| why.to_string());
         Ok(Self {
-            warnings: live_state_warnings(warnings).map(str::to_owned).collect(),
+            warnings,
             state_provinces,
-            impassable: states
-                .iter()
-                .filter_map(|(&id, s)| s.impassable.then_some(id))
-                .collect(),
-            state_names: state_names.clone(),
+            state_error,
+            continents,
+            impassable,
+            state_names,
             neighbors,
             terrain: environment.terrain().ok().and_then(|terrain| {
                 installed_content::movement::MovementMap::read_with_terrain(layers, defines, terrain).ok()
@@ -280,18 +311,11 @@ impl EnvironmentInputs {
                     .collect()
             }),
             dlcs: layers.dlc_names()?,
-            triggers: installed_content::trigger_keys::TriggerNames::new(
-                // Predicate-only copy; relation descriptions retain bindings (141395B30/1413931A0).
-                installed_content::scripted_triggers::read(layers)?,
-                installed_content::trigger_keys::CountTriggerNames::new(
-                    &buildings,
-                    environment.ideologies().map_err(std::io::Error::other)?,
-                    &installed_content::resources::read(layers)?.0,
-                ),
-            ),
+            triggers,
             aliases: std::sync::Arc::new(installed_content::tag_aliases::read(layers)?),
             buildings,
-            bonuses: crate::state_resources::resource_bonuses(defines)?,
+            bonuses: crate::state_resources::resource_bonuses(defines)
+                .map_err(|why| why.to_string()),
             // Visible-trigger templates differ from the full character role/name projections.
             roles: installed_content::characters::leader_templates(layers)
                 .map(LeaderRoles::new)
@@ -308,14 +332,17 @@ impl EnvironmentInputs {
     fn facts<'a>(&'a self, environment: &'a Environment) -> ContentFacts<'a> {
         ContentFacts {
             state_provinces: &self.state_provinces,
+            state_content: self.state_error.as_deref().map_or(Ok(()), Err),
+            continents: self.continents.as_deref().map_err(String::as_str),
+            ideologies: environment.ideologies.as_ref().map_err(String::as_str),
             impassable: &self.impassable,
             neighbor_states: self.neighbors.as_ref().map_err(String::as_str),
             terrain: self.terrain.as_ref(),
             dlcs: &self.dlcs,
-            triggers: &self.triggers,
+            triggers: self.triggers.as_ref().map_err(String::as_str),
             tag_aliases: &self.aliases,
-            buildings: &self.buildings,
-            resource_bonuses: Ok(self.bonuses),
+            buildings: self.buildings.as_ref().map_err(String::as_str),
+            resource_bonuses: self.bonuses.as_ref().copied().map_err(String::as_str),
             leader_roles: self.roles.as_ref().map_err(String::as_str),
             invasion_prepare_days: self.invasion_days.as_ref().copied().map_err(String::as_str),
             script_constants: self.constants.as_ref().map_err(String::as_str),
@@ -334,6 +361,19 @@ impl EnvironmentInputs {
 }
 
 impl ScriptedContent {
+    /// Native content-load callers use a fresh empty scope, without a game
+    /// hour. Reuse this cached content environment; runtime operands remain
+    /// unavailable instead of borrowing a later recording read.
+    pub(crate) fn unrecorded_trigger_world(&self) -> Result<World<'_>, String> {
+        let environment = self.environment()?;
+        let facts = environment.inputs(self)?.facts(environment);
+        Ok(World::unrecorded(
+            facts.dlcs,
+            facts.triggers.map_err(str::to_owned)?,
+            facts.tag_aliases,
+        ))
+    }
+
     pub(crate) fn cached_states(&self) -> Result<&StateContent, &str> {
         self.state_content
             .get_or_init(|| {
@@ -388,26 +428,49 @@ pub(crate) fn state_display_name(
     .and_then(|text| crate::catalogue::plain_text(&text))
 }
 
+impl ScriptedContent {
+    /// The same lazy content inputs as scripted text, retaining recorded table gaps.
+    pub(crate) fn recorded_world<'a>(
+        &'a self,
+        frame: &'a DecodedFrame,
+    ) -> Result<World<'a>, String> {
+        let environment = self.environment()?;
+        let facts = environment.inputs(self)?.facts(environment);
+        Ok(World::read(frame, facts).with_template_names(
+            &self.template_names,
+            &self.layers.layers,
+            &self.recorded_language,
+        ))
+    }
+}
+
 impl<'a> ScriptedText<'a> {
     fn environment(&self) -> Result<&'a EnvironmentInputs, String> {
         self.content.environment()?.inputs(self.content)
     }
 
-    /// The hour's trigger inputs, read on first use.
-    pub(crate) fn world(&self) -> Result<&World<'a>, String> {
+    /// The hour's trigger inputs; missing tables refuse only predicates that use them.
+    pub(crate) fn trigger_world(&self) -> Result<&World<'a>, String> {
         self.world
             .get_or_init(|| {
                 let facts = self.environment()?.facts(self.content.environment()?);
-                World::new(self.frame, facts).map(|world| {
-                    world.with_template_names(
-                        &self.content.template_names,
-                        &self.content.layers.layers,
-                        &self.content.recorded_language,
-                    )
-                })
+                Ok(World::read(self.frame, facts).with_template_names(
+                    &self.content.template_names,
+                    &self.content.layers.layers,
+                    &self.content.recorded_language,
+                ))
             })
             .as_ref()
             .map_err(Clone::clone)
+    }
+
+    /// Text expansion requires complete core scope tables.
+    pub(crate) fn world(&self) -> Result<&World<'a>, String> {
+        let world = self.trigger_world()?;
+        match world.core_gap() {
+            Some(gap) => Err(gap),
+            None => Ok(world),
+        }
     }
 
     pub(super) fn entry(
@@ -518,6 +581,16 @@ impl<'a> ScriptedText<'a> {
     }
 
     pub(crate) fn state_name(&self, id: u32) -> Result<String, String> {
+        self.state_name_for(id, false)
+    }
+
+    /// War naming copies display_name's already-localised string without
+    /// running CTextBase::ProcessString (140D0BCA0, 140AAF580, 1409CC380).
+    pub(crate) fn plain_state_name(&self, id: u32) -> Result<String, String> {
+        self.state_name_for(id, true)
+    }
+
+    fn state_name_for(&self, id: u32, plain: bool) -> Result<String, String> {
         let (states, gap) = rows::<tables::States>(self.frame);
         let state = states
             .iter()
@@ -531,7 +604,16 @@ impl<'a> ScriptedText<'a> {
                 let definition = environment.state_names.get(&id).ok_or_else(|| {
                     format!("GetName: state {id} has no recorded-content template")
                 })?;
-                self.localise(definition.as_ref().map_err(Clone::clone)?)
+                let key = definition.as_ref().map_err(Clone::clone)?;
+                if plain {
+                    crate::catalogue::localised(
+                        self.localisation,
+                        key,
+                        crate::catalogue::View::Plain,
+                    )
+                } else {
+                    self.localise(key)
+                }
             },
         )
     }
@@ -834,15 +916,17 @@ impl EnvironmentInputs {
             warnings: Vec::new(),
             state_names: BTreeMap::new(),
             state_provinces: BTreeMap::new(),
+            state_error: None,
+            continents: Err("no synthetic continent content is supplied".into()),
             impassable: BTreeSet::new(),
             neighbors: Ok(BTreeMap::new()),
             terrain: None,
             terrain_names: Ok(Vec::new()),
             dlcs: BTreeSet::new(),
-            triggers: Default::default(),
+            triggers: Ok(Default::default()),
             aliases: Default::default(),
-            buildings: Default::default(),
-            bonuses: [0; 2],
+            buildings: Ok(Default::default()),
+            bonuses: Ok([0; 2]),
             roles: Ok(LeaderRoles::new(Vec::new())),
             invasion_days: Ok(0),
             constants: Ok(Default::default()),

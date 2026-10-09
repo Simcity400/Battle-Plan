@@ -86,6 +86,7 @@ struct CadenceState {
     prev_hour: i32,
     prev_signal: i64,
     prev_campaign: Text<128>,
+    prev_world: u64,
 }
 
 impl CadenceState {
@@ -94,6 +95,7 @@ impl CadenceState {
             && self.prev_hour.checked_add(1) == Some(clock.hour)
             && self.prev_signal == clock.play_session_started_at
             && self.prev_campaign == clock.campaign_id
+            && self.prev_world == crate::world_lifetime::generation()
     }
     // New branches never open on stale data: first, signal, campaign and
     // discontinuity force a full refresh. A periodic encoding keyframe does
@@ -105,15 +107,18 @@ impl CadenceState {
             self.prev_hour = clock.hour;
             self.prev_signal = clock.play_session_started_at;
             self.prev_campaign = clock.campaign_id;
+            self.prev_world = crate::world_lifetime::generation();
             return true;
         }
         let signal = self.prev_signal != clock.play_session_started_at;
         let campaign = self.prev_campaign != clock.campaign_id;
         let gap = self.prev_hour.checked_add(1) != Some(clock.hour);
-        let force = signal || campaign || gap;
+        let world = self.prev_world != crate::world_lifetime::generation();
+        let force = signal || campaign || gap || world;
         self.prev_hour = clock.hour;
         self.prev_signal = clock.play_session_started_at;
         self.prev_campaign = clock.campaign_id;
+        self.prev_world = crate::world_lifetime::generation();
         force
     }
 }
@@ -242,6 +247,7 @@ impl OrderCounterCapture {
 }
 
 pub struct Captured {
+    pub world_generation: u64,
     /// This clocked hour's fixed-layout check, applied during conversion.
     pub fixed_layout: Option<crate::fixed_layout::Layout>,
     /// The same sequence carried by this frame's sole DecodeJob (zero is valid).
@@ -316,6 +322,7 @@ impl Captured {
         let mut division_fallback = crate::division_census::Census::new();
         division_fallback.reserve_sources(capacities[4].max(extended_capacities.division_sources));
         let frame = Self {
+            world_generation: crate::world_lifetime::generation(),
             capture_seq: 0,
             fixed_layout: None,
             order_counters: OrderCounterCapture::with_capacity(capacities[0]),
@@ -605,6 +612,8 @@ pub struct Shared {
     pub base: usize,
     pub trampoline: usize,
     pub frequency: u64,
+    /// Immutable attachment setting; disabling adds no score operand reads.
+    pub game_score_enabled: bool,
     /// Every slot is allocated before hook installation and never moves.
     pub frames: [AtomicPtr<Captured>; BUFFERS],
     pub completed: [AtomicI64; BUFFERS],
@@ -655,6 +664,8 @@ pub struct Shared {
     /// Set by the spool when a staggered table truncated or a static table
     /// failed: the next hour walks everything again, with grown buffers.
     pub force_next: AtomicBool,
+    /// Requested acquisition refresh; it does not revoke observer continuity.
+    pub refresh_next: AtomicBool,
     /// Sliced families (bit per [`crate::slicing::FAMILIES`] index) whose
     /// walked read the spool could not publish; the next hour forgets their
     /// fingerprint stores, so every owner is read again.
@@ -770,6 +781,7 @@ impl Shared {
             base,
             trampoline,
             frequency,
+            game_score_enabled: sizing.extended.game_score.enabled,
             frames: std::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
             completed: std::array::from_fn(|_| AtomicI64::new(0)),
             callback_tail: std::array::from_fn(|_| AtomicI64::new(0)),
@@ -801,6 +813,7 @@ impl Shared {
             template_models: Mutex::new(TemplateModelStats::default()),
             template_models_missed: AtomicU64::new(0),
             force_next: AtomicBool::new(false),
+            refresh_next: AtomicBool::new(false),
             forget_families: std::sync::atomic::AtomicU32::new(0),
             lexical_max: AtomicI32::new(-1),
             fixed_layout: OnceLock::new(),
@@ -1031,10 +1044,23 @@ unsafe fn return_slice_store(
     unsafe { *shared.slice_fingerprints[family].get() = Some(store) };
 }
 
+fn lost_observer_interval() {
+    crate::equipment_destruction::lost_drain();
+    crate::naval_result_sources::lost_drain();
+    crate::experience_gains::lost_drain();
+    crate::event_feed_observer::lost_drain();
+    crate::operation_outcomes::lost_drain();
+    crate::politics_changes::invalidate();
+    crate::land_events::fail();
+    crate::air_losses::lost_drain();
+    crate::building_bombing::lost_drain();
+}
+
 /// Restore an owned frame's absorbed witnesses, record its lost hour and return
 /// the buffer. Shared by every queue-full branch; no new loss reasons.
 fn drop_owned_frame(shared: &Shared, frame: &mut Captured, index: usize) {
-    crate::equipment_destruction::lost_drain();
+    frame.extended.discard_event_feed();
+    lost_observer_interval();
     // The dropped hour's sliced reads are never published: read them again.
     // A clockless frame read nothing, and its selections belong to an older hour.
     let read = frame.clock.is_some();
@@ -1088,6 +1114,7 @@ pub fn qpc() -> i64 {
 /// The hour's read, built at the tick's entry. `index` is None when no frame
 /// could be obtained before shutdown cancellation: retain an explicit loss witness.
 struct Dispatch {
+    world_generation: u64,
     index: Option<usize>,
     entry: Option<Clock>,
     entry_ticks: i64,
@@ -1145,7 +1172,7 @@ unsafe fn guarded_acquisition(
             }
         }
     }
-    crate::equipment_destruction::lost_drain();
+    lost_observer_interval();
     unsafe { (&mut *shared.pending.get()).push(entry) };
     shared.dropped.fetch_add(1, Ordering::Relaxed);
     false
@@ -1180,15 +1207,22 @@ pub(crate) unsafe fn synthetic_callback(
 pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     ACTIVE.fetch_add(1, Ordering::SeqCst);
     let shared = unsafe { &*SHARED.load(Ordering::Acquire) };
-    let recording = shared.recording.load(Ordering::Relaxed) && !crate::allocation::failed();
+    let admission = crate::runtime::admit_hourly_capture();
+    let recording = admission.is_some()
+        && shared.recording.load(Ordering::Acquire)
+        && !crate::allocation::failed();
     if recording {
         let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);
         let _reads = crate::read_accounting::Capture::new();
         let memory = CountedMemory::new(unsafe { LiveMemory::new() });
+        let world_generation = crate::world_lifetime::generation();
         // Read the clock at entry: +468 still the hour just ended, the trampoline
         // has not run. The frame's identity and the settled state the body reads.
         let clock_start = qpc();
-        let entry = cgame_state::read_clock(&memory, shared.base);
+        let entry = cgame_state::read_clock(&memory, shared.base).filter(|_| {
+            world_generation != u64::MAX && world_generation == crate::world_lifetime::generation()
+        });
+        crate::world_lifetime::boundary(world_generation, entry.is_some());
         crate::allocation::set_context(crate::allocation::Context {
             campaign_id: entry.and_then(|clock| clock.campaign_id.as_bytes().try_into().ok()),
             branch: None,
@@ -1196,6 +1230,10 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             failed_hour: entry.map(|clock| clock.hour),
         });
         crate::equipment_destruction::boundary(entry);
+        crate::naval_result_sources::boundary(entry);
+        crate::experience_gains::boundary(entry);
+        crate::air_losses::boundary(entry);
+        crate::building_bombing::boundary(entry);
         let entry_ticks = qpc() - clock_start;
         #[cfg(feature = "callback_profile")]
         let profile_before = callback_profile_counters(shared);
@@ -1213,6 +1251,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         // this thread helps drain them. A Rust panic must never unwind across
         // the extern boundary into the game: contain it and drop the hour.
         let job = Dispatch {
+            world_generation,
             index,
             entry,
             entry_ticks,
@@ -1252,6 +1291,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             crate::callback_profile::record(sample);
         }
     }
+    drop(admission);
     // Run the trampoline (this hour's tick) only after every live read finished.
     let original_begin = qpc();
     let original: unsafe extern "system" fn(usize, usize) =
@@ -1269,11 +1309,20 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
     ACTIVE.fetch_sub(1, Ordering::SeqCst);
 }
 
+fn begin_event_interval(frame: &mut Captured, hour: i32, continuous: bool, recovery: bool) {
+    crate::relation_changes::boundary(!continuous || recovery);
+    crate::history_changes::boundary(!continuous || recovery);
+    // Refresh/retry requests a full read without interrupting the native log.
+    // Only first/load/campaign/gap boundaries discard the land prefix.
+    frame.extended.drain_land_events(hour, !continuous);
+}
+
 /// Every live read of the hour that just ended, on the game thread inside the
 /// hook. The trampoline has not run, so the state is the settled end-of-hour
 /// boundary, read exactly as the original collector did.
 unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
     let Dispatch {
+        world_generation,
         index,
         entry,
         entry_ticks,
@@ -1283,6 +1332,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
 
     if let Some(index) = index {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        frame.world_generation = world_generation;
         frame.clock = entry;
         frame.qpc = dispatched;
         frame.table_ns = [0; TABLE_COUNT];
@@ -1456,23 +1506,30 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             let cadence = unsafe { &mut *shared.cadence.get() };
             let continuous = cadence.continuous(&clock);
             let recovery = shared.force_next.swap(false, Ordering::AcqRel);
+            let refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
             forget_unpublished_families(shared);
-            let force_full = cadence.force_full(&clock) | recovery;
+            let force_full = cadence.force_full(&clock) | recovery | refresh;
             // A periodic encoding keyframe does not interrupt native mutation
             // observation. Its freshly certified owned rows remain complete.
             if !continuous || recovery {
                 crate::portrait_changes::invalidate();
                 crate::advisor_changes::invalidate();
                 crate::opinion_changes::invalidate();
+                crate::operation_outcomes::invalidate();
+                crate::politics_changes::invalidate();
                 extended::intel::forget_relation_opinions();
             }
             // Before any capture of the hour, while this thread holds the game.
-            crate::relation_changes::boundary(!continuous || recovery);
-            crate::history_changes::boundary(!continuous || recovery);
+            begin_event_interval(frame, clock.hour, continuous, recovery);
+            frame
+                .extended
+                .drain_event_feed(clock.hour, !continuous || recovery);
             // Every production tick before this sample is in the log: the
             // daily pass runs on this thread, inside the hourly update this
             // callback precedes. The spool totals the log per branch.
             frame.extended.drain_line_output();
+            frame.extended.drain_fuel_awards();
+            crate::fuel_awards::install_offered();
             frame
                 .extended
                 .set_load_signal(clock.play_session_started_at);
@@ -1480,6 +1537,10 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             // its log too: the same serial pass advances construction.
             frame.extended.drain_construction_ic();
             crate::line_output::install_offered();
+            frame
+                .extended
+                .drain_peace_settlements(continuous && !recovery);
+            crate::peace_settlements::install_offered();
             frame.extended.prepare_hour(clock.hour, force_full);
             let state = clock.game_state as usize;
             let cache_begin = qpc();
@@ -1495,6 +1556,8 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                 })
                 .expect("every country snapshot lease returned before the next callback");
             let cached = country_snapshot.view(&memory);
+            frame.extended.capture_operation_outcomes();
+            frame.extended.capture_politics();
             frame.country_cache_status = cached.seed_status();
             frame.country_cache_entries = cached.cached_entries();
             let cache_prepare_ticks = qpc() - cache_begin;
@@ -1660,6 +1723,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     wing_limits[1],
                 ],
                 naval_limit: naval_job.wing_limit(),
+                game_score: shared.game_score_enabled,
             };
             let air_pending = queue!(acquisition::Job::AirWing(acquisition::RawRequest {
                 countries: Arc::clone(&country_snapshot),
@@ -3238,6 +3302,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     .fail_registrations_capture(reason);
             }
             if let Some(reason) = air_failure {
+                frame.extended.game_score_pilot().fail_air(reason);
                 frame
                     .extended
                     .air_wing_pilot()
@@ -3393,6 +3458,17 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
                     frame.table_ns[index] = ns;
                     decode::add_air_wing_copy_ns(slot, ns);
                     decode::add_air_wing_raw_bytes(slot, air_wing_report.raw_bytes[slot]);
+                }
+                for (table, ticks) in [
+                    TableId::CountryGameScoreInputs,
+                    TableId::AirWingGameScoreStats,
+                ]
+                .into_iter()
+                .zip(air_wing_report.game_score_ticks)
+                {
+                    let index = table.index();
+                    frame.table_ns[index] =
+                        frame.table_ns[index].saturating_add(shared.ns(ticks as i64));
                 }
             }
             // Hourly air statistics measured copy-only above; same
@@ -3605,6 +3681,12 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
         }
         frame.table_ns[0] = shared.ns(clock_ticks);
         frame.table_reads = crate::read_accounting::snapshot();
+        if frame.world_generation != crate::world_lifetime::generation() {
+            frame.extended.discard_event_feed();
+            lost_observer_interval();
+            frame.clock = None;
+            shared.force_next.store(true, Ordering::Release);
+        }
         // Keep the producer's loss witnesses until ownership is published.
         // A contained panic before enqueue must not consume earlier gaps.
         frame.dropped_before = unsafe { *shared.pending.get() };
@@ -3772,7 +3854,7 @@ unsafe fn acquire(shared: &Shared, dispatch: Dispatch) {
             shared.sample_roster(&memory, entry);
             (&mut *shared.pending.get()).push(entry);
         }
-        crate::equipment_destruction::lost_drain();
+        lost_observer_interval();
         shared.dropped.fetch_add(1, Ordering::Relaxed);
     }
 }

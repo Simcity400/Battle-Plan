@@ -9,24 +9,34 @@ use crate::{
 use engine::{Memory, allocation, walk::Outcome};
 use replay::{
     frame::TableView,
-    rows::{EquipmentDestructionRow, TableId, TableRows},
+    rows::{
+        DivisionDeletionDisposition, DivisionEquipmentDeletionRow, EquipmentDestructionCoverage,
+        EquipmentDestructionRow, Recorded, TableId, TableRows,
+    },
 };
 
-pub const N: usize = 1;
-pub const TABLES: [TableId; N] = [TableId::EquipmentDestruction];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
+pub const N: usize = 2;
+pub const TABLES: [TableId; N] = [
+    TableId::EquipmentDestruction,
+    TableId::DivisionEquipmentDeletions,
+];
+pub const READ_GROUPS: &[(&str, usize, &[usize])] =
+    &[("equipment destruction event drain", 0, &[0, 1])];
 pub type Capacities = usize;
 pub struct Captured {
     rows: CaptureRows<producer::Entry>,
+    deletion_unavailable: Option<&'static str>,
 }
 impl Captured {
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(*c),
+            deletion_unavailable: None,
         }
     }
     pub fn reset(&mut self) {
         self.rows.reset();
+        self.deletion_unavailable = None;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -42,10 +52,19 @@ impl Captured {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };
-        [qpc().saturating_sub(start).max(0) as u64]
+        self.deletion_unavailable = producer::deletion_unavailable();
+        [qpc().saturating_sub(start).max(0) as u64, 0]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
-        [self.rows.outcome]
+        [
+            self.rows.outcome,
+            match self.deletion_unavailable {
+                Some(reason) if matches!(self.rows.outcome, Outcome::Rows { .. }) => {
+                    Outcome::Unavailable { reason }
+                }
+                _ => self.rows.outcome,
+            },
+        ]
     }
     pub fn tables(&self) -> [TableView; N] {
         let Outcome::Rows { len } = self.rows.outcome else {
@@ -53,31 +72,62 @@ impl Captured {
                 Outcome::Unavailable { reason } => reason,
                 _ => "equipment destruction incomplete drain",
             };
-            return [unavailable(reason)];
+            return std::array::from_fn(|_| unavailable(reason));
         };
-        match aggregate(&self.rows.rows[..len]) {
-            Ok(rows) => [TableView::Complete(TableRows::EquipmentDestruction(rows))],
+        match aggregate(&self.rows.rows[..len])
+            .and_then(|rows| deletion_rows(&self.rows.rows[..len]).map(|deleted| (rows, deleted)))
+        {
+            Ok((mut rows, deleted)) => {
+                let deletion_table = if let Some(reason) = self.deletion_unavailable {
+                    let marker_reason = allocation::string(reason);
+                    if allocation::reserve_exact(&mut rows, 1).is_err() || marker_reason.is_err() {
+                        return std::array::from_fn(|_| unavailable("collector allocation failed"));
+                    }
+                    rows.insert(
+                        0,
+                        EquipmentDestructionRow {
+                            coverage: Recorded::Value(
+                                EquipmentDestructionCoverage::SupplementalUnavailable,
+                            ),
+                            unavailable_reason: Recorded::Value(marker_reason.unwrap()),
+                            ..Default::default()
+                        },
+                    );
+                    unavailable(reason)
+                } else {
+                    TableView::Complete(TableRows::DivisionEquipmentDeletions(deleted))
+                };
+                [
+                    TableView::Complete(TableRows::EquipmentDestruction(rows)),
+                    deletion_table,
+                ]
+            }
             Err(reason) => {
                 producer::lost_drain();
-                [unavailable(reason)]
+                std::array::from_fn(|_| unavailable(reason))
             }
         }
     }
 }
 
 fn aggregate(events: &[producer::Entry]) -> Result<Vec<EquipmentDestructionRow>, &'static str> {
-    let mut rows = allocation::collect_vec(events.iter().map(|r| EquipmentDestructionRow {
-        country: r.country,
-        cause: r.cause.into(),
-        variant: r.variant,
-        amount_raw: r.amount_raw,
-    }))
-    .map_err(|_| "collector allocation failed")?;
+    let mut rows =
+        allocation::collect_vec(events.iter().filter(|r| r.division_handle == 0).map(|r| {
+            EquipmentDestructionRow {
+                country: r.country,
+                cause: r.cause.into(),
+                variant: r.variant,
+                amount_raw: r.amount_raw,
+                coverage: Recorded::Value(EquipmentDestructionCoverage::Complete),
+                unavailable_reason: Recorded::Value(String::new()),
+            }
+        }))
+        .map_err(|_| "collector allocation failed")?;
     rows.sort_unstable_by_key(EquipmentDestructionRow::key);
     let mut write = 0usize;
     for read in 0..rows.len() {
-        if rows[read].amount_raw <= 0 {
-            return Err("equipment destruction nonpositive event");
+        if rows[read].amount_raw == 0 {
+            return Err("equipment destruction zero event");
         }
         if write > 0 && rows[write - 1].key() == rows[read].key() {
             rows[write - 1].amount_raw = rows[write - 1]
@@ -90,57 +140,78 @@ fn aggregate(events: &[producer::Entry]) -> Result<Vec<EquipmentDestructionRow>,
         }
     }
     rows.truncate(write);
+    // Exact native removals and gains can cancel for one owner/cause/design.
+    rows.retain(|row| row.amount_raw != 0);
     Ok(rows)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use replay::rows::EquipmentDestructionCause;
-    #[test]
-    fn hourly_groups_preserve_all_owners_causes_and_full_designs() {
-        let event = producer::Entry {
-            country: 4999,
-            cause: engine::equipment_destruction::Cause::Attrition,
-            variant: 0xf00100000046,
-            amount_raw: 9,
-        };
-        let other = producer::Entry {
-            country: 1500,
-            ..event
-        };
-        let rows = aggregate(&[
-            event,
-            other,
-            event,
-            producer::Entry {
-                cause: engine::equipment_destruction::Cause::Unknown,
-                ..event
-            },
-        ])
-        .unwrap();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].country, 1500);
-        assert_eq!(rows[1].cause, EquipmentDestructionCause::Unknown);
-        assert_eq!(rows[2].cause, EquipmentDestructionCause::Attrition);
-        assert_eq!(rows[2].amount_raw, 18);
-        assert!(
-            aggregate(&[
-                producer::Entry {
-                    amount_raw: i64::MAX,
-                    ..event
+fn deletion_rows(
+    events: &[producer::Entry],
+) -> Result<Vec<DivisionEquipmentDeletionRow>, &'static str> {
+    let mut rows = allocation::vec(events.len()).map_err(|_| "collector allocation failed")?;
+    for (index, event) in events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.division_handle != 0)
+    {
+        if event.variant != 0 || event.amount_raw != 0 {
+            return Err("equipment deletion witness has equipment amount");
+        }
+        rows.push((
+            index,
+            DivisionEquipmentDeletionRow {
+                division_handle: event.division_handle,
+                country: event.country,
+                expeditionary_owner: event.expeditionary_owner,
+                cause: (event.disposition == engine::equipment_destruction::Disposition::Loss)
+                    .then(|| event.cause.into()),
+                disposition: match event.disposition {
+                    engine::equipment_destruction::Disposition::Loss => {
+                        DivisionDeletionDisposition::Loss
+                    }
+                    engine::equipment_destruction::Disposition::Returned => {
+                        DivisionDeletionDisposition::Returned
+                    }
+                    engine::equipment_destruction::Disposition::Merged => {
+                        DivisionDeletionDisposition::Merged
+                    }
+                    engine::equipment_destruction::Disposition::HqTransferred => {
+                        DivisionDeletionDisposition::HqTransferred
+                    }
+                    engine::equipment_destruction::Disposition::VolunteerTransferred => {
+                        DivisionDeletionDisposition::VolunteerTransferred
+                    }
+                    engine::equipment_destruction::Disposition::ExileTransferred => {
+                        DivisionDeletionDisposition::ExileTransferred
+                    }
                 },
-                event
-            ])
-            .is_err()
-        );
-        assert!(
-            aggregate(&[producer::Entry {
-                amount_raw: 0,
-                ..event
-            }])
-            .is_err()
-        );
-        assert!(aggregate(&[]).unwrap().is_empty());
+            },
+        ));
     }
+    // Retain native event order within each full handle. A transfer can be
+    // followed by another transfer or an actual disposal in the same hour.
+    rows.sort_unstable_by_key(|(index, row)| (row.division_handle, *index));
+    let mut write = 0;
+    for read in 0..rows.len() {
+        if write > 0 && rows[write - 1].1.division_handle == rows[read].1.division_handle {
+            if !matches!(
+                rows[write - 1].1.disposition,
+                DivisionDeletionDisposition::VolunteerTransferred
+                    | DivisionDeletionDisposition::ExileTransferred
+            ) {
+                return Err("equipment deletion division recorded twice in one hour");
+            }
+            rows[write - 1] = rows[read].clone();
+        } else {
+            rows[write] = rows[read].clone();
+            write += 1;
+        }
+    }
+    rows.truncate(write);
+    allocation::collect_vec(rows.into_iter().map(|(_, row)| row))
+        .map_err(|_| "collector allocation failed")
 }
+
+#[cfg(test)]
+#[path = "equipment_destruction/tests.rs"]
+mod tests;

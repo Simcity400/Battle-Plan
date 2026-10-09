@@ -103,11 +103,11 @@ test('timeline layout: lanes by row, spans cover their last observed day, bars s
   assert.equal(barHours(spans[0], 5), null);
 });
 
-test('content choices keep any short token, and malformed replies are refused', () => {
+test('content choices keep raw scalar keys, and malformed replies are refused', () => {
   const field: OptionField = { key: 'category', section: 'options', label: 'Category', kind: 'content-choice', automatic: 'First', default: '' };
   assert.equal(validOption(field, ''), true);
   assert.equal(validOption(field, 'research_production'), true);
-  assert.equal(validOption(field, 'bad token!'), false);
+  assert.equal(validOption(field, 'mod category,slot:20:'), true);
   assert.equal(validOption(field, 3), false);
   assert.throws(() => validateIdeaHistoryReply({ spans: [{ token: 'x', firstHour: 5, lastHour: 1, slot: null, character: null }] }));
   assert.equal(validateIdeaHistoryReply(REPLY), REPLY);

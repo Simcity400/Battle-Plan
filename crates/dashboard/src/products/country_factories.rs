@@ -1,5 +1,5 @@
 //! Every country's factories over one branch, for the Factories widget: each of
-//! the game's three factory groups as the game last recalculated it, hour by hour.
+//! the three recorded factory groups as the game last recalculated them, hour by hour.
 //!
 //! The values are the recorded `CountryFactories` rows (table 257, hourly): the
 //! stored totals the top bar, the factory tooltips and the factory triggers read
@@ -84,9 +84,10 @@ const RUN_OVERHEAD: usize = 64;
 
 /// One of the game's factory groups (`CProductionStatus` +0x2b0, +0x310, +0x370,
 /// zeroed by `ResetFactoryTotals@140e51760` and rebuilt by
-/// `RecalculateFactoryTotals@140e57f10`). These three are engine structures, not
-/// content, so a mod cannot add a fourth: which buildings count in each, a mod's
-/// own factory types included, comes from the content flag [`FactoryGroupKey::flag`].
+/// `RecalculateFactoryTotals@140e57f10`). Building membership, including modded
+/// types, comes from the content flag [`FactoryGroupKey::flag`]. The native
+/// fourth group (+0x3d0, positive `rocket_production`) is not recorded; content
+/// that counts in it is refused by name rather than treated as one of these groups.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum FactoryGroupKey {
@@ -224,10 +225,26 @@ pub struct FactoryRun {
     pub values: Vec<i32>,
 }
 
+/// Supplying factory read, independent of equal value compression.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct FactoryReadRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub read_hour: i32,
+    pub hourly: bool,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct FactorySeries {
     pub tag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub identities: Option<Vec<super::country_history::CountryIdentityRun>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reads: Option<Vec<FactoryReadRun>>,
     pub runs: Vec<FactoryRun>,
     /// Unbroken country identities from Countries and CountryLinks, never cut to top-N
     /// membership. Appearance samples must stay within the segment at their hour.
@@ -288,6 +305,7 @@ pub struct CountryFactoriesReply {
 pub struct ScannedFactories {
     pub series: BTreeMap<String, Vec<FactoryRun>>,
     pub segments: BTreeMap<String, Vec<HourSpan>>,
+    pub reads: BTreeMap<String, Vec<FactoryReadRun>>,
     /// Country-hours whose recorded `unavailable` is not the sum of the withheld
     /// parts, by group.
     pub unexplained: BTreeMap<FactoryGroupKey, usize>,
@@ -401,6 +419,31 @@ struct Track {
     last: Option<(Identity, i32)>,
     segments: Vec<HourSpan>,
     last_identity: IdentityTrack,
+    reads: Vec<FactoryReadRun>,
+}
+
+fn append_read(
+    reads: &mut Vec<FactoryReadRun>,
+    hour: i32,
+    read_hour: i32,
+    hourly: bool,
+    continues: bool,
+) {
+    if let Some(last) = reads.last_mut()
+        && continues
+        && last.last_hour.checked_add(1) == Some(hour)
+        && last.hourly == hourly
+        && (hourly || last.read_hour == read_hour)
+    {
+        last.last_hour = hour;
+    } else {
+        reads.push(FactoryReadRun {
+            first_hour: hour,
+            last_hour: hour,
+            read_hour,
+            hourly,
+        });
+    }
 }
 
 /// Scans one branch once for every country.
@@ -480,6 +523,14 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     if continues && let Some(run) = track.runs.last_mut() {
                         run.last_hour = hour;
                         track.last = Some((identity, hour));
+                        if let Some(previous) = track.reads.last() {
+                            let supplying = if previous.hourly {
+                                previous.last_hour
+                            } else {
+                                previous.read_hour
+                            };
+                            append_read(&mut track.reads, hour, supplying, false, true);
+                        }
                     }
                     continue;
                 }
@@ -494,6 +545,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     *result.unexplained.entry(key).or_default() += 1;
                 }
                 track.last = Some((identity, hour));
+                append_read(&mut track.reads, hour, hour, true, continues);
                 match track.runs.last_mut() {
                     Some(run) if continues && run.values == values => run.last_hour = hour,
                     _ => {
@@ -511,6 +563,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     for (tag, track) in tracks {
         if !track.runs.is_empty() {
             result.segments.insert(tag.clone(), track.segments);
+            result.reads.insert(tag.clone(), track.reads);
             result.series.insert(tag, track.runs);
         }
     }
@@ -584,7 +637,7 @@ pub fn top_membership(
                 groups
                     .iter()
                     .map(|group| group_count(&run.values, *group, top.mode))
-                    .sum(),
+                    .sum::<i64>(),
             )
         },
         cancelled,
@@ -641,6 +694,14 @@ pub fn series_bytes(series: &[FactorySeries]) -> usize {
         .iter()
         .map(|item| {
             series_overhead(&item.tag, item.membership.as_deref(), item.segments.len())
+                + item
+                    .reads
+                    .as_ref()
+                    .map_or(0, |reads| 16 + reads.len() * 128)
+                + item
+                    .identities
+                    .as_ref()
+                    .map_or(0, |runs| 24 + runs.len() * 128)
                 + item
                     .runs
                     .iter()
@@ -716,10 +777,23 @@ pub fn requested_bytes(
     params: &FactoriesParams,
     cancelled: &AtomicBool,
 ) -> io::Result<usize> {
-    parts_bytes(&requested_parts(scanned, params, cancelled)?, cancelled)
+    let parts = requested_parts(scanned, params, cancelled)?;
+    Ok(parts_bytes(&parts, cancelled)? + read_bytes(scanned, &parts))
 }
 
 type Parts<'a> = [Part<'a>];
+
+fn read_bytes(scanned: &ScannedFactories, parts: &Parts<'_>) -> usize {
+    parts
+        .iter()
+        .map(|(tag, _, _, _)| {
+            scanned
+                .reads
+                .get(tag)
+                .map_or(0, |reads| 16 + reads.len() * 128)
+        })
+        .sum()
+}
 
 fn parts_bytes(parts: &Parts<'_>, cancelled: &AtomicBool) -> io::Result<usize> {
     let mut bytes = 0;
@@ -757,7 +831,7 @@ pub fn requested_series(
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<FactorySeries>> {
     let parts = requested_parts(scanned, params, cancelled)?;
-    let bytes = parts_bytes(&parts, cancelled)?;
+    let bytes = parts_bytes(&parts, cancelled)? + read_bytes(scanned, &parts);
     if bytes > MAX_REPLY_BYTES {
         return Err(io::Error::other(format!(
             "These countries' factory history takes {} MiB, more than one reply holds ({} MiB); choose fewer countries.",
@@ -769,6 +843,8 @@ pub fn requested_series(
         .into_iter()
         .map(|(tag, runs, segments, membership)| {
             Ok(FactorySeries {
+                identities: None,
+                reads: scanned.reads.get(&tag).cloned(),
                 segments: segments.to_vec(),
                 runs: match &membership {
                     Some(spans) => clip_runs(runs, spans, cancelled)?,
@@ -939,6 +1015,23 @@ fn describe_groups_with_findings(
                 ));
                 warnings.push(message);
             }
+            for token in &buildings.declaration_order {
+                if !buildings.ambiguous_factory_types.contains(token)
+                    && buildings
+                        .factory_flags
+                        .get(token)
+                        .is_some_and(|flags| flags.rocket())
+                {
+                    let message = format!(
+                        "{token} has positive rocket_production; its factory group was not recorded, so its rocket factory counts are unavailable."
+                    );
+                    let mut finding =
+                        Finding::new(Kind::Refused, format!("building {token}"), &message);
+                    finding.count = Some(1);
+                    findings.push(finding);
+                    warnings.push(message);
+                }
+            }
             let groups = group_buildings(&buildings, localise);
             for group in &groups {
                 if group.buildings.is_empty() {
@@ -984,6 +1077,7 @@ impl Product for CountryFactories {
             FactoryBuilding::decl(),
             FactoryGroupInfo::decl(),
             FactoryRun::decl(),
+            FactoryReadRun::decl(),
             FactorySeries::decl(),
             CountryFactoriesReply::decl(),
         ]
@@ -1080,14 +1174,219 @@ impl Product for CountryFactories {
         {
             warnings.push(format!("{tag}: no recorded factories in this branch"));
         }
-        Ok(CountryFactoriesReply {
+        let mut projection = params.clone();
+        let histories = if params.top.is_none() && !params.tags.is_empty() {
+            let history =
+                super::country_history::branch_histories(source, branch, false, &[], cancelled)?;
+            projection.tags = super::country_history::selected_aliases(&history, &params.tags);
+            Some(history)
+        } else {
+            None
+        };
+        if let Some(history) = &histories {
+            let metadata = projection
+                .tags
+                .iter()
+                .map(|tag| {
+                    128 + tag.len()
+                        + history.countries.get(tag).map_or(0, |country| {
+                            24 + country.identities.len() * 128 + country.segments.len() * 52
+                        })
+                })
+                .sum::<usize>();
+            if requested_bytes(&scanned, &projection, cancelled)?.saturating_add(metadata)
+                > MAX_REPLY_BYTES
+            {
+                return Err(io::Error::other(
+                    "These countries' factory identities and history exceed one reply",
+                ));
+            }
+        }
+        let mut series = requested_series(&scanned, &projection, cancelled)?;
+        if let Some(history) = histories {
+            for tag in &projection.tags {
+                if !series.iter().any(|item| item.tag == *tag) {
+                    series.push(FactorySeries {
+                        tag: tag.clone(),
+                        ..Default::default()
+                    });
+                }
+            }
+            for item in &mut series {
+                if let Some(country) = history.countries.get(&item.tag) {
+                    item.identities = Some(country.identities.as_ref().clone());
+                    item.segments = country.segments.as_ref().clone();
+                } else {
+                    item.identities = Some(Vec::new());
+                }
+            }
+        }
+        let reply = CountryFactoriesReply {
             branch_id: params.branch_id.clone(),
             groups,
             fields: fields(),
-            series: requested_series(&scanned, params, cancelled)?,
+            series,
             warnings,
-        })
+        };
+        if crate::transport::json_len(&reply, MAX_REPLY_BYTES).is_none() {
+            return Err(io::Error::other(
+                "These countries' factory history exceeds one exact reply",
+            ));
+        }
+        Ok(reply)
     }
+}
+
+/// Clips stale factory coverage around proven country-absence reads. Zero
+/// evidence wins at an overlap, so one country never contributes twice.
+fn faction_measure_runs(
+    recorded: &[FactoryRun],
+    absent: &[HourSpan],
+    mode: FactoryCount,
+    groups: &[FactoryGroupKey],
+    count: &mut usize,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<super::faction_totals::MeasureRun>> {
+    use super::faction_totals::{MeasureRun, push_measure};
+    let mut runs = Vec::new();
+    let mut absent_index = 0usize;
+    for run in recorded {
+        let mut first = i64::from(run.first_hour);
+        let last = i64::from(run.last_hour);
+        let value = Some(
+            groups
+                .iter()
+                .map(|group| group_count(&run.values, *group, mode))
+                .sum(),
+        );
+        while absent
+            .get(absent_index)
+            .is_some_and(|span| i64::from(span.last_hour) < first)
+        {
+            absent_index += 1;
+        }
+        let mut index = absent_index;
+        while let Some(span) = absent.get(index) {
+            if i64::from(span.first_hour) > last {
+                break;
+            }
+            if first < i64::from(span.first_hour) {
+                push_measure(
+                    &mut runs,
+                    MeasureRun {
+                        first_hour: first as i32,
+                        last_hour: (i64::from(span.first_hour) - 1) as i32,
+                        value,
+                        starts_segment: run.starts_segment || first != i64::from(run.first_hour),
+                    },
+                    count,
+                    cancelled,
+                )?;
+            }
+            first = first.max(i64::from(span.last_hour) + 1);
+            if first > last {
+                break;
+            }
+            index += 1;
+        }
+        absent_index = index;
+        if first <= last {
+            push_measure(
+                &mut runs,
+                MeasureRun {
+                    first_hour: first as i32,
+                    last_hour: last as i32,
+                    value,
+                    starts_segment: run.starts_segment || first != i64::from(run.first_hour),
+                },
+                count,
+                cancelled,
+            )?;
+        }
+    }
+    for span in absent {
+        push_measure(
+            &mut runs,
+            MeasureRun {
+                first_hour: span.first_hour,
+                last_hour: span.last_hour,
+                starts_segment: true,
+                value: Some(0),
+            },
+            count,
+            cancelled,
+        )?;
+    }
+    runs.sort_by_key(|run| run.first_hour);
+    debug_assert!(
+        runs.windows(2)
+            .all(|pair| pair[0].last_hour < pair[1].first_hour)
+    );
+    Ok(runs)
+}
+
+pub(crate) fn faction_tracks(
+    source: &Source,
+    branch: u64,
+    tags: &[String],
+    mode: FactoryCount,
+    groups: &[FactoryGroupKey],
+    history: &super::country_groups::FactionHistory,
+    cancelled: &AtomicBool,
+) -> io::Result<super::faction_totals::CountryMeasures> {
+    use super::faction_totals::{CountryMeasures, CountryTrack, for_each_absent};
+    let scanned = scanned_branch(source, branch, cancelled)?;
+    let groups = if groups.is_empty() {
+        &FactoryGroupKey::ALL
+    } else {
+        groups
+    };
+    let mut count = 0usize;
+    let mut tracks = Vec::with_capacity(tags.len());
+    for tag in tags {
+        let mut absent = Vec::new();
+        for_each_absent(
+            &history.country_reads,
+            history
+                .country_presence
+                .get(tag)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+            cancelled,
+            |first_hour, last_hour| {
+                absent.push(HourSpan {
+                    first_hour,
+                    last_hour,
+                });
+                Ok(())
+            },
+        )?;
+        tracks.push(CountryTrack {
+            tag: tag.clone(),
+            runs: faction_measure_runs(
+                scanned
+                    .series
+                    .get(tag)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                &absent,
+                mode,
+                groups,
+                &mut count,
+                cancelled,
+            )?,
+        });
+    }
+    let mut warnings = Vec::new();
+    if scanned.unreadable > 0 || scanned.unnamed > 0 {
+        warnings.push(format!("{} factory reads could not name a country or show its count; affected faction totals are gaps.", scanned.unreadable + scanned.unnamed));
+    }
+    Ok(CountryMeasures {
+        tracks,
+        unit: Some("factories".into()),
+        unavailable_reason: None,
+        warnings,
+    })
 }
 
 #[cfg(test)]

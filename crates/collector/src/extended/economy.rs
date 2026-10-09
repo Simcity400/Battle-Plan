@@ -57,6 +57,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
 pub struct Capacities {
     pub rows: [usize; N],
     pub foreign_sources: usize,
+    pub demand: super::fuel_demand::Capacities,
 }
 
 /// Consumer rows per country, fixed by the engine's fuel status.
@@ -79,6 +80,7 @@ impl Default for Capacities {
                 512 * FUEL_CONSUMERS,
             ],
             foreign_sources: 16_384,
+            demand: Default::default(),
         }
     }
 }
@@ -92,11 +94,13 @@ impl Capacities {
         raise(&mut self.rows[1], rows(slots, 1));
         raise(&mut self.rows[7], rows(slots, 8));
         raise(&mut self.rows[10], rows(slots, FUEL_CONSUMERS));
+        self.demand.raise_for_countries(slots);
     }
 }
 
 pub struct Captured {
     fuel: CaptureRows<ccountry_fuel_status::Row>,
+    demand: super::fuel_demand::Captured,
     experience: CaptureRows<ccountry_experience_status::Row>,
     supply: CaptureRows<sprovince_supply_data::Row>,
     hubs: CaptureRows<ccountry_supply_system::Row>,
@@ -128,6 +132,7 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             fuel: CaptureRows::new(capacity.rows[0]),
+            demand: super::fuel_demand::Captured::with_capacities(&capacity.demand),
             experience: CaptureRows::new(capacity.rows[1]),
             supply: CaptureRows::new(capacity.rows[2]),
             hubs: CaptureRows::new(capacity.rows[3]),
@@ -156,6 +161,7 @@ impl Captured {
 
     pub fn reset(&mut self) {
         self.fuel.reset();
+        self.demand.reset();
         self.experience.reset();
         self.supply.reset();
         self.hubs.reset();
@@ -171,6 +177,7 @@ impl Captured {
 
     pub fn allocated_bytes(&self) -> usize {
         self.fuel.allocated_bytes()
+            + self.demand.allocated_bytes()
             + self.experience.allocated_bytes()
             + self.supply.allocated_bytes()
             + self.hubs.allocated_bytes()
@@ -188,6 +195,7 @@ impl Captured {
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.fuel.grow(&mut capacity.rows[0]);
+        self.demand.grow(&mut capacity.demand);
         self.experience.grow(&mut capacity.rows[1]);
         self.supply.grow(&mut capacity.rows[2]);
         self.hubs.grow(&mut capacity.rows[3]);
@@ -214,11 +222,17 @@ impl Captured {
     ) -> [u64; N] {
         self.reset();
         self.set_schedule(hour, force_full);
+        let mut ticks = [0; N];
+        if self.other_active {
+            let _reads = read_accounting::table(TABLES[0]);
+            let begin = qpc();
+            self.demand.capture(memory, base, game_state, hour);
+            ticks[0] = elapsed(begin);
+        }
         // A staged payload is installed by the decode worker.
         if self.rest_raw_mode {
-            return [0; N];
+            return ticks;
         }
-        let mut ticks = [0; N];
         macro_rules! plain {
             ($index:literal, $field:ident, $walker:path) => {{
                 let _reads = read_accounting::table(TABLES[$index]);
@@ -233,7 +247,7 @@ impl Captured {
             let _reads = read_accounting::table(TABLES[0]);
             let begin = qpc();
             self.capture_fuel(memory, base, game_state);
-            ticks[0] = elapsed(begin);
+            ticks[0] = ticks[0].saturating_add(elapsed(begin));
             plain!(1, experience, ccountry_experience_status::walk);
         }
         plain!(2, supply, sprovince_supply_data::walk);
@@ -393,9 +407,11 @@ impl Captured {
         mut projection: Option<&mut Projection<'_>>,
     ) -> [TableInput; N] {
         let outcomes = self.outcomes();
-        [
+        let mut tables = [
             scalar_table::<tables::CountryFuel, _>(
-                projection.as_deref_mut(),
+                // Demand and award windows append owned values after scalar
+                // conversion; compare only the final row in the encoder.
+                None,
                 outcomes[0],
                 &self.fuel.rows,
                 |r| r.country as u128,
@@ -420,6 +436,9 @@ impl Captured {
                     ring_received_0_raw: r.ring_received_raw[0],
                     ring_received_1_raw: r.ring_received_raw[1],
                     ring_received_2_raw: r.ring_received_raw[2],
+                    awards: rows::Recorded::NotRecorded,
+                    demand: rows::Recorded::NotRecorded,
+                    country_instance: rows::Recorded::Value(r.country_instance),
                 },
             ),
             scalar_table::<tables::CountryExperience, _>(
@@ -574,7 +593,13 @@ impl Captured {
                     received_raw: r.received_raw,
                 },
             ),
-        ]
+        ];
+        if let Err(error) = super::fuel_demand::attach(&mut tables[0], &self.demand) {
+            // OOM follows the existing terminal ownership policy. A named
+            // demand refusal must never discard the independently known prefix.
+            let _ = engine::allocation::owned_vec::<()>(Err(error));
+        }
+        tables
     }
 
     #[cfg(test)]

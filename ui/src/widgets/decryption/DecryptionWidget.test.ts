@@ -20,8 +20,8 @@ const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery
     transform(source, id) {
       if (id.endsWith('/dashboard/products.ts')) return source.slice(0, source.indexOf('export function useProduct<T>'))
         + `export function useProduct() { return { data: ${JSON.stringify(data)}, retry: () => {} }; }`;
-      if (id.endsWith('/dashboard/useCountriesAt.ts')) return source.slice(0, source.indexOf('export function useCountriesAt'))
-        + 'export function useCountriesAt() { return { country: tag => ({ name: `Recorded ${tag}` }), revision: 1 }; }';
+      if (id.endsWith('/decryption/decryptionCountries.ts')) return source.slice(0, source.indexOf('export function useDecryptionCountries'))
+        + 'export function useDecryptionCountries() { return { pair: row => ({ owner: { name: `Recorded ${row.tags.ownerTag}` }, target: { name: `Recorded ${row.tags.targetTag}` }, hour: row.hour }), revision: 1 }; }';
       if (id.endsWith('/components/ContextMenu.tsx')) return source.slice(0, source.indexOf('export function useContextMenu'))
         + 'export function useContextMenu() { return { menu: null, open: () => {} }; }';
       if (id.endsWith('/charts/useRowTooltips.ts')) return source.replace('  const [hovered, setHovered]',

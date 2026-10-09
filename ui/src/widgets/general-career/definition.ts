@@ -1,0 +1,17 @@
+import type { WidgetMeta } from '../../dashboard/definitions';
+import type { OptionField } from '../../dashboard/options';
+export const GROW_WITH_PLAYBACK_OPTION: OptionField = {
+  key: 'growWithPlayback', section: 'time', label: 'Grow with playback',
+  hint: 'Extend the time axis up to the moment shown', kind: 'toggle', default: false,
+};
+export const OPTIONS: readonly OptionField[] = [
+  { key: 'leader', section: 'options', label: 'Leader', kind: 'content-choice', automatic: 'Choose a leader', default: '' },
+  GROW_WITH_PLAYBACK_OPTION,
+];
+export const definition = {
+  kind: 'general-career', version: 1, title: 'General career', icon: 'history',
+  description: 'One recorded general or admiral’s skill, traits, commands and battle history.',
+  timeModes: ['campaign', 'follow', 'pin'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
+  countries: { max: Number.MAX_SAFE_INTEGER, all: true },
+  minSize: { w: 4, h: 7 }, defaultSize: { w: 6, h: 10 }, options: OPTIONS,
+} as const satisfies WidgetMeta;

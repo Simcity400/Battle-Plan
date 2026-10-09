@@ -93,11 +93,19 @@ pub struct CountryFlagImage {
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct CountryFlagUnavailable {
+    pub tag: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct CountryFlagReply {
     pub branch_id: String,
     pub hour: i32,
     pub size: CountryFlagSize,
     pub flags: Vec<CountryFlagImage>,
+    pub unavailable: Vec<CountryFlagUnavailable>,
     pub warnings: Vec<String>,
 }
 
@@ -111,6 +119,7 @@ impl Product for CountryFlags {
         vec![
             CountryFlagSize::decl(),
             CountryFlagImage::decl(),
+            CountryFlagUnavailable::decl(),
             CountryFlagParams::decl(),
             CountryFlagReply::decl(),
         ]
@@ -698,6 +707,7 @@ impl FlagContext {
         cancelled: &AtomicBool,
     ) -> io::Result<CountryFlagReply> {
         let mut flags = Vec::new();
+        let mut unavailable = Vec::new();
         let mut warnings = self.warnings.clone();
         let shield_style = match shield_style {
             Some(Ok(style)) => Some(style),
@@ -708,6 +718,14 @@ impl FlagContext {
                     hour: request.hour,
                     size: request.size,
                     flags,
+                    unavailable: request
+                        .tags
+                        .iter()
+                        .map(|tag| CountryFlagUnavailable {
+                            tag: tag.clone(),
+                            reason: format!("Shield artwork unavailable: {reason}"),
+                        })
+                        .collect(),
                     warnings,
                 });
             }
@@ -723,6 +741,10 @@ impl FlagContext {
             }
             let Some(choice) = self.choices.get(tag) else {
                 warnings.push(format!("{tag}: country identity unavailable at this hour"));
+                unavailable.push(CountryFlagUnavailable {
+                    tag: tag.clone(),
+                    reason: "country identity unavailable at this hour".into(),
+                });
                 continue;
             };
             // A flag key is the recorded tag (any bytes but NUL, spaces
@@ -735,6 +757,11 @@ impl FlagContext {
                 &choice.candidates,
                 &mut cache,
             )?;
+            let reasons: Vec<_> = findings
+                .iter()
+                .filter(|finding| finding.kind == crate::content_check::Kind::Refused)
+                .map(|finding| finding.message.clone())
+                .collect();
             warnings.extend(
                 findings
                     .into_iter()
@@ -760,11 +787,32 @@ impl FlagContext {
                         pixels: image.pixels,
                     });
                 }
-                FlagSearch::Unresolvable => {}
-                FlagSearch::Absent => warnings.push(match &choice.refusal {
-                    Some(reason) => format!("{tag}: flag not drawn: {reason}"),
-                    None => format!("{tag}: flag artwork unavailable in the recorded content"),
+                FlagSearch::Unresolvable => unavailable.push(CountryFlagUnavailable {
+                    tag: tag.clone(),
+                    reason: if reasons.is_empty() {
+                        choice.refusal.clone().unwrap_or_else(|| {
+                            "flag artwork unavailable in the recorded content".into()
+                        })
+                    } else {
+                        reasons.join("; ")
+                    },
                 }),
+                FlagSearch::Absent => {
+                    warnings.push(match &choice.refusal {
+                        Some(reason) => format!("{tag}: flag not drawn: {reason}"),
+                        None => format!("{tag}: flag artwork unavailable in the recorded content"),
+                    });
+                    unavailable.push(CountryFlagUnavailable {
+                        tag: tag.clone(),
+                        reason: choice.refusal.clone().unwrap_or_else(|| {
+                            if reasons.is_empty() {
+                                "flag artwork unavailable in the recorded content".into()
+                            } else {
+                                reasons.join("; ")
+                            }
+                        }),
+                    });
+                }
             }
         }
         Ok(CountryFlagReply {
@@ -772,6 +820,7 @@ impl FlagContext {
             hour: request.hour,
             size: request.size,
             flags,
+            unavailable,
             warnings,
         })
     }
@@ -1095,6 +1144,11 @@ mod tests {
                 Some("engine does not check read status"),
             ),
             (
+                vec!["mod_truncated"],
+                None,
+                Some("engine does not check read status"),
+            ),
+            (
                 vec!["mod_absent"],
                 None,
                 Some("mod tag: flag artwork unavailable in the recorded content"),
@@ -1131,6 +1185,18 @@ mod tests {
                 .reply(&request, None, &AtomicBool::new(false))
                 .unwrap();
             assert_eq!(reply.flags.first().map(|flag| flag.asset.as_str()), asset);
+            if asset.is_some() {
+                assert!(reply.unavailable.is_empty());
+            } else {
+                assert_eq!(reply.unavailable.len(), 1);
+                assert_eq!(reply.unavailable[0].tag, "mod tag");
+                let reason = reason.unwrap();
+                assert!(
+                    reply.unavailable[0]
+                        .reason
+                        .contains(reason.strip_prefix("mod tag: ").unwrap_or(reason))
+                );
+            }
             match reason {
                 Some(reason) => assert_eq!(
                     reply
@@ -1181,6 +1247,12 @@ mod tests {
             .reply(&request, Some(Err(reason)), &AtomicBool::new(false))
             .unwrap();
         assert!(reply.flags.is_empty());
+        assert_eq!(reply.unavailable.len(), 1);
+        assert_eq!(reply.unavailable[0].tag, "MOD tag");
+        assert_eq!(
+            reply.unavailable[0].reason,
+            format!("Shield artwork unavailable: {reason}")
+        );
         assert_eq!(
             reply.warnings,
             [

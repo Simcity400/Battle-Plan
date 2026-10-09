@@ -19,24 +19,22 @@
 //! loss of all spanning relations leaves it unknown thereafter. New zero counters
 //! cover only their new relations: losses between old and new relations may be missing.
 //! WarRelations cadence comes from replay::cadence; reads use metadata::slot_read. Ended and
-//! disappeared relations retain their counters inside the scan. No pairs leave it.
+//! disappeared relations retain their counters inside the shared scan.
 //! If a relation present at the last read before a gap is absent afterwards,
-//! both endpoint totals remain lower bounds from that sample onwards. A relation
-//! already absent before the gap does not acquire this flag. Even uninterrupted
+//! both endpoint totals become partial recorded subtotals from that sample onwards.
+//! A relation already absent before the gap does not acquire this flag. Even uninterrupted
 //! hourly reads cannot capture a war's final tick if it ends between reads.
 //!
 //! Requests name chosen tags, all recorded countries, or a user-selected top N by
 //! dealt + known taken. Unknown losses affect display only, never ranking.
 //! Per-source branch scans retain sampled country totals and are shared
-//! across selections. No per-pair history is retained. A top reply includes every
+//! across selections. Pair views retain compressed hourly confirmations in the
+//! same scan, without another decode. A top reply includes every
 //! country ever selected, its membership, and runs clipped to it: at most N series cover an hour.
 //!
-//! Points use the last recorded hour of a game day (hour.rem_euclid(24) == 23),
-//! also the first read of a readable stretch, the last readable hour before a
-//! gap/unreadable census or identity change,
-//! and the branch's last readable hour. Each retains its exact readHour, holding
-//! until the next point, never backwards or across a gap. Top membership is
-//! ranked from these same daily samples, so ranking and displayed values agree.
+//! Every hourly read confirms country totals. Equal consecutive reads merge;
+//! carried hours keep their supplying read, never backwards or across a gap.
+//! Top membership ranks these same hourly values, so ranking and display agree.
 //! Numbers are exact i128 sums of recorded i64 counters; nothing is interpolated.
 //! Each typed columnar series is counted before adding it to the bounded reply.
 //! Refusals measure JSON bytes against MAX_PRODUCT_REPLY_BYTES.
@@ -46,9 +44,11 @@
 //! Naming projections are retained during this same decode, only on change.
 //! Labels resolve only for reply tags; full ranking windows
 //! are cached once for any requested N. Equal samples merge, with implicit
-//! day-end confirmations.
+//! hourly confirmations; repeated numeric deltas compress without losing points.
 //! A tag changing holder starts a separate wire series, keeping unknown recovery
-//! and the monotonic lower-bound flag scoped to its opaque country identity.
+//! and the partial-history flag scoped to its opaque country identity.
+//! Explicit picks follow all recorded holders of the chosen tags through renames;
+//! unrelated holders of an alias are clipped from that projection.
 
 use super::{
     LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_groups::HourSpan, validate_tag,
@@ -75,6 +75,8 @@ use std::{
 use ts_rs::TS;
 
 pub struct WarCasualties;
+pub mod breakdown;
+pub mod pairs;
 // Native diplomacy tooltip entry, 140d19cf0/140d1a550.
 pub(crate) const UNKNOWN_LABEL: &str = "CASUALTIES_UNKNOWN";
 
@@ -94,14 +96,38 @@ pub struct CasualtyParams {
 
 /// Exact base and safe integer deltas; the client accumulates with BigInt.
 /// Exceptionally large deltas stay decimal strings rather than losing precision.
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(untagged)]
 pub enum CasualtyDelta {
     Small(#[ts(type = "number")] i64),
     Wide(String),
+    /// [count, exact delta] repeats the same delta without dropping hourly points.
+    Repeated(u32, String),
 }
 #[derive(Clone, Debug, Default, Serialize, TS)]
 pub struct CasualtyValues(pub String, pub Vec<CasualtyDelta>);
+impl CasualtyValues {
+    fn compact(&mut self) {
+        let mut deltas = std::mem::take(&mut self.1).into_iter().peekable();
+        while let Some(delta) = deltas.next() {
+            let mut count = 1;
+            while deltas.peek() == Some(&delta) {
+                deltas.next();
+                count += 1;
+            }
+            if count >= 4 {
+                let value = match delta {
+                    CasualtyDelta::Small(value) => value.to_string(),
+                    CasualtyDelta::Wide(value) => value,
+                    CasualtyDelta::Repeated(_, _) => unreachable!("already compacted"),
+                };
+                self.1.push(CasualtyDelta::Repeated(count, value));
+            } else {
+                self.1.extend(std::iter::repeat_n(delta, count as usize));
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -117,18 +143,19 @@ pub struct CasualtySeries {
     /// First read followed by positive hour deltas. Equal confirmations are implicit.
     #[ts(type = "Array<number>")]
     pub reads: Vec<i64>,
-    /// [point index, hold endpoint, exceptional confirming read]. Holding is not a read.
+    /// [point index, endpoint, last read if held]. Otherwise every hour is confirmed.
     pub ends: Vec<(u32, i32, Option<i32>)>,
     pub dealt: CasualtyValues,
     pub taken: CasualtyValues,
     pub unknown: Option<CasualtyValues>,
     /// Unknown values cease to be exact at this hour (null means still exact).
     pub unknown_until: Option<i32>,
+    /// Legacy wire name: partial recorded history begins here, not a lower bound.
     pub at_least_from: Option<i32>,
     pub identities: Vec<CasualtyIdentity>,
     /// Every resolved name over the branch, for one stable campaign label column.
     pub labels: Vec<String>,
-    /// Top-N membership; null for chosen tags. Runs are cut to these hours.
+    /// Top-N or selected-holder membership; null when the whole tag track applies.
     pub membership: Option<Vec<HourSpan>>,
 }
 
@@ -291,6 +318,7 @@ struct Country {
 struct HeldPair {
     values: [i64; 4],
     read: u64,
+    hour: i32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -304,17 +332,23 @@ struct Sample {
     unknown: Option<i64>,
     at_least: bool,
 }
-fn daily_confirmation(first: i32, last: i32) -> i32 {
-    let last = i64::from(last);
-    i64::from(first).max(last - (last + 1).rem_euclid(24)) as i32
-}
 impl Sample {
+    fn measure_at(&self, hour: i32) -> CasualtyMeasure {
+        CasualtyMeasure {
+            read_hour: hour.min(self.confirmed),
+            dealt: self.dealt,
+            taken: self.taken,
+            unknown: self.unknown,
+            at_least: self.at_least,
+        }
+    }
+
     fn exceptional_confirmation(&self) -> Option<i32> {
-        (self.confirmed != daily_confirmation(self.first, self.last)).then_some(self.confirmed)
+        (self.confirmed != self.last).then_some(self.confirmed)
     }
 }
 // Packed signed integer deltas avoid padding and retain wide country sums.
-// Typical daily deltas take 1–3 bytes; no per-day strings or run headers survive.
+// Typical hourly deltas take 1–3 bytes; no per-hour strings or run headers survive.
 fn put(bytes: &mut Vec<u8>, value: i128) {
     let mut value = ((value << 1) ^ (value >> 127)) as u128;
     while value >= 128 {
@@ -353,13 +387,14 @@ struct Checkpoint {
 impl Track {
     fn sample(&mut self, hour: i32, identity: Identity, country: &Country) -> bool {
         if let Some(last) = &mut self.tail {
-            if last.first == hour {
+            if last.confirmed == hour {
                 return false;
             }
             if last.last >= hour {
                 last.last = hour - 1;
             }
             if last.last.checked_add(1) == Some(hour)
+                && last.confirmed == last.last
                 && last.identity == identity
                 && last.dealt == country.dealt
                 && last.taken == country.taken
@@ -464,7 +499,7 @@ impl Track {
             let confirmed = if flags & 8 != 0 {
                 (i128::from(first) + get(&mut bytes)) as i32
             } else {
-                daily_confirmation(first, last)
+                last
             };
             let identity = if flags & 4 != 0 {
                 (get(&mut bytes) as u32, get(&mut bytes) as u32)
@@ -496,6 +531,7 @@ struct Scan {
     countries: Vec<Country>,
     pairs: HashMap<PairKey, HeldPair>,
     live: BTreeMap<String, usize>,
+    holders: BTreeMap<String, HashSet<Identity>>,
     tracks: BTreeMap<String, Track>,
     bounds: BTreeSet<i64>,
     last_bound: Option<i32>,
@@ -508,8 +544,6 @@ struct Scan {
     incomplete: bool,
     gap_read: Option<u64>,
     touched: Vec<usize>,
-    stretch_start: bool,
-    changed_tags: Vec<String>,
     names: Vec<replay::frame::DecodedFrame>,
 }
 impl Scan {
@@ -520,6 +554,7 @@ impl Scan {
             countries: Vec::new(),
             pairs: HashMap::new(),
             live: BTreeMap::new(),
+            holders: BTreeMap::new(),
             tracks: BTreeMap::new(),
             bounds: BTreeSet::new(),
             last_bound: None,
@@ -532,8 +567,6 @@ impl Scan {
             incomplete: false,
             gap_read: None,
             touched: Vec::new(),
-            stretch_start: false,
-            changed_tags: Vec::new(),
             names: Vec::new(),
         }
     }
@@ -614,7 +647,6 @@ impl Scan {
         self.active_dirty = true;
         self.hour = None;
         self.last_read = None;
-        self.stretch_start = true;
         self.incomplete = true;
         self.gap_read.get_or_insert(self.read);
         for country in &mut self.countries {
@@ -670,13 +702,14 @@ impl Scan {
                 .map(|(tag, _)| tag.clone())
                 .collect::<Vec<_>>();
             for tag in changed_tags {
-                if !self.changed_tags.contains(&tag) {
-                    self.changed_tags.push(tag);
-                }
+                // Census holders include peaceful countries before their first relation.
+                self.holders
+                    .entry(tag.clone())
+                    .or_default()
+                    .insert(self.identities[live[&tag]]);
             }
             self.live.clone_from(live);
         }
-        self.stretch_start |= self.hour.is_none();
         self.hour = Some(hour);
         span_push(&mut self.observed, hour);
         if read {
@@ -686,6 +719,12 @@ impl Scan {
         }
     }
     fn relation(&mut self, first: usize, second: usize, start: i32, values: [i64; 4]) {
+        // GetCasualties@140D0D890 selects by victim, independent of endpoint order.
+        let (first, second, values) = if first < second {
+            (first, second, values)
+        } else {
+            (second, first, [values[1], values[0], values[3], values[2]])
+        };
         for index in [first, second] {
             let country = &mut self.countries[index];
             if country.touched != self.read {
@@ -702,6 +741,7 @@ impl Scan {
             HeldPair {
                 values: [0; 4],
                 read: 0,
+                hour: self.hour.expect("relation hour"),
             }
         });
         let spans = pair.read != 0 && pair.read + 1 == self.read;
@@ -718,6 +758,7 @@ impl Scan {
             .relation(values[3], spans.then_some(old[3]));
         pair.values = values;
         pair.read = self.read;
+        pair.hour = self.hour.expect("relation hour");
     }
     fn end_hour(&mut self, read: bool) {
         if read {
@@ -733,23 +774,8 @@ impl Scan {
                 }
             }
         }
-        if read && (self.stretch_start || self.hour.is_some_and(|hour| hour.rem_euclid(24) == 23)) {
-            self.sample();
-            self.changed_tags.clear();
-        } else if read {
-            let changed = std::mem::take(&mut self.changed_tags);
-            for tag in changed {
-                if !self.live.contains_key(&tag) {
-                    continue;
-                }
-                self.sample_tag(&tag, self.hour.unwrap());
-                if self.countries[self.live[&tag]].relations > 0 && !self.active.contains(&tag) {
-                    self.active.push(tag);
-                }
-            }
-        }
         if read {
-            self.stretch_start = false;
+            self.sample();
         }
     }
     fn finish(mut self, cancelled: &AtomicBool) -> io::Result<ScannedCasualties> {
@@ -792,7 +818,7 @@ impl Scan {
             ranked.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
             if !ranked.is_empty() {
                 let order: Vec<_> = ranked.into_iter().map(|(_, index)| index).collect();
-                // Values can change daily without changing the full ranking.
+                // Values can change hourly without changing the full ranking.
                 // Merge equal adjacent orders; gaps still close the window.
                 if let Some(previous) = windows.last_mut()
                     && previous.last.checked_add(1) == Some(first)
@@ -811,6 +837,8 @@ impl Scan {
             incomplete: self.incomplete,
             windows,
             names: self.names,
+            holders: self.holders,
+            pairs: pairs::PairHistory::default(),
         })
     }
 }
@@ -826,6 +854,8 @@ pub struct ScannedCasualties {
     incomplete: bool,
     windows: Vec<TopWindow>,
     names: Vec<replay::frame::DecodedFrame>,
+    holders: BTreeMap<String, HashSet<Identity>>,
+    pairs: pairs::PairHistory,
 }
 
 /// Exact recorded totals at a sampled read, before the optional unknown addition.
@@ -837,8 +867,18 @@ pub struct CasualtyMeasure {
     pub taken: i128,
     /// Losses with no recorded attacker; `None` means unrecoverable, never zero.
     pub unknown: Option<i64>,
-    /// Dealt and known taken are lower bounds (display with "≥").
+    /// Legacy name: dealt and known taken have partial recorded history.
+    /// Missing corrections can decrease totals, so this establishes no lower bound.
     pub at_least: bool,
+}
+/// A held value with one supplying read, shared by downstream history products.
+/// Gaps and holder changes start a new segment; confirmations remain dated even
+/// when the totals have not changed.
+pub struct CasualtyMeasureRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub starts_segment: bool,
+    pub value: CasualtyMeasure,
 }
 type ScanResult = Result<Arc<ScannedCasualties>, (io::ErrorKind, String)>;
 #[derive(Default)]
@@ -908,7 +948,11 @@ pub fn scanned_branch(
         return flight.wait(cancelled);
     }
     let result = scan_frames(&replay, branch, cancelled)
-        .and_then(|scan| scan.finish(cancelled))
+        .and_then(|(scan, pairs)| {
+            let mut finished = scan.finish(cancelled)?;
+            finished.pairs = pairs;
+            Ok(finished)
+        })
         .map(Arc::new);
     {
         let mut scans = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -963,6 +1007,14 @@ fn check_reply_bytes(bytes: usize) -> io::Result<()> {
     }
 }
 impl ScannedCasualties {
+    // Explicit picks follow native holders through recorded tag renames.
+    fn selected_identities(&self, tags: &[String]) -> HashSet<Identity> {
+        tags.iter()
+            .filter_map(|tag| self.holders.get(tag))
+            .flat_map(|holders| holders.iter().copied())
+            .collect()
+    }
+
     /// Whether missing hours could hide entire wars; show the branch-wide caveat.
     pub fn has_gap(&self) -> bool {
         self.incomplete
@@ -982,19 +1034,70 @@ impl ScannedCasualties {
             .binary_search_by(|(name, _)| name.as_str().cmp(tag))
             .ok()?;
         let run = self.tracks[index].1.at(hour)?;
-        let read_hour =
-            daily_confirmation(run.first, hour.min(run.confirmed)).max(if run.confirmed <= hour {
-                run.confirmed
-            } else {
-                run.first
-            });
-        Some(CasualtyMeasure {
-            read_hour,
-            dealt: run.dealt,
-            taken: run.taken,
-            unknown: run.unknown,
-            at_least: run.at_least,
-        })
+        Some(run.measure_at(hour))
+    }
+
+    /// Walk the same sampled values as `country_at`, without a new replay scan
+    /// or expanding the stored history. Only observed coverage is emitted. The caller
+    /// can retain compressed totals and construct dates only for returned tags.
+    pub fn for_each_country_run(
+        &self,
+        tag: &str,
+        cancelled: &AtomicBool,
+        mut emit: impl FnMut(CasualtyMeasureRun) -> io::Result<()>,
+    ) -> io::Result<()> {
+        check_cancel(cancelled)?;
+        let Ok(index) = self
+            .tracks
+            .binary_search_by(|(name, _)| name.as_str().cmp(tag))
+        else {
+            return Ok(());
+        };
+        let mut observed = 0;
+        let mut previous: Option<(i32, Identity)> = None;
+        for sample in self.tracks[index].1.iter() {
+            check_cancel(cancelled)?;
+            while self
+                .observed
+                .get(observed)
+                .is_some_and(|span| span.last_hour < sample.first)
+            {
+                observed += 1;
+            }
+            for span in self.observed[observed..]
+                .iter()
+                .take_while(|span| span.first_hour <= sample.last)
+            {
+                let mut first = i64::from(sample.first.max(span.first_hour));
+                let last = i64::from(sample.last.min(span.last_hour));
+                while first <= last {
+                    check_cancel(cancelled)?;
+                    // Each hourly confirmation supplies its own date. A held
+                    // tail keeps its last read without inventing confirmations.
+                    let next = if first < i64::from(sample.confirmed) {
+                        first + 1
+                    } else {
+                        last + 1
+                    };
+                    let end = last.min(next - 1) as i32;
+                    let first_hour = first as i32;
+                    let starts_segment = previous.is_none_or(|(last, identity)| {
+                        last.checked_add(1) != Some(first_hour) || identity != sample.identity
+                    });
+                    emit(CasualtyMeasureRun {
+                        first_hour,
+                        last_hour: end,
+                        starts_segment,
+                        value: sample.measure_at(first_hour),
+                    })?;
+                    previous = Some((end, sample.identity));
+                    // Widen before advancing so a native i32::MAX endpoint is
+                    // emitted once and cannot wrap into another interval.
+                    first = i64::from(end) + 1;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn memberships(&self, params: &CasualtyParams) -> BTreeMap<String, Option<Vec<HourSpan>>> {
@@ -1022,13 +1125,35 @@ impl ScannedCasualties {
         } else if params.tags.is_empty() {
             selected.extend(self.tracks.iter().map(|(tag, _)| (tag.clone(), None)));
         } else {
-            for tag in &params.tags {
+            let identities = self.selected_identities(&params.tags);
+            for (tag, track) in &self.tracks {
                 if self
-                    .tracks
-                    .binary_search_by(|(name, _)| name.cmp(tag))
-                    .is_ok()
+                    .holders
+                    .get(tag)
+                    .is_none_or(|holders| holders.is_disjoint(&identities))
                 {
-                    selected.insert(tag.clone(), None);
+                    continue;
+                }
+                let mut spans: Vec<HourSpan> = Vec::new();
+                let mut whole_track = true;
+                for run in track.iter() {
+                    if !identities.contains(&run.identity) {
+                        whole_track = false;
+                        continue;
+                    }
+                    if let Some(last) = spans.last_mut()
+                        && last.last_hour.checked_add(1) == Some(run.first)
+                    {
+                        last.last_hour = run.last;
+                    } else {
+                        spans.push(HourSpan {
+                            first_hour: run.first,
+                            last_hour: run.last,
+                        });
+                    }
+                }
+                if !spans.is_empty() {
+                    selected.insert(tag.clone(), (!whole_track).then_some(spans));
                 }
             }
         }
@@ -1178,6 +1303,11 @@ impl ScannedCasualties {
             ));
         }
         series.membership = membership;
+        series.dealt.compact();
+        series.taken.compact();
+        if let Some(unknown) = &mut series.unknown {
+            unknown.compact();
+        }
         Ok(series)
     }
     fn reply(
@@ -1193,9 +1323,23 @@ impl ScannedCasualties {
                 .push("Casualties are unknown in missing or incomplete recording hours.".into());
         }
         let selected = self.memberships(params);
-        for tag in &params.tags {
-            if !selected.contains_key(tag) {
-                warnings.push(format!("{tag}: no sampled casualties in this branch"));
+        if !params.tags.is_empty() {
+            let sampled: HashSet<_> = selected
+                .keys()
+                .flat_map(|tag| {
+                    let index = self
+                        .tracks
+                        .binary_search_by(|(name, _)| name.cmp(tag))
+                        .unwrap();
+                    self.tracks[index].1.iter().map(|run| run.identity)
+                })
+                .collect();
+            for tag in &params.tags {
+                if !self.holders.get(tag).is_some_and(|holders| {
+                    holders.iter().any(|identity| sampled.contains(identity))
+                }) {
+                    warnings.push(format!("{tag}: no sampled casualties in this branch"));
+                }
             }
         }
         let mut reply = CasualtyReply {
@@ -1519,7 +1663,11 @@ impl ScanFrames {
             for row in relations {
                 match (endpoint(row.first_country), endpoint(row.second_country)) {
                     (Some(first), Some(second)) if first != second => {
-                        valid &= self.seen.insert((first, second, row.start_hour));
+                        valid &= self.seen.insert((
+                            first.min(second),
+                            first.max(second),
+                            row.start_hour,
+                        ));
                         self.endpoints.push((first, second));
                     }
                     _ => valid = false,
@@ -1555,7 +1703,12 @@ impl ScanFrames {
         self.scan.end_hour(read);
     }
 }
-fn scan_frames(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan> {
+fn scan_frames(
+    replay: &Replay,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<(Scan, pairs::PairHistory)> {
+    let mut pairs = pairs::PairHistory::default();
     check_cadence(cadence::cadence(TableId::WarRelations))?;
     let mut builder = ScanFrames::new(replay, branch);
     for block in replay.index.iter().filter(|block| block.branch == branch) {
@@ -1572,9 +1725,10 @@ fn scan_frames(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Resu
                 break;
             };
             builder.frame(decoded, replay);
+            pairs.observe(&builder.scan);
         }
     }
-    Ok(builder.scan)
+    Ok((builder.scan, pairs))
 }
 
 #[cfg(test)]

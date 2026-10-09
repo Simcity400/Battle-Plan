@@ -1,21 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
+import type { WidgetProps } from '../../dashboard/definitions';
 import type { ProductionSpendingLeaf, ProductionSpendingReply, ProductionSpendingRun } from '../../generated/dashboard';
 import { groupTree, amountText, arcTargets, sliceTooltip } from '../../charts/sunburst/layout.ts';
-import { UNIT, formatDeliveredIc, productionSpendingItems, spendingAt, spendingFinals, spendingFootnote, spendingTotal, validateProductionSpendingReply } from './spendingData.ts';
+import type { SunburstText } from '../../charts/sunburst/layout';
+import { UNIT, formatAppliedIc, productionSpendingItems, spendingAt, spendingEmptyLabel, spendingFinals, spendingFootnote, spendingTotal, validateProductionSpendingReply } from './spendingData.ts';
 import { definition, OPTIONS } from './definition.ts';
 import { levelsShown, sunburstSettings } from '../../charts/sunburst/sunburstOptions.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
 
 const known = (firstHour: number, lastHour: number, totalRaw: string): ProductionSpendingRun => ({ firstHour, lastHour, totalRaw, reason: null });
 const leaf = (extra: Partial<ProductionSpendingLeaf> = {}): ProductionSpendingLeaf => ({
-  variant: 'v/1', typeKey: 'mod_mechanised', name: 'Clockwork walkers', domain: 'land',
+  variant: 'v/1', typeKey: 'mod_mechanised', name: 'Clockwork walkers', domain: 'land', rocket: false,
   names: [{ firstHour: 100, name: 'Early walker', known: true, design: null }, { firstHour: 148, name: 'Revised walker', known: true, design: null }],
   runs: [known(100, 123, '0'), known(124, 147, '1234567'), known(148, 171, '2000001')], ...extra,
 });
 
 const reply = (): ProductionSpendingReply => ({
   branchId: '1', tag: 'opaque/tag', decimals: 5, reads: [100, 124, 148], observations: [100], warnings: [],
+  equipmentReads: [100, 124, 148], rocketReads: [100, 124, 148], equipmentObservations: [100], rocketObservations: [100],
+  rocketKey: 'mod_launch_works', rocketName: 'Launch works', rocketTotal: [known(100, 171, '0')],
+  production: [{ firstHour: 100, lastHour: 171, present: true, emptyCensusHour: null }],
   leaves: [
     leaf(),
     leaf({ variant: 'v/2', typeKey: 'mod_ornithopter', name: 'Ornithopters', domain: 'air', names: [],
@@ -27,14 +35,14 @@ const reply = (): ProductionSpendingReply => ({
 });
 
 const ROOT = { id: 'all', label: 'All production' };
-const text = { format: formatDeliveredIc, unit: UNIT, valueLabel: 'Delivered IC at read cost' };
+const text: SunburstText = { format: (value, exact) => formatAppliedIc(value, exact, 5), unit: UNIT, valueLabel: 'Equipment-line IC' };
 
 test('a well-formed production spending reply passes; malformed shape is refused', () => {
   const good = reply();
   assert.equal(validateProductionSpendingReply(good), good);
   const changes: ((bad: ProductionSpendingReply) => void)[] = [
     bad => { bad.decimals = 10; },
-    bad => { bad.leaves[0].runs[1].totalRaw = '-1'; },
+    bad => { bad.leaves[0].runs[1].totalRaw = '--1'; },
     bad => { bad.leaves[0].runs[1].totalRaw = '1.5'; },
     bad => { bad.leaves[0].runs[1].totalRaw = '1'.repeat(40); },
     bad => { bad.leaves[0].runs[1].totalRaw = null; },
@@ -63,10 +71,43 @@ test('the amount at an hour is the exact supplying read, without interpolation o
   assert.deepEqual(spendingAt(data.total, 147.9), { exact: 2734567n, reason: null });
   assert.deepEqual(spendingAt(data.total, 148), { exact: 11000001n, reason: null });
   assert.deepEqual(spendingAt(data.total, 172), { exact: null, reason: 'outsideRead' });
-  assert.equal(formatDeliveredIc(1234567, 1234567n), '12.34567');
-  assert.equal(formatDeliveredIc(1, 1n), '0.00001');
-  assert.equal(formatDeliveredIc(100000, 100000n), '1');
-  assert.equal(formatDeliveredIc(Number(9007199254741499n), 9007199254741499n), '90,071,992,547.41499');
+  assert.equal(formatAppliedIc(1234567, 1234567n), '12.34567');
+  assert.equal(formatAppliedIc(1, 1n), '0.00001');
+  assert.equal(formatAppliedIc(100000, 100000n), '1');
+  assert.equal(formatAppliedIc(Number(9007199254741499n), 9007199254741499n), '90,071,992,547.41499');
+});
+
+test('complete-empty evidence validation scales with its ordered read inventory', () => {
+  const data = reply(), reads = Array.from({ length: 5000 }, (_, index) => 100 + index);
+  let accesses = 0;
+  data.equipmentReads = new Proxy(reads, { get(target, key, receiver) {
+    if (typeof key === 'string' && /^\d+$/.test(key)) accesses++;
+    return Reflect.get(target, key, receiver);
+  } });
+  data.production = reads.map(hour => ({ firstHour: hour, lastHour: hour, present: false, emptyCensusHour: hour }));
+  assert.equal(validateProductionSpendingReply(data), data);
+  assert.ok(accesses < reads.length * 40, `${accesses} read accesses`);
+  data.production[0].emptyCensusHour = 99;
+  assert.throws(() => validateProductionSpendingReply(data), /malformed/);
+});
+
+test('signed cumulative corrections and negative range changes remain selectable exact rows', () => {
+  const data = reply();
+  data.leaves = [leaf({ runs: [known(100, 123, '400000'), known(124, 171, '-100000')] })];
+  data.total = data.leaves[0].runs;
+  assert.equal(validateProductionSpendingReply(data), data);
+  assert.deepEqual(spendingAt(data.total, 124), { exact: -100000n, reason: null });
+  const window = { from: 124, hour: 148, end: 171 };
+  const items = productionSpendingItems(data, window);
+  assert.equal(items[0].exact, -500000n);
+  assert.equal(items[0].present, true);
+  assert.deepEqual(items[0].counted, ['v/1']);
+  const tree = groupTree(items, ROOT, [], spendingTotal(data, window));
+  assert.equal(tree.exact, -500000n);
+  assert.equal(amountText(tree, text), '\u22125');
+  assert.ok([...arcTargets(tree, tree, 'share').values()].every(target => !target.shown));
+  assert.match(spendingFootnote(data, window), /including ticks without delivery/);
+  assert.match(spendingFootnote(data, window), /Excludes instant progress and IC before/);
 });
 
 test('Live looks up the playhead and Live off shows the whole branch at its final hour', () => {
@@ -202,6 +243,25 @@ test('a known zero remains exact zero, including a country with no designs', () 
   assert.equal(amountText(tree, text), '0');
 });
 
+test('an empty publication range needs covered exact endpoints, not a line observation', () => {
+  const data = reply();
+  data.observations = [];
+  data.leaves = [];
+  data.total = [known(100, 171, '0')];
+  const window = { from: 124, hour: 148, end: 171 };
+  const tree = groupTree(productionSpendingItems(data, window), ROOT, [], spendingTotal(data, window));
+  assert.equal(tree.valueUnknown, false);
+  assert.equal(tree.finalUnknown, false);
+  assert.equal(tree.exact, 0n);
+  assert.equal(amountText(tree, text), '0');
+  assert.equal(spendingTotal(data, { ...window, from: 100 }).unknownValue, true);
+  data.total = [known(100, 123, '0'), known(148, 171, '0')];
+  assert.equal(spendingTotal(data, window).unknownValue, true);
+  data.total = [{ firstHour: 100, lastHour: 171, totalRaw: null, reason: 'notRecorded' }];
+  assert.equal(spendingTotal(data, window).unknownValue, true);
+  assert.match(spendingTotal(data, window).note!, /not recorded/);
+});
+
 test('deleted lines retain their delivered value for every later covered hour', () => {
   const data = reply();
   data.leaves = [leaf({ runs: [known(100, 123, '0'), known(124, 171, '1234567')] })];
@@ -231,7 +291,7 @@ test('a range crossing a gap or observation restart stays unknown', () => {
 
 test('unknown final amounts use earlier exact values for stable ordering only', () => {
   const data = reply();
-  data.leaves[0].runs = [known(100, 147, '1234567'), { firstHour: 148, lastHour: 171, totalRaw: null, reason: 'missingCost' }];
+  data.leaves[0].runs = [known(100, 147, '1234567'), { firstHour: 148, lastHour: 171, totalRaw: null, reason: 'spendingUnavailable' }];
   const finals = spendingFinals(data, null, 171);
   assert.deepEqual(finals[0], { exact: null, geometry: 1234567 });
   const before = productionSpendingItems(data, { from: null, hour: 124, end: 171 }, finals)[0];
@@ -256,9 +316,145 @@ test('all sunburst settings and levels default to the shared construction behavi
   const options = resolveOptions(OPTIONS, {});
   assert.equal(definition.defaultTime, 'campaign');
   assert.equal(options.refits, false);
+  assert.equal(OPTIONS.find(option => option.key === 'domainLevel')?.label, 'Production source');
   assert.deepEqual(levelsShown(options, ['domainLevel', 'typeLevel', 'variantLevel']), [true, true, true]);
   assert.deepEqual(sunburstSettings(options), { growth: 'share', labels: true, legend: true, breadcrumb: true, dimming: true });
   const flat = groupTree(productionSpendingItems(reply(), { from: null, hour: 171, end: 171 }), ROOT, [false, false, false]);
   assert.equal(flat.exact, 11000001n);
   assert.deepEqual(flat.children, []);
+});
+
+test('Rocket and equipment leaves with the same design stay distinct when rings are hidden', () => {
+  const data = reply();
+  data.leaves = [leaf({ runs: [known(100, 171, '200000')] }),
+    leaf({ rocket: true, runs: [known(100, 171, '-300003')] })];
+  data.rocketTotal = data.leaves[1].runs;
+  data.total = [known(100, 171, '-100003')];
+  assert.equal(validateProductionSpendingReply(data), data);
+  const items = productionSpendingItems(data, { from: null, hour: 148, end: 171 });
+  assert.equal(items[1].path[0].label, 'Launch works');
+  const tree = groupTree(items, ROOT, [false, false, true], spendingTotal(data, { from: null, hour: 148, end: 171 }));
+  assert.equal(tree.children.length, 2);
+  assert.deepEqual(tree.children.map(node => node.exact), [200000n, -300003n]);
+  assert.equal(tree.exact, -100003n);
+  assert.ok([...arcTargets(tree, tree, 'share').values()].filter(target => target.shown).length > 0);
+});
+
+test('missing Rocket coverage keeps equipment slices exact while the whole remains unknown', () => {
+  const data = reply();
+  data.rocketReads = []; data.rocketObservations = []; data.rocketTotal = [];
+  data.production[0] = { firstHour: 100, lastHour: 171, present: false, emptyCensusHour: 100 };
+  data.total = [known(100, 171, '1')];
+  assert.doesNotMatch(spendingEmptyLabel(data, 124), /No military production/);
+  assert.doesNotMatch(spendingEmptyLabel(data, 99), /No military production/);
+  data.total = [{ firstHour: 100, lastHour: 171, totalRaw: null, reason: 'rocketTableUnavailable' }];
+  const window = { from: null, hour: 148, end: 171 };
+  const tree = groupTree(productionSpendingItems(data, window), ROOT, [], spendingTotal(data, window));
+  assert.equal(tree.exact, null);
+  assert.equal(tree.children.find(node => node.key === 'land')?.exact, 2000001n);
+  assert.match(spendingFootnote(data, window), /Independent Rocket production coverage/);
+});
+
+test('unresolved Rocket type does not make unrelated equipment arms unknown', () => {
+  const data = reply();
+  data.leaves.push(leaf({ rocket: true, variant: 'unknown', domain: null, typeKey: ':mod_rocket', name: null,
+    names: [], runs: [known(100, 171, '1')] }));
+  const tree = groupTree(productionSpendingItems(data, { from: null, hour: 148, end: 171 }), ROOT);
+  assert.equal(tree.children.find(node => node.key === 'land')?.valueUnknown, false);
+  assert.equal(tree.children.find(node => node.key === 'rocket')?.exact, 1n);
+});
+
+test('mixed resolved and unresolved Rocket types keep source and design amounts independently exact', () => {
+  const data = reply();
+  data.leaves = [
+    leaf({ runs: [known(100, 171, '200000')] }),
+    leaf({ rocket: true, variant: 'known_rocket', domain: 'air', typeKey: 'mod_missile', name: 'Mod missiles', names: [],
+      runs: [known(100, 123, '5000'), known(124, 147, '10000'), known(148, 171, '25000')] }),
+    leaf({ rocket: true, variant: 'untyped_rocket', domain: null, typeKey: ':unknown_rocket', name: null, names: [],
+      runs: [known(100, 123, '0'), known(124, 147, '3000'), known(148, 171, '5000')] }),
+  ];
+  data.rocketTotal = [known(100, 123, '5000'), known(124, 147, '13000'), known(148, 171, '30000')];
+  data.total = [known(100, 123, '205000'), known(124, 147, '213000'), known(148, 171, '230000')];
+  for (const hour of [100, 124]) {
+    const window = { from: null, hour, end: 171 };
+    const items = productionSpendingItems(data, window);
+    for (const shown of [[true, true, true], [true, false, true]]) {
+      const tree = groupTree(items, ROOT, shown, spendingTotal(data, window));
+      const rocket = tree.children.find(node => node.key === 'rocket')!;
+      assert.equal(rocket.valueUnknown, false);
+      assert.equal(rocket.exact, hour === 100 ? 5000n : 13000n);
+      assert.equal(rocket.finalUnknown, false);
+      assert.equal(rocket.final, 30000);
+      const design = shown[1] ? rocket.children.find(node => node.key === 'mod_missile')!.children[0]
+        : rocket.children.find(node => node.key === 'rocket:known_rocket')!;
+      assert.equal(design.valueUnknown, false);
+      assert.equal(design.exact, hour === 100 ? 5000n : 10000n);
+      assert.equal(design.finalUnknown, false);
+      assert.equal(design.final, 25000);
+      if (shown[1]) {
+        const type = rocket.children.find(node => node.key === 'mod_missile')!;
+        assert.equal(type.valueUnknown, hour === 124);
+        assert.equal(type.finalUnknown, true);
+      }
+      const land = tree.children.find(node => node.key === 'land')!;
+      assert.equal(land.valueUnknown, false);
+      assert.equal(land.exact, 200000n);
+      assert.equal(land.finalUnknown, false);
+      assert.equal(land.final, 200000);
+    }
+  }
+});
+
+test('empty-state wording requires dated complete-empty census evidence and exact zero', () => {
+  const data = reply();
+  data.total = [known(100, 171, '0')];
+  data.production = [{ firstHour: 100, lastHour: 171, present: false, emptyCensusHour: 100 }];
+  assert.equal(spendingEmptyLabel(data, 124), 'No military production yet.');
+  assert.doesNotMatch(spendingEmptyLabel(data, 124, 99), /No military production/);
+  data.production[0].emptyCensusHour = null;
+  assert.equal(spendingEmptyLabel(data, 124), 'No factory IC spent in this view.');
+  data.production[0].present = true;
+  assert.equal(spendingEmptyLabel(data, 124), 'No factory IC spent in this view.');
+  data.production[0].present = null;
+  assert.match(spendingEmptyLabel(data, 124), /presence is not known/);
+  data.production[0] = { firstHour: 100, lastHour: 171, present: false, emptyCensusHour: 100 };
+  data.total = [known(100, 171, '1')];
+  assert.doesNotMatch(spendingEmptyLabel(data, 124), /No military production/);
+  assert.doesNotMatch(spendingEmptyLabel(data, 99), /No military production/);
+  data.total = [{ firstHour: 100, lastHour: 171, totalRaw: null, reason: 'rocketTableUnavailable' }];
+  assert.match(spendingEmptyLabel(data, 124), /Rocket production coverage/);
+  assert.doesNotMatch(spendingEmptyLabel(data, 124), /No military production/);
+});
+
+test('the actual spending widget shows the census-backed empty state even with its legend disabled', async () => {
+  const state = { data: reply() };
+  const host = globalThis as typeof globalThis & { __spendingEmpty?: typeof state };
+  host.__spendingEmpty = state;
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'spending-empty-fixture', enforce: 'pre', transform(_source, id) {
+      const path = id.replaceAll('\\', '/');
+      if (path.endsWith('/dashboard/products.ts')) return 'export const useProduct = () => ({ data: globalThis.__spendingEmpty.data });';
+      if (path.endsWith('/dashboard/playback.ts')) return 'export const usePlaybackHour = () => {};';
+      if (path.endsWith('/charts/sunburst/Sunburst.tsx')) return "import { createElement } from 'react'; export default () => createElement('div', null, 'Spending chart');";
+    } }] });
+  try {
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/production-spending/ProductionSpendingWidget.tsx');
+    const props = { widget: { kind: 'production-spending', trackIds: ['track'], countries: { kind: 'tags', tags: ['opaque/tag'] },
+      time: { mode: 'campaign' }, options: { legend: false } }, active: true, onDiagnostics() {},
+      runtime: { tracks: [{ id: 'track', axisOffset: 0, source: { id: 'source', revision: '1' },
+        branch: { id: '1', firstHour: 100, lastHour: 171 } }], client: {}, clock: { getHour: () => 124,
+        getSnapshot: () => ({ hoursPerSecond: 24 }) } } } as unknown as WidgetProps;
+    state.data.leaves = [];
+    state.data.total = [known(100, 171, '0')];
+    state.data.production = [{ firstHour: 100, lastHour: 171, present: false, emptyCensusHour: 100 }];
+    const render = () => renderToStaticMarkup(createElement(Widget, props));
+    assert.match(render(), /No military production yet\./);
+    state.data.production[0].emptyCensusHour = null;
+    assert.match(render(), /Spending chart/);
+    state.data.production[0] = { firstHour: 100, lastHour: 171, present: true, emptyCensusHour: null };
+    assert.match(render(), /Spending chart/, 'zero amounts from active lines do not prove emptiness');
+    state.data.total = [{ firstHour: 100, lastHour: 171, totalRaw: null, reason: 'rocketTableUnavailable' }];
+    assert.doesNotMatch(render(), /No military production/);
+  } finally { await vite.close(); delete host.__spendingEmpty; }
 });

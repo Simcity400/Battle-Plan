@@ -249,6 +249,59 @@ fn fixture() -> Vec<u8> {
     bytes
 }
 
+#[test]
+fn cached_fuel_traversal_keeps_all_missions_without_reading_leader_or_mission_body() {
+    use std::cell::RefCell;
+    struct MissingBody<'a> {
+        bytes: &'a [u8],
+        reads: RefCell<Vec<usize>>,
+    }
+    impl Memory for MissingBody<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push(address);
+            if [FLEET + LEADER, TASK + ctask_force::MISSION].contains(&address) {
+                return false;
+            }
+            SliceMemory {
+                base: 0,
+                bytes: self.bytes,
+            }
+            .copy(address, output)
+        }
+    }
+    for mission in [0, 4, 8, -1_i32] {
+        let mut bytes = fixture();
+        put32(&mut bytes, TASK + ctask_force::MISSION, mission as u32);
+        put64(&mut bytes, TASK + 0x500, (-17_i64) as u64);
+        let memory = MissingBody {
+            bytes: &bytes,
+            reads: RefCell::default(),
+        };
+        let countries = ccountry::Reader::new(&memory, 0, GS).unwrap();
+        let mut rates = Vec::new();
+        visit_fuel_task_forces(&memory, 0, &countries, |visit| {
+            if let Visit::TaskForce(task, ordinal) = visit {
+                rates.push((
+                    task.id,
+                    ordinal,
+                    read::<i64>(&memory, task.task + 0x500).unwrap(),
+                ));
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(rates, vec![((11_u64 << 32) | 51, 0, -17)]);
+        assert!(!memory.reads.borrow().contains(&(FLEET + LEADER)));
+        assert!(
+            !memory
+                .reads
+                .borrow()
+                .contains(&(TASK + ctask_force::MISSION))
+        );
+        assert!(visit_task_forces(&memory, 0, &countries, |_| Ok(())).is_err());
+    }
+}
+
 fn capture(
     bytes: &[u8],
     fleets: &mut [Row],
@@ -279,6 +332,10 @@ fn naval_graph_preserves_handles_aliases_and_full_signed_scalars() {
             id: (11_u64 << 32) | 61,
             owner: 3,
             home_base: 1,
+            leader: None,
+            name_start: 0,
+            name_len: 0,
+            name_known: false,
         }
     );
     assert_eq!(

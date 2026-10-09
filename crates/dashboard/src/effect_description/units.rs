@@ -39,7 +39,7 @@ fn variant_version(variant: &VariantDefinitionRow) -> Result<u8, String> {
         .copied()
 }
 
-struct EquipmentTexts<'a>(&'a Localisation);
+struct EquipmentTexts<'a>(&'a Localisation, &'a str);
 
 impl crate::products::equipment::Texts for EquipmentTexts<'_> {
     fn has(&self, key: &str) -> bool {
@@ -48,6 +48,10 @@ impl crate::products::equipment::Texts for EquipmentTexts<'_> {
 
     fn text(&self, key: &str) -> Option<String> {
         self.0.localise_with(key.as_bytes(), &[]).ok()
+    }
+
+    fn stored_text(&self, text: &str, what: &str) -> Result<String, String> {
+        crate::scripted_text::stored_text(self.0, self.1, text.as_bytes(), what)
     }
 }
 
@@ -389,6 +393,7 @@ impl Renderer<'_, '_, '_> {
                     .map_err(|why| why.to_string())?,
             );
             if raw.name_tag.is_none() {
+                raw.check("name tag")?;
                 return Err("variant origin/creator naming tag is unavailable (140BCB030)".into());
             }
             raw
@@ -399,11 +404,13 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn units_variant_name(&self, variant: &VariantDefinitionRow) -> Result<String, String> {
-        crate::products::equipment::variant_names(
+        crate::products::equipment::variant_name(
             &self.units_variant_raw(variant)?,
-            Some(&EquipmentTexts(self.context.localisation)),
-        )
-        .0
+            Some(&EquipmentTexts(
+                self.context.localisation,
+                self.context.text.recorded_language(),
+            )),
+        )?
         .ok_or_else(|| {
             "shared equipment variant-name formatter cannot represent the name (140BCB030)".into()
         })
@@ -560,24 +567,11 @@ impl Renderer<'_, '_, '_> {
     }
 
     fn units_enabled_module_slots(&self, index: usize) -> Result<bool, String> {
-        let database = self.units_equipment()?;
-        let kind = &database.equipment[index];
-        if kind.module_slots.is_empty() {
-            return Ok(false);
-        }
-        let dlc = self
-            .context
-            .text
-            .frame()
-            .complete::<tables::SimulationFeatures>()
-            .map_err(|why| why.to_string())?
-            .first()
-            .ok_or("SimulationFeatures lacks the DLC mask (140C88540)")?
-            .dlc_mask;
-        let mask = if dlc & (1 << 4) != 0 { 0x80004001C0 } else { 0 }
-            | if dlc & (1 << 7) != 0 { 4 } else { 0 }
-            | if dlc & (1 << 8) != 0 { 0x1D0026FC00 } else { 0 };
-        Ok(database.category(kind) & mask != 0) // 140C88540 / 140F72890.
+        crate::products::equipment::enabled_module_slots(
+            self.units_equipment()?,
+            index,
+            self.context.text.frame(),
+        )
     }
 
     fn units_variant_order(
@@ -585,39 +579,12 @@ impl Renderer<'_, '_, '_> {
         variant: &VariantDefinitionRow,
         index: usize,
     ) -> Result<crate::products::equipment::VariantOrder, String> {
-        let database = self.units_equipment()?;
-        let kind = &database.equipment[index];
-        let archetype = kind
-            .archetype
-            .ok_or("equipment variant has a null archetype (140BC2F10)")?;
-        let frame = self.context.text.frame();
-        let upgrade_sum = if self.units_enabled_module_slots(index)? {
-            0
-        } else {
-            frame
-                .complete::<tables::VariantUpgrades>()
-                .map_err(|why| why.to_string())?
-                .iter()
-                .filter(|row| row.variant == variant.id)
-                .fold(0_i32, |sum, row| sum.wrapping_add(i32::from(row.level)))
-        }; // RebuildDerivedStats 140BD0D50 -> 140BD14BD.
-        let creator = variant.creator_link as i32;
-        let creator_slot = if creator > 0 {
-            self.context
-                .world()?
-                .slot(variant.creator_link)
-                .ok_or("CountryLinks lacks variant creator (140BC2F10)")? as i32
-        } else {
-            creator
-        };
-        Ok(crate::products::equipment::VariantOrder {
-            archetype_ordinal: archetype,
-            parent_depth: kind.depth,
-            upgrade_sum,
-            creator_reference: creator,
-            creator_slot,
-            id: (variant.id >> 32) as u32,
-        })
+        crate::products::equipment::variant_order(
+            self.units_equipment()?,
+            index,
+            variant,
+            self.context.text.frame(),
+        )
     }
 
     fn units_pool_variant_order(
@@ -856,16 +823,22 @@ impl Renderer<'_, '_, '_> {
                 scopes,
             )?; // LocalizeShortNameWithGameStateCountry 140BBA950.
             let raw = self.units_variant_raw(variant)?;
-            let name = if raw.display_name.is_empty() {
-                self.units_short_name_for_tag(
-                    raw.token.as_bytes(),
-                    raw.name_tag
-                        .as_deref()
-                        .ok_or("variant naming tag is unavailable")?,
-                    scopes,
-                )?
-            } else {
-                raw.display_name
+            let name = match raw.own_name(Some(&EquipmentTexts(
+                self.context.localisation,
+                self.context.text.recorded_language(),
+            )))? {
+                Some(name) => name,
+                None => {
+                    raw.check("token")?;
+                    raw.check("name tag")?;
+                    self.units_short_name_for_tag(
+                        raw.token.as_bytes(),
+                        raw.name_tag
+                            .as_deref()
+                            .ok_or("variant naming tag is unavailable")?,
+                        scopes,
+                    )?
+                }
             }; // GetShortDisplayName 140BCB250, without suffix.
             lines.push(self.localised(
                 key,

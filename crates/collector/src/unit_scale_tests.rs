@@ -41,6 +41,7 @@ fn stored_air_wing_names_presize_and_handoff_at_5000_countries() {
             force_full: true,
             limits: [5000, 0, 0],
             naval_limit: 0,
+            game_score: false,
         },
         &mut job,
     );
@@ -398,6 +399,7 @@ fn unit_scale_capture() {
             force_full: true,
             limits: [shape.wings, shape.wings, shape.wings],
             naval_limit: shape.wings,
+            game_score: false,
         };
         for _ in 0..4 {
             air::copy_air_refresh(&memory, context, &mut job);

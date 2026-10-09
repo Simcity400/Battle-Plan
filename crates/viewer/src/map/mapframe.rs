@@ -55,8 +55,8 @@ impl FrameAssets {
         warnings: &mut Vec<String>,
     ) -> io::Result<Self> {
         let types = ambient::read(layers)?;
-        let world =
-            dashboard::triggers::World::unrecorded(facts.dlcs, facts.triggers, facts.tag_aliases);
+        let triggers = facts.triggers.map_err(io::Error::other)?;
+        let world = dashboard::triggers::World::unrecorded(facts.dlcs, triggers, facts.tag_aliases);
         let roster = layers.descriptor_roster()?;
         warnings.extend(
             roster

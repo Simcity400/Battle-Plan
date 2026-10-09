@@ -1,4 +1,4 @@
-import type { IdentityChange } from '../generated/dashboard';
+import type { IdentityChange, MembershipRun } from '../generated/dashboard';
 
 /** Which country a tag named at an hour, from the recorded changes of tag
  * (`country-groups`' `identityChanges`: an id naming another tag from one recorded
@@ -51,6 +51,13 @@ export class Lineage {
     return list ? entryAt(list, hour).country : this.unchanged(tag);
   }
 
+  /** Last recorded holder boundary for this tag, by binary search. The implicit
+   * initial region starts at -Infinity; this bound does not prove native existence. */
+  holderStart(tag: string, hour: number): number {
+    const list = this.held.get(tag);
+    return list ? entryAt(list, hour).hour : Number.NEGATIVE_INFINITY;
+  }
+
   /** Hours when `tag` names another country inside the inclusive range. Find the
    * first change by binary search, then visit changes only, never every hour. */
   changeHours(tag: string, firstHour: number, lastHour: number): number[] {
@@ -86,6 +93,27 @@ export class Lineage {
     if (history) return entryAt(history, hour).tag;
     const [tag] = JSON.parse(country) as [string, number | null];
     return tag;
+  }
+
+  /** Recorded aliases of these countries, bounded by their holders as well as
+   * their renames. A tag another country later takes never selects that holder. */
+  aliasRuns(countries: ReadonlySet<string>, firstHour: number, lastHour: number): MembershipRun[] {
+    const runs: MembershipRun[] = [];
+    for (const country of countries) {
+      const history = this.tags.get(country) ?? [{ hour: Number.NEGATIVE_INFINITY, tag: this.tagOf(country, firstHour) }];
+      for (let index = 0; index < history.length; index++) {
+        const { tag } = history[index];
+        const first = Math.max(firstHour, history[index].hour);
+        const last = Math.min(lastHour, (history[index + 1]?.hour ?? Infinity) - 1);
+        if (first > last) continue;
+        const starts = [first, ...this.changeHours(tag, first + 1, last)];
+        for (let piece = 0; piece < starts.length; piece++) {
+          const start = starts[piece];
+          if (this.countryAt(tag, start) === country) runs.push({ tag, firstHour: start, lastHour: (starts[piece + 1] ?? last + 1) - 1 });
+        }
+      }
+    }
+    return runs.sort((a, b) => a.firstHour - b.firstHour || a.tag.localeCompare(b.tag));
   }
 }
 

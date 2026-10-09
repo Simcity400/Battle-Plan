@@ -1,204 +1,69 @@
 # engine
 
-The boundary between this project and HOI4's native memory. This crate owns the supported executable identity, native layouts, offsets, guarded reads and table walkers. It does not own replay encoding or presentation.
+The boundary between HOI4's native memory and the recorder. This crate owns the supported executable identity, native layouts and offsets, guarded readers, table walkers and hook site descriptors. Replay encoding belongs to [replay](../replay/README.md), hook installation and acquisition to [collector](../collector/README.md), and presentation to the consumers.
 
-## Start here
-
-Use the source map below to follow a field from native memory to its consumer. Read the [reverse-engineering guide](../../tools/re/README.md) before investigating a native field.
-
-The pre-rewrite implementation is retained at Git tag `archive/pre-rewrite-2026-09-09` and `<local-path>`. Use it as a research lead, not as proof that an old offset or interpretation is correct.
+Shared rules and checks live in [AGENTS.md](../../AGENTS.md). Use the [hoi4re guide](../../tools/re/README.md) when investigating native behaviour.
 
 ## Source map
 
-| Question | Start here |
+| Area | Start here |
 |---|---|
-| Which executable and sampling boundary are supported? | [build.rs](src/build.rs), [cgame_state.rs](src/cgame_state.rs) and the collector's [hook.rs](../collector/src/hook.rs). |
-| How are memory reads bounded and failures represented? | [memory.rs](src/memory.rs), [walk.rs](src/walk.rs) and the relevant struct's reader. |
-| How do country references resolve? | [ccountry_tag.rs](src/ccountry_tag.rs), [country_memory.rs](src/country_memory.rs) and the [replay identity rules](../replay/README.md#values-availability-and-freshness). |
-| Where are original-tag membership and country order read? | [original_tag_lists.rs](src/original_tag_lists.rs) copies the native cached buckets; [country_roster.rs](src/country_roster.rs) copies the physical array. Both preserve raw order and repeated occurrences. |
-| Where is a native row captured and encoded? | Collector [acquisition](../collector/src/acquisition.rs) and [extended packs](../collector/src/extended/), then replay [rows](../replay/src/rows.rs), [extended rows](../replay/src/extended_rows/) and [format](../replay/src/format.rs). |
-| What do the raid map tooltips read? | [raid_facilities.rs](src/raid_facilities.rs), [raid_air_scores.rs](src/raid_air_scores.rs), [raid_intel_inputs.rs](src/raid_intel_inputs.rs) and [raid_tooltip_operands.rs](src/raid_tooltip_operands.rs); each separates stored values from the tooltip's on-demand arithmetic. |
-| What can a save validate? | [Text-save parsers](../installed-content/src/save/) and the recorder's [oracle comparators](../recorder/src/oracle/); keep unsupported fields explicit. |
-| Where is a reader's field evidence, validation and live-verification status? | The reader's own module docs (`//!`), beside its offsets; for example [research_inputs.rs](src/research_inputs.rs) or [country_stability.rs](src/country_stability.rs). |
+| Executable identity and sampling operands | [build.rs](src/build.rs), [cgame_state.rs](src/cgame_state.rs) and the collector's [hook.rs](../collector/src/hook.rs). |
+| Guarded copies, exact-field gathers and accounting | [memory.rs](src/memory.rs), [seh_read.c](src/seh_read.c) and [read_counts.rs](src/read_counts.rs). |
+| Walk results, checked storage and prepared reads | [walk.rs](src/walk.rs), [allocation.rs](src/allocation.rs) and [read_plan.rs](src/read_plan.rs). |
+| Native containers and strings | [cpdx_array.rs](src/cpdx_array.rs), [msvc_tree_node.rs](src/msvc_tree_node.rs) and [msvc_string.rs](src/msvc_string.rs). |
+| Country identity and native order | [ccountry_tag.rs](src/ccountry_tag.rs), [country_memory.rs](src/country_memory.rs), [country_roster.rs](src/country_roster.rs) and [original_tag_lists.rs](src/original_tag_lists.rs). |
+| Full reference handles | [creference_registry.rs](src/creference_registry.rs); shared registry counts bound storage, not one reference type's population. |
+| Modifier names, definitions and fixed tokens | [modifier_keys.rs](src/modifier_keys.rs), [modifier_keys/builtins.rs](src/modifier_keys/builtins.rs), [modifier_definition.rs](src/modifier_definition.rs) and [fixed_layout.rs](src/fixed_layout.rs). |
+| Struct layouts and field evidence | The corresponding module under [src](src/); [lib.rs](src/lib.rs) lists the public modules. |
+| Hook boundaries and operands | Domain site modules, for example [line_output_sites.rs](src/line_output_sites.rs), [peace_finalizer_site.rs](src/peace_finalizer_site.rs) and [event_feed_sites.rs](src/event_feed_sites.rs). |
+| Save comparisons | [installed-content save readers](../installed-content/src/save/) and [recorder oracle comparators](../recorder/src/oracle/). |
 
-The struct files hold offsets, native widths and evidence. Do not recreate the old registry, table-count or format-version catalogs here. A stored field, a calculated getter and a renderer cache are different sources; a similar-looking save value does not make them interchangeable.
+Offsets, widths, native functions and field-specific limitations stay beside the reader. Stored fields, calculated getters and renderer caches are different sources; a similar save value does not establish equivalence.
 
-Raid naming, capture and save comparison follow the [raid tooltip contract](../viewer/src/map/raids/tooltips/README.md).
+Fixed modifier keys and lexer tokens require the live layouts to match their native registration names; a mismatch refuses fixed keys by name. Dynamic definitions size and resolve from live data.
 
-## Adding or changing a reader
+## Reader safety
 
-Built-in modifier names live in [modifier_keys/builtins.rs](src/modifier_keys/builtins.rs), with each native registration callsite; the fixed-key constants in [modifier_keys.rs](src/modifier_keys.rs) take their names from that catalog. Hard-coded static lexer tokens are listed in [fixed_layout.rs](src/fixed_layout.rs). Its check confirms, through the witnessed lexer dictionary, that every built-in row spells its script name, that the gap row after the built-ins is default-constructed, and that each token is within the static range and spells its name. A mismatch anywhere in the built-in layout fails every fixed key by name. Dynamic definitions remain sized and resolved from live data.
+- Use `Memory` and the guarded read helpers for every native span. Check nulls, address arithmetic, lengths and the reader's vtable, reference-type, identity and ownership requirements. A readable address alone does not authenticate an object.
+- Preserve native order, repeated occurrences, signed widths and arithmetic. Deduplicate only where native behaviour permits it. Scope shared reads to the selecting table, identity and occurrence; address equality alone is insufficient.
+- Preserve the first independent failure and each consumer's failure boundary. A short or failed read cannot become a complete row, empty table or zero. Distinguish known absence, unavailable data and capacity truncation, counting unread occurrences as the walker requires. Do not retry to hide a failure.
+- Read passively at the collector's established boundary. Never call game getters, refresh caches, wait for memory to change or infer freshness beyond the native writers. Registry walks require a quiescent boundary.
+- Copy everything deferred decoding needs into owned storage during acquisition. Deferred code must not follow game pointers. Native string descriptors, including ace portrait descriptors, authorize immediate acquisition only; copy their payload before deferring work.
+- Reuse buffers and plans only within a proved identity, ownership and invalidation lifetime. Reloadable defines, weather and mutable definitions are not automatically session-static; a sizing hint is not a recorded value or validation of a later read.
 
-Keep one source file per engine struct. Put a short evidence comment beside each constant: the native function or structure that establishes it and how it was confirmed. There is no arbitrary file-count cap.
+Size variable capture storage from live demand. Use [allocation.rs](src/allocation.rs) for potentially large or live-sized buffers, reserve a known batch before filling it, and keep callback reads within caller-owned capacity. Preserve the existing growth boundaries when filtering determines the output count. Allocation failure must retain its terminal `OutOfMemory` distinction through the collector callback, including readers that otherwise return a static refusal or optional value. See the collector guide for accepted standard-library allocation residuals.
 
-Derive widths, signedness, ownership and meaning from native writers, serializers and established evidence. An old reader is a lead, not proof. Look functions up through `hoi4re`; save established names, fields and notes before reporting the result. If a decompile drops an argument or arithmetic, inspect the indexed instructions rather than guessing. Distinguish virtual addresses from image-relative RVAs.
+Preparing a read plan is fallible; executing it does not allocate. Its controls must cover every owned operand that selects later addresses. Hints run only after those controls pass and acquire no bytes. A stopped plan reports its completed prefix and attempted failure so continuation need not reread them. Valid geometry alone proves neither dependencies nor object lifetime.
 
-Guard every native read. Preserve source order, identity checks, meaningful pointer occurrences, bounds and the first independent failure. A failed or short read must not become a complete row, an empty table or a zero value. Never call engine functions to obtain a value, wait for memory to change, or retry to hide a failure.
+## Adding a layout or reader
 
-Capture buffers sized from live game data, or potentially large, use [allocation.rs](src/allocation.rs): reserve a whole known batch before pushing or resizing, and keep native readers' caller-owned arenas within their admitted capacity. Preserve the original growth policy for capacity-based recording metrics; when native filtering or deduplication determines the actual count, check only the original growth boundary. Checked failures produce `io::ErrorKind::OutOfMemory` without allocating an error message and notify the collector's terminal callback; readers with a static refusal or optional-value interface retain that terminal distinction through the callback. Packet preparation is fallible, while executing a prepared read plan never allocates. Large owned copies remain checked inside standard `Arc` owners; their small control blocks and fixed setup allocations use the standard library. Paths and file handles also use the standard library. The collector lists these accepted residuals in its [allocation rule](../collector/README.md).
+1. Establish the native writer, getter or serializer with `C:\Tools\hoi4_mcp\hoi4re.cmd fn|asm|data|callers <addr>`. Derive widths, signedness, ownership, gates and arithmetic from that evidence. Inspect instructions when the decompile omits an argument or operation; distinguish virtual addresses from RVAs. Old readers are research leads.
+2. Keep one source file per native struct and register it in [lib.rs](src/lib.rs). Cite the native address and what it establishes beside each constant or operation; keep a longer field audit beside the module when needed. Save established names, fields and notes through hoi4re.
+3. Implement guarded reads with the existing containers, gathers and caller-owned arenas. Preserve independent failures and native reach: skipped branches should not acquire operands. Resolve content through [installed-content](../installed-content/README.md); built-in modifier names and fixed tokens use the witnessed layouts above, while dynamic definitions size and resolve from live data.
+4. Add synthetic-memory cases that fail on the old behaviour: aliases, invalid identities, short reads, overflow, cycles where relevant and insufficient capacity. Follow AGENTS.md for scale and local checks, and the [recorder guide](../recorder/README.md) for the affected capture oracle and smoke workflow. Update the collector, replay and consumers together when the recorded meaning changes.
 
-The collector may decode owned copies after the callback. Those copies must be sufficient: deferred code must not follow live game pointers. Shared acquisition is useful only when each consumer retains its own correctness and failure behavior. Address equality alone does not identify a table or read occurrence: keep raw/owned lookups correctly scoped, including empty and overflow paths.
+## Adding a hook site
 
-## Reuse and measurement
+Put the site's RVA, exact instruction sentinel, operand layouts and caller evidence in its domain module. Establish whether it is a function entry, CALL or interior instruction, and document the register/stack ABI, original continuation and safe observation phase. Pre/post readers must reauthenticate identities when the native call can replace or free objects.
 
-The [naval modifier tree contract](../replay/README.md#naval-modifier-breakdowns) links the reader and native evidence; ship input writer-coverage notes do not certify reuse.
+Verify both [the pinned executable](src/build.rs) and the site's bytes before installation. A matching sentinel alone proves neither executable support nor hook, lifetime or unwind safety. An interior site must resume its relocated instruction and original continuation correctly; it cannot be invoked as a function. Collector owns patching, dispatch, teardown and runtime coverage. Keep engine operands separate from replay event IDs and never publish a native pointer as history identity.
 
-Keep cached plans and copied buffers within their proved lifetime. Reloadable defines, weather structures and mutable definitions are not automatically session-static. Reuse native inputs only when identity, ownership and invalidation are established.
+## Native distinctions to preserve
 
-[read_plan.rs](src/read_plan.rs) executes fresh exact reads with ordered comparisons of the owned values that selected later addresses. The native executor uses compact checked descriptors; geometry outside that representation keeps the ordinary ordered executor. Hints run only after their selecting controls pass and never acquire a value. A stopped plan exposes its completed prefix and attempted failure so a producer can continue without rereading it. Bounds validation alone does not prove a plan's dependency coverage or object lifetime.
+[world_lifetime_sites.rs](src/world_lifetime_sites.rs) authenticates current-world invalidation markers before reset, deletion and construction publish or retire data. These markers supply occurrence changes to collector; they do not infer successful load completion from a clock or singleton address.
 
-Use the instrumentation present on the checked-out branch and its actual counter definitions. Do not count decoding an owned copy as another native read, or report synthetic fixture savings as measured gameplay speed.
-
-Test readers with the existing synthetic-memory fixtures, including aliases, invalid pointers, short reads and capacity limits. Run the local checks in [AGENTS.md](../../AGENTS.md); a new capture domain also needs collector/replay integration and an oracle comparison or an explicit limitation.
-
-Unit-count fixtures live in [tests/support/unit_world.rs](tests/support/unit_world.rs). Run `cargo test -p engine --release --test unit_scale -- --ignored --nocapture --test-threads=1` through the build slot; `BATTLE_PLAN_UNIT_SHAPE=design|stress` selects one population per process for memory measurement. `BATTLE_PLAN_UNIT_VALIDATE=1` checks complete native walks without timing repetitions. The separate `unit_scale_templates` test extends the model-input fixture; it retains that benchmark's in-memory fastest-pass methodology. Synthetic guarded reads measure acquisition work, not gameplay slowdown.
-
-## Historical evidence
-
-The [archived domain index](#) preserves old registry-to-source mappings, exclusions and investigation results. It is not current coverage or acceptance: its double-read windows and phase gates are superseded by [AGENTS.md](../../AGENTS.md). Keep new field evidence beside the reader, not in another running porting log. For the hourly-sample versus later-save limitation, see the [recorder guide](../recorder/README.md#inspect-and-compare).
-
-`research_inputs.rs` captures current slot-local progress/cost operands and applied limited-use bonus IDs. `climited_use_tech_bonus.rs` owns the source layout and serializer evidence. The slot multiplier is assigned once and is not a current countdown. The reader performs no game calls or forecasting. Synthetic fixtures exercise short reads, identities, truncation, lazy bonus lookup and guarded batch counts; they do not establish live capture cost or fresh-save agreement.
-
-`cpolitical_status.rs` copies each party's naming operands with its popularity in one read: its tag index (+0x20), the name and long-name keys (+0x28, +0x48) and the default-name flag (+0x68), whose meaning is in `cpolitical_party.rs`. Synthetic fixtures cover renamed and default parties, a flag that is not a boolean and truncation; live capture is unverified.
-
-`ccountry_fuel_status.rs` reads each country's fuel status once for CountryFuel and CountryFuelConsumers: one guarded scatter copies the scalars with both array headers, the history cursor and the owner, and a second copies the consumer entries and the history ring. The writer ignores the ring's own header and always writes 24 entries, so the reader reads exactly 24, refuses a header that is not the constructed 24-entry ring, and records checked sums of the entries' raw values (a sum outside i64 is refused); the pending entry is not read. A status failure withholds both tables; a ring failure or overflow withholds only CountryFuel and a consumer failure only the consumers. Element layouts are in `fuel_consumer_data.rs` and `fuel_history_entry.rs`. Synthetic fixtures cover a full read, truncation, an unreadable ring, sum overflow, invalid consumer headers and owner mismatch. The per-entry reader matched a fresh save live (2026-09-28, hour 60829646); the sums are not yet checked live.
-
-`clogistics_status.rs` reads the current daily record of each country's CLogisticsStatus stock and balance series (15 and 16); the balance is the Logistics screen's surplus or deficit as the day's update computed it. The game writes the balance only for countries `IsCountryAIControlled` rejects, so only those are read: `cgame_state::AiControl` evaluates that predicate for the whole census, gathering its operands in batches (`autonomous_country` uses it too). Its first failed operand read, a failed batch included, fails it for the rest of the sample: no operand is read again, so a later successful read cannot hide the failure. Each record index is named by the archetype at that position of the equipment database's archetype list (`cequipment_database.rs`), which must be an archetype whose own index is that position. The layout from the status to each value is checked as the constructor builds it (19 series and their roll-up modes, the 30-record daily window, the current slot's record, records sized by the archetype count); any other form is refused. Synthetic fixtures cover the full read, batching, truncation, refused forms, failed reads, a control read that fails once and the live-player fallback past the controller counts; live capture is unverified.
-
-`ncombat_log_cmanager.rs` walks the game's own Combat Log (`CGameState+0x880`, one NCombatLog::CManager per country slot): each orders group's log (`ncombat_log_corders_group_logs.rs`), its four loss arrays by stored reason and its recovered array, each calendar-month entry (`ncombat_log_cequipment_loss.rs`) and each variant of the entry's pool, for the countries a caller selects. Every writer adds only to an array's last entry, and only in its own month, so `Months::Window` reads each array's last two entries (every entry that can have changed since a complete read in the same or the previous calendar month) and `Months::All` every retained entry; the caller's selector chooses per country. Each manager, group log and entry is copied whole in one guarded span, and a per-walk variant memo (cleared every walk, never carried across hours) authenticates each variant once. Every object is authenticated (vtables, orders-group reference type 53, variant type 70); a loss entry must carry its array's reason, a month may appear once per array and a variant once per pool, and any other form is refused; a country's rows are stored whole or counted unread. `countries_with_deleted_groups` finds the countries holding a log whose orders group no longer resolves (through the registry lookup the prune uses), and `deleted_logs` reads a manager's such logs whole, for the prune detour (`PRUNE_RVA`, `PRUNE_SENTINEL`). The native writer admits a country when `CGameState+0x520 < 1` or its country matches a live CHuman roster record (without inspecting its flags), but also requires the army's orders group (`army+0xc0`); admission alone does not prove logging. AddEquipmentLoss also requires an enabled runtime feature, whose mask is recorded by SimulationFeatures; the module cites that predicate and its global. `viewing_country` records the gate operand to explain missing game records, never to select capture. The walk, deleted-group census and deleted-log reader visit every country's held records regardless of player, human, AI or viewpoint status. The writers, the gate, the daily prune and the loader are cited in the module comments. `clend_lease_exchange.rs` reads each giver's lend-lease exchanges (CCountryResources+0x758): what each delivered and what was sunk on the way, per variant; its comments prove that CLogisticsStatus series 10 is lend-lease sent and 9 received. Synthetic fixtures cover full, window and selected reads, batching, whole-country truncation, every refused form, short reads, the memo, deleted-group detection through a synthetic registry, and the exchanges; a release benchmark at 5,000 slots measures the walks. The save parser read the combat logs of a fresh save (W3_O11, 2026-09-29), but live capture and prune cost remain unverified.
-
-`cproduction_status.rs`'s `walk_factories` reads each canonical country's stored factory totals: after the status pointer, one guarded scatter copies its vtable, owner and the 0x1f8-byte span of the three factory groups (`factory_group.rs`) and the five civilian consumers (`civ_factory_consumer.rs`); the status and every consumer are authenticated by vtable. Any failure withholds the table. The unified evaluator uses the three stored group-head levels for `num_of_controlled_factories` and scripted-text seeds; the fixed5 totals are different values. The writers and the game's views are cited beside the constants. Synthetic fixtures cover a full read, alias identity, truncation, each authentication failure and a short span; live capture is unverified.
-
-`cequipment_production_line.rs` records each line's current efficiency as the production view gets it, without calling the game: the per-factory array (+0xC0) holds Q15 values, and `efficiency_average` reproduces the averager's wrapping sum, shift and truncating division over the first min(active factories, maximum factories) entries. The maximum is the line's virtual slot 11, followed through the equipment type's optional, its archetype's, then the kind's define (the six defines are read once per walk); it is recorded as the average's clamp. A count beyond the array's own is refused rather than read past. Synthetic fixtures cover the arithmetic, every maximum source, the clamp, an invalid, short or unreadable array and an unreadable header; live capture is unverified.
-
-`cequipment_variant.rs`' definition walk also copies each variant's icon entry (+0x450: active byte, kind, string) in the same record gather; `ccountry.rs`' appearance reader copies the 2D graphical culture (+0x1050) beside the 3D one, since the icon fallback uses it and the save does not write it. The icon rule's fallbacks read content and recorded country values only; their evidence is beside the icon entry constants. Synthetic fixtures cover the raw entry, a short record and a corrupt string header; live capture is unverified.
-
-`nindustrial_organisation_corganisation.rs` walks each country's organisations (CProductionStatus +0x130) in array order: one scatter per organisation copies its identity, key token, name-key override, icon, history header and owner link; the history table's occupied slots are then read in slot order, as the serializer visits them, and must number its element count. The slot extent comes from the live bucket mask and overflow tail, with no chosen ceiling; invalid extents and address overflow are refused by name. The units each slot holds (`mio_history_entry.rs`) are the game's own count of units the organisation's lines completed; the game keeps no count per line. An unreadable or foreign organisation withholds both tables; a broken history withholds only the history. Synthetic fixtures cover a full read, a large live extent, truncation, unreadable pointers and fields, and each history failure; live capture is unverified.
-
-
-`construction_ic_sites.rs` pins the construction detours and their a729 instruction bytes, with field and caller evidence beside the code. Its guarded operand reader copies only the live line and, for buildings, the instant/invalid-reference globals; railway instant progress is identified by the pinned segment amount, preserving other countries' normal bank draws; synthetic fixtures cover entry fields, short reads and unsupported identities, while live cost and exactness remain unverified.
-
-`ccountry.rs`'s appearance reader walks the ruling party's first country leader once for both its ideology token and the id of its parent CCharacter. A null, unreadable or unauthenticated character leaves the id missing and keeps the row; a failed walk up to the leader still withholds it. Synthetic fixtures cover both; live capture is unverified.
-
-`ccharacter.rs` reads each character's template (`CCharacter+0x20`) after its names: `ccharacter_template.rs` owns the template's tag, source file and line and generated byte and their writers. The pointer rides in the view's name token span, so a caller may supply an identity it read earlier for the same pointer instead of reading it again. `ccharacter::FLAGS` is the character's own flag manager, which `cflag_manager` reads unchanged. Synthetic fixtures cover reading, reuse, truncation and a template the loader never read; live capture and fresh-save agreement are unverified until run.
-
-`modifier_definition.rs` copies the registered rows of the engine's modifier definition table (script-name token, name and postfix localisation keys, `$ARG$` argument, flags, category mask, feature selector, precision); a row is registered when its own index equals its position and its token is nonzero, and a default gap row is skipped. The table header (data pointer, count) is the copy's validity control. `keys_by_names_at` resolves key indices from script names through these rows and the lexer's reverse dictionary, so readers need not hard-code key numbers; it reads every row, so callers resolve once per header. `ccountry_characters.rs` reads each country's appointed advisors (CCountryCharacters +0x58) in native order; a persistent advisor role alone does not mean appointment. Its record walk reads each country's active (+0x10) and retired (+0x28) character records in one country pass, each table failing on its own. `character_inputs.rs` reads, in one pass over the character roster, every country-leader, advisor and scientist role's trait tokens and each nonzero unit-leader reference (`CCharacter+0xC8`) with the operands of the unit leader the reference registry holds for it; the roster's pointers are copied in pages and each page's identities and role fields gathered in one guarded call. Synthetic fixtures cover both readers; live capture and fresh-save agreement are unverified until run.
-
-`country_stability.rs` copies each country's operands of GetStability, GetWarSupport and GetMaxCommandPower (bases, stored Q15 penalties, the cached coastal term, ruling-party popularity, the war predicates over the owned war relations, the interception ring sum, world tension, the loaded defines, the active language and the getter values of tracked modifier keys resolved by script name through `modifier_definition::keys_by_names_at`). The maximum's other operands, `max_command_power`, `max_command_power_mult` and the allocated command power (+0x1f8, subtracted from the maximum by `add_command_power` and the top bar), have one reader, `raid_launch_inputs.rs` (CountryCommandPower, read every hour); consumers join that row at the same frame. It also copies every child of the country modifier tree with its exact tracked values, and replays RecalculateModifiers' source order for ideas, the ruling party's leader and ideology group, appointed advisors, the bound statics, dynamic modifiers and the scaled statics. Only children with a tracked value and sources with a tracked key take part in pairing, so sources and children without values (tooltip-only ideas, dynamic modifiers whose values are all zero, zero-valued faction children) cannot shift it. A child is paired only when its nonzero entries (and, where the clone copies it, its display text) equal one source's and the leftmost and rightmost order-preserving assignments agree; every other child stays unpaired with its display text. Synthetic fixtures cover pairing, ambiguity, drift, truncation, short reads and the fingerprint; live capture and the pairing coverage on real countries are unverified.
-
-The hourly research modifier reader follows only assigned technology links from the same acquisition pass. It copies shared country speed/source trees once, slot-specific idea/script and design-team operands, XP boosts, matching production licences, sharing group operands and selected scientist-category bonuses. Sharing uses bounded direct template-index lookups for raw member levels and predecessor classifiers, not a technology census. Native group filters, doctrine flags and scientist category values remain separate inputs; analytics derives eligibility, contributor counts and the combined scientist contribution. Modifier metadata retains the native flags and feature operands so eligibility and clamping also belong to replay. Applied-bonus roster scans have a finite bound and stop once the requested IDs are resolved. The scientist source list records efficiency modifiers separately from each native cached category value; those values must not be summed as direct technology-speed contributions. Native formula evidence is beside the reader. Synthetic tests cover signed values, missing reads, output capacity, ownership, aliases, source cycles and conditional read cost. Fresh-save, live-rate and performance acceptance remain unverified while the game is left untouched.
-
-[naval_combat_air_base_wings.rs](src/naval_combat_air_base_wings.rs) walks the dense wing vector (`CAirBase+0x48`) of the air bases naval combats reference, which `CountAirBaseAircraft` counts; save loading can append one container twice, so neither containers nor wing handles are deduplicated. The referenced bases are gathered once, in first-reference order, through `UniqueHandles`.
-
-[ctask_force.rs](src/ctask_force.rs) reads each task force's counter operands in the fleet walk ([cfleet.rs](src/cfleet.rs) `walk_counter_inputs`), including the received-supply ratio (`CUnit+0x40`, signed fixed5, written by `AddReceivedSupply@1419F77F0`). Its `MapMotionCollector` takes every task force that walk authenticates (the walk's `visit` callback) through [cunit.rs](src/cunit.rs) `read_map_motion`, the reader railway guns share: the movement target, the first combat's role and both routes. `first_combat_side` (`140BF0FC0`) accepts naval combats as well as land and border-war ones: all three keep what it reads at the same offsets. Nothing of the map entity, the camera or a selection is read. Synthetic fixtures cover routes, both combat roles, truncation demand and a refused combat object; live capture and fresh-save agreement are unverified.
-
-`ccountry::walk_sent_volunteers` copies each country's ordered sent-volunteer references (`CCountry+0x310`), null and stale ones included, in bounded batches. The counter tint stops at the first matching reference, so the order the swap-removals leave matters. The reader never follows the references or rereads division owners. Synthetic tests cover order, capacity demand, malformed headers and short reads; `sent_volunteers_unit_scale` is an opt-in release benchmark over owned synthetic memory. Live capture and fresh-save agreement are unverified.
-
-[invasion_preparations.rs](src/invasion_preparations.rs) also records the sea-route cost operands of each invasion's route unit, selected as `CheckNavalInvasionRoute` does: the owner's slot-zero war presence, retired and co-belligerent bytes and its nonzero co-belligerent target slots, read by [crelation_status.rs](src/crelation_status.rs) as stored. The candidate-set proof is `RebuildWartimeAllies`, its setter and the diplomacy/status resets; candidates only select reads, never supply the byte. `ccountry::walk_counter_inputs` adds the handle of each country's first roster division, the route's last unit fallback.
-
-`cgame_state::local_player` reads the local playing and observer-view references together in one guarded copy. Its writer, local-player-key gate, lobby restore and observer evidence are beside the reader. Synthetic tests preserve raw words, reject short reads and verify the constant read cost.
-
-The scripted-localisation readers preserve `CCharacter` gender, the country manpower residual, each state's available manpower, the intelligence agency's stored name and created byte, and each country's retained old name, adjective and definite name. Agency names use validated native string lengths and an externally sized arena; a capacity shortage omits whole rows with exact demand, and a bad header or terminator refuses the table. The old names are bounded strings in the appearance row: an unreadable or longer one leaves only that country's old names absent. Native getter and save-writer evidence is beside the field declarations.
-
-The [naval mission input reader](src/naval_mission_inputs.rs) reads the native strike/invasion range and convoy-efficiency chain, authenticated embedded missions, stored navy ledger headers and supply-hub lists, and raw country/fleet-leader/HQ accumulators. Native reader/writer addresses stay beside the fields; the build-fixed modifier registrations are in [modifier_keys.rs](src/modifier_keys.rs).
-
-[saved_event_targets.rs](src/saved_event_targets.rs) reads the saved event targets a save writes, in native order; its module docs hold the fields, liveness bits and refusals.
-
-[equipment_destruction.rs](src/equipment_destruction.rs) owns the destruction
-writer sites, call ABI, native source classifications and ownership evidence.
-It reads exact per-design pre/post pool differences; requested removal is not
-exact because the native pool arithmetic clamps. The attrition CALL tap runs
-only after the native early-outs and loss roll. The active-damage hook covers
-accumulated land-combat damage flushed by `CArmy::OnCombatEnded`, naval transport
-damage and immediate army damage. It does not cover paradrop disruption
-(`CArmy::ApplyParadropDisruption` -> 140C7AE10), or the remaining equipment of
-divisions destroyed in combat (logged by
-`CLandCombatant::participant_lifecycle` 141299850); those writers are queued for
-follow-up hooks. The engine maps verified caller RVAs to semantic causes; replay
-owns their stable encoding. Unrecognized callers produce an explicit unknown
-cause and are counted, preserving the actual removal. Negative pools, pool increases,
-short reads and arithmetic overflow remain named refusals. Live coverage and
-removal agreement remain unverified until the coordinated capture.
-
-Native equipment accounting is signed: land damage (140C7BFC0), stochastic
-rounding (140FFCCE0), scripted scaling (14049B2C0/14049B2F3), merge surplus
-(14134F8FB) and negative aircraft requests (140F4E400) can raise pools.
-The current destruction reader still refuses increases; signed corrections
-belong to the separately coordinated format change.
-
-[The land detail demand reader](src/cland_combat/demand.rs) runs the existing
-`read_details` census with empty arenas for each authenticated land/border
-combat. It counts actual participant, air, trait and text demand and rechecks
-mutable headers after their walks. This reads ordinary detail operands but
-copies no variable text payload, and allocates no census storage. The hint
-never certifies recorded values or replaces hourly validation.
-
-[The naval hover demand reader](src/naval_ship_modifier_breakdown/demand.rs)
-bounds requests from live combat/member/plane headers and the shared native
-source visitor (140C29020, 14195C7D0, 141963700). Capture's count-only tree census
-counts nodes, selected leaf text and depth for each distinct candidate source
-and key union. Native 14054D0F0 walks with depth -1; observed depth two supplies
-no fixed breadth or text bound. The census reads modifier values to select
-text, validates string descriptors without copying display text, and rechecks
-child/string and selecting headers. Hint-only allocations return failure
-without the collector's terminal callback. Candidate hover/source bounds can
-still overprovision storage; live cost remains unmeasured.
-
-[fixed5.rs](src/fixed5.rs) owns the native logarithm, exponential and power series
-(1424DAA00, 1424DA930, 1424DAB50), shared by movement and naval mission derivation.
-
-[saved_event_targets.rs](src/saved_event_targets.rs) reads the saved-global registry in native order and resolves its case-sensitive interned names through the reverse name vector. It records the stored selectors and character ID, all nine object-reference liveness bits with region/combatant presence, the omission of an intern-ID-0 name from saves, and GetUnitLeader's result. UnitLeaders does not cover its fallback reference. A null leader identity refuses only that row's leader consumer. Local event-chain and description-only target arrays are outside this table. A nonempty registry whose native 16-bit name IDs have wrapped is unavailable by name: the reverse vector cannot reconstruct name aliases. An empty registry remains complete. Synthetic memory covers strings, ID wrapping, invalid reads and exact capacity demand; live capture is unverified.
-
-[cunit_leader.rs](src/cunit_leader.rs) includes the stored signed exile-country reference at +0xED4 in its existing guarded leader read; `141C61C40` uses it for the kind-6 flag badge. [cland_combat/details.rs](src/cland_combat/details.rs) reads border-war marker inputs only after the combat and side classes are authenticated: raw transfer byte +0xF0; each side country +0x4A0, authenticated state +0x4A8 -> +0x58, and MSVC event identifiers +0x4E0/+0x500. The string lengths +0x4F0/+0x510 are presence operands, not separate pointers (`1413D69D0`). Event bytes use the existing growable detail text arena, retaining full contents and exact demand. Ordinary combats acquire none of these subclass fields. Synthetic tests cover signed exile values, border-only reads, event bytes and the inactive skip; live read correctness remains unverified.
-
-[cstate/border_conflicts.rs](src/cstate/border_conflicts.rs) reads the active-state conflict tree from `1409CDA70`, preserving ordered attacker/defender signed country references (`1413D69B0`/`1413D69C0`) and rejecting malformed sizes, links and border-class identities. Inactive states read no tree detail. The shared [MSVC set walker](src/msvc_tree_node.rs) also serves the province conflict set; its traversal validates the declared size without reserving from it, and bounds successor cycles. [carmy.rs](src/carmy.rs) augments its authenticated status packet only for demanded full class0 handles, copying the stored defense/soft/hard attack cache spans read by `140C6E140` and memoing shared stat pointers within the hour. [ctechnology_status.rs](src/ctechnology_status.rs) reads only demanded controllers' signed stored land-doctrine level, with its existing vtable/backlink guard. `1403EC730` reads that cache; `140EC1B40` writes it and reset `140EC4610` can leave it stale, so saved research cannot reconstruct it. Selected faults withhold their owning table. Synthetic tests cover guards, signed extremes, inactive skips and memo reuse; live cache/tree agreement remains unverified.
-
-[sweather_per_province.rs](src/sweather_per_province.rs) gathers stored temperature and raw mud with snow in the existing bounded exact-field batches. Numeric temperature and content-defined thermal classification both need the full signed fixed5 word (140DEBC90, 140F04F70); display mud combines raw and custom mud and cannot replace the raw byte. [cweather_manager.rs](src/cweather_manager.rs) reads the two hourly simulation-suspension bytes together. Synthetic tests cover full-width values, each short field, authentication and batch counts; live capture and fresh-save agreement remain unverified.
-
-[border_effect_demand.rs](src/border_effect_demand.rs) walks active border-war event definitions without reading armies. It follows the native namespace/reference lookup, the immediate and single-option description roots and the supported effect children, including attached else chains. Branches and scope switches form a conservative demand union; only targeted decision rows whose names match that union read their optional status execution count. The caller supplies checked, reusable token, copied-name, visited-event and DFS arenas; faults, cycles and capacity shortage never become an empty successful demand census. `CDecision+0x140` is derived from the authored key's ASCII-folded FNV-1a hash (`1407198A0`, `140BBA1B0`, constructor `140716650`), so it is not captured. The default constructor `140716320` writes the `0xFFFFFFFF` sentinel from `1427C79D0` at `1407163A5`; its sole caller `140716C90` creates the database null placeholder and replaces its vtable, outside authored content reach. Demand follows the existing daily decision pass: a border war beginning between passes can lack a description seed until the next pass, for up to one day.
-
-The appearance reader retains the ordered raw subject header from `CDiplomacyStatus+0x170` (`1404AC450`); the collector acquires payloads only for positive counts. Template dictionary gathers also retain the fallback localisation key (`140B91170`) in the existing string arena. The decision walker reads the first matching `SDecisionRandomCountItem` execution count (`140721170`) only for demanded active targeted rows and keeps known absence distinct from unavailable memory. The coordinated vanilla fresh-save check passed for saved template keys and demanded description counts. Live subject-roster order and runtime getter agreement remain unverified.
+- [War overview](src/cwar_relation/war_overview.md) builds viewpoint-dependent temporary groups of bilateral relations. These have no stable native war-object identity or stored participant join dates.
+- [Peace settlements](src/peace_settlement.rs) need the pre-destruction finalizer boundary: a conference can appear and disappear between hourly samples, and finalization destroys its action history.
+- [Equipment destruction](src/equipment_destruction.rs) retains signed pre/post pool differences, including gain corrections and supplemental writers; requested removal does not prove actual removal.
+- [Air loss](src/air_loss_sites.rs) and [building damage](src/building_damage_sites.rs) retain native bookkeeping and signed health changes, including gains above a full level, independently of returned budgets.
+- [Event feed](src/event_feed_sites.rs) reauthenticates action roles and reciprocal war links after native execution; world lifetime comes from the collector's reset/construction signal, not from these reads.
+- Cached rates and tooltip inputs retain native gates, stale values and source order. Their formula and lifetime evidence belongs in the corresponding reader; save serialization may omit those operands.
 
 ## Strategic-action operands
 
-[carmy/strategic_action.rs](src/carmy/strategic_action.rs) is the shared native
-reader for the current hourly action and the ETA rail operands.
-Unit_GetActionCode@140BEF850 reaches it only for authenticated class-zero armies
-with signed route count > 0, null target, clear retreat and nonzero strategic
-byte. The unit counter's onmap_action_icon is bound at +0xE0 by 1418C70C0;
-140C79B70 false selects code 6, true code 11, and 140BEF9F0 maps code+1.
-Own detailed plates show the child; full-intel members compare at 1418C632E.
-GUI child, sprite, placement and frame support come from the recorded stack.
+[carmy/strategic_action.rs](src/carmy/strategic_action.rs) supplies the current ladder glyph and ETA rail operands with their native gates and effective modifier queries. These consumers retain their own acquisition and cadence; carried ETA cannot supply current glyph inputs. A query failure withholds that row's ladder glyph. The save omits the effective modifiers, while serialized route, target and strategic truth remain independently comparable.
 
-140C79B70 first reads owner-country key 0x1EA at CCountry+0x5B8. Owner is the
-signed-positive expeditionary reference CUnit+0x1DC, else roster +0x1D8.
-Only country zero reaches current province +0x1F0 -> state CProvince+0xC0.
-Only a present state reaches the roster's key 0x1EA via 1409CC140: country
-override hash +0x8D0, stride 0xD0, accumulator +0x20, else state base +0x558.
-Only state zero reaches 1406F3A90(owner, controller +0xCC, 1, 0); only friendly
-reaches roster-state key 0x1EB. Any reached nonzero effective value blocks rail.
-The numeric passive getter follows 140551820's exact halving probes
-(140551850..877), feature eligibility before raw reads and flags+0x60 bit 4
-clamp to [0,100000]. No raw census or unused capacity/suffix read is needed.
-Country writers are 1406CE2A0/1406D61D0; state writer is 1409D3470; the strategic
-byte setter is 140C7FA70.
+## Measurement
 
-The hourly row stores Unreached, Available(three effective modifiers), or
-Withheld(a query reason). State/friendly skips follow nested option absence,
-without separate booleans. A demanded fault affects only that row's ladder
-glyph. The playback-only fixed-layout family has no withheld tables; a key
-layout failure refuses only the two ladder actions by name and count.
-A strategic query failure still permits only codes 6/11, so a fully visible
-member outside that pair proves the mixed frame even when the query is refused.
-ETA maps the same reader onto MovementRailInputs, retaining its acquisition
-memo and cadence. It does not supply current glyph operands from carried ETA.
-
-CCountry::Write@14070C580 omits +0x5B8 and CState::Serialize@1409D4040 omits
-+0x558/+0x8D0. These operands and query failures therefore have a named oracle
-limitation. CArmy::Serialize@140C80E00 -> CUnit::Serialize@140BF7010 saves route,
-target and strategic truth, which remain exact comparisons.
-Synthetic fixtures cover skipped reads, per-row failures, ownership, state
-overrides/base, friendly gates, clamp/feature rules, shared ETA projection and
-codec/drawing. The coordinated vanilla fresh-save and 124-hour smoke checks
-passed for serialized route, target and strategic truth. Live ladder pixels,
-getter values and game-thread cost remain separate acceptance checks.
+Measure acquisition with the current [read counters](src/read_counts.rs) and their definitions. Decoding an owned copy is not another native read. [Unit-scale fixtures](tests/support/unit_world.rs) and the opt-in scale tests model native walks; synthetic timings do not establish gameplay slowdown or live hook correctness.

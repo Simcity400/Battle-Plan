@@ -10,12 +10,317 @@ fn params(count: u32) -> CasualtyParams {
         top: Some(CasualtyTop { count }),
     }
 }
+
+#[test]
+fn shared_country_run_walk_matches_point_reads_at_gaps_and_native_endpoints() {
+    let wide = i128::from(i64::MAX) * 2;
+    let mut track = Track::default();
+    for (first, last, confirmed, identity) in [
+        (-2, 25, 23, (1, 10)),
+        (26, 26, 26, (1, 11)),
+        (28, 40, 28, (1, 11)),
+        (i32::MAX - 2, i32::MAX, i32::MAX - 1, (1, 11)),
+    ] {
+        track.flush();
+        track.tail = Some(Sample {
+            first,
+            last,
+            confirmed,
+            identity,
+            dealt: wide,
+            taken: wide + 1,
+            unknown: None,
+            at_least: true,
+        });
+    }
+    let scanned = ScannedCasualties {
+        tracks: vec![("opaque holder".into(), track)],
+        observed: vec![
+            HourSpan {
+                first_hour: -2,
+                last_hour: 26,
+            },
+            HourSpan {
+                first_hour: 28,
+                last_hour: 40,
+            },
+            HourSpan {
+                first_hour: i32::MAX - 2,
+                last_hour: i32::MAX,
+            },
+        ],
+        incomplete: true,
+        windows: Vec::new(),
+        names: Vec::new(),
+        holders: BTreeMap::new(),
+        pairs: pairs::PairHistory::default(),
+    };
+    let cancelled = AtomicBool::new(false);
+    let mut runs = Vec::new();
+    scanned
+        .for_each_country_run("opaque holder", &cancelled, |run| {
+            runs.push(run);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(runs.iter().filter(|run| run.starts_segment).count(), 4);
+    for hour in (-3..=41).chain((i32::MAX - 2)..=i32::MAX) {
+        let from_run = runs
+            .iter()
+            .find(|run| run.first_hour <= hour && hour <= run.last_hour)
+            .map(|run| run.value.clone());
+        assert_eq!(
+            from_run,
+            scanned.country_at("opaque holder", hour),
+            "hour {hour}"
+        );
+    }
+    assert_eq!(runs.last().unwrap().last_hour, i32::MAX);
+    assert_eq!(runs.last().unwrap().value.read_hour, i32::MAX - 1);
+    assert!(
+        scanned
+            .for_each_country_run("not recorded", &cancelled, |_| {
+                panic!("An unrecorded country cannot supply zero-valued runs")
+            })
+            .is_ok()
+    );
+    let cancelled = AtomicBool::new(true);
+    assert_eq!(
+        scanned
+            .for_each_country_run("opaque holder", &cancelled, |_| Ok(()))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Interrupted
+    );
+}
 fn chosen() -> CasualtyParams {
     CasualtyParams {
         branch_id: "1".into(),
         tags: vec!["mod country 1| with spaces".into()],
         top: None,
     }
+}
+
+#[test]
+fn manual_casualties_follow_renames_but_clip_other_holders_and_gaps() {
+    let mut scan = Scan::new();
+    let holder = scan.country((1, 10));
+    let replacement = scan.country((1, 11));
+    let enemy = scan.country((2, 20));
+    for (hour, tag, country, losses) in [
+        (100, "peaceful original", holder, None),
+        (101, "renamed | country", holder, Some((12, -4))),
+        (102, "renamed | country", replacement, Some((100, 200))),
+        (104, "renamed again", holder, Some((-2, 5))),
+        (105, "peaceful original", replacement, Some((101, 201))),
+    ] {
+        let live = BTreeMap::from([(tag.into(), country), ("enemy".into(), enemy)]);
+        scan.begin_hour(hour, &live, true, true);
+        if let Some((taken, dealt)) = losses {
+            scan.relation(country, enemy, 90, [taken, dealt, 0, 0]);
+        }
+        scan.end_hour(true);
+    }
+    let cancelled = AtomicBool::new(false);
+    let scanned = scan.finish(&cancelled).unwrap();
+    let request = |tag: &str| CasualtyParams {
+        branch_id: "1".into(),
+        tags: vec![tag.into()],
+        top: None,
+    };
+    // The original tag was peaceful at first, but every native holder ever
+    // bearing that explicit pick remains selected, including its later reuse.
+    let original = scanned
+        .reply(
+            &request("peaceful original"),
+            &cancelled,
+            None,
+            UNKNOWN_LABEL,
+            Vec::new(),
+        )
+        .unwrap();
+    assert!(
+        original
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("no sampled"))
+    );
+    assert_eq!(original.series.len(), 4);
+    let renamed = original
+        .series
+        .iter()
+        .find(|series| series.tag == "renamed | country" && series.identities[0].id == "1:10")
+        .unwrap();
+    assert_eq!(
+        (reads(renamed), taken(renamed), value(&renamed.dealt, 0)),
+        (vec![101], vec![12], -4)
+    );
+    assert_eq!(renamed.ends, [(0, 101, None)]);
+    assert!(
+        original
+            .observed
+            .iter()
+            .all(|span| !(span.first_hour <= 103 && 103 <= span.last_hour))
+    );
+
+    // A different explicit alias selects only the holder observed under that
+    // alias. The unrelated reuse of another alias never leaks into its history.
+    let selected = scanned
+        .reply(
+            &request("renamed again"),
+            &cancelled,
+            None,
+            UNKNOWN_LABEL,
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(selected.series.len(), 2);
+    assert!(
+        selected
+            .series
+            .iter()
+            .all(|series| series.identities[0].id == "1:10")
+    );
+    let first = selected
+        .series
+        .iter()
+        .find(|series| series.tag == "renamed | country")
+        .unwrap();
+    assert_eq!(
+        first.membership.as_ref().unwrap(),
+        &[HourSpan {
+            first_hour: 101,
+            last_hour: 101
+        }]
+    );
+    let later = selected
+        .series
+        .iter()
+        .find(|series| series.tag == "renamed again")
+        .unwrap();
+    assert_eq!((reads(later), taken(later)), (vec![104], vec![-2]));
+    assert_eq!(value(&later.dealt, 0), 5);
+    assert!(later.unknown.is_none());
+}
+
+#[test]
+fn a_gap_alias_projection_clips_an_unrelated_later_holder() {
+    let mut scan = Scan::new();
+    let holder = scan.country((1, 10));
+    let replacement = scan.country((1, 11));
+    let enemy = scan.country((2, 20));
+    for (hour, tag, country, losses) in [
+        (100, "original", holder, (0, 0)),
+        (101, "original", holder, (0, 0)),
+        (102, "reused alias", holder, (-3, 5)),
+        (103, "reused alias", holder, (-3, 5)),
+        (106, "reused alias", replacement, (7, 8)),
+        (107, "reused alias", replacement, (7, 8)),
+    ] {
+        let live = BTreeMap::from([(tag.into(), country), ("enemy".into(), enemy)]);
+        scan.begin_hour(hour, &live, true, true);
+        scan.relation(country, enemy, 90, [losses.0, losses.1, 0, 0]);
+        scan.end_hour(true);
+    }
+    let cancelled = AtomicBool::new(false);
+    let scanned = scan.finish(&cancelled).unwrap();
+    let reply = scanned
+        .reply(
+            &CasualtyParams {
+                branch_id: "1".into(),
+                tags: vec!["original".into()],
+                top: None,
+            },
+            &cancelled,
+            None,
+            UNKNOWN_LABEL,
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        reply.observed,
+        [
+            HourSpan {
+                first_hour: 100,
+                last_hour: 103
+            },
+            HourSpan {
+                first_hour: 106,
+                last_hour: 107
+            }
+        ]
+    );
+    assert_eq!(reply.series.len(), 2);
+    assert!(
+        reply
+            .series
+            .iter()
+            .all(|series| series.identities[0].id == "1:10")
+    );
+    let original = reply
+        .series
+        .iter()
+        .find(|series| series.tag == "original")
+        .unwrap();
+    assert!(original.membership.is_none());
+    let alias = reply
+        .series
+        .iter()
+        .find(|series| series.tag == "reused alias")
+        .unwrap();
+    assert_eq!(
+        alias.membership.as_ref().unwrap(),
+        &[HourSpan {
+            first_hour: 102,
+            last_hour: 103
+        }]
+    );
+    assert_eq!((reads(alias), taken(alias)), (vec![102], vec![-3]));
+    assert_eq!(alias.ends, [(0, 103, None)]);
+}
+
+#[test]
+fn a_peaceful_manual_casualty_pick_uses_its_renamed_samples_and_existing_scan() {
+    let mut before = casualty_frame(100, None, 0);
+    let mut after = casualty_frame(101, Some((12, 0)), 0);
+    for (frame, tag) in [(&mut before, "peaceful original"), (&mut after, "renamed")] {
+        let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        else {
+            unreachable!();
+        };
+        rows[0].tag = tag.as_bytes().to_vec();
+    }
+    let source = opened(research_replay(vec![before, after]));
+    let cancelled = AtomicBool::new(false);
+    let scanned = scanned_branch(&source, 1, &cancelled).unwrap();
+    let product = WarCasualties::load(
+        &source,
+        &CasualtyParams {
+            branch_id: "1".into(),
+            tags: vec!["peaceful original".into()],
+            top: None,
+        },
+        &LoadContext { content: None },
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(product.series.len(), 1);
+    assert_eq!(product.series[0].tag, "renamed");
+    assert_eq!(
+        (reads(&product.series[0]), taken(&product.series[0])),
+        (vec![101], vec![12])
+    );
+    assert!(
+        product
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("no sampled"))
+    );
+    assert!(Arc::ptr_eq(
+        &scanned,
+        &scanned_branch(&source, 1, &cancelled).unwrap()
+    ));
 }
 fn opened(replay: Replay) -> Source {
     Source::from_replay(
@@ -40,16 +345,23 @@ fn reply(frames: Vec<DecodedFrame>, request: &CasualtyParams) -> CasualtyReply {
     .unwrap()
 }
 fn value(values: &CasualtyValues, index: usize) -> i128 {
-    values.0.parse::<i128>().unwrap()
-        + values
-            .1
-            .iter()
-            .take(index)
-            .map(|d| match d {
-                CasualtyDelta::Small(n) => i128::from(*n),
-                CasualtyDelta::Wide(n) => n.parse::<i128>().unwrap(),
-            })
-            .sum::<i128>()
+    let mut value = values.0.parse::<i128>().unwrap();
+    let mut left = index;
+    for delta in &values.1 {
+        let (count, delta) = match delta {
+            CasualtyDelta::Small(n) => (1, i128::from(*n)),
+            CasualtyDelta::Wide(n) => (1, n.parse::<i128>().unwrap()),
+            CasualtyDelta::Repeated(count, n) => (*count as usize, n.parse::<i128>().unwrap()),
+        };
+        let count = count.min(left);
+        value += delta * count as i128;
+        left -= count;
+        if left == 0 {
+            break;
+        }
+    }
+    assert_eq!(left, 0, "missing delta at {index}");
+    value
 }
 fn reads(series: &CasualtySeries) -> Vec<i32> {
     let mut read = 0;
@@ -120,12 +432,8 @@ fn war_casualties_shared_measure_agrees_with_product_reads_and_gaps() {
                     if h > last {
                         return None;
                     }
-                    let day_end = i64::from(h) - (i64::from(h) + 1).rem_euclid(24);
-                    let exceptional = endpoint.and_then(|end| end.2).filter(|read| *read <= h);
                     Some(CasualtyMeasure {
-                        read_hour: dates[index]
-                            .max(day_end as i32)
-                            .max(exceptional.unwrap_or(dates[index])),
+                        read_hour: h.min(endpoint.and_then(|end| end.2).unwrap_or(h)),
                         dealt: value(&series.dealt, index),
                         taken: value(&series.taken, index),
                         unknown: series
@@ -145,7 +453,7 @@ fn war_casualties_shared_measure_agrees_with_product_reads_and_gaps() {
     }
     assert_eq!(
         cached.country_at(&request.tags[0], 101).unwrap().read_hour,
-        100
+        101
     );
     assert!(cached.country_at(&request.tags[0], 128).is_none());
     let after_gap = cached.country_at(&request.tags[0], 130).unwrap();
@@ -292,7 +600,7 @@ fn selection_validation_and_exact_escaped_json_budget() {
 }
 #[test]
 fn requests_keep_more_than_thirty_chosen_top_and_all_countries() {
-    let source = opened(research_replay(vec![scale_frame(1), scale_frame(2)]));
+    let source = opened(research_replay((1..=6).map(scale_frame).collect()));
     let cancelled = AtomicBool::new(false);
     let scanned = scanned_branch(&source, 1, &cancelled).unwrap();
     for count in [31, 300, 5000] {
@@ -318,11 +626,21 @@ fn requests_keep_more_than_thirty_chosen_top_and_all_countries() {
         .unwrap();
         assert_eq!(chosen.series.len(), count as usize);
         for series in &top.series {
+            assert_eq!(reads(series), [1, 2, 3, 4, 5, 6]);
+            assert!(matches!(
+                series.taken.1.as_slice(),
+                [CasualtyDelta::Repeated(5, _)]
+            ));
             assert_eq!(
                 value(&series.taken, 0),
                 scanned.country_at(&series.tag, 1).unwrap().taken
             );
+            assert_eq!(
+                value(&series.taken, 5),
+                scanned.country_at(&series.tag, 6).unwrap().taken
+            );
         }
+        assert!(json_bytes(&top).unwrap() <= MAX_PRODUCT_REPLY_BYTES);
     }
     let all = WarCasualties::load(
         &source,
@@ -336,6 +654,7 @@ fn requests_keep_more_than_thirty_chosen_top_and_all_countries() {
     )
     .unwrap();
     assert_eq!(all.series.len(), 5000);
+    assert!(json_bytes(&all).unwrap() <= MAX_PRODUCT_REPLY_BYTES);
     assert!(Arc::ptr_eq(
         &scanned,
         &scanned_branch(&source, 1, &cancelled).unwrap()
@@ -435,16 +754,16 @@ fn complete_reply_refuses_measured_bytes_including_headers_and_escaped_labels() 
 }
 
 #[test]
-fn casualties_daily_points_hold_forward_and_keep_ended_disappeared_totals() {
+fn casualties_hourly_points_keep_ended_disappeared_totals() {
     let r = reply(
         (100..=149)
             .map(|h| casualty_frame(h, (h <= 122).then_some((i64::from(h), 0)), 122))
             .collect(),
         &chosen(),
     );
-    assert_eq!(reads(&r.series[0]), [100, 119, 143]);
-    assert_eq!(taken(&r.series[0]), [100, 119, 122]);
-    assert_eq!(r.series[0].ends, [(2, 149, Some(149))]);
+    assert_eq!(reads(&r.series[0]), (100..=122).collect::<Vec<_>>());
+    assert_eq!(taken(&r.series[0]), (100..=122).collect::<Vec<i128>>());
+    assert_eq!(r.series[0].ends, [(22, 149, None)]);
     assert!(r.series[0].membership.is_none());
 }
 #[test]
@@ -537,7 +856,7 @@ fn casualties_unknown_refuses_resets_disagreement_and_disjoint_relations() {
     }
 }
 #[test]
-fn casualties_unknown_is_deduplicated_hourly_before_daily_sampling() {
+fn casualties_unknown_is_deduplicated_at_every_hourly_read() {
     let frames = [0, 5, 9]
         .into_iter()
         .enumerate()
@@ -555,8 +874,11 @@ fn casualties_unknown_is_deduplicated_hourly_before_daily_sampling() {
         })
         .collect();
     let r = reply(frames, &chosen());
-    assert_eq!(taken(&r.series[0]), [20, 20]);
-    assert_eq!(value(r.series[0].unknown.as_ref().unwrap(), 1), 9);
+    assert_eq!(reads(&r.series[0]), [117, 118, 119]);
+    assert_eq!(taken(&r.series[0]), [20, 20, 20]);
+    for (index, unknown) in [0, 5, 9].into_iter().enumerate() {
+        assert_eq!(value(r.series[0].unknown.as_ref().unwrap(), index), unknown);
+    }
     assert!(
         reply(vec![casualty_frame(119, Some((10, 5)), 0)], &chosen()).series[0]
             .unknown
@@ -582,7 +904,7 @@ fn changed_relation_keys_refresh_joins_while_unchanged_keys_keep_reading_counter
         vec![casualty_frame(100, Some((10, 0)), 0), moved, later],
         &chosen(),
     );
-    assert_eq!(taken(&r.series[0]), [10, 14]);
+    assert_eq!(taken(&r.series[0]), [10, 13, 14]);
 }
 
 #[test]
@@ -652,7 +974,7 @@ fn top_identity_endpoint_and_gap_keep_membership_bounded_and_samples_dated() {
     assert!(members(&r, 25).is_empty());
 }
 #[test]
-fn holder_changes_are_sampled_at_the_first_read_instead_of_the_next_day_end() {
+fn holder_changes_are_sampled_at_the_first_hourly_read() {
     let mut changed = casualty_frame(101, Some((3, 0)), 0);
     if let TableView::Complete(TableRows::Countries(rows)) =
         &mut *changed.tables[TableId::Countries.index()]
@@ -762,7 +1084,7 @@ fn a_holder_change_during_an_unresolved_read_resumes_with_the_new_identity() {
     assert_eq!(r.series[1].identities[0].id, "1:101");
 }
 #[test]
-fn top_membership_endpoint_is_not_a_confirming_read() {
+fn hourly_confirmation_survives_top_membership_clipping() {
     let frames = (0..=23)
         .map(|hour| {
             let mut frame = casualty_frame(hour, Some((if hour < 23 { 50 } else { 0 }, 0)), 0);
@@ -790,7 +1112,7 @@ fn top_membership_endpoint_is_not_a_confirming_read() {
             .collect(),
         &chosen(),
     );
-    assert_eq!(branch_end.series[0].ends, [(0, 22, Some(22))]);
+    assert_eq!(branch_end.series[0].ends, [(0, 22, None)]);
 }
 
 #[test]
@@ -845,8 +1167,36 @@ fn top_membership_tracks_every_entrant_and_smaller_n_is_a_cached_prefix() {
         &scanned_branch(&source, 1, &AtomicBool::new(false)).unwrap()
     ));
 }
+
 #[test]
-fn sparse_equal_values_stop_costing_daily_points_and_keep_wide_signed_totals() {
+fn top_membership_changes_hourly_and_never_spans_a_missing_hour() {
+    let frames = (100..=105)
+        .filter(|hour| *hour != 103)
+        .map(|hour| {
+            let mut frame = casualty_frame(hour, Some((if hour == 100 { 50 } else { 0 }, 0)), 0);
+            if let TableView::Complete(TableRows::WarRelations(rows)) =
+                &mut *frame.tables[TableId::WarRelations.index()]
+            {
+                rows.push(replay::rows::WarRelationRow {
+                    first_country: 2,
+                    second_country: 3,
+                    first_casualties: if hour == 101 { 100 } else { 0 },
+                    second_casualties: if hour == 101 { 100 } else { 0 },
+                    ..Default::default()
+                });
+            }
+            frame
+        })
+        .collect();
+    let r = reply(frames, &params(1));
+    assert_eq!(members(&r, 100), ["mod country 1| with spaces"]);
+    assert_eq!(members(&r, 101), ["mod country 2| with spaces"]);
+    assert_eq!(members(&r, 102), ["mod country 1| with spaces"]);
+    assert!(members(&r, 103).is_empty());
+    assert_eq!(members(&r, 104), ["mod country 1| with spaces"]);
+}
+#[test]
+fn equal_hourly_values_compress_and_keep_wide_signed_totals() {
     let mut f = casualty_frame(-3, Some((0, 0)), 0);
     if let TableView::Complete(TableRows::WarRelations(rows)) =
         &mut *f.tables[TableId::WarRelations.index()]
@@ -867,7 +1217,7 @@ fn sparse_equal_values_stop_costing_daily_points_and_keep_wide_signed_totals() {
     let r = reply(frames, &chosen());
     assert_eq!(r.series[0].reads, [-3]);
     assert_eq!(value(&r.series[0].taken, 0), i128::from(i64::MAX) * 2);
-    assert_eq!(r.series[0].ends, [(0, 300, Some(300))]);
+    assert_eq!(r.series[0].ends, [(0, 300, None)]);
     assert!(
         check_cadence(Cadence::Daily(0))
             .unwrap_err()
@@ -1251,7 +1601,23 @@ fn war_casualties_nine_year_benchmark() {
     eprintln!(
         "hour build p50/p95: {built_p50:.3}/{built_p95:.3} ms; block decoding amortized p50/p95: {decode_p50:.3}/{decode_p95:.3} ms; finalization and reply overhead: {overhead:.3} ms/hour; profile: Cargo test unoptimized, inherited process priority"
     );
-    assert!(reply_bytes < 2 * 1024 * 1024);
+    assert!(reply_bytes <= MAX_PRODUCT_REPLY_BYTES);
+    assert!(reply.series.iter().any(|series| {
+        series
+            .taken
+            .1
+            .iter()
+            .any(|delta| matches!(delta, CasualtyDelta::Repeated(_, _)))
+    }));
+    for series in &reply.series {
+        let dates = reads(series);
+        for index in [0, dates.len() / 2, dates.len() - 1] {
+            let measure = cached.country_at(&series.tag, dates[index]).unwrap();
+            assert_eq!(value(&series.taken, index), measure.taken);
+            assert_eq!(value(&series.dealt, index), measure.dealt);
+            assert_eq!(measure.read_hour, dates[index]);
+        }
+    }
     assert_eq!(members(&reply, hours - 1).len(), 30);
 }
 
@@ -1370,13 +1736,8 @@ fn benchmark_builder_bytes(builder: &ScanFrames) -> usize {
         + scan.bounds.len() * 32
         + scan.observed.capacity() * std::mem::size_of::<HourSpan>()
         + scan.touched.capacity() * std::mem::size_of::<usize>()
-        + [&scan.active, &scan.changed_tags]
-            .into_iter()
-            .map(|tags| {
-                tags.capacity() * std::mem::size_of::<String>()
-                    + tags.iter().map(String::capacity).sum::<usize>()
-            })
-            .sum::<usize>()
+        + scan.active.capacity() * std::mem::size_of::<String>()
+        + scan.active.iter().map(String::capacity).sum::<usize>()
         + builder
             .live
             .keys()
@@ -1492,6 +1853,10 @@ fn war_casualties_stretch_start_waits_for_read_and_nonread_endpoints_do_not_conf
             102
         );
         assert_eq!(
+            cached.country_at("opaque first", 118).unwrap().read_hour,
+            102
+        );
+        assert_eq!(
             cached.country_at("opaque first", 145).unwrap().read_hour,
             119
         );
@@ -1508,7 +1873,11 @@ fn war_casualties_stretch_start_waits_for_read_and_nonread_endpoints_do_not_conf
                 Vec::new(),
             )
             .unwrap();
-        assert_eq!(product.series[0].ends.last().unwrap(), &(0, 145, Some(119)));
+        assert_eq!(reads(&product.series[0]), [102, 119]);
+        assert_eq!(
+            product.series[0].ends,
+            [(0, 118, Some(102)), (1, 145, Some(119))]
+        );
     }
 }
 
@@ -1552,4 +1921,141 @@ fn war_casualties_returning_holder_waits_for_its_own_read() {
     assert_eq!(product.series.len(), 2);
     assert_eq!(product.series[0].ends[0].1, 100);
     assert_eq!(product.series[1].ends[0].1, 101);
+}
+
+#[test]
+fn casualty_routes_share_exact_lifetimes_with_the_current_scoreboard_run_cache() {
+    let mut first = casualty_frame(100, Some((0, 0)), 0);
+    if let TableView::Complete(TableRows::WarRelations(rows)) =
+        &mut *first.tables[TableId::WarRelations.index()]
+    {
+        rows[0].first_casualties = i64::MAX;
+        rows[0].second_casualties = -3;
+    }
+    let mut next = first.clone();
+    next.hour = 101;
+    if let TableView::Complete(TableRows::WarRelations(rows)) =
+        &mut *next.tables[TableId::WarRelations.index()]
+    {
+        rows[0].first_country = 2;
+        rows[0].second_country = 1;
+        rows[0].first_casualties = -2;
+        rows[0].second_casualties = i64::MAX - 1;
+        rows.push(replay::rows::WarRelationRow {
+            first_country: 1,
+            second_country: 2,
+            start_hour: 91,
+            first_casualties: i64::MAX,
+            second_casualties: 7,
+            ..Default::default()
+        });
+        rows.sort_by_key(|row| (row.first_country, row.second_country));
+    }
+    let source = opened(research_replay(vec![
+        first,
+        next,
+        casualty_frame(102, None, 0),
+    ]));
+    let cancelled = AtomicBool::new(false);
+    let cached = scanned_branch(&source, 1, &cancelled).unwrap();
+    let context = LoadContext { content: None };
+    let route = |key, params| {
+        let json = (super::super::find(key)
+            .expect("registered casualty product")
+            .load)(&source, "current lease", params, &context, &cancelled)
+        .unwrap();
+        let envelope: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(envelope["sourceId"], "current lease");
+        assert_eq!(envelope["product"], key);
+        envelope["data"].clone()
+    };
+    let pairs = route(
+        "casualty-pairs",
+        serde_json::json!({
+            "branchId": "1", "tags": [], "between": false, "window": 0,
+        }),
+    );
+    let last = pairs["pairs"][0]["runs"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    let wide = i128::from(i64::MAX) * 2 - 1;
+    assert_eq!(last["firstTaken"], wide.to_string());
+    assert_eq!(last["secondTaken"], "5");
+    assert_eq!(last["lastHour"], 102);
+    let breakdown = route(
+        "casualty-breakdown",
+        serde_json::json!({
+            "branchId": "1", "tag": chosen().tags[0], "window": 0,
+        }),
+    );
+    let total = breakdown["series"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|series| {
+            series["runs"].as_array().unwrap().last().unwrap()["value"]
+                .as_str()
+                .unwrap()
+                .parse::<i128>()
+                .unwrap()
+        })
+        .sum::<i128>();
+    assert_eq!(total, wide);
+    assert!(
+        breakdown["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning.as_str().unwrap().contains("no domain split"))
+    );
+    let mut at = None;
+    cached
+        .for_each_country_run(&chosen().tags[0], &cancelled, |run| {
+            if run.first_hour <= 102 && 102 <= run.last_hour {
+                at = Some(run.value);
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(at.as_ref().unwrap().taken, total);
+    assert_eq!(at.as_ref().unwrap().dealt, 5);
+    assert!(Arc::ptr_eq(
+        &cached,
+        &scanned_branch(&source, 1, &cancelled).unwrap()
+    ));
+}
+
+#[test]
+fn casualty_pair_reply_keeps_five_thousand_native_countries_without_a_selection_cap() {
+    let source = opened(research_replay(vec![scale_frame(1)]));
+    let reply = pairs::CasualtyPairs::load(
+        &source,
+        &pairs::CasualtyPairsParams {
+            branch_id: "1".into(),
+            tags: Vec::new(),
+            between: false,
+            window: Some(0),
+        },
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(reply.pairs.len(), 5000);
+    let countries: HashSet<_> = reply
+        .pairs
+        .iter()
+        .flat_map(|pair| [&pair.first_country, &pair.second_country])
+        .collect();
+    assert_eq!(countries.len(), 5000);
+    let total: i128 = reply
+        .pairs
+        .iter()
+        .map(|pair| {
+            let run = &pair.runs[0];
+            run.first_taken.parse::<i128>().unwrap() + run.second_taken.parse::<i128>().unwrap()
+        })
+        .sum();
+    assert_eq!(total, 5000 * 5001);
 }

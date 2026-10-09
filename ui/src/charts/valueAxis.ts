@@ -98,6 +98,12 @@ export function rescale(raw: string | bigint, denominator: bigint | number, deci
 /** Sums exact fractions with positive denominators, then rounds once to decimal
  * units (`rescale`), such as averages over different recorded durations. */
 export function rescaleSum(values: Iterable<readonly [bigint, bigint | number]>, decimals: number): bigint {
+  const [raw, denominator] = fractionSum(values);
+  return rescale(raw, denominator, decimals);
+}
+
+/** Exact reduced sum; presentation can round later without changing its amount. */
+export function fractionSum(values: Iterable<readonly [bigint, bigint | number]>): readonly [bigint, bigint] {
   // Common durations need only one fraction, however many countries contributed.
   const totals = new Map<bigint, bigint>();
   for (const [raw, denominator] of values) {
@@ -123,7 +129,7 @@ export function rescaleSum(values: Iterable<readonly [bigint, bigint | number]>,
     sum /= divisor;
     denominator /= divisor;
   }
-  return rescale(sum, denominator, decimals);
+  return [sum, denominator];
 }
 
 /** An amount as the game shows it, from a recorded fixed-point integer: at most

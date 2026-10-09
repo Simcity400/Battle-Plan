@@ -16,7 +16,10 @@ struct CountryInputs {
 pub(super) struct Scan<'a> {
     cat: Option<&'a Catalogue>,
     names: StateNames,
+    laws: Result<installed_content::occupation_laws::Laws, String>,
     red_threshold: Option<i64>,
+    strength_powers: Result<(i32, i32), String>,
+    equipment: std::sync::OnceLock<Result<installed_content::equipment::Database, String>>,
     pub(super) result: OccupiedStatesReply,
     refused: Refusals,
     names_cached: NameCache,
@@ -90,10 +93,30 @@ impl<'a> Scan<'a> {
                 }
             }
         });
+        let strength_powers = defines
+            .ok_or_else(|| "Garrison strength needs the recorded content defines".to_owned())
+            .and_then(|defines| {
+                Ok((
+                    defines
+                        .int32("NResistance", "GARRISON_STR_POW_MANPOWER")
+                        .map_err(|e| e.to_string())?,
+                    defines
+                        .int32("NResistance", "GARRISON_STR_POW_EQUIPMENT")
+                        .map_err(|e| e.to_string())?,
+                ))
+            });
+        let laws = cat
+            .ok_or_else(|| "Occupation laws need the recorded content stack".to_owned())
+            .and_then(|cat| {
+                installed_content::occupation_laws::read(&cat.content.layers).map_err(|e| e.to_string())
+            });
         Self {
             cat,
             names,
+            laws,
             red_threshold,
+            strength_powers,
+            equipment: std::sync::OnceLock::new(),
             result,
             refused: Refusals::default(),
             names_cached: HashMap::new(),
@@ -218,9 +241,20 @@ impl<'a> Scan<'a> {
             }
         }
         let mut defaults = HashMap::new();
+        let mut ambiguous_settings = HashSet::new();
         for row in recorded_rows::<tables::OccupationSettings>(frame)? {
             if let Some(slot) = link_slot(links, row.country) {
-                defaults.insert(slot, row);
+                if ambiguous_settings.contains(&slot) {
+                    continue;
+                }
+                if defaults.insert(slot, row).is_some() {
+                    defaults.remove(&slot);
+                    ambiguous_settings.insert(slot);
+                    self.refused.note(
+                        "OccupationSettings canonical country link is ambiguous",
+                        format!("slot {slot}"),
+                    );
+                }
             } else {
                 self.refused.note(
                     "OccupationSettings country link is unresolved",
@@ -228,6 +262,57 @@ impl<'a> Scan<'a> {
                 );
             }
         }
+        // Index the appended group inventory once per read, resolving raw aliases.
+        let mut group_laws = HashMap::new();
+        let mut group_failures: HashMap<_, _> = ambiguous_settings
+            .into_iter()
+            .map(|slot| {
+                (
+                    slot,
+                    "OccupationSettings canonical country link is ambiguous".to_owned(),
+                )
+            })
+            .collect();
+        for (&controller, row) in &defaults {
+            let groups = match &row.group_laws {
+                replay::rows::Recorded::NotRecorded => {
+                    group_failures.insert(controller, GROUP_LAW_MISSING.to_owned());
+                    continue;
+                }
+                replay::rows::Recorded::Value(None) => {
+                    group_failures.insert(
+                        controller,
+                        "The occupied-country law inventory capture failed".into(),
+                    );
+                    continue;
+                }
+                replay::rows::Recorded::Value(Some(groups)) => groups,
+            };
+            for group in groups {
+                let Some(occupied) = link_slot(links, group.occupied) else {
+                    group_failures.insert(
+                        controller,
+                        "The occupied-country law inventory has an unresolved country link".into(),
+                    );
+                    continue;
+                };
+                if group_laws
+                    .insert(
+                        (controller, occupied),
+                        (group.law.as_deref(), group.scope_country),
+                    )
+                    .is_some()
+                {
+                    group_failures.insert(
+                        controller,
+                        "The occupied-country law inventory has duplicate canonical country links"
+                            .into(),
+                    );
+                }
+            }
+        }
+        // Default eligibility shares one lazy world over this supplying read.
+        let law_text = std::sync::OnceLock::new();
         let mut assigned = HashMap::<StateKey, i32>::new();
         let mut unresolved_assigned = HashSet::new();
         for row in recorded_rows::<tables::StateAssignedManpower>(frame)? {
@@ -296,8 +381,78 @@ impl<'a> Scan<'a> {
             let default = link_slot(links, state.controller)
                 .and_then(|slot| defaults.get(&slot))
                 .map(|row| (row.default_law_present != 0, row.law.as_slice()));
-            let (law, law_missing) =
-                law_for(override_name, state_key.is_some(), laws_complete, default);
+            let settings = link_slot(links, state.controller).and_then(|slot| defaults.get(&slot));
+            let group = match state_key {
+                Some((controller, occupied, _)) => {
+                    if let Some(reason) = group_failures.get(&controller) {
+                        GroupLaw::Unknown(reason.clone())
+                    } else if let Some(law) = group_laws.get(&(controller, occupied)) {
+                        GroupLaw::Law(law.0)
+                    } else if settings.is_some() {
+                        GroupLaw::Missing
+                    } else {
+                        GroupLaw::Unknown("The occupier's occupation settings are missing".into())
+                    }
+                }
+                None => GroupLaw::Unknown("Occupation country links are unresolved".into()),
+            };
+            let fallback = settings
+                .ok_or_else(|| "The native database fallback law is missing".to_owned())
+                .and_then(|row| match &row.fallback_law {
+                    replay::rows::Recorded::Value(Some(bytes)) => Ok(bytes.as_slice()),
+                    replay::rows::Recorded::Value(None) => {
+                        Err("The native database fallback-law capture failed".into())
+                    }
+                    replay::rows::Recorded::NotRecorded => {
+                        Err("The native database fallback law is not recorded".into())
+                    }
+                });
+            let (law, law_missing) = law_for(
+                LawInputs {
+                    state: override_name,
+                    key_resolved: state_key.is_some(),
+                    overrides_complete: laws_complete,
+                    group,
+                    default,
+                    fallback,
+                },
+                |token| {
+                    let definition = self
+                        .laws
+                        .as_ref()
+                        .map_err(Clone::clone)?
+                        .find(token)?
+                        .ok_or_else(|| {
+                            format!("Occupation law {token} has no recorded-content declaration")
+                        })?;
+                    let (controller, occupied_key, _) =
+                        state_key.expect("law inputs checked the country links");
+                    if definition.visible.is_empty() && definition.available.is_empty() {
+                        return Ok(true);
+                    }
+                    let occupied = group_laws.get(&(controller, occupied_key)).and_then(|group| group.1)
+                    .and_then(|raw| link_slot(links, raw))
+                    .ok_or_else(|| "The native occupied-country scope (+0x18) is not captured or its link is unresolved".to_owned())?;
+                    if definition.visible.is_empty() && controller == occupied {
+                        return Ok(true);
+                    }
+                    let text = law_text
+                        .get_or_init(|| {
+                            let cat = self.cat.ok_or_else(|| {
+                                "Occupation law eligibility needs recorded content".to_owned()
+                            })?;
+                            Ok::<_, String>(scripted_text::ScriptedText::new(
+                                frame,
+                                &cat.localisation,
+                                cat.scripted_content()?,
+                                0,
+                            ))
+                        })
+                        .as_ref()
+                        .map_err(Clone::clone)?;
+                    occupation_law_valid(text.trigger_world()?, definition, controller, occupied)
+                },
+            );
             if let Some(reason) = &law_missing {
                 self.refused.note(
                     reason,
@@ -309,11 +464,9 @@ impl<'a> Scan<'a> {
             }
             let (name, name_missing) = self.name(state);
             // P: 140FE01E0(...,true) returns zero for +0x60, or a complete
-            // assigned-manpower total of zero. Otherwise equipment is unrecorded.
+            // assigned-manpower total of zero, before any equipment/define use.
             let garrison_alert = garrison.is_some_and(|row| row.serialized_flag != 0);
-            let zero_strength =
-                garrison.is_some() && (garrison_alert || assigned_manpower == Some(0));
-            let garrison_missing = if state_key.is_none() {
+            let mut garrison_missing = if state_key.is_none() {
                 Some("The read's controller or occupied-country link is unresolved; the garrison key cannot be established".into())
             } else if garrison.is_none() {
                 Some("No matching StateGarrisons row was recorded for the read's controller, occupied country and state".into())
@@ -322,6 +475,53 @@ impl<'a> Scan<'a> {
             } else {
                 None
             };
+            let strength = garrison.and_then(|row| {
+                match strength::displayed(row, assigned_manpower, &self.strength_powers, |entry| {
+                    let equipment = self
+                        .equipment
+                        .get_or_init(|| {
+                            self.cat
+                                .ok_or_else(|| {
+                                    "Garrison equipment needs the recorded content stack".to_owned()
+                                })
+                                .and_then(|cat| {
+                                    installed_content::equipment::Database::load_complete(
+                                        &cat.content.layers,
+                                    )
+                                    .map_err(|e| e.to_string())
+                                })
+                        })
+                        .as_ref()
+                        .map_err(Clone::clone)?;
+                    let lexical = frame
+                        .complete::<tables::LexicalTokens>()
+                        .map_err(|e| format!("Garrison equipment dictionary unavailable: {e}"))?;
+                    for token in [entry.equipment_token, entry.archetype_token] {
+                        let text = lexical
+                            .binary_search_by_key(&token, |row| row.token)
+                            .ok()
+                            .map(|index| lexical[index].literal.as_slice())
+                            .filter(|text| !text.is_empty() && !text.contains(&0))
+                            .ok_or_else(|| {
+                                format!("Garrison equipment token {token} has no recorded literal")
+                            })?;
+                        if equipment.named(text).is_none() {
+                            return Err(format!(
+                                "Garrison equipment {} has no recorded-content definition",
+                                String::from_utf8_lossy(text)
+                            ));
+                        }
+                    }
+                    Ok(())
+                }) {
+                    Ok(value) => Some(value),
+                    Err(reason) => {
+                        garrison_missing = Some(reason.clone());
+                        self.refused.note(reason, format!("state {}", state.id));
+                        None
+                    }
+                }
+            });
             let value = OccupiedValues {
                 name,
                 name_missing,
@@ -332,15 +532,12 @@ impl<'a> Scan<'a> {
                 compliance_raw: resistance.compliance.to_string(),
                 resistance_speed_raw: resistance.speed.to_string(),
                 compliance_speed_raw: resistance.compliance_speed.to_string(),
-                garrison_strength_raw: zero_strength.then(|| "0".into()),
+                garrison_strength_raw: strength.map(|value| value.to_string()),
                 required_manpower: garrison.map(|row| row.required_manpower),
                 garrison_required_raw: garrison.map(|row| row.garrison_required.to_string()),
                 garrison_alert,
-                garrison_red: if zero_strength {
-                    self.red_threshold.map(|threshold| 0 < threshold)
-                } else {
-                    None
-                },
+                garrison_red: strength
+                    .and_then(|value| self.red_threshold.map(|threshold| value < threshold)),
                 assigned_manpower,
                 garrison_missing,
                 law,
@@ -546,7 +743,7 @@ impl<'a> Scan<'a> {
             .cloned()
             .collect();
         if let Some(cat) = self.cat {
-            match installed_content::occupation_laws::read(&cat.content.layers) {
+            match &self.laws {
                 Ok(laws) => {
                     if !laws.warnings.is_empty() {
                         self.result.warnings.push(format!(
@@ -557,7 +754,7 @@ impl<'a> Scan<'a> {
                     }
                     self.result.laws = tokens
                         .iter()
-                        .map(|token| law_content(cat, &laws, token))
+                        .map(|token| law_content(cat, laws, token))
                         .collect();
                 }
                 Err(e) => self
@@ -609,11 +806,23 @@ pub(in crate::products) fn scan_history(
         TableId::OccupationSettings,
         TableId::StateAssignedManpower,
         TableId::CountryCollaboration,
+        TableId::LexicalTokens,
     ];
     let mut scan = Scan::new(branch, cat);
+    // Runtime law bodies need the full supplying frame. Decode each block
+    // incrementally once rather than seeking its keyframe at every daily read.
+    let selected: &[TableId] = if scan.laws.as_ref().is_ok_and(|laws| {
+        laws.definitions
+            .values()
+            .any(|law| !law.visible.is_empty() || !law.available.is_empty())
+    }) {
+        &TableId::ALL
+    } else {
+        &selected
+    };
     for block in replay.index.iter().filter(|block| block.branch == branch) {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let frames = match replay.read_block_selected(block, &selected) {
+        let mut decoder = FrameDecoder::for_tables(selected);
+        let frames = match replay.read_block_selected(block, selected) {
             Ok(frames) => frames,
             Err(e) => {
                 scan.result.warnings.push(format!(

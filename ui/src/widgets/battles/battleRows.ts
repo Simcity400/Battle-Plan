@@ -5,14 +5,15 @@ import { int, object } from '../../dashboard/validation.ts';
 import type { LogRow } from '../../charts/log/logData';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 
-import type { BattleRow, BattleValue } from '../../generated/dashboard';
+import { placeKey } from '../../dashboard/placeNamesData.ts';
+import type { BattleRow, BattleValue, BattleWindow, BattleWarning, PlaceNamesReply } from '../../generated/dashboard';
 export type { BattleRow, BattleSide, BattleValue, BattleWindow, BattleWarning } from '../../generated/dashboard';
 
 export interface BattleLabels {
   place: string; date: string; start: string; end: string; winner: string;
   ongoing: string; unknownPlace: string; unknownStart: string;
 }
-export type BattleCountryLabel = (tag: string, hour: number) => { name: string; flag?: string };
+export type BattleCountryLabel = (tag: string, hour: number) => { name: string; flag?: string; flagReason?: string; flagPending?: boolean };
 export type BattleLossFormatter<T extends BattleRow = BattleRow> = (value: BattleValue, row: T, side: number, tooltip: boolean) => string;
 export interface BattleMeasure<T extends BattleRow = BattleRow> {
   /** The caller's count/loss label is the stable key, never its array index. */
@@ -53,7 +54,9 @@ export function isBattleValue(v: unknown): v is BattleValue {
 }
 export function isBattleRow(v: unknown): v is BattleRow {
   if (!object(v) || !text(v.id) || !object(v.place) || !(v.place.name === null || text(v.place.name))
-    || typeof v.place.hour !== 'number' || !isEngineHour(v.place.hour) || !battleBound(v.start) || !(battleBound(v.end) || (object(v.end) && text(v.end.unknown) && !('hour' in v.end)))
+    || typeof v.place.hour !== 'number' || !isEngineHour(v.place.hour)
+    || !(v.place.namedAt === undefined || typeof v.place.namedAt === 'number' && isEngineHour(v.place.namedAt) && v.place.namedAt > v.place.hour)
+    || !battleBound(v.start) || !(battleBound(v.end) || (object(v.end) && text(v.end.unknown) && !('hour' in v.end)))
     || !Array.isArray(v.sides) || !v.sides.length || !v.sides.every(side => object(side) && text(side.label)
       && Array.isArray(side.countries) && side.countries.every(country => object(country) && text(country.tag)
         && typeof country.hour === 'number' && isEngineHour(country.hour))
@@ -114,14 +117,60 @@ export function battleTooltip<T extends BattleRow>(row: T, labels: BattleLabels,
     { label: labels.end, value: battleDate(row.end, labels.ongoing) },
     ...measures.map(measure => ({ label: measure.title, value: (measure.tooltipFormat ?? measure.format ?? battleValueText)(measure.value(row), row) })),
   ];
+  if (row.place.namedAt !== undefined) rows.push({ label: `named as of ${formatDateTime(row.place.namedAt)}` });
   for (const [index, side] of row.sides.entries()) {
     rows.push({ label: side.label, strong: true, divider: true });
     for (const part of side.countries) { const named = country(part.tag, part.hour);
-      rows.push({ label: named.name, icon: named.flag, value: formatDateTime(part.hour), indent: true }); }
+      rows.push({ label: named.name, countryFlag: named, value: formatDateTime(part.hour), indent: true }); }
     if (side.countriesUnknown) rows.push({ label: side.countriesUnknown, indent: true });
     for (const value of side.counts) rows.push({ label: value.label, value: battleValueText(value), indent: true });
     for (const value of side.losses) rows.push({ label: value.label, value: formatLoss ? formatLoss(value, row, index, true) : battleValueText(value), indent: true });
   }
   rows.push({ label: labels.winner, value: battleWinner(row), divider: true });
   return { title: row.place.name ?? labels.unknownPlace, rows, note };
+}
+
+export function battleWindowIndex(windows: readonly BattleWindow[], at: number): number {
+  for (let index = windows.length - 1; index >= 0; index--) {
+    if (windows[index].firstHour <= at) return index;
+  }
+  return -1;
+}
+
+/** Hold the playhead block, Live prefetch, drawn blocks and their earlier neighbour.
+ * Scrolling requests history; campaign length never determines wanted windows. */
+export function battleWindows(data: { windows: readonly BattleWindow[] } | undefined, at: number, live: boolean, visible: readonly number[] = [], from = -Infinity): number[] {
+  if (!data) return [];
+  const current = battleWindowIndex(data.windows, at);
+  if (current < 0) return [];
+  const wanted = new Set([current, ...visible.filter(index => index >= 0 && index <= current && data.windows[index]?.lastHour >= from)]);
+  let oldest = current;
+  for (const index of wanted) oldest = Math.min(oldest, index);
+  if (oldest > 0 && data.windows[oldest - 1].lastHour >= from) wanted.add(oldest - 1);
+  if (live && current + 1 < data.windows.length) wanted.add(current + 1);
+  return [...wanted].sort((a, b) => a - b);
+}
+
+export function shownBattleCensusHour(windows: ReadonlyMap<number, { observed: [number, number][] }>, at: number): number | null {
+  let latest: number | null = null;
+  for (const reply of windows.values()) for (const [first, last] of reply.observed) {
+    if (first <= at) latest = Math.max(latest ?? first, Math.min(last, at));
+  }
+  return latest;
+}
+export function battleWarnings(windows: ReadonlyMap<number, { contentWarnings: string[]; warnings: BattleWarning[] }>, first: number, last: number): string[] {
+  return [...new Set([...windows.values()].flatMap(reply => [...reply.contentWarnings,
+    ...reply.warnings.filter(w => w.hour >= first && w.hour <= last).map(w => `Hour ${w.hour}: ${w.reason} (${w.count})`)]))];
+}
+export function battlePlaceRequests(rows: readonly (BattleRow & { provinceId: number })[]): { provinceId: number; hour: number }[] {
+  const places = new Map<string, { provinceId: number; hour: number }>();
+  for (const row of rows) places.set(placeKey(row.provinceId, row.place.namedAt ?? row.place.hour), { provinceId: row.provinceId, hour: row.place.namedAt ?? row.place.hour });
+  return [...places.values()].sort((a, b) => a.hour - b.hour || a.provinceId - b.provinceId);
+}
+export function namedBattles<T extends BattleRow & { provinceId: number }>(rows: readonly T[], places: PlaceNamesReply | undefined): T[] {
+  const byPlace = new Map(places?.places.map(place => [placeKey(place.provinceId, place.hour), place]));
+  return rows.map(row => {
+    const name = byPlace.get(placeKey(row.provinceId, row.place.namedAt ?? row.place.hour))?.name ?? row.place.name;
+    return name === row.place.name ? row : { ...row, place: { ...row.place, name } };
+  });
 }

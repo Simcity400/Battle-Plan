@@ -1,14 +1,39 @@
 /** Country races share presentation; a widget supplies only its recorded values. */
 import type { RaceItem } from './race';
+import type { CountryFlagLook } from '../../components/CountryFlag';
 import type { Run } from '../series';
 import { lineEndHour, runAt } from '../series.ts';
-import { stackedSegments } from '../stack.ts';
+import { buildStack, compactStack, compactStackExtent, forEachCompactStackSegment, stackExtent, stackedSegments } from '../stack.ts';
 import type { StackSegment } from '../stack';
-import type { StackModel } from '../stack';
+import type { CompactStackModel, StackModel } from '../stack';
+
+export interface CountryRaceLooks {
+  name: (tag: string, hour?: number) => string;
+  color: (tag: string, hour?: number) => string;
+  flag?: (tag: string) => string | undefined;
+  /** Explicit native-country presence; generic entities leave this absent. */
+  countryFlag?: (tag: string, hour?: number) => CountryFlagLook | undefined;
+}
+
+/** Full part inventories opt into compact storage at the actual chart boundary. */
+export function countryRaceStack(bands: readonly (readonly Run[])[], compact = false): StackModel | CompactStackModel {
+  return compact ? compactStack(bands) : buildStack(bands);
+}
+export function forEachCountryRaceSegment(stack: StackModel | CompactStackModel, from: number, to: number, hoursPerPixel: number,
+  held: boolean, visit: (segment: StackSegment) => void): void {
+  if ('bands' in stack) forEachCompactStackSegment(stack, from, to, hoursPerPixel / 2,
+    segment => visit(held ? heldStackSegment(segment) : segment));
+  else countryRaceSegments(stack, from, to, hoursPerPixel, held).forEach(visit);
+}
+export function countryRaceStackExtent(stack: StackModel | CompactStackModel, from: number, to: number): [number, number] | null {
+  return 'bands' in stack ? compactStackExtent(stack, from, to) : stackExtent(stack, from, to);
+}
 
 export interface CountryRacePart { id: string; label: string; color?: string; value?: string }
 export interface CountryRaceEntry {
   tag: string; value: number; label: string; stretch: number | string | null;
+  /** Animation identity; the dated tag still owns content and interactions. */
+  entityKey?: string; hour?: number;
   /** Hatching included in an unsplit total, clamped inside its positive count. */
   hatched?: number;
   /** A secondary amount drawn inside the total, without adding to it. */
@@ -25,9 +50,15 @@ export interface CountryRaceLine {
   endLabel?: (hour: number, name: string) => string;
 }
 
-/** A supplied read-hour map dates country looks and actions to each value. */
-export function countryRaceReadHour(tag: string, moment: number, hours?: ReadonlyMap<string, number>): number | null {
-  return hours ? hours.get(tag) ?? null : moment;
+/** A supplied read dates country looks and Jump to; picks keep the displayed hour. */
+export function countryRaceReadHour(tag: string, moment: number, hours?: ReadonlyMap<string, number>,
+  readHour?: (tag: string | null, hour: number) => number | null): number | null {
+  return readHour ? readHour(tag, moment) : hours ? hours.get(tag) ?? null : moment;
+}
+
+/** A single country is picked directly; several lines need a country selector. */
+export function countryRacePickTag(view: string, lines: readonly CountryRaceLine[], mixTag?: string): string | null {
+  return view === 'mix' ? mixTag ?? null : lines.length === 1 ? lines[0].tag : null;
 }
 
 /** Content order selects palette positions, so renamed types keep their colour. */
@@ -39,7 +70,7 @@ const insideHatch = (value: number, hatched: number) => value > 0 ? Math.min(Mat
 
 export function countryRaceItems(entries: readonly CountryRaceEntry[], colours: ReadonlyMap<string, string>, country: (tag: string) => string,
   missingColour: string, exact = true): RaceItem[] {
-  return entries.map(entry => ({ key: entry.tag, value: entry.value, label: entry.label,
+  return entries.map(entry => ({ key: entry.entityKey ?? entry.tag, tag: entry.tag, hour: entry.hour, value: entry.value, label: entry.label,
     // Null prevents amount easing; the race still eases rows to their ranks.
     stretch: exact ? null : entry.stretch,
     ...(entry.inset !== undefined ? { inset: { value: entry.inset, color: country(entry.tag) } } : {}),
@@ -94,5 +125,5 @@ export function heldStackSegment(segment: StackSegment): StackSegment {
     hours.push(hour);
     bands.forEach((band, layer) => { band.low.push(segment.bands[layer].low[index]); band.high.push(segment.bands[layer].high[index]); });
   });
-  return { hours, bands };
+  return { ...segment, hours, bands };
 }

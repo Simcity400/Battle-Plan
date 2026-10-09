@@ -1,8 +1,9 @@
 use super::*;
 
 /// The tables the line output cross-check decodes along the branch.
-pub(super) const LINE_OUTPUT_TABLES: [TableId; 3] = [
+pub(super) const LINE_OUTPUT_TABLES: [TableId; 4] = [
     TableId::ProductionLineOutput,
+    TableId::ProductionLines,
     TableId::IndustrialOrganisationHistory,
     TableId::IndustrialOrganisations,
 ];
@@ -20,7 +21,7 @@ pub(in crate::oracle) fn compare_line_output(
     report: &mut Report,
 ) -> io::Result<()> {
     report.limitation(
-        "the save keeps no per-line output; each line's credits are checked against its organisation's history, and its delivered units are not saved at all",
+        "the save keeps no per-line spending or delivered count; branch self-checks use recorded progress and organisation history, while current progress and cost compare with the save separately",
         "ProductionLineOutput",
     );
     report.limitation(
@@ -46,7 +47,7 @@ pub(in crate::oracle) fn compare_line_output(
         gap.branch == frame.branch && gap.first_hour <= frame.hour && gap.last_hour >= since
     }) {
         report.limitation(
-            "a gap since the observation began may hide a publication of an ended line; the organisation credits are not cross-checked",
+            "a gap since the observation began may hide an ended-line publication; spending and organisation credits cannot be cross-checked",
             format!(
                 "ProductionLineOutput: hours {}..={}: {}",
                 gap.first_hour, gap.last_hour, gap.reason
@@ -65,6 +66,7 @@ pub(in crate::oracle) fn compare_line_output(
         .collect::<Vec<_>>();
     blocks.sort_by_key(|block| block.first_hour);
     let mut check = CreditCheck::new(since);
+    let mut spending = spending::SpendingCheck::new(since);
     for block in blocks {
         // Every block starts with a keyframe.
         let mut decoder = FrameDecoder::for_tables(&LINE_OUTPUT_TABLES);
@@ -75,9 +77,11 @@ pub(in crate::oracle) fn compare_line_output(
             let decoded = decoder.advance(&encoded)?;
             if decoded.hour >= since {
                 check.observe(decoded)?;
+                spending.observe(decoded, report)?;
             }
         }
     }
+    spending.finish(report);
     check.finish(frame.hour, report)
 }
 
@@ -261,3 +265,5 @@ fn credits<'a>(rows: impl Iterator<Item = &'a ProductionLineOutputRow>) -> Credi
     }
     credits
 }
+
+mod spending;

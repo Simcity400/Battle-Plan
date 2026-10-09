@@ -3,6 +3,7 @@
  * point. Pure, so it is tested without a browser. The component that draws it is
  * `FlowDiagram.tsx`; widgets hand it nodes and links and keep what they mean. */
 import { approach } from '../easing.ts';
+import type { CountryFlagLook } from '../../components/CountryFlag';
 
 export type FlowSide = 'source' | 'target';
 
@@ -15,6 +16,8 @@ export interface FlowNode {
   /** An image URL drawn before the label, such as a country's flag; null keeps its
    * place with a placeholder, as for a flag not (yet) known; absent, no image. */
   flag?: string | null;
+  /** Genuine country slot and sampled read state; aggregates leave this absent. */
+  countryFlag?: CountryFlagLook;
   /** A stable key: ribbons inside the other side's nodes keep this order, and equal
    * sizes are ordered by it, so nothing re-orders while playing. */
   order: string;
@@ -67,6 +70,9 @@ export const MIN_GAP = 2;
 export function flowCapacity(height: number, rowHeight: number): number {
   return Math.max(2, Math.floor((height + MIN_GAP) / Math.max(1, rowHeight, MIN_NODE + MIN_GAP)));
 }
+
+/** An earlier playback extent removes future geometry immediately. */
+export const flowPlaybackSnap = (previous: number | undefined, next: number | undefined) => previous !== undefined && next !== undefined && next < previous;
 
 const byOrder = (a: { order: string }, b: { order: string }) => a.order < b.order ? -1 : a.order > b.order ? 1 : 0;
 
@@ -252,9 +258,16 @@ export function flowStops(frame: Pick<FlowFrame, 'nodes' | 'links'>): FlowStop[]
   const shown = (box: { alpha: number }) => box.alpha > 0.5;
   const nodes = frame.nodes.filter(shown).sort((a, b) => a.y - b.y);
   const stops: FlowStop[] = [];
+  const links = new Map<string, LinkShape[]>();
+  for (const shape of frame.links) {
+    if (!(shape.width > 0) || !shown(shape)) continue;
+    const source = shape.link.source;
+    const ribbons = links.get(source) ?? [];
+    ribbons.push(shape); links.set(source, ribbons);
+  }
   for (const box of nodes.filter(box => box.node.side === 'source')) {
     stops.push({ kind: 'node', id: box.id });
-    for (const shape of frame.links.filter(shape => shape.link.source === box.id && shape.width > 0 && shown(shape)).sort((a, b) => a.y0 - b.y0)) stops.push({ kind: 'link', id: shape.id });
+    for (const shape of (links.get(box.id) ?? []).sort((a, b) => a.y0 - b.y0)) stops.push({ kind: 'link', id: shape.id });
   }
   for (const box of nodes.filter(box => box.node.side === 'target')) stops.push({ kind: 'node', id: box.id });
   return stops;

@@ -23,6 +23,13 @@ struct Prepared {
     identity: Identity,
     previous_session: Option<SessionStart>,
     tracker: BranchTracker,
+    politics_epoch: u64,
+    completion_sequence: u64,
+    naval_result_sequence: u64,
+    air_event_sequences: [Option<u64>; 2],
+    event_feed_sequence: Option<u64>,
+    event_feed_generation: Option<u64>,
+    event_feed_counts: replay::event_feed_rows::EventFeedCounts,
     lease: File,
 }
 
@@ -30,6 +37,12 @@ struct Prepared {
 pub struct PreparedCampaigns {
     directory: PathBuf,
     entries: BTreeMap<String, Result<Prepared, String>>,
+    completion_sequence: u64,
+    naval_result_sequence: u64,
+    air_event_sequences: [Option<u64>; 2],
+    event_feed_sequence: Option<u64>,
+    event_feed_generation: Option<u64>,
+    event_feed_counts: replay::event_feed_rows::EventFeedCounts,
 }
 
 impl PreparedCampaigns {
@@ -60,6 +73,12 @@ impl PreparedCampaigns {
         }
         paths.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         let mut entries = BTreeMap::new();
+        let mut completion_sequence = 0;
+        let mut naval_result_sequence = 0;
+        let mut air_event_sequences = [None; 2];
+        let mut event_feed_sequence = None;
+        let mut event_feed_generation = None;
+        let mut event_feed_counts = replay::event_feed_rows::EventFeedCounts::default();
         for (id, path) in paths {
             let deadline = Instant::now() + Duration::from_secs(2);
             let prepared = loop {
@@ -76,6 +95,19 @@ impl PreparedCampaigns {
                     result => break result.map_err(|error| error.to_string()),
                 }
             };
+            if let Ok(prepared) = &prepared {
+                completion_sequence = completion_sequence.max(prepared.completion_sequence);
+                naval_result_sequence = naval_result_sequence.max(prepared.naval_result_sequence);
+                event_feed_sequence = event_feed_sequence.max(prepared.event_feed_sequence);
+                event_feed_generation = event_feed_generation.max(prepared.event_feed_generation);
+                merge_event_counts(&mut event_feed_counts, prepared.event_feed_counts);
+                for (maximum, prior) in air_event_sequences
+                    .iter_mut()
+                    .zip(prepared.air_event_sequences)
+                {
+                    *maximum = (*maximum).max(prior);
+                }
+            }
             if entries.insert(id.to_ascii_lowercase(), prepared).is_some() {
                 return Err(invalid("duplicate campaign replay filename"));
             }
@@ -83,6 +115,12 @@ impl PreparedCampaigns {
         Ok(Self {
             directory: directory.into(),
             entries,
+            completion_sequence,
+            naval_result_sequence,
+            air_event_sequences,
+            event_feed_sequence,
+            event_feed_generation,
+            event_feed_counts,
         })
     }
 
@@ -116,6 +154,12 @@ impl PreparedCampaigns {
                 FormatVersion::CURRENT.version()
             )));
         }
+        let completion_sequence = completion_sequence(&replay)?;
+        let naval_result_sequence = naval_result_sequence(&replay)?;
+        let air_event_sequences = air_event_sequences(&replay)?;
+        let (event_feed_sequence, event_feed_generation, event_feed_counts) =
+            event_feed_history(&replay)?;
+        let politics_epoch = politics_epoch(&replay)?;
         let history = replay.into_history()?;
         if !history.campaign_id.eq_ignore_ascii_case(name.as_bytes()) {
             return Err(invalid(
@@ -136,8 +180,53 @@ impl PreparedCampaigns {
             identity: history.identity,
             previous_session,
             tracker,
+            politics_epoch,
+            completion_sequence,
+            naval_result_sequence,
+            air_event_sequences,
+            event_feed_sequence,
+            event_feed_generation,
+            event_feed_counts,
             lease,
         })
+    }
+
+    pub fn event_feed_sequence(&self) -> Option<u64> {
+        self.event_feed_sequence
+    }
+    pub fn event_feed_generation(&self) -> Option<u64> {
+        self.event_feed_generation
+    }
+    pub fn event_feed_counts(&self) -> replay::event_feed_rows::EventFeedCounts {
+        self.event_feed_counts
+    }
+    pub fn campaign_world_generation(&self, id: &str) -> Option<u64> {
+        self.entries
+            .get(&id.to_ascii_lowercase())
+            .and_then(|prepared| prepared.as_ref().ok())
+            .and_then(|prepared| prepared.event_feed_generation)
+    }
+
+    pub fn naval_result_sequence(&self) -> u64 {
+        self.naval_result_sequence
+    }
+
+    /// Air loss and building damage maxima, including retained partial prefixes.
+    pub fn air_event_sequences(&self) -> [Option<u64>; 2] {
+        self.air_event_sequences
+    }
+
+    pub fn completion_sequence(&self) -> u64 {
+        self.completion_sequence
+    }
+
+    pub fn politics_epoch(&self) -> u64 {
+        self.entries
+            .values()
+            .filter_map(|entry| entry.as_ref().ok())
+            .map(|entry| entry.politics_epoch)
+            .max()
+            .unwrap_or(0)
     }
 
     pub fn take(
@@ -183,6 +272,171 @@ impl PreparedCampaigns {
         let prepared = self.entries.remove(&key).unwrap().map_err(invalid)?;
         Ok((prepared.tracker, Some(prepared.lease)))
     }
+}
+
+fn completion_sequence(replay: &Replay) -> io::Result<u64> {
+    use replay::{
+        frame::FrameDecoder,
+        rows::{TableId, tables},
+    };
+    let selected = [TableId::OperationCompletions];
+    let mut maximum = 0;
+    for block in &replay.index {
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        for frame in replay.read_block_selected(block, &selected)? {
+            let decoded = decoder.advance(&frame)?;
+            if let Ok(rows) = decoded.complete::<tables::OperationCompletions>() {
+                maximum = maximum.max(rows.iter().map(|row| row.sequence).max().unwrap_or(0));
+            }
+        }
+    }
+    Ok(maximum)
+}
+
+fn politics_epoch(replay: &Replay) -> io::Result<u64> {
+    use replay::{frame::FrameDecoder, rows::TableId};
+    let selected = crate::extended::politics::TABLES;
+    let mut latest = 0;
+    for block in &replay.index {
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        for frame in replay.read_block_selected(block, &selected)? {
+            let decoded = decoder.advance(&frame)?;
+            for table in selected {
+                let rows = match &*decoded.tables[table.index()] {
+                    replay::frame::TableView::Complete(rows)
+                    | replay::frame::TableView::Truncated { rows, .. } => rows,
+                    replay::frame::TableView::Unavailable { .. } => continue,
+                };
+                // Every observed row carries the epoch, including refused census intervals.
+                macro_rules! maximum {
+                    ($ty:ident) => {
+                        for row in rows.rows::<replay::rows::tables::$ty>().unwrap() {
+                            latest = latest.max(row.epoch);
+                        }
+                    };
+                }
+                match table {
+                    TableId::CountryPowerDaily => maximum!(CountryPowerDaily),
+                    TableId::CountryPowerChanges => maximum!(CountryPowerChanges),
+                    TableId::CountryPowerDailyCosts => maximum!(CountryPowerDailyCosts),
+                    TableId::GovernmentChanges => maximum!(GovernmentChanges),
+                    TableId::PoliticsCaptureCoverage => maximum!(PoliticsCaptureCoverage),
+                    _ => unreachable!("politics selection"),
+                }
+            }
+        }
+    }
+    Ok(latest)
+}
+
+fn naval_result_sequence(replay: &Replay) -> io::Result<u64> {
+    use replay::{
+        frame::{FrameDecoder, TableView},
+        rows::{TableId, tables},
+    };
+    let selected = [TableId::NavalResultSources];
+    let mut maximum = 0;
+    for block in &replay.index {
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        for frame in replay.read_block_selected(block, &selected)? {
+            let decoded = decoder.advance(&frame)?;
+            if let TableView::Complete(rows) | TableView::Truncated { rows, .. } =
+                &*decoded.tables[TableId::NavalResultSources.index()]
+            {
+                let rows = rows
+                    .rows::<tables::NavalResultSources>()
+                    .ok_or_else(|| invalid("naval result source history contains another table"))?;
+                maximum = maximum.max(rows.iter().map(|row| row.id).max().unwrap_or(0));
+            }
+        }
+    }
+    Ok(maximum)
+}
+
+fn air_event_sequences(replay: &Replay) -> io::Result<[Option<u64>; 2]> {
+    use replay::{
+        frame::{FrameDecoder, TableView},
+        rows::{TableId, tables},
+    };
+    let selected = [TableId::AirLossEvents, TableId::BuildingBombingDamage];
+    let mut maximum = [None; 2];
+    for block in &replay.index {
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        for frame in replay.read_block_selected(block, &selected)? {
+            let decoded = decoder.advance(&frame)?;
+            for (index, table) in selected.into_iter().enumerate() {
+                let rows = match &*decoded.tables[table.index()] {
+                    TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows,
+                    TableView::Unavailable { .. } => continue,
+                };
+                let last = match table {
+                    TableId::AirLossEvents => rows
+                        .rows::<tables::AirLossEvents>()
+                        .ok_or_else(|| invalid("air loss history contains another table"))?
+                        .iter()
+                        .map(|row| row.id)
+                        .max(),
+                    TableId::BuildingBombingDamage => rows
+                        .rows::<tables::BuildingBombingDamage>()
+                        .ok_or_else(|| invalid("building bombing history contains another table"))?
+                        .iter()
+                        .map(|row| row.id)
+                        .max(),
+                    _ => unreachable!("air event history selection"),
+                };
+                maximum[index] = maximum[index].max(last);
+            }
+        }
+    }
+    Ok(maximum)
+}
+
+fn merge_event_counts(
+    into: &mut replay::event_feed_rows::EventFeedCounts,
+    counts: replay::event_feed_rows::EventFeedCounts,
+) {
+    into.acquired = into.acquired.max(counts.acquired);
+    into.settled = into.settled.max(counts.settled);
+    into.failed = into.failed.max(counts.failed);
+    into.rejected = into.rejected.max(counts.rejected);
+}
+fn event_feed_history(
+    replay: &Replay,
+) -> io::Result<(
+    Option<u64>,
+    Option<u64>,
+    replay::event_feed_rows::EventFeedCounts,
+)> {
+    use replay::{
+        frame::{FrameDecoder, TableView},
+        rows::{TableId, tables},
+    };
+    let selected = [TableId::EventFeedHistory];
+    let mut maximum = None;
+    let mut generation = None;
+    let mut counts = replay::event_feed_rows::EventFeedCounts::default();
+    for block in &replay.index {
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        for frame in replay.read_block_selected(block, &selected)? {
+            let decoded = decoder.advance(&frame)?;
+            if let TableView::Complete(rows) | TableView::Truncated { rows, .. } =
+                &*decoded.tables[TableId::EventFeedHistory.index()]
+            {
+                for row in rows
+                    .rows::<tables::EventFeedHistory>()
+                    .ok_or_else(|| invalid("Event feed history contains another table"))?
+                {
+                    row.validate()?;
+                    maximum = maximum.max(row.events.iter().map(|event| event.sequence).max());
+                    generation = generation.max(Some(row.generation));
+                    if let Some(previous) = row.counts {
+                        merge_event_counts(&mut counts, previous);
+                    }
+                }
+            }
+        }
+    }
+    Ok((maximum, generation, counts))
 }
 
 #[cfg(test)]

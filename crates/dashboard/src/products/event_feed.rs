@@ -1,0 +1,1407 @@
+//! One world feed composed from the topic products' witnessed histories.
+//! An exact native date remains separate from the read that revealed it. No
+//! cause is inferred from losing owned states, and no initial snapshot is
+//! promoted to a change. Window discovery and replies share the wire budget.
+
+use super::{
+    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, artwork, country_groups, country_nukes,
+    idea_format::{self, LocalisedText, ModifierFormat},
+    idea_history, national_focus, party_history, politics_content, special_projects, subjects,
+};
+use crate::{
+    Source,
+    catalogue::{self, Catalogue},
+    metadata::branch_bounds,
+};
+use replay::rows::TableId;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+use ts_rs::TS;
+
+mod diplomacy;
+
+mod native;
+
+pub struct EventFeed;
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EventFeedParams {
+    pub branch_id: String,
+    /// Both null discovers the bounded, event-bearing windows of the branch.
+    pub first_hour: Option<i32>,
+    pub last_hour: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum EventFeedCategory {
+    WarsPeace,
+    Diplomacy,
+    Politics,
+    Milestones,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum EventFeedKind {
+    WarStarted,
+    WarDeclared,
+    WarJoined,
+    CivilWarWarTransferred,
+    Annexed,
+    Peace,
+    Capitulated,
+    CeasedToExist,
+    FactionJoined,
+    FactionLeft,
+    BecameSubject,
+    GuaranteeGranted,
+    RulingPartyChanged,
+    LawChanged,
+    AdvisorHired,
+    FocusCompleted,
+    ProjectFinished,
+    NukesIncreased,
+}
+impl EventFeedKind {
+    fn category(self) -> EventFeedCategory {
+        use EventFeedKind::*;
+        match self {
+            WarStarted
+            | WarDeclared
+            | WarJoined
+            | CivilWarWarTransferred
+            | Annexed
+            | Peace
+            | Capitulated
+            | CeasedToExist => EventFeedCategory::WarsPeace,
+            FactionJoined | FactionLeft | BecameSubject | GuaranteeGranted => {
+                EventFeedCategory::Diplomacy
+            }
+            RulingPartyChanged | LawChanged | AdvisorHired => EventFeedCategory::Politics,
+            FocusCompleted | ProjectFinished | NukesIncreased => EventFeedCategory::Milestones,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedRow {
+    pub id: String,
+    pub hour: i32,
+    /// The read supplying this fact; Live must not expose it before this hour.
+    pub read_hour: i32,
+    /// Country naming/flags use the event hour; a vanished country's last seen hour.
+    pub name_hour: i32,
+    pub exact: bool,
+    pub category: EventFeedCategory,
+    pub kind: EventFeedKind,
+    pub tags: Vec<String>,
+    /// Native action roles, actor then target. Null retains an unidentified role;
+    /// tags contains only the exact occurrence-hour identities proved here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub participants: Option<[Option<String>; 2]>,
+    pub item: Option<u32>,
+    pub amount: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedItem {
+    pub token: Option<String>,
+    pub name: Option<String>,
+    pub icon: Option<String>,
+    pub description: Option<String>,
+    /// The same content effects the Ideas widget supplies to its shared tooltip.
+    pub idea: Option<idea_history::IdeaInfo>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedWindow {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub count: u32,
+    pub category_counts: EventFeedCounts,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedCounts {
+    pub wars_peace: u32,
+    pub diplomacy: u32,
+    pub politics: u32,
+    pub milestones: u32,
+}
+
+impl EventFeedCounts {
+    fn add(&mut self, category: EventFeedCategory) -> io::Result<()> {
+        let count = match category {
+            EventFeedCategory::WarsPeace => &mut self.wars_peace,
+            EventFeedCategory::Diplomacy => &mut self.diplomacy,
+            EventFeedCategory::Politics => &mut self.politics,
+            EventFeedCategory::Milestones => &mut self.milestones,
+        };
+        *count = count
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("Event-feed category count exceeds u32"))?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedUnavailable {
+    pub kind: String,
+    pub label: String,
+    pub reason: String,
+    pub count: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EventFeedReply {
+    pub branch_id: String,
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub windows: Vec<EventFeedWindow>,
+    pub rows: Vec<EventFeedRow>,
+    pub items: Vec<EventFeedItem>,
+    pub modifiers: Vec<ModifierFormat>,
+    pub texts: Vec<LocalisedText>,
+    pub unavailable: Vec<EventFeedUnavailable>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Default)]
+struct Cache {
+    branches: VecDeque<(u64, CachedBranch)>,
+}
+#[derive(Clone)]
+struct CachedBranch {
+    catalogue: Option<Arc<Catalogue>>,
+    feed: Arc<Feed>,
+}
+impl Cache {
+    fn get(&mut self, branch: u64, catalogue: &Option<Arc<Catalogue>>) -> Option<CachedBranch> {
+        let index = self.branches.iter().position(|(id, _)| *id == branch)?;
+        let (_, cached) = self.branches.remove(index)?;
+        let matches = match (&cached.catalogue, catalogue) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !matches {
+            return None;
+        }
+        self.branches.push_back((branch, cached.clone()));
+        Some(cached)
+    }
+    fn put(&mut self, branch: u64, cached: CachedBranch) {
+        self.branches.retain(|(id, _)| *id != branch);
+        self.branches.push_back((branch, cached));
+        while self.branches.len() > CACHED_BRANCHES {
+            self.branches.pop_front();
+        }
+    }
+}
+// Cache eviction only; never a limit on recorded branch facts.
+const CACHED_BRANCHES: usize = 4;
+type UnavailableKey = (String, String, Option<String>, bool);
+
+struct Feed {
+    first: i32,
+    last: i32,
+    rows: Vec<EventFeedRow>,
+    items: Vec<EventFeedItem>,
+    windows: Vec<EventFeedWindow>,
+    modifiers: Vec<ModifierFormat>,
+    texts: Vec<LocalisedText>,
+    unavailable: Vec<EventFeedUnavailable>,
+    warnings: Vec<String>,
+}
+struct Builder {
+    feed: Feed,
+    item_keys: BTreeMap<(Option<String>, Option<String>), Vec<u32>>,
+    unavailable_keys: BTreeMap<UnavailableKey, (usize, Vec<String>)>,
+}
+struct RowDate {
+    hour: i32,
+    read_hour: i32,
+    name_hour: i32,
+    exact: bool,
+}
+impl RowDate {
+    fn by(hour: i32) -> Self {
+        Self {
+            hour,
+            read_hour: hour,
+            name_hour: hour,
+            exact: false,
+        }
+    }
+}
+impl Builder {
+    fn new(first: i32, last: i32) -> Self {
+        Self {
+            feed: Feed {
+                first,
+                last,
+                rows: Vec::new(),
+                items: Vec::new(),
+                windows: Vec::new(),
+                modifiers: Vec::new(),
+                texts: Vec::new(),
+                unavailable: Vec::new(),
+                warnings: Vec::new(),
+            },
+            item_keys: BTreeMap::new(),
+            unavailable_keys: BTreeMap::new(),
+        }
+    }
+    fn item(&mut self, item: EventFeedItem) -> io::Result<u32> {
+        let key = (item.token.clone(), item.name.clone());
+        if let Some(indices) = self.item_keys.get(&key)
+            && let Some(index) = indices
+                .iter()
+                .find(|index| self.feed.items[**index as usize] == item)
+        {
+            return Ok(*index);
+        }
+        let index = u32::try_from(self.feed.items.len())
+            .map_err(|_| io::Error::other("Too many event-feed item identities"))?;
+        self.feed.items.push(item);
+        self.item_keys.entry(key).or_default().push(index);
+        Ok(index)
+    }
+    fn row(
+        &mut self,
+        kind: EventFeedKind,
+        date: RowDate,
+        tags: Vec<String>,
+        item: Option<u32>,
+        amount: Option<u32>,
+    ) {
+        let RowDate {
+            hour,
+            read_hour,
+            name_hour,
+            exact,
+        } = date;
+        if hour < self.feed.first || hour > self.feed.last {
+            return;
+        }
+        let id = format!("{kind:?}:{hour}:{read_hour}:{}", self.feed.rows.len());
+        self.feed.rows.push(EventFeedRow {
+            id,
+            hour,
+            read_hour,
+            name_hour,
+            exact,
+            category: kind.category(),
+            kind,
+            tags,
+            participants: None,
+            item,
+            amount,
+        });
+    }
+    fn unavailable(
+        &mut self,
+        kind: &str,
+        label: &str,
+        reason: impl Into<String>,
+        count: Option<u32>,
+    ) {
+        let reason = reason.into();
+        let key = (
+            kind.to_owned(),
+            label.to_owned(),
+            Some(reason.clone()),
+            count.is_some(),
+        );
+        self.merge_unavailable(key, reason, count, Vec::new());
+    }
+
+    /// Only varying hour/pair diagnostics use bounded examples. Fixed reasons
+    /// keep their own count, separate from standing notices without a count.
+    fn sampled_unavailable(
+        &mut self,
+        kind: &str,
+        label: &str,
+        reason: impl Into<String>,
+        count: u32,
+    ) {
+        let reason: String = reason.into().chars().take(240).collect();
+        let key = (kind.to_owned(), label.to_owned(), None, true);
+        self.merge_unavailable(key, reason.clone(), Some(count), vec![reason]);
+    }
+
+    fn merge_unavailable(
+        &mut self,
+        key: UnavailableKey,
+        reason: String,
+        count: Option<u32>,
+        samples: Vec<String>,
+    ) {
+        if let Some((index, retained)) = self.unavailable_keys.get_mut(&key) {
+            let existing = &mut self.feed.unavailable[*index];
+            if key.3 {
+                existing.count = existing
+                    .count
+                    .zip(count)
+                    .and_then(|(old, new)| old.checked_add(new));
+                if existing.count.is_none()
+                    && !existing.reason.contains("the refusal count exceeds u32")
+                {
+                    existing
+                        .reason
+                        .push_str("; the refusal count exceeds u32 and is not representable");
+                }
+            }
+            for sample in samples {
+                if retained.len() < 3 && !retained.contains(&sample) {
+                    existing.reason.push_str("; example: ");
+                    existing.reason.push_str(&sample);
+                    retained.push(sample);
+                }
+            }
+        } else {
+            let index = self.feed.unavailable.len();
+            self.feed.unavailable.push(EventFeedUnavailable {
+                kind: key.0.clone(),
+                label: key.1.clone(),
+                reason,
+                count,
+            });
+            self.unavailable_keys.insert(key, (index, samples));
+        }
+    }
+
+    fn finish(mut self) -> io::Result<Feed> {
+        self.feed.rows.sort_by(|a, b| {
+            (a.hour, a.read_hour, a.kind, &a.tags, &a.id).cmp(&(
+                b.hour,
+                b.read_hour,
+                b.kind,
+                &b.tags,
+                &b.id,
+            ))
+        });
+        self.feed.warnings.sort();
+        self.feed.warnings.dedup();
+        self.feed.windows = windows(&self.feed, MAX_PRODUCT_REPLY_BYTES)?;
+        Ok(self.feed)
+    }
+}
+
+fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
+    if cancelled.load(Ordering::Acquire) {
+        Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Event feed request cancelled",
+        ))
+    } else {
+        Ok(())
+    }
+}
+fn plain_item(
+    token: Option<String>,
+    name: Option<String>,
+    icon: Option<String>,
+    description: Option<String>,
+) -> EventFeedItem {
+    EventFeedItem {
+        token,
+        name,
+        icon,
+        description,
+        idea: None,
+    }
+}
+
+fn build(
+    source: &Source,
+    branch: u64,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<Feed> {
+    let replay = source.replay();
+    let start = replay
+        .branches
+        .iter()
+        .find(|start| start.id == branch)
+        .ok_or_else(|| io::Error::other("Unknown event-feed branch"))?;
+    let (first, last) = branch_bounds(&replay, start);
+    let mut builder = Builder::new(first, last);
+    let catalogue = match context
+        .content()
+        .and_then(|content| catalogue::catalogue(source, content))
+    {
+        Ok(content) => Some(content),
+        Err(reason) => {
+            builder.unavailable(
+                "contentStack",
+                "Recorded content stack",
+                reason.to_string(),
+                Some(1),
+            );
+            None
+        }
+    };
+    native::scan(&replay, branch, &mut builder, cancelled)?;
+    let groups = country_groups::cached_scan(source, branch, cancelled)?;
+    let diplomacy = diplomacy::scan(&replay, branch, &groups, cancelled)?;
+    builder
+        .feed
+        .warnings
+        .extend(groups.warnings.iter().cloned());
+    builder.unavailable("warDeclarationOrJoin", "War declaration or join", "WarRelations supplies the pair becoming at war. Declarations and joins require the native event history; refused intervals cannot distinguish those actions.", None);
+    builder.unavailable("peaceOutcome", "Peace outcome", "A witnessed WarRelations removal records that the pair is no longer at war; the treaty, annexation or release cause is not recorded.", None);
+    builder.unavailable("annexationCause", "Annexation or release", "CountryCounterInputs supplies owned-state existence. Its transitions have no cause; only a captured native annexation identifies that action and its roles.", None);
+    builder.unavailable("nuclearDrops", "Nuclear drops", "Nukes records stockpile and queued ready count; launches, drops and targets are not recorded.", None);
+    for (id, kind, label) in [
+        (TableId::WarRelations, "warStarted", "Wars and peace"),
+        (TableId::Capitulation, "capitulated", "Capitulations"),
+        (
+            TableId::CountryCounterInputs,
+            "ceasedToExist",
+            "Country existence",
+        ),
+        (TableId::FactionMembers, "factionJoined", "Faction changes"),
+        (TableId::RelationTuples, "guaranteeGranted", "Guarantees"),
+    ] {
+        if !diplomacy.observed.contains(&id) {
+            builder.unavailable(
+                kind,
+                label,
+                format!("{id:?} was never recorded complete on this branch."),
+                None,
+            );
+        }
+    }
+    for refusal in &diplomacy.unavailable {
+        builder.unavailable(
+            refusal.key,
+            refusal.label,
+            &refusal.reason,
+            Some(
+                u32::try_from(refusal.count)
+                    .map_err(|_| io::Error::other("Diplomacy refusal count exceeds u32"))?,
+            ),
+        );
+    }
+    let faction_naming = diplomacy
+        .moments
+        .iter()
+        .any(|moment| moment.faction.is_some())
+        .then(|| {
+            country_groups::load_faction_naming(
+                source,
+                &groups,
+                context,
+                &mut builder.feed.warnings,
+            )
+        });
+    let mut faction_refusals = catalogue::Refusals::default();
+    let mut faction_names = BTreeMap::new();
+    for moment in &diplomacy.moments {
+        check_cancel(cancelled)?;
+        use EventFeedKind::*;
+        let kind = match moment.kind {
+            "warStarted" => WarStarted,
+            "peace" => Peace,
+            "capitulated" => Capitulated,
+            "ceasedToExist" => CeasedToExist,
+            "factionJoined" => FactionJoined,
+            "factionLeft" => FactionLeft,
+            "guaranteeGranted" => GuaranteeGranted,
+            name => {
+                return Err(io::Error::other(format!(
+                    "Unsupported shared group event {name}"
+                )));
+            }
+        };
+        let item = if let Some(id) = moment.faction {
+            let name = faction_names
+                .entry((id, moment.name_hour))
+                .or_insert_with(|| {
+                    country_groups::faction_name_at(
+                        &groups,
+                        id,
+                        moment.name_hour,
+                        faction_naming
+                            .as_ref()
+                            .expect("faction moments need naming inputs"),
+                        &mut faction_refusals,
+                    )
+                    .ok()
+                });
+            Some(builder.item(plain_item(None, name.clone(), None, None))?)
+        } else {
+            None
+        };
+        builder.row(
+            kind,
+            RowDate {
+                hour: moment.hour,
+                read_hour: moment.read_hour,
+                name_hour: moment.name_hour,
+                exact: moment.exact,
+            },
+            moment.tags.clone(),
+            item,
+            None,
+        );
+    }
+    for (reason, count) in faction_refusals.counted_diagnostic_lines("faction names are not shown")
+    {
+        builder.unavailable(
+            "factionName",
+            "Faction name",
+            reason,
+            Some(
+                u32::try_from(count)
+                    .map_err(|_| io::Error::other("Faction name refusal count exceeds u32"))?,
+            ),
+        );
+    }
+    let subject_scan = subjects::scanned_branch(source, branch, cancelled)?;
+    builder
+        .feed
+        .warnings
+        .extend(subject_scan.warnings.iter().cloned());
+    if !subject_scan.observed {
+        builder.unavailable(
+            "becameSubject",
+            "Subjects",
+            "No complete Subjects read with resolved countries was recorded.",
+            None,
+        );
+    }
+    for event in &subject_scan.starts {
+        // CRelation::save@140D19260 writes +0x20 as start_date. The shared
+        // scan proves both tags at that hour before keeping the exact date.
+        builder.row(
+            EventFeedKind::BecameSubject,
+            RowDate {
+                hour: event.hour,
+                read_hour: event.read_hour,
+                name_hour: event.hour,
+                exact: event.exact,
+            },
+            vec![event.subject.clone(), event.overlord.clone()],
+            None,
+            None,
+        );
+    }
+    let parties = party_history::scanned_branch(source, branch, cancelled)?;
+    for (reason, count) in &parties.refusals {
+        builder.unavailable(
+            "rulingPartyObservation",
+            "Ruling party",
+            reason.clone(),
+            Some(
+                u32::try_from(*count)
+                    .map_err(|_| io::Error::other("Party refusal count exceeds u32"))?,
+            ),
+        );
+    }
+    if !parties.observed {
+        builder.unavailable(
+            "rulingPartyChanged",
+            "Ruling party",
+            "No complete PoliticalParties read with resolved countries was recorded.",
+            None,
+        );
+    }
+    let politics = match context
+        .content()
+        .and_then(|content| politics_content::politics_content(source, content))
+    {
+        Ok(content) => Some(content),
+        Err(reason) => {
+            builder.unavailable(
+                "politicsContent",
+                "Politics content",
+                reason.to_string(),
+                Some(1),
+            );
+            None
+        }
+    };
+    if let Some(content) = &politics {
+        builder
+            .feed
+            .warnings
+            .extend(content.warnings.iter().cloned());
+    }
+    for (tag, scanned) in &parties.countries {
+        for run in scanned.ruling.iter().filter(|run| !run.starts_segment) {
+            // SetRulingPartyByIdeologyGroup@140B9F440 writes no date.
+            let name = scanned
+                .party_name_runs
+                .iter()
+                .find(|name| name.first_hour <= run.first_hour && run.first_hour <= name.last_hour)
+                .and_then(|name| {
+                    politics.as_ref().and_then(|content| {
+                        let (key, fallback) = match party_history::recorded_party_key(
+                            scanned,
+                            name.name as usize,
+                            |key| content.defines(key),
+                        ) {
+                            Ok(value) => value,
+                            Err(reason) => {
+                                builder.unavailable(
+                                    "partyName",
+                                    "Ruling party names",
+                                    reason,
+                                    Some(1),
+                                );
+                                return None;
+                            }
+                        };
+                        if let Some(reason) = fallback {
+                            builder.feed.warnings.push(reason);
+                        }
+                        content.localised(&key, catalogue::View::Plain)
+                    })
+                });
+            let item = builder.item(plain_item(Some(run.token.clone()), name, None, None))?;
+            builder.row(
+                EventFeedKind::RulingPartyChanged,
+                RowDate::by(run.first_hour),
+                vec![tag.clone()],
+                Some(item),
+                None,
+            );
+        }
+    }
+    let ideas = idea_history::scanned_branch(source, branch, cancelled)?;
+    builder.feed.warnings.extend(ideas.warnings.iter().cloned());
+    for (reason, count) in &ideas.refusals {
+        builder.unavailable(
+            "ideaObservation",
+            "Laws and advisors",
+            reason.clone(),
+            Some(
+                u32::try_from(*count)
+                    .map_err(|_| io::Error::other("Idea refusal count exceeds u32"))?,
+            ),
+        );
+    }
+    if !ideas.observed {
+        builder.unavailable("lawChanged", "Laws and advisors", "ActiveIdeas and HiredAdvisors were not recorded complete together with resolved countries.", None);
+    }
+    let mut refused_laws = BTreeMap::<String, u32>::new();
+    let mut idea_infos = BTreeMap::new();
+    for (tag, scanned) in &ideas.countries {
+        let missing = idea_history::unavailable_additions(scanned);
+        if missing > 0 {
+            builder.unavailable("ideaAdditionAfterGap", "Law and advisor changes",
+                "Changed holdings after an unrecorded stretch cannot establish whether a law changed or an advisor was hired.",
+                Some(u32::try_from(missing).map_err(|_| io::Error::other("Idea-gap refusal count exceeds u32"))?));
+        }
+        for (span, naming) in idea_history::named_additions(scanned) {
+            check_cancel(cancelled)?;
+            let mut item = plain_item(Some(span.token.clone()), None, None, None);
+            let kind = if let Some(content) = &politics {
+                if span.character.is_none()
+                    && matches!(content.ideas.idea(&span.token), Ok(Some(idea)) if !idea.law)
+                {
+                    continue;
+                }
+                let localise = |key: &str, view| content.localised(key, view);
+                let joined = idea_history::Joined::of(content, &localise);
+                let built = span
+                    .character
+                    .as_ref()
+                    .and_then(|holder| scanned.templates.get(&holder.id));
+                let built = match built {
+                    Some(Ok(built)) => Ok(built),
+                    Some(Err(reason)) => Err(reason.as_str()),
+                    None => Err("no recorded holder names its template"),
+                };
+                let key = (
+                    span.token.clone(),
+                    span.slot.clone(),
+                    span.character.as_ref().map(|holder| holder.id),
+                );
+                let info = idea_infos
+                    .entry(key)
+                    .or_insert_with(|| {
+                        idea_history::prepare_info(
+                            &joined,
+                            &span.token,
+                            span.slot.as_deref(),
+                            built,
+                            false,
+                        )
+                        .0
+                    })
+                    .clone();
+                // IsLaw is content group +0x58, loaded by 140FC0B30/140FC0E90.
+                let kind = if span.character.is_some() {
+                    EventFeedKind::AdvisorHired
+                } else if info.law {
+                    EventFeedKind::LawChanged
+                } else if !info.effects_known {
+                    *refused_laws.entry(span.token.clone()).or_default() += 1;
+                    continue;
+                } else {
+                    continue;
+                };
+                if let Some(naming) = naming {
+                    let holder = span.character.as_ref();
+                    let script = holder.and_then(|holder| {
+                        (!holder.token.is_empty()).then_some(holder.token.as_str())
+                    });
+                    let (art, problem) = match holder {
+                        Some(holder) => content.held_idea_artwork(
+                            &span.token,
+                            script,
+                            &holder.name,
+                            naming.for_tag(tag),
+                        ),
+                        None => content.idea_artwork(&span.token, None, naming.for_tag(tag)),
+                    };
+                    if let Some(reason) = &problem {
+                        builder.unavailable(
+                            "ideaArtwork",
+                            "Idea artwork",
+                            format!("Idea {}: {reason}", span.token),
+                            Some(1),
+                        );
+                    }
+                    item.name = art.name;
+                    item.icon = art.icon;
+                    item.description = art.description;
+                    if let Some(holder) = holder
+                        && script.is_none()
+                    {
+                        item.icon = None;
+                        let reason = format!(
+                            "Advisor {} ({}) has no recorded script token; portrait refused.",
+                            holder.id, span.token
+                        );
+                        builder.unavailable(
+                            "advisorArtwork",
+                            "Advisor portrait",
+                            reason.clone(),
+                            Some(1),
+                        );
+                    }
+                }
+                item.idea = Some(info);
+                kind
+            } else if span.character.is_some() {
+                EventFeedKind::AdvisorHired
+            } else {
+                *refused_laws.entry(span.token.clone()).or_default() += 1;
+                continue;
+            };
+            let item = builder.item(item)?;
+            builder.row(
+                kind,
+                RowDate::by(span.first_hour),
+                vec![tag.clone()],
+                Some(item),
+                None,
+            );
+        }
+    }
+    for (token, count) in refused_laws {
+        builder.unavailable("lawChanged", "Law classification", format!("Idea {token}: the recorded content cannot establish whether this addition is a law."), Some(count));
+    }
+    focus_completion_rows(&mut builder, source, branch, context, cancelled)?;
+    let projects = special_projects::completion_events(source, branch, context, cancelled)?;
+    builder
+        .feed
+        .warnings
+        .extend(projects.warnings.iter().cloned());
+    for (reason, count) in &projects.refusals {
+        builder.unavailable(
+            "projectFinished",
+            "Special project presentation",
+            reason.clone(),
+            Some(u32::try_from(*count).map_err(|_| {
+                io::Error::other("Project refusal count exceeds the reply's recorded integer width")
+            })?),
+        );
+    }
+    if let Some(reason) = &projects.unavailable {
+        builder.unavailable("projectFinished", "Special projects", reason.clone(), None);
+    }
+    for event in &projects.events {
+        if let Some(reason) = &event.icon_missing {
+            builder.unavailable(
+                "projectArtwork",
+                "Special project artwork",
+                format!(
+                    "Project {} (definition {}): {reason}",
+                    event.item_token.as_deref().unwrap_or("unknown token"),
+                    event.definition_id
+                ),
+                Some(1),
+            );
+        }
+        let item = builder.item(plain_item(
+            event.item_token.clone(),
+            event.name.clone(),
+            event.icon.clone(),
+            None,
+        ))?;
+        builder.row(
+            EventFeedKind::ProjectFinished,
+            RowDate {
+                hour: event.date.hour,
+                read_hour: event.observed_hour,
+                name_hour: event.date.hour,
+                exact: event.date.exact,
+            },
+            vec![event.tag.clone()],
+            Some(item),
+            None,
+        );
+    }
+    let nukes = country_nukes::scanned_branch(source, branch, cancelled)?;
+    if nukes.read_hours.is_empty() {
+        builder.unavailable(
+            "nukesIncreased",
+            "Nuclear stockpile",
+            "No complete Nukes read was recorded.",
+            None,
+        );
+    }
+    for (ordinal, count) in &nukes.refused {
+        builder.unavailable(
+            "nuclearType",
+            "Nuclear type",
+            format!("Nuclear type {ordinal} has no native content-name mapping."),
+            Some(u32::try_from(*count).map_err(|_| {
+                io::Error::other("Nuclear refusal count exceeds the reply's recorded integer width")
+            })?),
+        );
+    }
+    let nuke_art = catalogue
+        .as_ref()
+        .map(|catalogue| artwork::nuke_icon(catalogue))
+        .transpose();
+    let mut nuke_item = None;
+    for (tag, runs) in &nukes.series {
+        for pair in runs.windows(2) {
+            let (old, new) = (&pair[0], &pair[1]);
+            if new.starts_segment {
+                continue;
+            }
+            let (Some(old), Some(new_total)) = (old.total, new.total) else {
+                continue;
+            };
+            // GetNukes@1410828A0 supplies signed i32 totals. Their observed
+            // positive difference can span u32; widening retains every rise.
+            let increase = i64::from(new_total) - i64::from(old);
+            if increase > 0 {
+                let amount = u32::try_from(increase)
+                    .map_err(|_| io::Error::other("Nuclear stockpile increase exceeds u32"))?;
+                if let Err(reason) = &nuke_art {
+                    builder.unavailable(
+                        "nuclearArtwork",
+                        "Nuclear stockpile artwork",
+                        reason.to_string(),
+                        Some(1),
+                    );
+                }
+                let item = match nuke_item {
+                    Some(item) => item,
+                    None => {
+                        let icon = nuke_art.as_ref().ok().cloned().flatten().flatten();
+                        let item = builder.item(plain_item(None, None, icon, None))?;
+                        nuke_item = Some(item);
+                        item
+                    }
+                };
+                builder.row(
+                    EventFeedKind::NukesIncreased,
+                    RowDate::by(new.first_hour),
+                    vec![tag.clone()],
+                    Some(item),
+                    Some(amount),
+                );
+            }
+        }
+    }
+    if let Some(content) = &politics {
+        let (modifier_keys, text_keys) = idea_history::effect_keys(
+            builder
+                .feed
+                .items
+                .iter()
+                .filter_map(|item| item.idea.as_ref()),
+        );
+        let (formats, warnings) =
+            idea_format::modifier_formats(&replay, branch, &modifier_keys, content, cancelled)?;
+        builder.feed.modifiers = formats;
+        builder.feed.texts = idea_format::texts(content, &text_keys);
+        builder.feed.warnings.extend(warnings);
+    }
+    if let Some(catalogue) = &catalogue {
+        for (reason, count) in catalogue.refusal_entries() {
+            let count = count
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| io::Error::other("Content refusal count exceeds u32"))?;
+            builder.unavailable("contentPresentation", "Content presentation", reason, count);
+        }
+    }
+    builder.finish()
+}
+
+/// One selective forward decode per block supplies both lean completion
+/// observations and their artwork. No event hour performs a replay seek.
+fn focus_completion_rows(
+    builder: &mut Builder,
+    source: &Source,
+    branch: u64,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    use replay::frame::FrameDecoder;
+    let replay = source.replay_ref();
+    let mut focus = national_focus::FocusCompletionProjection::default();
+    let mut focus_art = None;
+    if let Ok(content) = context.content()
+        && let Err(reason) = artwork::ensure(&mut focus_art, source, content, artwork::Kind::Focus)
+    {
+        builder.unavailable(
+            "focusPresentation",
+            "Focus presentation",
+            reason.to_string(),
+            Some(1),
+        );
+    }
+    let mut needed = BTreeSet::new();
+    needed.extend(national_focus::FOCUS_COMPLETION_TABLES.iter().copied());
+    if focus_art
+        .as_ref()
+        .is_some_and(|art| art.focus_text_needs_frame())
+    {
+        needed.extend(crate::scripted_text::TABLES.iter().copied());
+        needed.insert(TableId::Clock);
+    }
+    needed.insert(TableId::Campaign);
+    let needed: Vec<_> = needed.into_iter().collect();
+    for block in replay.index.iter().filter(|block| block.branch == branch) {
+        check_cancel(cancelled)?;
+        let frames = match replay.read_block_selected(block, &needed) {
+            Ok(frames) => frames,
+            Err(reason) => {
+                builder.sampled_unavailable(
+                    "completionRead",
+                    "Completion observations",
+                    reason.to_string(),
+                    1,
+                );
+                continue;
+            }
+        };
+        let mut decoder = FrameDecoder::for_tables(&needed);
+        for frame in frames {
+            check_cancel(cancelled)?;
+            let decoded = match decoder.advance(&frame) {
+                Ok(decoded) => decoded,
+                Err(reason) => {
+                    builder.sampled_unavailable(
+                        "completionRead",
+                        "Completion observations",
+                        reason.to_string(),
+                        1,
+                    );
+                    break;
+                }
+            };
+            if let Err(reason) = crate::metadata::validate_campaign(decoded, replay) {
+                builder.sampled_unavailable(
+                    "completionRead",
+                    "Completion observations",
+                    reason.to_string(),
+                    1,
+                );
+                break;
+            }
+            let events = focus.observe(decoded);
+            let requests: Vec<_> = events
+                .iter()
+                .map(|event| (event.token.as_str(), event.tag.as_str()))
+                .collect();
+            let presented = if requests.is_empty() {
+                Vec::new()
+            } else {
+                focus_art
+                    .as_mut()
+                    .map(|art| art.focuses_at(&requests, decoded))
+                    .unwrap_or_default()
+            };
+            for (index, event) in events.iter().enumerate() {
+                let mut item = plain_item(Some(event.token.clone()), None, None, None);
+                if let Some((art, refusal)) = presented.get(index) {
+                    item.name = art.name.clone();
+                    item.icon = art.icon.clone();
+                    item.description = art.description.clone();
+                    if let Some(reason) = refusal {
+                        builder.unavailable(
+                            "focusPresentation",
+                            "Focus presentation",
+                            format!("Focus {}: {reason}", event.token),
+                            Some(1),
+                        );
+                    }
+                }
+                let item = builder.item(item)?;
+                // AddCompletedFocus@1402CD170 retains ordinal/token, no date.
+                builder.row(
+                    EventFeedKind::FocusCompleted,
+                    RowDate::by(event.hour),
+                    vec![event.tag.clone()],
+                    Some(item),
+                    None,
+                );
+            }
+        }
+    }
+    if !focus.observed {
+        builder.unavailable(
+            "focusCompleted",
+            "Focus completions",
+            "Focus and CompletedFocuses were not recorded complete with resolved countries.",
+            None,
+        );
+    }
+    for (reason, count) in focus.unavailable {
+        builder.unavailable(
+            "focusCompleted",
+            "Focus completions",
+            reason,
+            Some(
+                u32::try_from(count)
+                    .map_err(|_| io::Error::other("Focus refusal count exceeds u32"))?,
+            ),
+        );
+    }
+    if let Some(art) = focus_art {
+        builder.feed.warnings.extend(art.standing_warnings());
+    }
+    Ok(())
+}
+
+fn reply(feed: &Feed, branch: &str, first: i32, last: i32, with_rows: bool) -> EventFeedReply {
+    let mut items = Vec::new();
+    let mut remap = BTreeMap::new();
+    let from = feed.rows.partition_point(|row| row.hour < first);
+    let to = feed.rows.partition_point(|row| row.hour <= last);
+    let rows = if with_rows {
+        feed.rows[from..to]
+            .iter()
+            .map(|row| {
+                let mut row = row.clone();
+                row.item = row.item.map(|item| {
+                    *remap.entry(item).or_insert_with(|| {
+                        let index = items.len() as u32;
+                        items.push(feed.items[item as usize].clone());
+                        index
+                    })
+                });
+                row
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    EventFeedReply {
+        branch_id: branch.into(),
+        first_hour: first,
+        last_hour: last,
+        windows: if with_rows {
+            Vec::new()
+        } else {
+            feed.windows.clone()
+        },
+        rows,
+        items,
+        modifiers: if with_rows {
+            feed.modifiers.clone()
+        } else {
+            Vec::new()
+        },
+        texts: if with_rows {
+            feed.texts.clone()
+        } else {
+            Vec::new()
+        },
+        unavailable: if with_rows {
+            Vec::new()
+        } else {
+            feed.unavailable.clone()
+        },
+        warnings: if with_rows {
+            Vec::new()
+        } else {
+            feed.warnings.clone()
+        },
+    }
+}
+
+/// Admission serializes borrowed rows, before cloning any page. A remapped
+/// reference has at most ten decimal digits (the recorded u32 field width).
+fn window_fits(feed: &Feed, branch: &str, first: i32, last: i32, budget: usize) -> bool {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Measure<'a> {
+        branch_id: &'a str,
+        first_hour: i32,
+        last_hour: i32,
+        windows: &'a [EventFeedWindow],
+        rows: &'a [EventFeedRow],
+        items: Vec<&'a EventFeedItem>,
+        modifiers: &'a [ModifierFormat],
+        texts: &'a [LocalisedText],
+        unavailable: &'a [EventFeedUnavailable],
+        warnings: &'a [String],
+    }
+    let from = feed.rows.partition_point(|row| row.hour < first);
+    let to = feed.rows.partition_point(|row| row.hour <= last);
+    let rows = &feed.rows[from..to];
+    let used: BTreeSet<_> = rows.iter().filter_map(|row| row.item).collect();
+    let measure = Measure {
+        branch_id: branch,
+        first_hour: first,
+        last_hour: last,
+        windows: &[],
+        rows,
+        items: used
+            .iter()
+            .map(|item| &feed.items[*item as usize])
+            .collect(),
+        modifiers: &feed.modifiers,
+        texts: &feed.texts,
+        unavailable: &[],
+        warnings: &[],
+    };
+    let remap_reserve = rows
+        .iter()
+        .filter_map(|row| row.item)
+        .map(|item| 10 - item.checked_ilog10().map_or(1, |log| log as usize + 1))
+        .sum::<usize>();
+    crate::transport::json_len(&measure, budget.saturating_sub(remap_reserve)).is_some()
+}
+
+/// Count serialized rows and distinct artwork before allocating a window reply.
+/// Entire hours stay together; a single oversized hour is refused with its count.
+fn windows(feed: &Feed, budget: usize) -> io::Result<Vec<EventFeedWindow>> {
+    let base = crate::transport::json_len(
+        &EventFeedReply {
+            branch_id: "0".into(),
+            first_hour: feed.first,
+            last_hour: feed.last,
+            ..Default::default()
+        },
+        budget,
+    )
+    .ok_or_else(|| io::Error::other("Event-feed index exceeds the shared reply budget"))?;
+    let shared = crate::transport::json_len(&feed.modifiers, budget)
+        .and_then(|a| crate::transport::json_len(&feed.texts, budget).map(|b| a + b))
+        .ok_or_else(|| {
+            io::Error::other("Event-feed tooltip definitions exceed the shared reply budget")
+        })?;
+    let row_bytes: Vec<_> = feed
+        .rows
+        .iter()
+        .map(|row| {
+            crate::transport::json_len(row, budget)
+                .map(|n| {
+                    n + 1
+                        + row.item.map_or(0, |item| {
+                            10 - item.checked_ilog10().map_or(1, |log| log as usize + 1)
+                        })
+                })
+                .ok_or_else(|| {
+                    io::Error::other("One event-feed row exceeds the shared reply budget")
+                })
+        })
+        .collect::<io::Result<_>>()?;
+    let item_bytes: Vec<_> = feed
+        .items
+        .iter()
+        .map(|item| {
+            crate::transport::json_len(item, budget)
+                .map(|n| n + 1)
+                .ok_or_else(|| {
+                    io::Error::other(format!(
+                        "Event artwork {} exceeds the shared reply budget",
+                        item.token.as_deref().unwrap_or("unknown")
+                    ))
+                })
+        })
+        .collect::<io::Result<_>>()?;
+    let reserve = base + shared + 1024;
+    let mut result: Vec<EventFeedWindow> = Vec::new();
+    let mut bytes = reserve;
+    let mut used = BTreeSet::new();
+    let mut index = 0;
+    while index < feed.rows.len() {
+        let hour = feed.rows[index].hour;
+        let end = index + feed.rows[index..].partition_point(|row| row.hour == hour);
+        let count = u32::try_from(end - index)
+            .map_err(|_| io::Error::other("Too many events at one hour"))?;
+        let row_size = row_bytes[index..end].iter().sum::<usize>();
+        let all_items: BTreeSet<_> = feed.rows[index..end]
+            .iter()
+            .filter_map(|row| row.item)
+            .collect();
+        let extra = |seen: &BTreeSet<u32>| {
+            all_items
+                .difference(seen)
+                .map(|item| item_bytes[*item as usize])
+                .sum::<usize>()
+        };
+        if bytes + row_size + extra(&used) > budget {
+            bytes = reserve;
+            used.clear();
+            if bytes + row_size + extra(&used) > budget {
+                return Err(io::Error::other(format!(
+                    "Event feed hour {hour}: {count} events exceed the shared reply budget; no events were omitted"
+                )));
+            }
+        }
+        let new = bytes == reserve;
+        bytes += row_size + extra(&used);
+        used.extend(all_items);
+        if new {
+            result.push(EventFeedWindow {
+                first_hour: hour,
+                last_hour: hour,
+                count,
+                category_counts: EventFeedCounts::default(),
+            });
+        } else {
+            let window = result.last_mut().expect("started window");
+            window.last_hour = hour;
+            window.count = window
+                .count
+                .checked_add(count)
+                .ok_or_else(|| io::Error::other("Too many events in a window"))?;
+        }
+        let window = result.last_mut().expect("started window");
+        for row in &feed.rows[index..end] {
+            window.category_counts.add(row.category)?;
+        }
+        index = end;
+    }
+    Ok(result)
+}
+
+impl Product for EventFeed {
+    const KEY: &'static str = "event-feed";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = EventFeedParams;
+    type Reply = EventFeedReply;
+    fn types() -> Vec<String> {
+        vec![
+            EventFeedParams::decl(),
+            EventFeedCategory::decl(),
+            EventFeedKind::decl(),
+            EventFeedRow::decl(),
+            EventFeedItem::decl(),
+            EventFeedWindow::decl(),
+            EventFeedCounts::decl(),
+            EventFeedUnavailable::decl(),
+            EventFeedReply::decl(),
+        ]
+    }
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        if params.branch_id.parse::<u64>().is_err() {
+            return Err("Invalid branch");
+        }
+        match (params.first_hour, params.last_hour) {
+            (None, None) => Ok(()),
+            (Some(first), Some(last)) if first <= last => Ok(()),
+            _ => Err("Invalid event-feed hour window"),
+        }
+    }
+    fn load(
+        source: &Source,
+        params: &Self::Params,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self::Reply> {
+        check_cancel(cancelled)?;
+        let branch = params.branch_id.parse::<u64>().expect("validated branch");
+        let catalogue = context
+            .content()
+            .and_then(|content| catalogue::catalogue(source, content))
+            .ok();
+        let state = source.state::<Cache>();
+        let cached = state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(branch, &catalogue);
+        let cached = match cached {
+            Some(cached) => cached,
+            None => CachedBranch {
+                catalogue,
+                feed: Arc::new(build(source, branch, context, cancelled)?),
+            },
+        };
+        let feed = Arc::clone(&cached.feed);
+        state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .put(branch, cached);
+        let (first, last) = params
+            .first_hour
+            .zip(params.last_hour)
+            .unwrap_or((feed.first, feed.last));
+        if first < feed.first || last > feed.last {
+            return Err(io::Error::other(
+                "Event-feed hour window is outside the recorded branch",
+            ));
+        }
+        if params.first_hour.is_some()
+            && !window_fits(
+                &feed,
+                &params.branch_id,
+                first,
+                last,
+                MAX_PRODUCT_REPLY_BYTES - 1024,
+            )
+        {
+            return Err(io::Error::other(
+                "The requested event-feed window exceeds the shared reply budget; request the indexed windows",
+            ));
+        }
+        let result = reply(
+            &feed,
+            &params.branch_id,
+            first,
+            last,
+            params.first_hour.is_some(),
+        );
+        if crate::transport::json_len(&result, MAX_PRODUCT_REPLY_BYTES).is_none() {
+            return Err(io::Error::other(
+                "The requested event-feed window exceeds the shared reply budget; request the indexed windows",
+            ));
+        }
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests;

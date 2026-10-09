@@ -12,12 +12,13 @@
 //! are independent of value coverage, so unknown amounts rank last, never zero.
 
 use super::{
-    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
+    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, air_force, army_size,
     country_factories::{self, FactoryCount, FactoryGroupKey},
     country_groups::HourSpan,
     country_history::{self, CountryIdentityRun, RecordedHistories},
     country_measure::FixedRun,
-    country_nukes, country_stability, equipment, equipment_produced, validate_tag,
+    country_nukes, country_stability, equipment, equipment_produced, navy, validate_tag,
+    war_casualties,
 };
 use crate::{
     Source,
@@ -42,6 +43,8 @@ pub enum ScoreboardColumnKey {
     ArmySize,
     Territory,
     Casualties,
+    CasualtiesDealt,
+    CasualtiesTaken,
     Planes,
     Ships,
     FactoriesBuilt,
@@ -55,11 +58,13 @@ pub enum ScoreboardColumnKey {
 }
 
 impl ScoreboardColumnKey {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::Factories,
         Self::ArmySize,
         Self::Territory,
         Self::Casualties,
+        Self::CasualtiesDealt,
+        Self::CasualtiesTaken,
         Self::Planes,
         Self::Ships,
         Self::FactoriesBuilt,
@@ -72,19 +77,9 @@ impl ScoreboardColumnKey {
         Self::Nukes,
     ];
 
-    fn military_adapter(self) -> Option<MilitaryAdapter> {
-        match self {
-            Self::ArmySize => Some(army_size),
-            Self::Planes => Some(planes),
-            Self::Ships => Some(ships),
-            Self::Casualties => Some(casualties),
-            _ => None,
-        }
-    }
-
     fn unavailable_reason(self) -> Option<&'static str> {
-        self.military_adapter()
-            .and_then(|adapter| adapter(None, 0, &[], &AtomicBool::new(false)).err())
+        (self == Self::Casualties)
+            .then_some("Choose Casualties dealt or Casualties taken in settings.")
     }
 
     fn factory_count(self) -> Option<FactoryCount> {
@@ -95,52 +90,6 @@ impl ScoreboardColumnKey {
             _ => None,
         }
     }
-}
-
-// One swap point per Military measure. None asks only about availability; Some
-// supplies the source for its shared per-country, per-hour measure. Registry,
-// validation and values all call the same adapter, so wiring it changes one body.
-type MilitaryAdapter =
-    fn(Option<&Source>, u64, &[String], &AtomicBool) -> Result<ColumnValues, &'static str>;
-fn army_size(
-    _source: Option<&Source>,
-    _branch: u64,
-    _tags: &[String],
-    _cancelled: &AtomicBool,
-) -> Result<ColumnValues, &'static str> {
-    Err(
-        "Not available yet: Army size comes with the Army size widget's shared measure; it is not on main yet.",
-    )
-}
-fn planes(
-    _source: Option<&Source>,
-    _branch: u64,
-    _tags: &[String],
-    _cancelled: &AtomicBool,
-) -> Result<ColumnValues, &'static str> {
-    Err(
-        "Not available yet: Number of planes comes with the Planes widget's shared measure; it is not on main yet.",
-    )
-}
-fn ships(
-    _source: Option<&Source>,
-    _branch: u64,
-    _tags: &[String],
-    _cancelled: &AtomicBool,
-) -> Result<ColumnValues, &'static str> {
-    Err(
-        "Not available yet: Number of ships comes with the Ships widget's shared measure; it is not on main yet.",
-    )
-}
-fn casualties(
-    _source: Option<&Source>,
-    _branch: u64,
-    _tags: &[String],
-    _cancelled: &AtomicBool,
-) -> Result<ColumnValues, &'static str> {
-    Err(
-        "Not available yet: Casualties comes with the Casualties widget's shared measure; it is not on main yet.",
-    )
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -169,6 +118,9 @@ pub struct ScoreboardColumn {
     pub decimals: u8,
     pub available: bool,
     pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
@@ -179,6 +131,9 @@ pub struct ScoreboardRun {
     /// Exact signed integer in units of 10^-decimals. None is unknown.
     pub amount: Option<String>,
     pub starts_segment: bool,
+    /// Legacy wire name: true marks a partial recorded subtotal, not a lower bound.
+    #[ts(optional, as = "Option<_>")]
+    pub at_least: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
@@ -257,11 +212,21 @@ fn descriptor(key: ScoreboardColumnKey) -> ColumnDescriptor {
         },
         ArmySize => ColumnDescriptor {
             label: "Army size",
-            unit: "divisions",
+            unit: "people",
             decimals: 0,
         },
         Casualties => ColumnDescriptor {
             label: "Casualties",
+            unit: "people",
+            decimals: 0,
+        },
+        CasualtiesDealt => ColumnDescriptor {
+            label: "Casualties dealt",
+            unit: "people",
+            decimals: 0,
+        },
+        CasualtiesTaken => ColumnDescriptor {
+            label: "Casualties taken",
             unit: "people",
             decimals: 0,
         },
@@ -338,6 +303,18 @@ pub(crate) fn registry(catalogue: Option<&Catalogue>) -> Vec<ScoreboardColumn> {
                 decimals: description.decimals,
                 available: reason.is_none(),
                 reason,
+                note: match key {
+                    ScoreboardColumnKey::ArmySize => Some(
+                        "Manpower in the field, attributed to each division's owner, as in the Army size widget's default.".into(),
+                    ),
+                    ScoreboardColumnKey::CasualtiesDealt => Some(
+                        "Recorded casualties dealt across land, naval and air. † marks a partial recorded subtotal; missing history may omit positive losses or negative corrections.".into(),
+                    ),
+                    ScoreboardColumnKey::CasualtiesTaken => Some(
+                        "Recorded casualties taken across land, naval and air with a known attacker, as in the Casualties widget's default. Losses without a recorded attacker are excluded; † marks a partial recorded subtotal.".into(),
+                    ),
+                    _ => None,
+                },
             }
         })
         .collect()
@@ -347,8 +324,9 @@ pub(crate) fn registry(catalogue: Option<&Catalogue>) -> Vec<ScoreboardColumn> {
 struct ValueRun {
     first_hour: i32,
     last_hour: i32,
-    amount: Option<i64>,
+    amount: Option<i128>,
     starts_segment: bool,
+    at_least: bool,
 }
 
 struct ColumnData {
@@ -369,6 +347,7 @@ impl ColumnData {
                     last_hour: run.last_hour,
                     amount: run.amount.map(|amount| amount.to_string()),
                     starts_segment: run.starts_segment,
+                    at_least: run.at_least,
                 })
                 .collect(),
             read_runs: self.read_runs,
@@ -386,6 +365,7 @@ fn numeric_fixed_runs(runs: &[FixedRun]) -> io::Result<Vec<ValueRun>> {
                     io::Error::other("The shared fixed5 measure is not a signed native integer")
                 })?),
                 starts_segment: run.starts_segment,
+                at_least: false,
             })
         })
         .collect()
@@ -503,8 +483,77 @@ fn values(
     warnings: &mut Vec<String>,
 ) -> io::Result<ColumnValues> {
     let mut out = BTreeMap::new();
-    if let Some(adapter) = key.military_adapter() {
-        return Ok(adapter(Some(source), branch, tags, cancelled).unwrap_or_default());
+    if matches!(
+        key,
+        ScoreboardColumnKey::ArmySize | ScoreboardColumnKey::Planes | ScoreboardColumnKey::Ships
+    ) {
+        if tags.is_empty() {
+            return Ok(out);
+        }
+        for tag in tags {
+            out.insert(
+                tag.clone(),
+                ColumnData {
+                    key,
+                    runs: Vec::new(),
+                    read_runs: Vec::new(),
+                },
+            );
+        }
+        let mut visit = |tag: &str,
+                         first_hour: i32,
+                         last_hour: i32,
+                         starts_segment: bool,
+                         amount: Option<i128>| {
+            let runs = &mut out.get_mut(tag).expect("requested force tag").runs;
+            if let Some(last) = runs.last_mut()
+                && !starts_segment
+                && last.last_hour.checked_add(1) == Some(first_hour)
+                && last.amount == amount
+            {
+                last.last_hour = last_hour;
+            } else {
+                runs.push(ValueRun {
+                    first_hour,
+                    last_hour,
+                    amount,
+                    starts_segment,
+                    at_least: false,
+                });
+            }
+            Ok(())
+        };
+        match key {
+            ScoreboardColumnKey::ArmySize => army_size::visit_army_runs(
+                source,
+                branch,
+                tags,
+                army_size::ArmyMeasure::Manpower,
+                army_size::ArmyAttribution::Owner,
+                cancelled,
+                &mut visit,
+            )?,
+            ScoreboardColumnKey::Planes => air_force::visit_plane_runs(
+                source,
+                branch,
+                tags,
+                cancelled,
+                |tag, first, last, starts, amount| {
+                    visit(tag, first, last, starts, amount.map(i128::from))
+                },
+            )?,
+            ScoreboardColumnKey::Ships => navy::visit_ship_runs(
+                source,
+                branch,
+                tags,
+                cancelled,
+                |tag, first, last, starts, amount| {
+                    visit(tag, first, last, starts, amount.map(i128::from))
+                },
+            )?,
+            _ => unreachable!(),
+        }
+        return Ok(out);
     }
     if let Some(mode) = key.factory_count() {
         let scanned = country_factories::scanned_branch(source, branch, cancelled)?;
@@ -525,8 +574,10 @@ fn values(
                         FactoryGroupKey::ALL
                             .iter()
                             .map(|group| country_factories::group_count(&run.values, *group, mode))
-                            .sum::<i64>(),
+                            .map(i128::from)
+                            .sum::<i128>(),
                     ),
+                    at_least: false,
                 })
                 .collect();
             out.insert(
@@ -558,8 +609,9 @@ fn values(
                         .map(|run| ValueRun {
                             first_hour: run.first_hour,
                             last_hour: run.last_hour,
-                            amount: Some(run.value),
+                            amount: Some(i128::from(run.value)),
                             starts_segment: run.starts_segment,
+                            at_least: false,
                         })
                         .collect()
                     })
@@ -606,8 +658,9 @@ fn values(
                     .map(|run| ValueRun {
                         first_hour: run.first_hour,
                         last_hour: run.last_hour,
-                        amount: run.total.map(i64::from),
+                        amount: run.total.map(i128::from),
                         starts_segment: run.starts_segment,
+                        at_least: false,
                     })
                     .collect();
                 out.insert(
@@ -635,12 +688,54 @@ fn values(
                     .map(|run| ValueRun {
                         first_hour: run.first_hour,
                         last_hour: run.last_hour,
-                        amount: run.amount,
+                        amount: run.amount.map(i128::from),
                         starts_segment: run.starts_segment,
+                        at_least: false,
                     })
                     .collect();
                 out.insert(
                     tag,
+                    ColumnData {
+                        key,
+                        runs,
+                        read_runs: Vec::new(),
+                    },
+                );
+            }
+        }
+        ScoreboardColumnKey::CasualtiesDealt | ScoreboardColumnKey::CasualtiesTaken => {
+            let scanned = war_casualties::scanned_branch(source, branch, cancelled)?;
+            if scanned.has_gap() {
+                warnings.push("Casualty history has gaps; wars entirely inside a gap may be missing. Partial recorded subtotals are marked †. Missing history may omit positive losses or negative corrections.".into());
+            }
+            for tag in tags {
+                let mut runs: Vec<ValueRun> = Vec::new();
+                scanned.for_each_country_run(tag, cancelled, |run| {
+                    let amount = Some(if key == ScoreboardColumnKey::CasualtiesDealt {
+                        run.value.dealt
+                    } else {
+                        run.value.taken
+                    });
+                    if let Some(last) = runs.last_mut()
+                        && !run.starts_segment
+                        && last.last_hour.checked_add(1) == Some(run.first_hour)
+                        && last.amount == amount
+                        && last.at_least == run.value.at_least
+                    {
+                        last.last_hour = run.last_hour;
+                    } else {
+                        runs.push(ValueRun {
+                            first_hour: run.first_hour,
+                            last_hour: run.last_hour,
+                            amount,
+                            starts_segment: run.starts_segment,
+                            at_least: run.value.at_least,
+                        });
+                    }
+                    Ok(())
+                })?;
+                out.insert(
+                    tag.clone(),
                     ColumnData {
                         key,
                         runs,
@@ -681,6 +776,22 @@ fn fill_read_runs(
                 }
             }
         }
+        ScoreboardColumnKey::CasualtiesDealt | ScoreboardColumnKey::CasualtiesTaken => {
+            let scanned = war_casualties::scanned_branch(source, branch, cancelled)?;
+            for tag in tags {
+                if let Some(column) = columns.get_mut(tag) {
+                    scanned.for_each_country_run(tag, cancelled, |run| {
+                        column.read_runs.push(ScoreboardReadRun {
+                            first_hour: run.first_hour,
+                            last_hour: run.last_hour,
+                            read_hour: run.value.read_hour,
+                            hourly: false,
+                        });
+                        Ok(())
+                    })?;
+                }
+            }
+        }
         _ => {
             for tag in tags {
                 if let Some(column) = columns.get_mut(tag) {
@@ -716,10 +827,9 @@ fn ranking_runs(
                     }
                     let next = measures.get(cursor);
                     let (last, amount) = match next {
-                        Some(run) if run.first_hour <= hour => (
-                            run.last_hour.min(segment.last_hour),
-                            run.amount.map(i128::from),
-                        ),
+                        Some(run) if run.first_hour <= hour => {
+                            (run.last_hour.min(segment.last_hour), run.amount)
+                        }
                         Some(run) => (segment.last_hour.min(run.first_hour - 1), None),
                         None => (segment.last_hour, None),
                     };
@@ -752,6 +862,7 @@ fn clip_column(
                 last_hour,
                 amount: run.amount,
                 starts_segment: run.starts_segment && first_hour == run.first_hour,
+                at_least: run.at_least,
             });
             Ok(())
         },
@@ -854,7 +965,8 @@ impl Product for Scoreboard {
             ScoreboardColumnKey::Factories,
             ScoreboardColumnKey::ArmySize,
             ScoreboardColumnKey::Territory,
-            ScoreboardColumnKey::Casualties,
+            ScoreboardColumnKey::CasualtiesDealt,
+            ScoreboardColumnKey::CasualtiesTaken,
             ScoreboardColumnKey::Planes,
             ScoreboardColumnKey::Ships,
         ];

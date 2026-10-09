@@ -29,6 +29,7 @@ fn expected_row(status: usize, country: u32) -> Row {
     let sum = |field| ring_sum(status, field);
     Row {
         country,
+        country_instance: Some(0),
         history_index: 13 + status as i32,
         remaining_hours: 1,
         ring_gain_raw: sum(1),

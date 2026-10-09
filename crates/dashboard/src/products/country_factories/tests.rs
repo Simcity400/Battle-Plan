@@ -217,6 +217,7 @@ fn factory_groups_are_named_by_the_content_buildings_their_flags_count() {
         military_production,
         naval_production,
         general_production,
+        ..Default::default()
     };
     let buildings = Buildings {
         factory_flags: BTreeMap::from([
@@ -701,7 +702,7 @@ fn factory_types_follow_a_modded_content_stack() {
         &[
             (
                 "common/buildings/mod_buildings.txt",
-                "buildings = { arms_factory = { military_production = 1 } tank_works = { military_production = 1 } industrial_complex = { general_production = 1 } workshop = { general_production = 1 } }",
+                "buildings = { arms_factory = { military_production = 1 } tank_works = { military_production = 1 rocket_production = 2 } industrial_complex = { general_production = 1 } workshop = { general_production = 1 rocket_production = -1 } launch_site = { rocket_launch_capacity = 3 rocket_production = 0 } }",
             ),
             (
                 "localisation/english/mod_l_english.yml",
@@ -721,7 +722,13 @@ fn factory_types_follow_a_modded_content_stack() {
     let catalogue = Catalogue::of_layers_for_check(layers, "english").unwrap();
     let (groups, warnings) = content_groups(&catalogue);
     let findings = catalogue.take_findings();
-    assert_eq!(findings.len(), 2);
+    assert_eq!(findings.len(), 3);
+    assert!(findings.iter().any(|finding| {
+        finding.kind == Kind::Refused
+            && finding.subject == "building tank_works"
+            && finding.count == Some(1)
+            && finding.message.contains("positive rocket_production")
+    }));
     assert!(findings.iter().any(|finding| {
         finding.kind == Kind::Content
             && finding.subject == "building workshop"
@@ -770,6 +777,16 @@ fn factory_types_follow_a_modded_content_stack() {
             .iter()
             .all(|warning| !warning.starts_with("workshop:")),
         "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("tank_works"))
+    );
+    assert!(
+        warnings
+            .iter()
+            .all(|warning| !warning.contains("launch_site"))
     );
     // The native integer scan leaves an unresolved token at its constructor's zero.
     let scripted = content_folder(
@@ -1080,4 +1097,158 @@ fn factory_slot_hour_reads_are_dated_at_their_hour_without_table_timing() {
         .map(|run| (run.first_hour, run.last_hour, run.values[civilian]))
         .collect();
     assert_eq!(reads, [(100, 100, 20), (101, 102, 21)]);
+    assert_eq!(
+        scanned.reads["GER"],
+        [super::FactoryReadRun {
+            first_hour: 100,
+            last_hour: 102,
+            read_hour: 100,
+            hourly: true,
+        }]
+    );
+}
+
+#[test]
+fn factory_read_confirmations_do_not_use_value_compression_as_provenance() {
+    use super::{FactoryReadRun, append_read};
+    let mut reads = Vec::new();
+    append_read(&mut reads, 100, 100, true, false);
+    append_read(&mut reads, 101, 100, false, true);
+    // A fresh confirmation of the same value must not retain the carried read.
+    append_read(&mut reads, 102, 102, true, true);
+    append_read(&mut reads, 103, 103, true, true);
+    // A different holder and a missing read each start a new provenance span.
+    append_read(&mut reads, 104, 104, true, false);
+    append_read(&mut reads, 106, 106, true, false);
+    assert_eq!(
+        reads,
+        [
+            FactoryReadRun {
+                first_hour: 100,
+                last_hour: 100,
+                read_hour: 100,
+                hourly: true
+            },
+            FactoryReadRun {
+                first_hour: 101,
+                last_hour: 101,
+                read_hour: 100,
+                hourly: false
+            },
+            FactoryReadRun {
+                first_hour: 102,
+                last_hour: 103,
+                read_hour: 102,
+                hourly: true
+            },
+            FactoryReadRun {
+                first_hour: 104,
+                last_hour: 104,
+                read_hour: 104,
+                hourly: true
+            },
+            FactoryReadRun {
+                first_hour: 106,
+                last_hour: 106,
+                read_hour: 106,
+                hourly: true
+            },
+        ]
+    );
+}
+
+#[test]
+#[ignore = "large synthetic recording"]
+fn factories_scale_1500_and_5000_countries_preserves_every_country() {
+    use crate::products::country_factories::scan;
+    use crate::test_fixtures::scale_frame;
+    use replay::rows::CountryFactoriesRow;
+    const HOURS: i32 = 24;
+    for (count, changing) in [1_500, 5_000]
+        .into_iter()
+        .flat_map(|count| [(count, false), (count, true)])
+    {
+        let frames = (100..100 + HOURS)
+            .map(|hour| {
+                let mut frame = scale_frame(1, hour, count);
+                *frame.tables[TableId::CountryFactories.index()] =
+                    TableView::Complete(TableRows::CountryFactories(
+                        (0..count)
+                            .map(|index| CountryFactoriesRow {
+                                country: 100_000 + index,
+                                civilian_total_raw: (i64::from(index)
+                                    + if changing && index == 0 {
+                                        i64::from(hour - 100)
+                                    } else {
+                                        0
+                                    })
+                                    * 100_000,
+                                ..Default::default()
+                            })
+                            .collect(),
+                    ));
+                frame
+            })
+            .collect();
+        let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+        let scanned = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
+        assert_eq!(scanned.series.len(), count as usize);
+        assert!(scanned.series.iter().all(|(tag, runs)| {
+            if changing && tag == &String::from_utf8(crate::test_fixtures::scale_tag(0)).unwrap() {
+                runs.len() == HOURS as usize && runs.last().unwrap().last_hour == 100 + HOURS - 1
+            } else {
+                runs.len() == 1 && runs[0].last_hour == 100 + HOURS - 1
+            }
+        }));
+    }
+}
+
+#[test]
+fn faction_factory_adapter_clips_recorded_runs_around_proven_zero_spans() {
+    use super::{FactoryCount, FactoryGroupKey, FactoryRun, faction_measure_runs};
+    use crate::products::country_groups::HourSpan;
+    let recorded = [FactoryRun {
+        first_hour: 0,
+        last_hour: 10,
+        starts_segment: true,
+        values: vec![7; super::fields().len()],
+    }];
+    let absent = [
+        HourSpan {
+            first_hour: 3,
+            last_hour: 5,
+        },
+        HourSpan {
+            first_hour: 9,
+            last_hour: 11,
+        },
+    ];
+    let runs = faction_measure_runs(
+        &recorded,
+        &absent,
+        FactoryCount::Built,
+        &[FactoryGroupKey::Military],
+        &mut 0,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        runs.iter()
+            .map(|run| (run.first_hour, run.last_hour, run.value))
+            .collect::<Vec<_>>(),
+        [
+            (0, 2, Some(7)),
+            (3, 5, Some(0)),
+            (6, 8, Some(7)),
+            (9, 11, Some(0))
+        ]
+    );
+    assert!(
+        runs.windows(2)
+            .all(|pair| pair[0].last_hour < pair[1].first_hour)
+    );
+    assert!(
+        runs[2].starts_segment,
+        "absence breaks the factory country's identity"
+    );
 }

@@ -23,9 +23,11 @@ export function mixCountry(countries: CountrySelection, fallback: string | null,
 }
 
 /** The view: `mix` names what one country's mix is split by (such as "type"). */
-export function raceViewOption(mixLabel: string, defaultView: RaceView = 'race'): OptionField {
+export function raceViewOption(mixLabel?: string, defaultView: RaceView = 'race',
+  extraViews: readonly { value: string; label: string }[] = []): OptionField {
   return { key: 'view', section: 'options', label: 'View', kind: 'choice', default: defaultView,
-    choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines over time' }, { value: 'mix', label: `One country by ${mixLabel}` }] };
+    choices: [{ value: 'race', label: 'Race' }, { value: 'lines', label: 'Lines over time' },
+      ...(mixLabel === undefined ? [] : [{ value: 'mix', label: `One country by ${mixLabel}` }]), ...extraViews] };
 }
 
 const inRace = (options: Readonly<Record<string, unknown>>) => (options.view ?? 'race') === 'race';

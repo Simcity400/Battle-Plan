@@ -1,8 +1,11 @@
 //! Equipment-pool header used by the old garrison-alert reader.
 //!
-//! The native container class is unknown. This +0x08 data layout differs from
+//! Required pools are CEquipmentArcheTypePool (RTTI 1427739D0). This +0x08 data layout differs from
 //! CEquipmentVariantPool's +0x20 data layout and must not be interchanged.
 //! Required and allocation pools have distinct entry layouts.
+
+/// CEquipmentArcheTypePool primary vtable, pinned RTTI and 140FF7550.
+pub const VTABLE_RVA: usize = 0x0277_39d0;
 
 /// Garrison equipment-pool data pointer; old read_equipment_pool_bytes reads +0x08.
 pub const DATA: usize = 0x08;

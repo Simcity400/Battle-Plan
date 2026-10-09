@@ -465,3 +465,581 @@ fn idea_history_marks_gaps_in_order_and_to_the_branch_end() {
     assert_eq!(scanned.unobserved, [span(101, 105), span(107, 109)]);
     assert_eq!(scanned.identity_starts, [100, 106]);
 }
+
+#[test]
+fn idea_history_additions_ignore_initial_gaps_and_holder_renames() {
+    let mut renamed = idea_frame(102, &["mod_law", "GER_schacht_idea"]);
+    if let TableView::Complete(TableRows::Characters(rows)) =
+        &mut *renamed.tables[TableId::Characters.index()]
+    {
+        rows[0].token = b"Renamed advisor".to_vec();
+    }
+    let mut replaced = idea_frame(103, &["mod_law", "GER_schacht_idea"]);
+    if let TableView::Complete(TableRows::HiredAdvisors(rows)) =
+        &mut *replaced.tables[TableId::HiredAdvisors.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.country == 9001)
+            .unwrap()
+            .character = 77;
+    }
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                idea_frame(100, &["old_mod_law"]),
+                idea_frame(101, &["mod_law", "GER_schacht_idea"]),
+                renamed,
+                replaced,
+                idea_frame(105, &["after_gap_law", "GER_schacht_idea"]),
+            ],
+        )],
+    )
+    .unwrap();
+    let scanned = super::scan_all(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let country = scanned.country("GER");
+    assert_eq!(
+        super::additions(country)
+            .map(|span| (
+                span.token.as_str(),
+                span.first_hour,
+                span.character.as_ref().map(|holder| holder.id)
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("GER_schacht_idea", 101, Some(7)),
+            ("mod_law", 101, None),
+            ("GER_schacht_idea", 103, Some(77)),
+        ]
+    );
+    assert_eq!(country.identity_starts, [100, 105]);
+    assert_eq!(super::unavailable_additions(country), 2);
+}
+
+#[test]
+fn idea_history_all_country_scan_names_each_span_start() {
+    use replay::rows::{ActiveIdeaRow, CountryAppearanceRow, CountryLinkRow, CountryRow};
+    let make = |hour, changed: bool| {
+        let mut frame = idea_frame(hour, &[]);
+        let countries: Vec<_> = (1..=4)
+            .map(|id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: format!("opaque-{id}").into_bytes(),
+                ..Default::default()
+            })
+            .collect();
+        let links = countries
+            .iter()
+            .map(|row| CountryLinkRow {
+                id: row.id,
+                canonical_slot: row.canonical_slot,
+            })
+            .collect();
+        let ideas = countries
+            .iter()
+            .map(|row| ActiveIdeaRow {
+                country: row.id,
+                ordinal: 0,
+                token: if changed {
+                    b"mod_law_b".to_vec()
+                } else {
+                    b"mod_law_a".to_vec()
+                },
+            })
+            .collect();
+        let appearances = countries
+            .iter()
+            .map(|row| CountryAppearanceRow {
+                country: row.id,
+                cosmetic_tag: if changed {
+                    b"mod_renamed".to_vec()
+                } else {
+                    b"mod_previous".to_vec()
+                },
+                ..Default::default()
+            })
+            .collect();
+        *frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(countries));
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(links));
+        *frame.tables[TableId::ActiveIdeas.index()] =
+            TableView::Complete(TableRows::ActiveIdeas(ideas));
+        *frame.tables[TableId::HiredAdvisors.index()] =
+            TableView::Complete(TableRows::HiredAdvisors(vec![]));
+        *frame.tables[TableId::CountryAppearance.index()] =
+            TableView::Complete(TableRows::CountryAppearance(appearances));
+        frame
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![make(100, false), make(101, true), make(103, false)],
+        )],
+    )
+    .unwrap();
+    let branch = super::scan_all(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(branch.countries.len(), 4);
+    for country in branch.countries.values() {
+        assert_eq!(
+            super::additions(country)
+                .map(|span| (span.token.as_str(), span.first_hour))
+                .collect::<Vec<_>>(),
+            [("mod_law_b", 101)]
+        );
+        assert_eq!(country.span_naming.len(), country.spans.len());
+        assert_eq!(
+            country
+                .spans
+                .iter()
+                .zip(&country.span_naming)
+                .map(|(span, naming)| (
+                    span.first_hour,
+                    naming.look.as_ref().unwrap().cosmetic_tag.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (100, "mod_previous"),
+                (101, "mod_renamed"),
+                (103, "mod_previous")
+            ]
+        );
+        assert_eq!(country.identity_starts, [100, 103]);
+        assert!(country.identity_naming.is_empty());
+        assert_eq!(super::unavailable_additions(country), 1);
+    }
+    let selected =
+        super::scan_selected(&replay, 1, Some("opaque-3"), &AtomicBool::new(false)).unwrap();
+    assert_eq!(selected.countries.len(), 1);
+    let country = selected.country("opaque-3");
+    assert_eq!(country.spans, branch.country("opaque-3").spans);
+    assert_eq!(country.identity_naming.len(), 2);
+    assert!(country.span_naming.is_empty());
+}
+
+#[test]
+fn idea_history_tokenless_advisors_are_counted_and_named() {
+    let make = |hour| {
+        let mut frame = idea_frame(hour, &[]);
+        *frame.tables[TableId::HiredAdvisors.index()] =
+            TableView::Complete(TableRows::HiredAdvisors(vec![
+                replay::rows::HiredAdvisorRow {
+                    country: 9001,
+                    ordinal: 0,
+                    character: 42,
+                    idea: vec![],
+                    slot: b"mod_seat".to_vec(),
+                },
+            ]));
+        frame
+    };
+    let replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![make(100), make(101)])]).unwrap();
+    let topic = super::scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        topic.warnings,
+        ["Some appointed advisors have no recorded idea, so their seats show as empty."]
+    );
+    let branch = super::scan_all(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let scanned = branch.country("GER");
+    assert!(scanned.warnings.is_empty());
+    assert_eq!(
+        branch.refusals,
+        [(
+            "Appointed advisors have no recorded idea token, so cannot be named.".into(),
+            1,
+        )]
+    );
+    assert!(scanned.spans.is_empty());
+}
+
+#[test]
+fn idea_feed_counts_malformed_rows_once_and_keeps_valid_additions() {
+    use replay::rows::{ActiveIdeaRow, CountryLinkRow, CountryRow, HiredAdvisorRow};
+    let mut malformed = idea_frame(101, &["mod_known_law"]);
+    if let TableView::Complete(TableRows::ActiveIdeas(rows)) =
+        &mut *malformed.tables[TableId::ActiveIdeas.index()]
+    {
+        rows.extend([
+            ActiveIdeaRow {
+                country: 777,
+                ordinal: 0,
+                token: b"unresolved_idea".to_vec(),
+            },
+            ActiveIdeaRow {
+                country: 778,
+                ordinal: 0,
+                token: b"orphan_idea".to_vec(),
+            },
+            ActiveIdeaRow {
+                country: 9001,
+                ordinal: 1,
+                token: vec![0xff],
+            },
+        ]);
+        rows.sort_by_key(|row| (row.country, row.ordinal));
+    }
+    if let TableView::Complete(TableRows::HiredAdvisors(rows)) =
+        &mut *malformed.tables[TableId::HiredAdvisors.index()]
+    {
+        rows.extend([
+            HiredAdvisorRow {
+                country: 9004,
+                ordinal: 0,
+                character: 54,
+                idea: b"unresolved_holder".to_vec(),
+                slot: b"seat_c".to_vec(),
+            },
+            HiredAdvisorRow {
+                country: 777,
+                ordinal: 0,
+                character: 55,
+                idea: b"unresolved_advisor".to_vec(),
+                slot: b"seat_a".to_vec(),
+            },
+            HiredAdvisorRow {
+                country: 777,
+                ordinal: 1,
+                character: 56,
+                idea: b"unresolved_advisor".to_vec(),
+                slot: b"seat_b".to_vec(),
+            },
+            HiredAdvisorRow {
+                country: 9001,
+                ordinal: 0,
+                character: 57,
+                idea: vec![0xfe],
+                slot: b"valid_seat".to_vec(),
+            },
+            HiredAdvisorRow {
+                country: 9001,
+                ordinal: 1,
+                character: 58,
+                idea: b"bad_seat_idea".to_vec(),
+                slot: vec![0xff],
+            },
+        ]);
+        rows.sort_by_key(|row| (row.country, row.ordinal));
+    }
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *malformed.tables[TableId::Countries.index()]
+    {
+        rows.extend([9002, 9003].map(|id| CountryRow {
+            id,
+            canonical_slot: id,
+            tag: vec![0xff],
+            ..Default::default()
+        }));
+        rows.push(CountryRow {
+            id: 9004,
+            canonical_slot: 44,
+            tag: b"mod_unresolved".to_vec(),
+            ..Default::default()
+        });
+        rows.sort_by_key(|row| row.id);
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *malformed.tables[TableId::CountryLinks.index()]
+    {
+        rows.extend([9002, 9003].map(|id| CountryLinkRow {
+            id,
+            canonical_slot: id,
+        }));
+        rows.extend([
+            CountryLinkRow {
+                id: 778,
+                canonical_slot: 7777,
+            },
+            CountryLinkRow {
+                id: 9004,
+                canonical_slot: 55,
+            },
+        ]);
+        rows.sort_by_key(|row| row.id);
+    }
+    let mut unchanged = malformed.clone();
+    unchanged.hour = 102;
+    let mut unrelated = malformed.clone();
+    unrelated.hour = 103;
+    *unrelated.tables[TableId::Characters.index()] =
+        TableView::Complete(TableRows::Characters(vec![]));
+    let mut renamed = unrelated.clone();
+    renamed.hour = 104;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *renamed.tables[TableId::Countries.index()]
+    {
+        rows.iter_mut().find(|row| row.id == 9001).unwrap().tag = b"RENAMED".to_vec();
+    }
+    let mut renamed_unrelated = renamed.clone();
+    renamed_unrelated.hour = 105;
+    *renamed_unrelated.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![]));
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                idea_frame(100, &[]),
+                malformed,
+                unchanged,
+                unrelated,
+                renamed,
+                renamed_unrelated,
+            ],
+        )],
+    )
+    .unwrap();
+    let feed = super::scan_all(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(feed.refusals, [
+        ("ActiveIdeas owner has no resolved Countries holder; holding cannot be attributed.".into(), 1),
+        ("ActiveIdeas owner is unresolved through CountryLinks; holding cannot be attributed.".into(), 1),
+        ("Countries tag is not UTF-8; idea holder cannot be identified.".into(), 2),
+        ("Held idea token is not UTF-8; holding cannot be identified.".into(), 2),
+        ("HiredAdvisors owner has no resolved Countries holder; appointment cannot be attributed.".into(), 1),
+        ("HiredAdvisors owner is unresolved through CountryLinks; appointment cannot be attributed.".into(), 2),
+        ("HiredAdvisors seat is not UTF-8; appointment cannot be identified.".into(), 1),
+    ]);
+    let topic = super::scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    for reason in [
+        "Held idea token is not UTF-8; holding cannot be identified. (count: 2)",
+        "HiredAdvisors seat is not UTF-8; appointment cannot be identified. (count: 1)",
+    ] {
+        assert!(
+            topic.warnings.iter().any(|warning| warning == reason),
+            "{:?}",
+            topic.warnings
+        );
+    }
+    let known = feed.country("GER");
+    assert_eq!(
+        super::additions(known)
+            .map(|span| (&*span.token, span.first_hour, span.last_hour))
+            .collect::<Vec<_>>(),
+        [("mod_known_law", 101, 103)]
+    );
+    assert!(super::additions(feed.country("RENAMED")).next().is_none());
+    assert_eq!(
+        feed.country("mod_unresolved").unobserved,
+        [crate::products::country_groups::HourSpan {
+            first_hour: 101,
+            last_hour: 105
+        }]
+    );
+    let topic = super::scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    assert_eq!(topic.spans, known.spans);
+}
+
+#[test]
+fn idea_history_feed_preserves_each_unchanged_unresolved_hour_before_additions() {
+    let mut unresolved = idea_frame(101, &["mod_old_law"]);
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *unresolved.tables[TableId::CountryLinks.index()]
+    {
+        rows.retain(|row| row.id != 9001);
+    }
+    let mut unchanged = unresolved.clone();
+    unchanged.hour = 102;
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                idea_frame(100, &["mod_old_law"]),
+                unresolved,
+                unchanged,
+                idea_frame(103, &["mod_new_law"]),
+            ],
+        )],
+    )
+    .unwrap();
+    let feed = super::scan_all(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let country = feed.country("GER");
+    assert_eq!(
+        country.unobserved,
+        [crate::products::country_groups::HourSpan {
+            first_hour: 101,
+            last_hour: 102
+        }]
+    );
+    assert_eq!(super::additions(country).count(), 0);
+    assert_eq!(super::unavailable_additions(country), 1);
+}
+
+#[test]
+fn idea_history_effect_keys_include_shared_effect_and_text_sources_once() {
+    let content = installed_content::ideas::IdeaContent::default();
+    let characters = installed_content::characters::Characters::default();
+    let traits = installed_content::leader_traits::LeaderTraits::default();
+    let joined = super::Joined {
+        ideas: &content,
+        characters: &characters,
+        traits: &traits,
+        localise: &|_, _| None,
+    };
+    let (mut idea, _) = super::prepare_info(&joined, "mod_idea", None, Err("no holder"), false);
+    let line = |key: &str| super::EffectLine {
+        key: key.into(),
+        fixed5: "1".into(),
+        hidden: false,
+    };
+    let group = |target: &str| super::EffectGroup {
+        target: Some(target.into()),
+        instant: false,
+        lines: vec![line("shared")],
+        tooltips: vec!["target_tooltip".into()],
+    };
+    idea.effects = vec![line("shared")];
+    idea.targeted = vec![group("mod_tag")];
+    idea.equipment = vec![group("mod_equipment")];
+    idea.research = vec![line("mod_research_category")];
+    idea.tooltips = vec!["idea_tooltip".into()];
+    idea.traits = vec![super::TraitEffects {
+        token: "mod_trait".into(),
+        known: true,
+        unknown: None,
+        name: None,
+        lines: vec![line("trait_modifier")],
+        targeted: vec![],
+        equipment: vec![group("mod_trait_equipment")],
+        tooltips: vec!["trait_tooltip".into()],
+    }];
+    let (modifiers, texts) = super::effect_keys([&idea, &idea]);
+    assert_eq!(
+        modifiers.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["shared", "trait_modifier"]
+    );
+    assert_eq!(
+        texts.iter().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "NO",
+            "YES",
+            "idea_tooltip",
+            "mod_equipment",
+            "mod_research_category_research",
+            "mod_trait_equipment",
+            "target_tooltip",
+            "trait_tooltip"
+        ]
+    );
+}
+
+#[test]
+fn idea_history_additions_after_incomplete_read_are_counted_not_invented() {
+    let mut incomplete = idea_frame(101, &["old_mod_law"]);
+    *incomplete.tables[TableId::ActiveIdeas.index()] = TableView::Unavailable {
+        reason: "synthetic incomplete idea read".into(),
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                idea_frame(100, &["old_mod_law"]),
+                incomplete,
+                idea_frame(102, &["new_mod_law", "GER_schacht_idea"]),
+            ],
+        )],
+    )
+    .unwrap();
+    let branch = super::scan_all(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let country = branch.country("GER");
+    assert_eq!(super::additions(country).count(), 0);
+    assert_eq!(super::unavailable_additions(country), 2);
+    assert_eq!(country.gap_starts, [102]);
+}
+
+#[test]
+fn idea_history_feed_names_additions_only_at_their_span_start() {
+    let make = |hour, ideas: &[&str], cosmetic: &[u8]| {
+        let mut frame = idea_frame(hour, ideas);
+        *frame.tables[TableId::CountryAppearance.index()] =
+            TableView::Complete(TableRows::CountryAppearance(vec![
+                replay::rows::CountryAppearanceRow {
+                    country: 9001,
+                    cosmetic_tag: cosmetic.to_vec(),
+                    ..Default::default()
+                },
+            ]));
+        *frame.tables[TableId::WarRelations.index()] = TableView::Unavailable {
+            reason: format!("unneeded naming input changed at hour {hour}"),
+        };
+        frame
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                make(100, &[], b"mod_initial"),
+                make(101, &["mod_law_a"], b"mod_before"),
+                make(102, &["mod_law_a"], b"mod_renamed"),
+                make(103, &["mod_law_a", "mod_law_b"], b"mod_renamed"),
+                make(104, &["mod_law_a", "mod_law_b"], &[0xff]),
+            ],
+        )],
+    )
+    .unwrap();
+    let branch = super::scan_all(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let country = branch.country("GER");
+    assert_eq!(country.spans.len(), 2);
+    assert_eq!(country.span_naming.len(), 2);
+    assert_eq!(
+        super::named_additions(country)
+            .map(|(span, naming)| (
+                span.token.as_str(),
+                span.first_hour,
+                span.last_hour,
+                naming.unwrap().look.as_ref().unwrap().cosmetic_tag.as_str(),
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("mod_law_a", 101, 104, "mod_before"),
+            ("mod_law_b", 103, 104, "mod_renamed"),
+        ]
+    );
+    let topic = super::scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    assert_eq!(topic.spans, country.spans);
+    assert!(topic.span_naming.is_empty());
+    assert_eq!(topic.identity_naming.len(), 1);
+    assert_eq!(
+        topic.identity_naming[0].look.as_ref().unwrap().cosmetic_tag,
+        "mod_initial"
+    );
+}
+
+#[test]
+fn indexed_idea_naming_preserves_independent_positive_empty_original_and_refusal() {
+    use super::NamingCountry;
+    use replay::rows::{Recorded, tables};
+    let mut frame = crate::scope::tests::positive_frame();
+    for original in [Recorded::Value(Some(Vec::new())), Recorded::Value(None)] {
+        let TableView::Complete(TableRows::CountryAppearance(rows)) =
+            &mut *frame.tables[TableId::CountryAppearance.index()]
+        else {
+            panic!("appearance");
+        };
+        rows[0].original_tag_reference = Recorded::Value(Some(300));
+        rows[0].original_tag = original;
+        // Static generator gating cannot witness this independently recorded getter.
+        rows[0].name_tag.clear();
+        rows[0].cosmetic_tag = b"MOD_cosmetic".to_vec();
+        let country = &frame.complete::<tables::Countries>().unwrap()[0];
+        let appearance = &frame.complete::<tables::CountryAppearance>().unwrap()[0];
+        let naming = NamingCountry::read_with_appearance(&frame, country, Some(appearance));
+        assert_eq!(naming, NamingCountry::read(&frame, country));
+        let look = naming.look.unwrap();
+        assert_eq!(look.cosmetic_tag, "MOD_cosmetic");
+        if matches!(appearance.original_tag, Recorded::Value(Some(_))) {
+            assert_eq!(look.original_or_own_tag, Ok(String::new()));
+        } else {
+            assert!(
+                look.original_or_own_tag
+                    .unwrap_err()
+                    .contains("capture refused")
+            );
+        }
+    }
+}

@@ -178,7 +178,7 @@ fn need_is_derived_only_where_the_available_stock_is_the_recorded_stock() {
     assert_eq!(note("mechanized_equipment"), None);
     for key in ["motorized_equipment", "train_equipment"] {
         let refusal = note(key).unwrap();
-        assert!(refusal.contains("daily balance"));
+        assert!(refusal.contains("same balance write"));
         assert!(!refusal.contains("recording lacks"));
     }
     assert!(note("convoy").unwrap().contains("convoy"));
@@ -211,6 +211,7 @@ fn logistics_frame(hour: i32, read: bool, rows: Option<&[(u32, u32, i64, i64)]>)
                         token,
                         balance_raw,
                         stock_raw,
+                        available_raw: replay::rows::Recorded::Value(None),
                     },
                 )
                 .collect(),
@@ -518,8 +519,7 @@ fn the_stockpile_replies_without_content_by_variant_and_says_when_it_has_no_logi
     )
     .unwrap();
     assert_eq!(reply.decimals, 5);
-    // Without content no type is resolved; the variants keep their tokens, and a
-    // variant with its own name is named without localisation.
+    // Without content, variant tokens and stocks survive; cached names need language context.
     assert!(reply.types.is_empty());
     assert_eq!(
         reply
@@ -534,8 +534,14 @@ fn the_stockpile_replies_without_content_by_variant_and_says_when_it_has_no_logi
             .collect::<Vec<_>>(),
         [
             ("10", "infantry_equipment_1", true, None),
-            ("20", "infantry_equipment_1", true, Some("Gewehr 43"))
+            ("20", "infantry_equipment_1", true, None)
         ]
+    );
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("Equipment names and types are unavailable:"))
     );
     assert_eq!(reply.variants[0].stock[0].last_hour, slot + 1);
     assert_eq!(
@@ -553,4 +559,41 @@ fn the_stockpile_replies_without_content_by_variant_and_says_when_it_has_no_logi
         "{:?}",
         reply.warnings
     );
+}
+
+#[test]
+fn observed_available_is_carried_with_the_balance_and_never_backfilled() {
+    let day = 1000 * replay::cadence::STAGGER_PERIOD;
+    let mut first = logistics_frame(day, true, Some(&[(11, 1, -19, 7)]));
+    if let TableView::Complete(TableRows::LogisticsEquipment(rows)) =
+        &mut *first.tables[TableId::LogisticsEquipment.index()]
+    {
+        rows[0].available_raw = replay::rows::Recorded::Value(Some(0));
+    }
+    let mut next = logistics_frame(day + 2, true, Some(&[(11, 1, -19, 7)]));
+    if let TableView::Complete(TableRows::LogisticsEquipment(rows)) =
+        &mut *next.tables[TableId::LogisticsEquipment.index()]
+    {
+        rows[0].available_raw = replay::rows::Recorded::Value(None);
+    }
+    let replay = replay(vec![
+        first,
+        logistics_frame(day + 1, false, Some(&[])),
+        next,
+    ]);
+    let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
+    let runs = &scanned.available.runs[&1];
+    assert_eq!(
+        (
+            runs[0].first_hour,
+            runs[0].last_hour,
+            runs[0].amount_raw.as_deref()
+        ),
+        (day, day + 1, Some("0"))
+    );
+    assert_eq!(
+        (runs[1].first_hour, runs[1].amount_raw.as_deref()),
+        (day + 2, None)
+    );
+    assert_eq!(scanned.missing_available, 1);
 }

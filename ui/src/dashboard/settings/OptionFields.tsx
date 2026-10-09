@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChipSet } from '../../components/ChipSet';
+import ContentSetPicker from '../../components/ContentSetPicker';
 import { Segmented } from '../../components/Segmented';
 import { contentSet, storableToken, toggleContentSet, UNSTORABLE, validOption } from '../options';
 import type { OptionField, OptionValue } from '../options';
@@ -42,14 +43,15 @@ function OptionRow({ field, value, choices, onChange }: {
       return <label className="setting-row">{caption}
         <select value={String(value)} onChange={event => onChange(event.currentTarget.value)}>
           <option value="">{field.automatic}</option>
-          {/* A choice whose token cannot be stored says why instead of doing nothing when picked. */}
-          {[...listed, ...kept].map(choice => storableToken(choice.value)
-            ? <option key={choice.value} value={choice.value}>{choice.label}</option>
-            : <option key={choice.value} value={choice.value} disabled title={UNSTORABLE}>{`${choice.label} (cannot be saved)`}</option>)}
+          {[...listed, ...kept].map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
         </select></label>;
     }
     case 'content-set': {
       const chosen = contentSet(value);
+      if (field.catalogue) return <div className="setting-row setting-row-stacked">{caption}
+        <ContentSetPicker label={field.label} automatic={field.automatic} choices={choices ?? []} selected={chosen}
+          onReset={() => onChange('')} onToggle={token => { const next = toggleContentSet(value, token, Number.MAX_SAFE_INTEGER); if (next !== null) onChange(next); }} />
+      </div>;
       // Saved tokens this campaign lacks stay listed, so opening the panel never changes them.
       const listed = choices ?? [];
       const kept = chosen.filter(token => !listed.some(choice => choice.value === token)).map(token => ({ value: token, label: `${token} (not in this campaign)` }));

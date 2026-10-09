@@ -30,7 +30,8 @@ export function validateAgencyComparisonReply(data: unknown): AgencyComparisonRe
     || !Array.isArray(data.operativeReadHours) || !data.operativeReadHours.every((hour, index, reads) => int(hour) && (!index || reads[index - 1] < hour))
     || !Array.isArray(data.series) || !data.series.every(series => object(series) && typeof series.tag === 'string' && series.tag.length > 0
       && isOrderedSpans(series.segments) && (series.membership === null || isOrderedSpans(series.membership)) && isOrderedSpans(series.entries)
-      && isOrderedSpans(series.rosters) && series.rosters.every(roster => unsigned32(roster.count))
+      && isOrderedSpans(series.rosters) && series.rosters.every(roster => unsigned32(roster.count)
+        && int(roster.readHour) && roster.readHour <= roster.firstHour)
       && series.entries.every(entry => int(entry.readHour) && entry.readHour <= entry.firstHour && value(entry.value, entry.firstHour)))
     || new Set(data.series.map(series => series.tag)).size !== data.series.length
     || !Array.isArray(data.warnings) || !data.warnings.every(warning => typeof warning === 'string')) {
@@ -41,7 +42,7 @@ export function validateAgencyComparisonReply(data: unknown): AgencyComparisonRe
   for (const series of reply.series) {
     if (!spansCovered(series.entries, reply.observed)) throw new Error('The agency comparison reply crosses unobserved hours.');
     if (!spansCovered(series.entries, series.segments) || !spansCovered(series.rosters, series.segments)
-      || series.rosters.some(roster => !rosterReads.has(roster.firstHour))) throw new Error('The agency comparison reply has an undated or unresolved roster.');
+      || series.rosters.some(roster => !rosterReads.has(roster.readHour))) throw new Error('The agency comparison reply has an undated or unresolved roster.');
     for (const entry of series.entries) for (const item of entry.value.upgrades.items) {
       const original = item.icon;
       item.icon = drawableIcon(original);
@@ -59,7 +60,8 @@ export function agencyRequestParams(branchId: string, selection: CountrySelectio
   const countries = worldRequestTags(selection, fallback, groups, lastHour);
   if (!countries.ready) return null;
   const count = selection.kind === 'group' && selection.group.type === 'top' ? selection.group.count : null;
-  return { branchId, tags: countries.tags, includeUncreated, top: count === null ? null : { count, field } };
+  const tags = selection.kind === 'tags' ? selection.tags : selection.kind === 'selected' ? fallback : countries.tags;
+  return { branchId, tags, includeUncreated, top: count === null ? null : { count, field } };
 }
 /** Hourly agency scalars are independently read at every hour in an entry. Missing
  * rows stay absent, even where another country's entry or a prior value exists. */

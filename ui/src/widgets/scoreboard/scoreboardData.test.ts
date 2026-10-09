@@ -22,6 +22,52 @@ const DEFAULT_COLUMNS = ['factories', 'armySize'] as const;
 const TEST_SORT = { column: 'factories', direction: 'descending' } as const;
 const reply = (rows: ScoreboardSeries[]): ScoreboardReply => ({ branchId: 'branch', defaultColumns: [...DEFAULT_COLUMNS], defaultSort: 'factories', columns: registry, series: rows, warnings: [] });
 
+test('signed wide casualty subtotals retain exact sorting, known-attacker meaning and their supplying read', () => {
+  const casualty = { ...factories, key: 'casualtiesTaken' as const, label: 'Casualties taken',
+    note: 'Losses with no recorded attacker are excluded.' };
+  const wide = (1n << 80n) + 1n;
+  const entry = series('opaque', 1, (-wide).toString(), (-wide).toString(), 10, 35);
+  entry.columns[0].key = casualty.key;
+  entry.columns[0].runs.forEach(run => { run.atLeast = true; });
+  entry.columns[0].readRuns = [{ firstHour: 10, lastHour: 33, readHour: 10, hourly: false },
+    { firstHour: 35, lastHour: 35, readHour: 35, hourly: false }];
+  const model = scoreboardModel(validateScoreboardReply({ ...reply([entry]), columns: [...registry, casualty] }));
+  const row = scoreboardRows(model, model.tags, 33, casualty.key, 'descending')[0];
+  assert.deepEqual(row.cells.get(casualty.key), { amount: -wide, readHour: 10, atLeast: true });
+  const tooltip = scoreboardTooltip(row, [casualty], 'Dated name');
+  assert.equal(tooltip.rows[0].value, formatCell(casualty, -wide, true));
+  assert.equal(tooltip.rows[0].value, '† −1,208,925,819,614,629,174,706,177');
+  assert.ok(tooltip.rows.some(note => note.label.startsWith('Read ')));
+  assert.ok(tooltip.rows.some(note => note.label.includes('Recorded subtotal (†)')));
+  assert.ok(tooltip.rows.some(note => note.label.includes('negative corrections')));
+  assert.ok(tooltip.rows.some(note => note.label.includes('attacker are excluded')));
+  const second = series('adjacent signed amount', 2, (-wide + 1n).toString(), (-wide + 1n).toString(), 10, 35);
+  second.columns[0].key = casualty.key;
+  const compared = scoreboardModel(validateScoreboardReply({ ...reply([entry, second]), columns: [...registry, casualty] }));
+  assert.deepEqual(scoreboardRows(compared, compared.tags, 35, casualty.key, 'descending').map(row => row.tag),
+    ['adjacent signed amount', 'opaque']);
+  assert.equal(formatCell(casualty, wide), '1,208,925,819,614,629,174,706,177');
+  assert.equal(formatCell(casualty, wide, true), '† 1,208,925,819,614,629,174,706,177');
+  const gap = scoreboardRows(model, model.tags, 34, casualty.key, 'descending')[0];
+  assert.equal(gap.cells.get(casualty.key)?.amount, null);
+  assert.equal(gap.cells.get(casualty.key)?.atLeast, false);
+  assert.equal(formatCell(casualty, null, true), '—');
+});
+
+test('Scoreboard accepts the signed 128-bit endpoints and refuses values beyond them', () => {
+  for (const exact of [-(1n << 127n), (1n << 127n) - 1n]) {
+    const data = reply([series('opaque', 1, exact.toString())]);
+    const model = scoreboardModel(validateScoreboardReply(data));
+    assert.equal(scoreboardRows(model, model.tags, 10, 'factories', 'descending')[0].cells.get('factories')?.amount, exact);
+  }
+  for (const invalid of [-(1n << 127n) - 1n, 1n << 127n]) {
+    assert.throws(() => validateScoreboardReply(reply([series('opaque', 1, invalid.toString())])), /values/);
+  }
+  const invalid = reply([series('opaque', 1, '1')]);
+  (invalid.series[0].columns[0].runs[0] as unknown as { atLeast: unknown }).atLeast = 'yes';
+  assert.throws(() => validateScoreboardReply(invalid), /values/);
+});
+
 test('Scoreboard follows playback and uses the registry defaults with top ten', () => {
   assert.equal(definition.history, false);
   assert.equal(definition.defaultTime, 'follow');

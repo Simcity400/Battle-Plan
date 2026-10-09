@@ -1,3 +1,4 @@
+mod metrics;
 mod movement_oracle;
 mod oracle;
 mod recording;

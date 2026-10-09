@@ -20,7 +20,8 @@ export function validateScoreboardReply(value: unknown): ScoreboardReply {
   for (const column of value.columns) {
     if (!object(column) || typeof column.key !== 'string' || keys.has(column.key) || typeof column.label !== 'string'
       || typeof column.unit !== 'string' || !int(column.decimals) || column.decimals < 0 || column.decimals > 18
-      || typeof column.available !== 'boolean' || !(column.reason === null || typeof column.reason === 'string')) throw new Error('Invalid Scoreboard column.');
+      || typeof column.available !== 'boolean' || !(column.reason === null || typeof column.reason === 'string')
+      || !(column.note === undefined || typeof column.note === 'string')) throw new Error('Invalid Scoreboard column.');
     keys.add(column.key);
   }
   if (!Array.isArray(value.defaultColumns) || !value.defaultColumns.every(key => typeof key === 'string' && keys.has(key))
@@ -38,7 +39,9 @@ export function validateScoreboardReply(value: unknown): ScoreboardReply {
       if (!object(column) || typeof column.key !== 'string' || !keys.has(column.key) || present.has(column.key)
         || !isOrderedSpans(column.runs) || !isOrderedSpans(column.readRuns)
         || !spansCovered(column.runs, series.segments) || !spansCovered(column.readRuns, series.segments)
-        || !column.runs.every(run => (run.amount === null || (typeof run.amount === 'string' && /^-?\d+$/.test(run.amount))) && typeof run.startsSegment === 'boolean')
+        || !column.runs.every(run => (run.amount === null || (typeof run.amount === 'string' && /^-?\d{1,39}$/.test(run.amount)
+          && BigInt(run.amount) >= -(1n << 127n) && BigInt(run.amount) < (1n << 127n))) && typeof run.startsSegment === 'boolean'
+          && (run.atLeast === undefined || typeof run.atLeast === 'boolean'))
         || !column.readRuns.every(read => int(read.readHour) && read.readHour <= read.firstHour && typeof read.hourly === 'boolean'
           && (!read.hourly || read.readHour === read.firstHour))) throw new Error('Invalid Scoreboard values.');
       present.add(column.key);
@@ -47,7 +50,7 @@ export function validateScoreboardReply(value: unknown): ScoreboardReply {
   return value as unknown as ScoreboardReply;
 }
 
-export interface ScoreboardCell { amount: bigint | null; readHour: number | null }
+export interface ScoreboardCell { amount: bigint | null; readHour: number | null; atLeast: boolean }
 export interface ScoreboardRow { key: string; tag: string; hour: number; cells: ReadonlyMap<string, ScoreboardCell> }
 export function scoreboardModel(reply: ScoreboardReply) {
   return {
@@ -102,7 +105,7 @@ export function scoreboardRows(model: ScoreboardModel, tags: readonly string[], 
     for (const [key, column] of series.columns) {
       const run = runAt(column.runs, hour);
       const readHour = readRunAt(column.readRuns, hour);
-      cells.set(key, { amount: readHour === null ? null : run?.amount ?? null, readHour });
+      cells.set(key, { amount: readHour === null ? null : run?.amount ?? null, readHour, atLeast: readHour !== null && run?.atLeast === true });
     }
     rows.push({ key: countryIdentityKey(identity), tag, hour, cells });
   }
@@ -110,10 +113,10 @@ export function scoreboardRows(model: ScoreboardModel, tags: readonly string[], 
   return top == null ? ordered : ordered.slice(0, top);
 }
 
-export function formatCell(column: ScoreboardColumn, amount: bigint | null): string {
+export function formatCell(column: ScoreboardColumn, amount: bigint | null, atLeast = false): string {
   if (amount === null) return '—';
   const percent = column.unit === 'percent';
-  return `${formatAmount(percent ? amount * 100n : amount, column.decimals, column.decimals)}${percent ? '%' : ''}`;
+  return `${atLeast ? '† ' : ''}${formatAmount(percent ? amount * 100n : amount, column.decimals, column.decimals)}${percent ? '%' : ''}`;
 }
 
 export function scoreboardTooltip(row: ScoreboardRow, columns: readonly ScoreboardColumn[], name: string) {
@@ -121,11 +124,13 @@ export function scoreboardTooltip(row: ScoreboardRow, columns: readonly Scoreboa
     title: name, subtitle: formatDateTime(row.hour),
     rows: columns.flatMap(column => {
       const cell = row.cells.get(column.key);
-      const value = formatCell(column, cell?.amount ?? null);
+      const value = formatCell(column, cell?.amount ?? null, cell?.atLeast);
       const note = !column.available ? column.reason ?? 'Not available yet'
         : cell?.amount === null || !cell ? cell?.readHour == null ? 'Not recorded at this hour' : 'Not known from this recording at this hour'
           : readNote(cell.readHour, row.hour, `${column.label} follows its recorded read cadence.`);
-      return [{ label: column.label, value }, ...(note ? [{ label: note, tone: 'muted' as const }] : [])];
+      return [{ label: column.label, value }, ...(note ? [{ label: note, tone: 'muted' as const }] : []),
+        ...(cell?.amount != null && cell.atLeast ? [{ label: 'Recorded subtotal (†): sorting uses this recorded amount. Missing history may omit positive losses or negative corrections.', tone: 'muted' as const }] : []),
+        ...(column.note ? [{ label: column.note, tone: 'muted' as const }] : [])];
     }),
   };
 }

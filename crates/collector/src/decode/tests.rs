@@ -2154,6 +2154,7 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         force_full: true,
         limits: [1024, 8192, 4096],
         naval_limit: 4096,
+        game_score: false,
     };
     let mut first = acquire_air_wing_job();
     let report = crate::extended::air::copy_air_refresh(&memory, ctx, &mut first);
@@ -2427,6 +2428,7 @@ fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
         force_full: true,
         limits: [1024, 8192, 4096],
         naval_limit: 4096,
+        game_score: false,
     };
     let air_report = crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job);
     assert!(
@@ -2733,6 +2735,7 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
         force_full: true,
         limits: [1024, 8192, 4096],
         naval_limit: 4096,
+        game_score: false,
     };
     let mut air_job = acquire_air_wing_job();
     let air_report = crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job);

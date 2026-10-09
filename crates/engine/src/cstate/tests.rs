@@ -1012,3 +1012,82 @@ fn state_census_and_flags_keep_primary_read_order_without_terminal_rereads() {
     }
     assert_eq!(*memory.reads.borrow(), expected);
 }
+
+#[test]
+fn continent_capture_keeps_cached_identity_null_and_independent_failure() {
+    const DATABASE_GLOBAL: usize = 0x0331_6ca0;
+    struct ContinentMemory<'a>(&'a [u8]);
+    impl Memory for ContinentMemory<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == DATABASE_GLOBAL && output.len() == 8 {
+                output.copy_from_slice(&0x2000_u64.to_le_bytes());
+                true
+            } else {
+                SliceMemory {
+                    base: 0,
+                    bytes: self.0,
+                }
+                .copy(address, output)
+            }
+        }
+    }
+    let mut bytes = vec![0; 0x6200];
+    let mut put = |address: usize, data: &[u8]| {
+        bytes[address..address + data.len()].copy_from_slice(data);
+    };
+    let (game, database, state_array, continents, state, template, null, continent) = (
+        0x1000, 0x2000, 0x3000, 0x3100, 0x4000, 0x5000, 0x6000, 0x6100,
+    );
+    put(database, &0x0292_cf10_u64.to_le_bytes());
+    for (at, array, count) in [
+        (game + cgame_state::STATES, state_array, 2_u32),
+        (database + 0x58, continents, 2_u32),
+    ] {
+        put(at, &(array as u64).to_le_bytes());
+        put(at + 8, &count.to_le_bytes());
+        put(at + 12, &count.to_le_bytes());
+    }
+    put(state_array + 8, &(state as u64).to_le_bytes());
+    put(state + TEMPLATE, &(template as u64).to_le_bytes());
+    put(
+        template,
+        &(crate::cstate_template::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(
+        template + crate::cstate_template::CONTINENT,
+        &(continent as u64).to_le_bytes(),
+    );
+    put(continents, &(null as u64).to_le_bytes());
+    put(continents + 8, &(continent as u64).to_le_bytes());
+    put(continent + 0x28, &[1]);
+    put(continent + 0x2c, &991_u32.to_le_bytes());
+    put(continent + 0x30, &1_u32.to_le_bytes());
+    let mut rows = [Row {
+        id: 1,
+        owner: 123,
+        ..Default::default()
+    }];
+    let read_rows = |bytes: &[u8], rows: &mut [Row]| {
+        read_continents(
+            &ContinentMemory(bytes),
+            0,
+            game,
+            Outcome::Rows { len: 1 },
+            rows,
+        )
+    };
+    read_rows(&bytes, &mut rows);
+    assert_eq!(rows[0].continent, Some(991));
+    // No province list is consulted or recomputed.
+    bytes[template + crate::cstate_template::CONTINENT
+        ..template + crate::cstate_template::CONTINENT + 8]
+        .copy_from_slice(&(null as u64).to_le_bytes());
+    read_rows(&bytes, &mut rows);
+    assert_eq!(rows[0].continent, Some(0));
+    bytes[template + crate::cstate_template::CONTINENT
+        ..template + crate::cstate_template::CONTINENT + 8]
+        .copy_from_slice(&0_u64.to_le_bytes());
+    read_rows(&bytes, &mut rows);
+    assert_eq!(rows[0].continent, None);
+    assert_eq!(rows[0].owner, 123);
+}

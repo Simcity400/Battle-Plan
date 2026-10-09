@@ -239,6 +239,18 @@ fn owned_state_builtin_and_scoped_predicate_use_recorded_operands() {
                 ..Default::default()
             },
         ]));
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.country == 100)
+            .unwrap()
+            .owned_states = Recorded::NotRecorded;
+        rows.iter_mut()
+            .find(|row| row.country == 103)
+            .unwrap()
+            .owned_states = Recorded::Value(Some(vec![7, 8]));
+    }
     with_world(&f, "", Err("none"), |world| {
         let evaluator = Evaluator::new(world, None).with_event_scopes(graph());
         let caller = evaluator.event_scopes(0).unwrap();
@@ -573,6 +585,248 @@ fn ability_country_leader_copies_keep_both_masks_and_getter_priorities() {
                 .decided()
                 .unwrap_err();
             assert!(why.contains("more than one UnitLeaders row"), "{why}");
+        }
+    });
+}
+
+#[test]
+fn controlled_state_roster_keeps_native_order_and_wrapping_count() {
+    use replay::rows::{ProvinceRow, Recorded, StateRow};
+    let mut f = frame(&countries(), &[]);
+    *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![
+        StateRow {
+            id: 7,
+            owner: 100,
+            controller: 103,
+            ..Default::default()
+        },
+        StateRow {
+            id: 8,
+            owner: 100,
+            controller: 103,
+            ..Default::default()
+        },
+        StateRow {
+            id: 9,
+            owner: 100,
+            controller: 103,
+            ..Default::default()
+        },
+    ]));
+    *f.tables[TableId::Provinces.index()] = TableView::Complete(TableRows::Provinces(vec![
+        ProvinceRow {
+            id: 1,
+            state: 7,
+            ..Default::default()
+        },
+        ProvinceRow {
+            id: 2,
+            state: 8,
+            ..Default::default()
+        },
+    ]));
+    let TableView::Complete(TableRows::CountryCounterInputs(counters)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    else {
+        unreachable!()
+    };
+    counters
+        .iter_mut()
+        .find(|row| row.country == 103)
+        .unwrap()
+        .controlled_states = Recorded::Value(Some(vec![8, 7]));
+    counters
+        .iter_mut()
+        .find(|row| row.country == 100)
+        .unwrap()
+        .controlled_states = Recorded::Value(Some(vec![]));
+    with_world(&f, "", Err("none"), |world| {
+        let evaluator = Evaluator::new(world, None).with_event_scopes(graph());
+        let caller = evaluator.event_scopes(0).unwrap();
+        for (body, expected) in [
+            ("state=8", true),
+            ("state=9", false),
+            ("count=2 always=yes", true),
+            ("count=4294967296 always=no", true),
+            ("count=-2147483648 always=yes", false),
+            ("count=-2147483648 always=no", true),
+        ] {
+            assert_eq!(
+                evaluator
+                    .evaluate(
+                        &items(&format!(
+                            "FROM.FROM={{ any_controlled_state={{ {body} }} }}"
+                        )),
+                        caller
+                    )
+                    .decided(),
+                Ok(expected)
+            );
+        }
+        assert_eq!(
+            evaluator.evaluate(&items("any_controlled_state={count=0 always=yes}"), caller),
+            Eval::False
+        );
+        assert_eq!(
+            evaluator.evaluate(
+                &items("FROM.FROM={any_controlled_state={set_temp_variable={seen=THIS}}}"),
+                caller
+            ),
+            Eval::True
+        );
+        assert_eq!(evaluator.scoped_state(b"seen", caller), Ok(8));
+        assert!(evaluator.evaluate(&items("FROM.FROM={any_controlled_state={count=-2147483648 is_on_continent=mod_continent}}"), caller).decided().is_err());
+    });
+}
+
+#[test]
+fn native_scopes_precede_an_unavailable_scripted_catalogue() {
+    let f = frame(&countries(), &[]);
+    let dlcs = BTreeSet::new();
+    let names = TriggerNames::default();
+    let aliases = Arc::new(TagAliases::default());
+    let world = World::read(
+        &f,
+        ContentFacts {
+            triggers: Err("scripted catalogue failed"),
+            ..ContentFacts::content_only(&dlcs, &names, &aliases)
+        },
+    );
+    let evaluator = Evaluator::new(&world, None).with_event_scopes(graph());
+    let caller = evaluator.event_scopes(0).unwrap();
+    for body in [
+        "always=yes",
+        "FROM={always=yes}",
+        "FROM.FROM={always=yes}",
+        "SOV={always=yes}",
+    ] {
+        assert_eq!(
+            evaluator.evaluate(&items(body), caller),
+            Eval::True,
+            "{body}"
+        );
+    }
+    assert!(
+        evaluator
+            .evaluate(&items("missing_script=yes"), caller)
+            .decided()
+            .unwrap_err()
+            .contains("scripted catalogue failed")
+    );
+}
+
+#[test]
+fn state_roster_distinguishes_older_fields_from_failed_capture() {
+    use replay::rows::{ProvinceRow, StateRow};
+    let mut f = frame(&countries(), &[]);
+    *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(vec![StateRow {
+        id: 7,
+        owner: 100,
+        controller: 103,
+        ..Default::default()
+    }]));
+    *f.tables[TableId::Provinces.index()] =
+        TableView::Complete(TableRows::Provinces(vec![ProvinceRow {
+            id: 1,
+            state: 7,
+            ..Default::default()
+        }]));
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    {
+        rows.iter_mut()
+            .find(|row| row.country == 103)
+            .unwrap()
+            .controlled_states = Recorded::NotRecorded;
+    }
+    assert_eq!(
+        check(&f, "", 3, "any_controlled_state={always=yes}"),
+        Eval::True
+    );
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    else {
+        unreachable!()
+    };
+    rows.iter_mut()
+        .find(|row| row.country == 103)
+        .unwrap()
+        .controlled_states = Recorded::Value(None);
+    assert!(
+        check(&f, "", 3, "any_controlled_state={always=yes}")
+            .decided()
+            .unwrap_err()
+            .contains("controlled_states capture unavailable")
+    );
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    else {
+        unreachable!()
+    };
+    rows.iter_mut()
+        .find(|row| row.country == 103)
+        .unwrap()
+        .controlled_states = Recorded::Value(Some(vec![7, 7]));
+    assert_eq!(
+        check(&f, "", 3, "any_controlled_state={count=2 always=yes}"),
+        Eval::True
+    );
+    with_world(&f, "", Err("none"), |world| {
+        let scopes = Scopes::of(Scope::CountryLeader {
+            country: 3,
+            leader: 0,
+        });
+        assert_eq!(
+            world.evaluate(&items("any_controlled_state={count=2 always=yes}"), scopes),
+            Eval::True
+        );
+    });
+}
+
+#[test]
+fn controlled_state_rosters_admit_five_thousand_countries_without_map_reads() {
+    use replay::rows::StateRow;
+    let tags = (1..=5_000)
+        .map(|id| format!("Synthetic{id}"))
+        .collect::<Vec<_>>();
+    let countries = tags
+        .iter()
+        .enumerate()
+        .map(|(at, tag)| {
+            let id = at as u32 + 1;
+            (id, id, tag.as_str(), 1, "", "")
+        })
+        .collect::<Vec<_>>();
+    let mut f = frame(&countries, &[]);
+    *f.tables[TableId::States.index()] = TableView::Complete(TableRows::States(
+        (1..=5_000)
+            .map(|id| StateRow {
+                id,
+                owner: id,
+                controller: id,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *f.tables[TableId::Provinces.index()] = TableView::Unavailable {
+        reason: "native roster body needs no province read".into(),
+    };
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *f.tables[TableId::CountryCounterInputs.index()]
+    else {
+        unreachable!()
+    };
+    for row in rows {
+        row.controlled_state_count = 1;
+        row.controlled_states = Recorded::Value(Some(vec![row.country]));
+    }
+    with_world(&f, "", Err("none"), |world| {
+        let body = items("any_controlled_state={always=yes}");
+        for slot in 1..=5_000 {
+            assert_eq!(
+                world.evaluate(&body, Scopes::of(Scope::Country(slot))),
+                Eval::True
+            );
         }
     });
 }

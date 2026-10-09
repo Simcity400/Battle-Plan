@@ -1,32 +1,29 @@
 # Production spending
 
-One country’s production-line deliveries, weighted by the supplying read’s recorded line cost, as **land / air / naval → equipment type → exact design**. The centre shows **IC**; the tooltip value row and the footnote name it **Delivered IC at read cost**. It reads the content-dependent [`production-spending` product](../../../../crates/dashboard/src/products/production_spending.rs), which shares the Equipment produced branch scan and its output, line-kind and variant helpers.
+## What it shows
 
-The measure adds each newly observed whole-unit delivery count multiplied by the matching line’s fixed-point `cost_raw` at that read. Previous deliveries keep their original read valuation when a later cost changes. This is an exact valuation of recorded deliveries at recorded read costs; the recording does not establish factory output added to progress each day, or the cost at an earlier delivery tick. Progress still in flight and deliveries before the collector’s first observation are excluded. `ProduceEquipment@140F596C0` and the naval `ProduceEquipment@140F59ED0` replace speed on instant-production paths; `SetEquipmentVariant@141926570` and `RefreshProductionState@141926DB0` can change the cost between delivery and read. The [product’s field evidence](../../../../crates/dashboard/src/products/production_spending.rs) gives the remaining executable addresses and valuation rules.
+Signed factory IC applied to equipment lines and rocket sites, grouped as production source → equipment type → exact design.
 
-With **Live** on, lookup at the playback hour grows totals only when a read supplied them. Live off looks up the branch’s final hour. A pinned moment counts through that moment. A date range subtracts its known cumulative endpoints in one uninterrupted observation; before the first observation, across missing hours, or across a restart, its total is **Not known**. Nothing is interpolated. A gap, failed output publication, inexact output, lost line count, missing or invalid cost, collector restart, or change of the country holding the tag ends what the product can tell. Later reads never turn the missing campaign contribution into zero or recover the whole-campaign total. The centre, legend and tooltip say why. A known zero remains zero.
+## Products it reads
 
-The backend retains deleted lines’ deliveries. Naval, railway-gun and refit handling uses the shared Equipment produced rules. **Count refitted ships** defaults off, like Equipment produced; enabling it values the recorded refit deliveries at their recorded line costs. As Equipment produced does, a line no census listed counts as new production; its value remains **Not known** if new units have no matching cost read.
+[`production-spending`](../../../../crates/dashboard/src/products/production_spending.rs) shares Equipment produced’s branch scan and content helpers. [line_output_sites.rs](../../../../crates/engine/src/line_output_sites.rs) holds native field evidence.
 
-Equipment types and their names come from the recorded content stack. The recorded `VariantDefinitions` identify a design’s type, and the shared engine classifiers identify its arm. Mod equipment appears through those same rules. An unresolved type remains in **Type not resolved**, named by its recorded token using the shared unresolved marker. Its known recorded valuation stays exact in that arm. As in Equipment produced, its nonzero or unknown output could belong to any resolved arm or type, so those group totals become **Not known**. The country total is independent of that attribution and remains exact if its read amounts are exact; exact designs also remain independently known. Switching both arm and type off reveals that exact design breakdown. Design names use [`variantNameAt`](../../dashboard/equipment.ts) at the hour shown, never a future name and never a name carried through a recorded unknown boundary; the recorded variant handle is the fallback. Tags are opaque.
+## Settings
 
-## Shared sunburst
+Campaign/follow/pin/range; refitted ships (off), hierarchy levels and shared sunburst options. One country and whole campaign are the defaults.
 
-Everything drawn and every interaction comes from [`charts/sunburst`](../../charts/sunburst/), exactly as Construction spending uses it. There is no widget stylesheet. Click a slice or legend row to zoom in; click the centre or breadcrumb to go back. Two rings and the 2 px slice gap, parent shades, direct labels where they fit, hover dimming, accessible tooltips, keyboard navigation, folding into Other and motion all belong to the kit. The kit has no dated right-click target, so this widget adds no Jump to menu.
+## Notable behaviour
 
-**Land, air and naval**, **Equipment type** and **Exact design** each switch one level off; shared `levelOption` and `levelsShown` regroup its children without changing amounts. The shared settings are **Growth** (Share by default, or Fill), **Slice labels**, **Side legend**, **Breadcrumb** and **Hover dimming**, all on by default. When a whole total is unknown, Fill uses Share for exact groups that can still be opened in the legend. An unknown focus draws no slices or share percentages, so a partial sum cannot appear to be the whole. A known country with unresolved attribution draws only independently exact arm slices, leaving the unknowable arms blank. Earlier exact values supply stable order and palette slots only; they never appear as an unknown endpoint’s amount.
+- Counts applied input even without delivery; later design/cost changes never reprice it. Instant progress is excluded. Rocket country/design totals survive site removal with independent coverage; while rocket coverage is unknown (for example after a world reset or load), equipment subtotals stay readable.
+- “No military production yet.” requires a dated complete-empty census/output read and independently known rocket absence. Empty leaves, stalled lines, zero signed totals and empty ranges do not prove this state. Historical spending survives deleted lines; unread sources retain their reasons.
+- Final deleted-line input remains counted. Ranges subtract signed endpoints in one uninterrupted observation. Lost publications, resets, overflow or classification failure leave spending unknown independently of delivery counts.
+- Unresolved types keep tokens/values and can make group attribution unknown while an independently measured country total stays exact. Names are read-dated; the rocket source name uses recorded building classification. Design/source pairs remain distinct when rings are hidden.
+- Signed corrections keep every fraction in totals/legend rows; only positive amounts draw. Unknown totals supply no shares or Fill denominator. The shared Sunburst owns zoom/folding; this widget adds no dated Jump menu.
 
-## Choices where the mock-up and spec are silent
+## Files
 
-- The root is **All production**; the value row is **Delivered IC at read cost**, and **Designs** counts distinct recorded variant handles with a nonzero or unknown amount, rather than lines or delivered units.
-- The widget uses Construction spending’s initial size and minimum size, one-country selection and default whole-campaign time mode. Pin and date range use the framework’s existing time controls.
-- The shared Equipment produced refit toggle defaults off. No additional grouping, type-filter or view setting is introduced.
-- Exact labels keep every recorded fractional digit, with thousands separators and trailing zeroes removed. Geometry alone uses numbers; labels use exact integers.
-- There is no equipment artwork request or invented icon. Type and design rows use the kit’s existing text and colour legend.
-- A country with a recorded zero and no designs keeps the centre’s exact zero. Before a usable read, or with an unattributable unknown country total, the centre says **Not known** even when no design can be listed.
-- The footnote states the read-cost valuation, exclusions, first counting date and carried read date, and visibly names the current country total’s unknown reason even when no designs can be listed. It explains Fill’s fallback only when Fill is selected and the whole total is unknown.
-- The kit’s stable whole-amount order, eight-colour folding and responsive legend placement remain the same as Construction spending. Unknown whole amounts use their known prefix solely to keep that order stable.
-
-## Verification limits
-
-Data tests cover fixed-point precision, read-hour and whole-campaign lookups, gaps, unknown totals without designs, deleted lines, mod types, every engine arm, unresolved tokens, dated design names, ranges and shared option defaults. Live game capture and visual playback validation are separate from those tests; no game launch is needed to build this widget.
+| File | Responsibility |
+|---|---|
+| [ProductionSpendingWidget.tsx](ProductionSpendingWidget.tsx) | Product and Sunburst adapter. |
+| [spendingData.ts](spendingData.ts) | Exact amounts, hierarchy, attribution unknowns and footnotes; adjacent tests. |
+| [definition.ts](definition.ts), [index.ts](index.ts) | Levels, shared options and registration. |

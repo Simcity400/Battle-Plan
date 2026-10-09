@@ -162,7 +162,7 @@ pub(super) fn compare_war_relations(
             "absent",
         );
     }
-    report.limitation("war rows identify ordered country relations; grouped-war identities, names and participants are not recorded", "war relations");
+    report.limitation("war rows identify ordered country relations; grouped-war identity is an app continuity rule", "war relations");
     report.limitation("capture includes only non-retired war relations; the save writes first-owned relations without their retirement flag, so extra saved relations still fail and are never silently filtered", "war relations");
     Ok(())
 }

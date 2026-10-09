@@ -42,6 +42,8 @@ test('group members draw only while they belong', () => {
   const runs = toRuns(SERIES, 5);
   assert.deepEqual(clipRuns(runs, [{ tag: 'GER', firstHour: 101, lastHour: 112 }]).map(run => [run.firstHour, run.lastHour]), [[101, 101], [102, 102], [110, 112]]);
   const groups: CountryGroupReply = { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], humans: [], wars: [], unobserved: { humans: [], factions: [], wars: [] },
+    countryIdentities: [{ tag: 'GER', identities: [{ firstHour: 0, lastHour: 200, slot: 1, countryId: 10 }] },
+      { tag: 'ITA', identities: [{ firstHour: 50, lastHour: 80, slot: 2, countryId: 20 }] }],
     factions: [{ id: '5', name: 'Axis', recordedName: 'Axis', firstHour: 0, lastHour: 200, nameReason: null, names: [{ firstHour: 0, lastHour: 200, name: 'Axis', reason: null }], members: [{ tag: 'GER', firstHour: 0, lastHour: 200 }, { tag: 'ITA', firstHour: 50, lastHour: 80 }], leaders: [], incomplete: [] }] };
   const atEachHour = resolveCountries({ kind: 'group', group: { type: 'faction', id: '5' }, membership: 'hour', aggregate: false }, [], groups, 200);
   assert.deepEqual(atEachHour.tags, ['GER', 'ITA']);

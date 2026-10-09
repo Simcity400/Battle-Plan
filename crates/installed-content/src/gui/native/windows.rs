@@ -44,7 +44,7 @@ pub fn window_button_sprite(
 
 /// The native registry's kept container declaration, shared by window-local
 /// artwork and static text lookup. A later unread suffix can replace it.
-fn kept_container_window<'a>(
+pub fn kept_container_window<'a>(
     guis: &'a native::Guis,
     window: &str,
     warnings: &mut Vec<String>,

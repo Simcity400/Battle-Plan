@@ -30,6 +30,13 @@ pub struct SourceKey {
     pub revision: String,
 }
 
+type SharedState = Arc<dyn Any + Send + Sync>;
+
+struct StateEntry {
+    value: SharedState,
+    append: Option<fn(&SharedState) -> SharedState>,
+}
+
 type ContentCache = Option<(ResolveOptions, Arc<ResolvedContent>, UncoveredReads)>;
 
 /// The replay bytes, its presentation metadata, the resolved game content and
@@ -42,7 +49,7 @@ pub struct Source {
     /// The metadata with country names resolved for the last folders it was asked for.
     named: Mutex<Option<(Option<ContentKey>, ReplayMetadata)>>,
     content: Mutex<ContentCache>,
-    state: Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
+    state: Mutex<HashMap<TypeId, StateEntry>>,
 }
 
 impl Source {
@@ -195,10 +202,114 @@ impl Source {
         let mut states = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let entry = states
             .entry(TypeId::of::<T>())
-            .or_insert_with(|| Arc::new(Mutex::new(T::default())) as Arc<dyn Any + Send + Sync>);
-        Arc::clone(entry)
+            .or_insert_with(|| StateEntry {
+                value: Arc::new(Mutex::new(T::default())),
+                append: None,
+            });
+        Arc::clone(&entry.value)
             .downcast::<Mutex<T>>()
             .expect("state is keyed by its own type")
+    }
+
+    /// Opt in to verified append inheritance. Clone must share immutable history
+    /// and give the new revision its own mutable continuation.
+    pub(crate) fn append_state<T: Default + Clone + Send + 'static>(&self) -> Arc<Mutex<T>> {
+        fn fork<T: Clone + Send + 'static>(value: &SharedState) -> SharedState {
+            let value = value.downcast_ref::<Mutex<T>>().expect("state type");
+            Arc::new(Mutex::new(
+                value
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone(),
+            ))
+        }
+        let value = self.state::<T>();
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(&TypeId::of::<T>())
+            .expect("state created")
+            .append = Some(fork::<T>);
+        value
+    }
+
+    /// Called outside the service's sources lock. Unused and revision-local
+    /// state needs neither a prefix comparison nor a product lock.
+    pub(crate) fn inherit_append_states(&self, previous: &Self) {
+        let opted: Vec<_> = previous
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .filter_map(|(id, entry)| {
+                entry
+                    .append
+                    .map(|fork| (*id, Arc::clone(&entry.value), fork))
+            })
+            .collect();
+        if opted.is_empty() || !self.is_append_of(previous) {
+            return;
+        }
+        for (id, value, fork) in opted {
+            let value = fork(&value);
+            self.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    id,
+                    StateEntry {
+                        value,
+                        append: Some(fork),
+                    },
+                );
+        }
+    }
+
+    fn is_append_of(&self, previous: &Self) -> bool {
+        let old = previous.replay_ref();
+        let new = self.replay_ref();
+        if old.campaign_id != new.campaign_id
+            || old.identity != new.identity
+            || old.format != new.format
+            || old.keyframe_interval != new.keyframe_interval
+            || old.index.len() > new.index.len()
+        {
+            return false;
+        }
+        for (a, b) in old.index.iter().zip(&new.index) {
+            if a != b {
+                return false;
+            }
+            let Some(end) = a
+                .offset
+                .checked_add(a.length)
+                .and_then(|end| usize::try_from(end).ok())
+            else {
+                return false;
+            };
+            let Ok(start) = usize::try_from(a.offset) else {
+                return false;
+            };
+            if old.bytes().get(start..end) != new.bytes().get(start..end) {
+                return false;
+            }
+        }
+        if old
+            .branches
+            .iter()
+            .any(|branch| !new.branches.contains(branch))
+            || old.gaps.iter().any(|gap| !new.gaps.contains(gap))
+        {
+            return false;
+        }
+        !new.gaps
+            .iter()
+            .filter(|gap| !old.gaps.contains(gap))
+            .any(|gap| {
+                old.index
+                    .iter()
+                    .any(|block| block.branch == gap.branch && gap.first_hour <= block.last_hour)
+            })
     }
 }
 

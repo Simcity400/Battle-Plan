@@ -8,6 +8,7 @@
 .production-head { position: sticky; top: 0; z-index: 1; height: var(--production-head); background: var(--surface); color: var(--muted); font-size: var(--type-xs); text-transform: uppercase; letter-spacing: .04em; }
 .production-row { position: absolute; top: 0; left: 0; right: 0; height: var(--production-row); border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent); outline: none; }
 .production-row:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-line); }
+.production-row > [tabindex]:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
 .production-row small { color: var(--muted); font-size: var(--type-xs); }
 .production-equipment { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
 .production-equipment > span { display: flex; flex-direction: column; min-width: 0; }
@@ -29,3 +30,8 @@
 .production-meter > i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width var(--row-glide, 450ms); }
 .production-meter > em { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: var(--text); opacity: .55; transition: left var(--row-glide, 450ms); }
 .production-meter.is-empty { background: repeating-linear-gradient(90deg, color-mix(in srgb, var(--text) 10%, transparent) 0 4px, transparent 4px 8px); }
+.production-factor { border: 0; padding: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.production-factor:hover { text-decoration: underline; }
+.production-factor:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.production-drill { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.production-drill-chart { height: 280px; min-height: 180px; }

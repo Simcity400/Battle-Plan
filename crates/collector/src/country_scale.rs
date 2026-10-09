@@ -11,11 +11,74 @@
 
 use crate::{extended, map_capture::MapCapacities, sampling};
 use engine::{Memory, cgame_state, country_memory::Cache};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+};
 
 /// Largest registry observed this attachment, for raw-copy jobs whose pools
 /// live outside the frame. Only rises.
 static SLOTS_HINT: AtomicUsize = AtomicUsize::new(0);
+
+struct DemandFailures {
+    count: AtomicU64,
+    last_reason: Mutex<Option<&'static str>>,
+}
+
+impl DemandFailures {
+    const fn new() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            last_reason: Mutex::new(None),
+        }
+    }
+
+    /// An unreadable sizing observation adds no hint, preserving the existing
+    /// capacities. It is counted separately from a successful empty census.
+    fn observe<T>(&self, demand: Result<T, &'static str>) -> Result<T, &'static str> {
+        match demand {
+            Ok(demand) => Ok(demand),
+            Err(reason) => {
+                *self
+                    .last_reason
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason);
+                self.count.fetch_add(1, Ordering::Relaxed);
+                Err(reason)
+            }
+        }
+    }
+
+    fn diagnostics(&self) -> impl serde::Serialize {
+        let last_reason = *self
+            .last_reason
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::status::status!({
+            "failed_observations": self.count.load(Ordering::Relaxed),
+            "last_reason": last_reason,
+        })
+    }
+}
+
+static AGENCY_UPGRADE_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
+static OPERATION_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
+static FUEL_UNIT_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
+static ADVISOR_MODIFIER_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
+static PRODUCTION_MODIFIER_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
+static LAND_EVENT_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
+
+pub(crate) fn demand_diagnostics() -> impl serde::Serialize {
+    crate::status::status!({
+        "scope": "cumulative failed off-thread sizing observations; no hint added on failure; existing capacities retained",
+        "agency_upgrade_levels": AGENCY_UPGRADE_DEMAND_FAILURES.diagnostics(),
+        "operations": OPERATION_DEMAND_FAILURES.diagnostics(),
+        "fuel_unit_demand": FUEL_UNIT_DEMAND_FAILURES.diagnostics(),
+        "advisor_modifiers": ADVISOR_MODIFIER_DEMAND_FAILURES.diagnostics(),
+        "production_modifiers": PRODUCTION_MODIFIER_DEMAND_FAILURES.diagnostics(),
+        "land_event_words": LAND_EVENT_DEMAND_FAILURES.diagnostics(),
+    })
+}
 
 /// Record an observed registry size for job pools sized later.
 pub fn note_slots(slots: usize) {
@@ -82,6 +145,19 @@ pub fn observe_saved_targets(
     engine::saved_event_targets::demand(memory, base, state)
 }
 
+/// Off-thread live fleet/first-site/wing header demand for all score buffers.
+/// These are capacity hints, never captured operands or completeness witnesses.
+pub fn observe_game_score(
+    memory: &impl Memory,
+    base: usize,
+) -> std::io::Result<Option<engine::game_score_inputs::ArenaSizing>> {
+    match demand_game_state(memory, base) {
+        Ok(Some(state)) => engine::game_score_inputs::arena_demand(memory, base, state).map(Some),
+        Ok(None) => Ok(None),
+        Err(reason) => engine::game_score_inputs::ArenaSizing::unavailable(reason).map(Some),
+    }
+}
+
 /// Live dense CountryIntel record total, or `None` when no consistent
 /// census is readable. Header words only; nothing observed is recorded.
 pub fn observe_country_intel(memory: &impl Memory, base: usize) -> Option<usize> {
@@ -94,6 +170,35 @@ pub fn observe_country_intel(memory: &impl Memory, base: usize) -> Option<usize>
         .filter(|state| *state != 0)?;
     let rows = engine::ccountry_intel::native_rows(memory, base, state)?;
     Some(rows.min(slots.saturating_mul(slots)))
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct AceNamesDemand {
+    pub aces: usize,
+    pub ace_bytes: usize,
+}
+
+/// Off-thread full ace roster/string-header demand, including the independent
+/// selected definition and retained portrait operands. Values are never reused.
+pub(crate) fn observe_ace_names(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<AceNamesDemand>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    let walked = engine::cace::walk(memory, base, state, &mut [], &mut []);
+    let aces = match walked.outcome {
+        engine::walk::Outcome::Rows { len } => len,
+        engine::walk::Outcome::Truncated { len, unread_rows } => len
+            .checked_add(unread_rows as usize)
+            .ok_or("ace roster sizing overflow")?,
+        engine::walk::Outcome::Unavailable { reason } => return Err(reason),
+    };
+    Ok(Some(AceNamesDemand {
+        aces,
+        ace_bytes: walked.required_bytes,
+    }))
 }
 
 static AIR_WING_NAME_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -164,6 +269,7 @@ pub fn observe_attrition_inputs(
 /// Live equipment-line population, using ProductionLines' walk with no row
 /// storage: only country identities, production managers and roster headers
 /// are read. An unreadable census contributes no sizing hint.
+#[cfg(test)]
 pub fn observe_production_lines(memory: &impl Memory, base: usize) -> Option<usize> {
     let game_state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
     let state = usize::try_from(game_state)
@@ -178,6 +284,23 @@ pub fn observe_production_lines(memory: &impl Memory, base: usize) -> Option<usi
     }
 }
 
+/// Exact live header demand for the common output log, including the separate
+/// Rocket roster. A failed hint is counted but never poisons captured payloads.
+pub fn observe_production_output(memory: &impl Memory, base: usize) -> Option<usize> {
+    let observe = || {
+        let Some(state) = demand_game_state(memory, base)? else {
+            return Ok(None);
+        };
+        engine::line_output_sites::output_events_per_pass(memory, base, state).map(Some)
+    };
+    match observe() {
+        Ok(events) => events,
+        Err(reason) => {
+            crate::line_output::refuse_sizing(reason);
+            None
+        }
+    }
+}
 static COMBAT_HINT_FAILURES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 
 pub(crate) fn note_combat_hint_failure(index: usize) {
@@ -307,7 +430,11 @@ pub fn observe_characters(
     }))
 }
 
-fn demand_game_state(memory: &impl Memory, base: usize) -> Result<Option<usize>, &'static str> {
+/// An absent or empty world is pending, not a failed census or a zero hint.
+pub(crate) fn demand_game_state(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<usize>, &'static str> {
     let game_state = base
         .checked_add(cgame_state::SINGLETON_RVA)
         .and_then(|at| engine::read::<u64>(memory, at))
@@ -324,6 +451,81 @@ fn demand_game_state(memory: &impl Memory, base: usize) -> Result<Option<usize>,
     Ok((countries.count >= 2).then_some(state))
 }
 
+pub(crate) fn observe_advisor_modifiers(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<engine::cadvisor::ModifierDemand>, &'static str> {
+    ADVISOR_MODIFIER_DEMAND_FAILURES.observe(demand_game_state(memory, base).and_then(|state| {
+        state
+            .map(|state| engine::cadvisor::modifier_demand(memory, base, state))
+            .transpose()
+    }))
+}
+
+/// InitData@140DC2220 reaches 1401E0F60 only after creating country roots;
+/// that routine constructs +690, then 140C4A6F0 fills its country-air slots.
+/// Its +3C count reaches the country count before filling slots. A null
+/// manager or shorter roster therefore leaves these hints pending.
+pub(crate) fn demand_air_game_state(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<usize>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    let manager = state
+        .checked_add(cgame_state::STRATEGIC_AIR_MANAGER)
+        .and_then(|at| engine::read::<u64>(memory, at))
+        .and_then(|p| usize::try_from(p).ok())
+        .ok_or("input demand strategic air manager unreadable")?;
+    if manager == 0 {
+        return Ok(None);
+    }
+    let slots = manager
+        .checked_add(engine::cstrategic_air_manager::COUNTRY_AIR)
+        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
+        .ok_or("input demand strategic air country roster unreadable or invalid")?;
+    let countries = state
+        .checked_add(cgame_state::COUNTRIES)
+        .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
+        .ok_or("input demand country array unreadable or invalid")?;
+    Ok((countries.count >= 2 && slots.count >= countries.count).then_some(state))
+}
+
+pub(crate) fn observe_production_modifiers(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<engine::production_modifiers::Demand>, &'static str> {
+    PRODUCTION_MODIFIER_DEMAND_FAILURES.observe(demand_game_state(memory, base).and_then(|state| {
+        state
+            .map(|state| engine::production_modifiers::demand(memory, base, state))
+            .transpose()
+    }))
+}
+
+pub(crate) fn observe_land_event_words(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<usize>, &'static str> {
+    LAND_EVENT_DEMAND_FAILURES.observe(demand_game_state(memory, base).and_then(|state| {
+        state
+            .map(|state| engine::land_events::word_demand(memory, base, state))
+            .transpose()
+    }))
+}
+
+/// Current unit/site/context headers and name lengths; hints are never values.
+pub(crate) fn observe_fuel_unit_demand(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<[usize; 12]>, &'static str> {
+    FUEL_UNIT_DEMAND_FAILURES.observe(demand_air_game_state(memory, base).and_then(|state| {
+        state
+            .map(|state| engine::fuel_demand::demand(memory, base, state))
+            .transpose()
+    }))
+}
+
 /// Live demand of the political and character tables whose per-country
 /// sizes content and play decide: CountryCharacters' active-character
 /// records, CountryRetiredCharacters' retired ones, PartyLeaders' party
@@ -333,6 +535,7 @@ fn demand_game_state(memory: &impl Memory, base: usize) -> Result<Option<usize>,
 /// character inputs' rows and values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PoliticsDemand {
+    pub war_overview: engine::cwar_relation::overview::Demand,
     pub active_characters: usize,
     pub retired_characters: usize,
     pub party_leaders: usize,
@@ -342,6 +545,13 @@ pub struct PoliticsDemand {
     pub faction_advisors: usize,
     pub faction_advisor_bytes: usize,
     pub agency_name_bytes: usize,
+    pub agency_upgrade_rows: usize,
+    pub agency_upgrade_definitions: usize,
+    pub operation_rows: usize,
+    pub operation_assignments: usize,
+    pub operation_description_bytes: usize,
+    pub operative_memberships: usize,
+    pub operative_name_bytes: usize,
     pub available_advisors: usize,
     pub available_advisor_bytes: usize,
     pub advisor_modifiers: engine::cadvisor::ModifierDemand,
@@ -362,6 +572,16 @@ impl PoliticsDemand {
     /// Whether any field exceeds `seen`'s.
     pub fn exceeds(&self, seen: &Self) -> bool {
         self.agency_name_bytes > seen.agency_name_bytes
+            || self.agency_upgrade_rows > seen.agency_upgrade_rows
+            || self.agency_upgrade_definitions > seen.agency_upgrade_definitions
+            || self.operation_rows > seen.operation_rows
+            || self.operation_assignments > seen.operation_assignments
+            || self.operation_description_bytes > seen.operation_description_bytes
+            || self.operative_memberships > seen.operative_memberships
+            || self.operative_name_bytes > seen.operative_name_bytes
+            || self.war_overview.relations > seen.war_overview.relations
+            || self.war_overview.owned > seen.war_overview.owned
+            || self.war_overview.goals > seen.war_overview.goals
             || self.available_advisors > seen.available_advisors
             || self.available_advisor_bytes > seen.available_advisor_bytes
             || self.advisor_modifiers.rows > seen.advisor_modifiers.rows
@@ -397,7 +617,26 @@ impl PoliticsDemand {
     /// The field-wise maximum.
     pub fn max(self, other: Self) -> Self {
         Self {
+            war_overview: engine::cwar_relation::overview::Demand {
+                relations: self
+                    .war_overview
+                    .relations
+                    .max(other.war_overview.relations),
+                owned: self.war_overview.owned.max(other.war_overview.owned),
+                goals: self.war_overview.goals.max(other.war_overview.goals),
+            },
             agency_name_bytes: self.agency_name_bytes.max(other.agency_name_bytes),
+            agency_upgrade_rows: self.agency_upgrade_rows.max(other.agency_upgrade_rows),
+            agency_upgrade_definitions: self
+                .agency_upgrade_definitions
+                .max(other.agency_upgrade_definitions),
+            operation_rows: self.operation_rows.max(other.operation_rows),
+            operation_assignments: self.operation_assignments.max(other.operation_assignments),
+            operation_description_bytes: self
+                .operation_description_bytes
+                .max(other.operation_description_bytes),
+            operative_memberships: self.operative_memberships.max(other.operative_memberships),
+            operative_name_bytes: self.operative_name_bytes.max(other.operative_name_bytes),
             available_advisors: self.available_advisors.max(other.available_advisors),
             available_advisor_bytes: self
                 .available_advisor_bytes
@@ -479,6 +718,20 @@ pub fn observe_politics(
     memory: &impl Memory,
     base: usize,
 ) -> Result<Option<PoliticsDemand>, &'static str> {
+    observe_politics_with_failures(
+        memory,
+        base,
+        &AGENCY_UPGRADE_DEMAND_FAILURES,
+        &OPERATION_DEMAND_FAILURES,
+    )
+}
+
+fn observe_politics_with_failures(
+    memory: &impl Memory,
+    base: usize,
+    upgrade_failures: &DemandFailures,
+    operation_failures: &DemandFailures,
+) -> Result<Option<PoliticsDemand>, &'static str> {
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
@@ -499,15 +752,33 @@ pub fn observe_politics(
     let retired_characters = demand(retired)?;
     let agencies = engine::cintelligence_agency::walk(memory, base, state, &mut [], &mut []);
     demand(agencies.outcome)?;
+    let operatives = engine::coperative_leader::walk(memory, base, state, &mut [], &mut []);
+    let operative_memberships = demand(operatives.outcome)?
+        .checked_sub(operatives.refused_rows as usize)
+        .ok_or("operative refusal count exceeds demand")?;
     let (available_advisors, available_advisor_bytes) =
         engine::ccountry_characters::demand_available(memory, base, state)?;
     let goals = engine::cwar_goal::walk(memory, base, state, &mut [], &mut []);
     demand(goals.outcome)?;
+    let upgrades = upgrade_failures.observe(engine::agency_upgrade_levels::native_demand(
+        memory, base, state,
+    ))?;
+    let operations = operation_failures.observe(engine::ccountry_operation_manager::demand(
+        memory, base, state,
+    ))?;
     Ok(Some(PoliticsDemand {
+        war_overview: engine::cwar_relation::overview::demand(memory, base, state)?,
         agency_name_bytes: agencies.required_bytes,
+        agency_upgrade_rows: upgrades.rows,
+        agency_upgrade_definitions: upgrades.catalog,
+        operation_rows: operations.rows,
+        operation_assignments: operations.assignments,
+        operation_description_bytes: operations.description_bytes,
+        operative_memberships,
+        operative_name_bytes: operatives.required_bytes,
         available_advisors,
         available_advisor_bytes,
-        advisor_modifiers: engine::cadvisor::modifier_demand(memory, base, state)?,
+        advisor_modifiers: extended::characters::advisors::live_modifier_demand(),
         country_rosters: engine::ccountry::counter_roster_demand(memory, base, state)?,
         timed_ideas: engine::cpolitical_status::timed_idea_demand(memory, base, state)?,
         decision_random_items: engine::cdecision_status::random_item_demand(memory, base, state)?,
@@ -598,6 +869,37 @@ impl Sizing {
 mod tests {
     use super::*;
 
+    #[test]
+    fn politics_sizing_read_failures_are_named_counted_and_preserve_capacities() {
+        let failures = DemandFailures::new();
+        let mut sizing = Sizing::for_slots(COUNTRIES + 1);
+        let before = sizing.extended;
+        let refused: Result<engine::agency_upgrade_levels::Demand, _> =
+            failures.observe(Err("agency field unreadable"));
+        assert_eq!(refused.unwrap_err(), "agency field unreadable");
+        let upgrades = engine::agency_upgrade_levels::Demand::default();
+        sizing.extended.raise_for_politics(PoliticsDemand {
+            agency_upgrade_rows: upgrades.rows,
+            agency_upgrade_definitions: upgrades.catalog,
+            ..Default::default()
+        });
+        assert!(sizing.extended == before);
+        assert_eq!(
+            serde_json::to_value(failures.diagnostics()).unwrap()["failed_observations"],
+            1
+        );
+        assert_eq!(
+            serde_json::to_value(failures.diagnostics()).unwrap()["last_reason"],
+            "agency field unreadable"
+        );
+        let _: engine::agency_upgrade_levels::Demand =
+            failures.observe(Ok(Default::default())).unwrap();
+        assert_eq!(
+            serde_json::to_value(failures.diagnostics()).unwrap()["failed_observations"],
+            1
+        );
+    }
+
     /// The #63 attach hour: 440 countries whose raid type lists need more
     /// tokens than the default arena (it read 336 parents), and more
     /// convoy reservation words than the default 512. The observed demand
@@ -647,6 +949,29 @@ mod tests {
         let before = sizing.extended;
         sizing.extended.raise_for_politics(demand);
         assert!(sizing.extended == before);
+        let intel = PoliticsDemand {
+            agency_upgrade_rows: 5_000 * 17,
+            agency_upgrade_definitions: 9_001,
+            operation_rows: 5_000 * 3,
+            operation_assignments: 5_000 * 7,
+            operation_description_bytes: 5_000 * 400,
+            ..Default::default()
+        };
+        assert!(intel.exceeds(&PoliticsDemand::default()));
+        assert_eq!(intel.max(PoliticsDemand::default()), intel);
+        sizing.extended.raise_for_politics(intel);
+        assert!(sizing.extended.intel.rows[17] >= intel.agency_upgrade_rows);
+        assert!(
+            sizing.extended.intel.agency_upgrade_definitions >= intel.agency_upgrade_definitions
+        );
+        assert!(sizing.extended.intel.rows[9] >= intel.operation_rows);
+        assert!(sizing.extended.intel.rows[10] >= intel.operation_assignments);
+        assert!(sizing.extended.intel.operation_descriptions >= intel.operation_description_bytes);
+        let before = sizing.extended;
+        sizing
+            .extended
+            .raise_for_politics(PoliticsDemand::default());
+        assert!(sizing.extended == before);
         sizing.extended.raise_for_politics(PoliticsDemand {
             active_characters: 1 << 20,
             ..Default::default()
@@ -680,7 +1005,15 @@ mod tests {
         });
         assert!(sizing.extended != before);
         let seen = PoliticsDemand {
+            war_overview: Default::default(),
             agency_name_bytes: 0,
+            agency_upgrade_rows: 0,
+            agency_upgrade_definitions: 0,
+            operation_rows: 0,
+            operation_assignments: 0,
+            operation_description_bytes: 0,
+            operative_memberships: 0,
+            operative_name_bytes: 0,
             active_characters: 5,
             retired_characters: 1,
             party_leaders: 3,
@@ -744,6 +1077,66 @@ mod tests {
         assert_eq!(observe_politics(&menu, 0), Ok(None));
         assert_eq!(observe_characters(&menu, 0), Ok(None));
         assert!(observe_characters(&world(), BASE).is_err());
+    }
+
+    #[test]
+    fn fuel_sizing_waits_for_the_late_air_manager_and_its_country_slots() {
+        struct Loading {
+            manager: usize,
+            slots: u32,
+        }
+        impl Memory for Loading {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                let pointer = match address {
+                    cgame_state::SINGLETON_RVA => Some(0x1000_u64),
+                    address if address == 0x1000 + cgame_state::STRATEGIC_AIR_MANAGER => {
+                        Some(self.manager as u64)
+                    }
+                    _ => None,
+                };
+                if let Some(pointer) = pointer {
+                    output.copy_from_slice(&pointer.to_le_bytes());
+                    return true;
+                }
+                let count = if address == 0x1000 + cgame_state::COUNTRIES {
+                    5_001
+                } else if self.manager != 0
+                    && address == self.manager + engine::cstrategic_air_manager::COUNTRY_AIR
+                {
+                    self.slots
+                } else {
+                    return false;
+                };
+                let mut header = [0; 16];
+                header[..8].copy_from_slice(&0x9000_u64.to_le_bytes());
+                header[8..12].copy_from_slice(&count.to_le_bytes());
+                header[12..].copy_from_slice(&count.to_le_bytes());
+                output.copy_from_slice(&header);
+                true
+            }
+        }
+        for loading in [
+            Loading {
+                manager: 0,
+                slots: 0,
+            },
+            Loading {
+                manager: 0x8000,
+                slots: 0,
+            },
+            Loading {
+                manager: 0x8000,
+                slots: 2,
+            },
+        ] {
+            assert_eq!(demand_air_game_state(&loading, 0), Ok(None));
+            assert_eq!(observe_fuel_unit_demand(&loading, 0), Ok(None));
+        }
+        let loaded = Loading {
+            manager: 0x8000,
+            slots: 5_001,
+        };
+        assert_eq!(demand_air_game_state(&loaded, 0), Ok(Some(0x1000)));
     }
 
     #[test]
@@ -2305,16 +2698,10 @@ mod tests {
         let per_state = bytes(1_501);
         let large = bytes(5_001);
         assert!(vanilla <= per_state && per_state <= large);
-        // Linear, not quadratic: about 22 KiB per country slot per frame.
-        // Measured 2026-10-02 with the merged economy, naval mission and
-        // saved-global target captures: 22,321 B per slot (rounded up)
-        // between 1,501 and 5,001 slots. The 23 KiB bound leaves about
-        // 1.2 KiB of margin. Project pools and the per-slot research, party
-        // and raid rows dominate; the economy adds CountryFactories and
-        // eight organisation/history rows per slot. LogisticsEquipment and
-        // saved-global target arenas follow live demand, not country slots.
+        // Bound per-slot growth across the 1,501- and 5,001-slot frames.
+        // This includes the added score and current fuel-demand country buffers.
         assert!(
-            large - per_state <= 3_500 * 23 * 1024,
+            large - per_state <= 3_500 * 25 * 1024,
             "vanilla {vanilla}, 1,501 slots {per_state}, 5,001 slots {large}"
         );
     }
@@ -2359,7 +2746,7 @@ mod tests {
 
     /// The sizing walk needs roster headers, never line pointers or payloads.
     #[test]
-    fn line_output_population_counts_live_rosters_at_1500_and_5000_countries() {
+    fn line_output_population_and_rocket_event_demand_at_1500_and_5000_countries() {
         use engine::{Memory, cpdx_array, cproduction_status as production};
         const MANAGERS: usize = 0x3_0000_0000;
         const MANAGER: usize = 0x300;
@@ -2367,16 +2754,22 @@ mod tests {
         struct Lines {
             world: World,
             per_country: u32,
-            unreadable: bool,
+            rockets: u32,
+            rocket_capacity: u32,
+            unreadable: Option<usize>,
         }
         impl Memory for Lines {
             fn copy(&self, address: usize, output: &mut [u8]) -> bool {
                 // There is deliberately no storage for any line pointer.
-                if (LINE_POINTERS..LINE_POINTERS + self.per_country as usize * 8).contains(&address)
+                if (LINE_POINTERS..LINE_POINTERS + self.per_country.max(self.rockets) as usize * 8)
+                    .contains(&address)
                 {
                     return false;
                 }
-                if self.unreadable && address == MANAGERS + MANAGER + production::LINES {
+                if self
+                    .unreadable
+                    .is_some_and(|field| address == MANAGERS + MANAGER + field)
+                {
                     return false;
                 }
                 for (offset, byte) in output.iter_mut().enumerate() {
@@ -2402,6 +2795,25 @@ mod tests {
                                 manager + production::COUNTRY,
                                 8,
                                 (OBJECTS + slot * OBJECT) as u64,
+                            ),
+                            (
+                                manager + engine::line_output_sites::ROCKET_LINES,
+                                8,
+                                LINE_POINTERS as u64,
+                            ),
+                            (
+                                manager
+                                    + engine::line_output_sites::ROCKET_LINES
+                                    + cpdx_array::CAPACITY,
+                                4,
+                                u64::from(self.rocket_capacity),
+                            ),
+                            (
+                                manager
+                                    + engine::line_output_sites::ROCKET_LINES
+                                    + cpdx_array::COUNT,
+                                4,
+                                u64::from(self.rockets),
                             ),
                             (manager + production::LINES, 8, LINE_POINTERS as u64),
                             (
@@ -2437,7 +2849,9 @@ mod tests {
                     ..world()
                 },
                 per_country: 14,
-                unreadable: false,
+                rockets: 13,
+                rocket_capacity: 13,
+                unreadable: None,
             };
             assert_eq!(
                 observe_production_lines(&memory, BASE),
@@ -2448,8 +2862,25 @@ mod tests {
                 observe_production_lines(&memory, BASE),
                 Some(countries * 28)
             );
-            memory.unreadable = true;
+            memory.per_country = 14;
+            assert_eq!(
+                observe_production_output(&memory, BASE),
+                Some(countries * (14 + 2 * 13))
+            );
+            memory.rockets = 26;
+            memory.rocket_capacity = 26;
+            assert_eq!(
+                observe_production_output(&memory, BASE),
+                Some(countries * (14 + 2 * 26))
+            );
+            memory.rocket_capacity = 25;
+            assert_eq!(observe_production_output(&memory, BASE), None);
+            memory.rocket_capacity = 26;
+            memory.unreadable = Some(engine::line_output_sites::ROCKET_LINES);
+            assert_eq!(observe_production_output(&memory, BASE), None);
+            memory.unreadable = Some(production::LINES);
             assert_eq!(observe_production_lines(&memory, BASE), None);
+            assert_eq!(observe_production_output(&memory, BASE), None);
         }
     }
 

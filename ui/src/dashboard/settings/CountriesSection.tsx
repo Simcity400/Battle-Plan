@@ -3,8 +3,8 @@ import { SourceFlag } from '../../components/CountryFlag';
 import { Icon } from '../../components/Icons';
 import { Segmented } from '../../components/Segmented';
 import type { CountryGroupReply } from '../../generated/dashboard';
-import { defaultCountryTag, selectedTags } from '../countrySelection';
-import { DEFAULT_TOP } from '../groups';
+import { defaultCountryTag, selectedTags, singleCountryChoice } from '../countrySelection';
+import { countrySelectionFor, countrySelectionMode, countrySelectionModes, DEFAULT_TOP } from '../groups';
 import { useCampaignSettings } from '../campaignSettings';
 import { factionNameAt, UNNAMED_FACTION } from '../factionNames';
 import { resolveWindow } from '../model';
@@ -26,18 +26,17 @@ export function CountriesSection({ widget, reference, runtime, limits, onChange 
   const common = { field: true, source, client: runtime.client, countries: source?.metadata.countries ?? [], playerCountryId: source?.metadata.playerCountryId ?? null };
   if (limits.max <= 1) return <CountryPicker key={source?.id ?? 'unbound'} {...common}
     selectedTag={widget.countries.kind === 'tags' ? widget.countries.tags[0] ?? null : fallback}
-    onChange={tag => onChange(tag && tag !== fallback ? { kind: 'tags', tags: [tag] } : { kind: 'selected' })} />;
-  const mode = widget.countries.kind === 'group' ? 'group' : widget.countries.kind === 'all' && limits.all ? 'all' : 'countries';
-  // A widget about the whole world offers all countries first, and narrows to chosen ones or a group.
-  const modes = [...(limits.all ? [{ value: 'all' as const, label: 'All' }] : []), { value: 'countries' as const, label: 'Countries' }, { value: 'group' as const, label: 'Group' }];
+    onChange={tag => onChange(singleCountryChoice(tag, fallback, limits.fixed))} />;
+  const mode = widget.countries.kind === 'all' && !limits.all ? 'countries' : countrySelectionMode(widget.countries);
   return <>
-    <Segmented label="Choose countries by" value={mode} options={modes}
-      onChange={value => { if (value !== mode) onChange(value === 'group' ? { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }
-        : value === 'all' ? { kind: 'all' } : { kind: 'selected' }); }} />
+    <Segmented label="Choose countries by" value={mode} options={countrySelectionModes(limits)}
+      onChange={value => { if (value !== mode) onChange(countrySelectionFor(value, limits.max)); }} />
     {mode === 'all' ? <p className="field-hint">Every country the recording names.</p>
       : widget.countries.kind === 'group'
         ? <GroupFields widget={widget} selection={widget.countries} reference={reference} runtime={runtime} limits={limits} onChange={onChange} />
-        : <CountryChips widget={widget} reference={reference} runtime={runtime} max={limits.max} onChange={onChange} />}
+        : widget.countries.kind === 'factions'
+          ? <FactionFields selection={widget.countries} max={limits.max} onChange={onChange} />
+          : <CountryChips widget={widget} reference={reference} runtime={runtime} max={limits.max} onChange={onChange} />}
   </>;
 }
 
@@ -72,6 +71,19 @@ const MEMBERSHIP: readonly { value: GroupMembership; label: string; tooltip: str
   { value: 'end', label: 'At the end', tooltip: 'Members at the end of the campaign' },
   { value: 'ever', label: 'Anyone ever', tooltip: 'Every country that was ever a member' },
 ];
+
+function FactionFields({ selection, max, onChange }: {
+  selection: Extract<CountrySelection, { kind: 'factions' }>; max: number; onChange: (countries: CountrySelection) => void;
+}) {
+  return <>
+    <label className="setting-row"><span>How many<small>Factions ranked by their total each hour</small></span>
+      <span className="option-number"><input type="number" min={1} max={max} value={selection.count}
+        onChange={event => { const count = Math.round(Number(event.currentTarget.value)); if (count >= 1 && count <= max) onChange({ ...selection, count }); }} /></span></label>
+    <div className="setting-row setting-row-stacked"><span>Members</span>
+      <Segmented label="Faction membership" value={selection.membership} options={MEMBERSHIP} onChange={membership => onChange({ ...selection, membership })} /></div>
+    <p className="field-hint">Each recorded faction is one total. A missing member value or membership read leaves a gap.</p>
+  </>;
+}
 
 function GroupFields({ widget, selection, reference, runtime, limits, onChange }: {
   widget: WidgetSpec; selection: Extract<CountrySelection, { kind: 'group' }>; reference: BoundTrack | undefined; runtime: WidgetRuntime; limits: Limits;

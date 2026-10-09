@@ -65,12 +65,29 @@ fn orders_group_definitions_keep_native_order_kind_and_conditional_pointers() {
 }
 
 #[test]
-fn an_orders_group_without_its_unconditional_fields_is_refused() {
-    for removed in [
-        "name=\"Army 1\"",
-        "field_marshal_group=no",
-        "motorization_level=0",
+fn orders_group_names_keep_native_empty_omission_and_reject_malformed_fields() {
+    let original = String::from_utf8(ORDER_OF_BATTLE.to_vec()).unwrap();
+    for (saved, expected) in [
+        ("", b"".as_slice()),
+        ("name=\"\"", b"".as_slice()),
+        ("name=\"Renamed command\"", b"Renamed command".as_slice()),
     ] {
+        let text = original.replace("name=\"Army 1\"", saved);
+        let pack = parse_text(text.as_bytes()).unwrap();
+        let army =
+            &pack.theatre_countries.as_ref().unwrap()[b"GER".as_slice()].land[0].definitions[0];
+        assert_eq!(army.name, expected);
+        assert_eq!(army.id, (57 << 32) | 53);
+    }
+    for saved in ["name=A name=B", "name=\"\" name=\"\"", "name={bad=x}"] {
+        let text = original.replace("name=\"Army 1\"", saved);
+        assert!(parse_text(text.as_bytes()).is_err(), "{saved}");
+    }
+}
+
+#[test]
+fn an_orders_group_without_its_unconditional_fields_is_refused() {
+    for removed in ["field_marshal_group=no", "motorization_level=0"] {
         let text = String::from_utf8(ORDER_OF_BATTLE.to_vec())
             .unwrap()
             .replace(removed, "");

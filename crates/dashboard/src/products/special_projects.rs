@@ -3,41 +3,61 @@
 //! Character names and scoped project names are resolved at each frame's hour.
 
 use super::{
-    CountryParams, LoadContext, Product,
+    CountryParams, LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
     character_portraits::{portrait_png, recorded_portrait},
     country_groups::HourSpan,
+    country_history::{self, CountryIdentityRun},
     identity::character_script_token,
     politics_content::{PoliticsContent, politics_content},
 };
 use crate::{
     Source,
     catalogue::{self, Catalogue, View},
-    metadata::{link_slot, slot_read, tagged_country, validate_campaign},
+    metadata::{link_slot, slot_read, tagged_countries, tagged_country, validate_campaign},
 };
 use installed_content::{localisation::Argument, special_projects::Catalog};
 use replay::{
-    container::Replay,
-    frame::{DecodedFrame, FrameDecoder, ViewIdentity},
+    frame::{DecodedFrame, ViewIdentity},
     rows::{CountryLinkRow, ProjectHistoryRow, ProjectRow, TableId, tables},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, VecDeque},
     io,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 use ts_rs::TS;
 
 pub struct SpecialProjects;
+mod history;
+
+mod completions;
+pub(crate) use completions::completion_events;
 
 // Native string and sentinel facts, not content assumptions: 141ED9730,
 // SProjectHistory completion constructor 141A249B0, 140FCDD00/14296C3A8.
 const ITERATIONS_KEY: &str = "ONGOING_PROJECT_BREAKTHROUGHS_NUMBER";
 const COMPLETION_MARKER: u32 = 0x4c17;
 const PLACEHOLDER_ICON: &str = "GFX_PLACEHOLDER_sp_project_icon";
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SpecialProjectsParams {
+    pub branch_id: String,
+    pub tag: String,
+    /// Original manual picks; a projected alias is never another selection root.
+    #[serde(default)]
+    pub selection_tags: Vec<String>,
+}
+
+impl SpecialProjectsParams {
+    fn country(&self) -> CountryParams {
+        CountryParams {
+            branch_id: self.branch_id.clone(),
+            tag: self.tag.clone(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -109,6 +129,7 @@ pub struct ProjectEpisode {
 pub struct SpecialProjectsReply {
     pub branch_id: String,
     pub tag: String,
+    pub identities: Vec<CountryIdentityRun>,
     pub available: Vec<HourSpan>,
     pub read_hours: Vec<i32>,
     pub projects: Vec<ProjectEpisode>,
@@ -141,6 +162,14 @@ fn project_state(project: &ProjectRow) -> ProjectState {
         0xe8 if completed(project) => ProjectState::Completed,
         _ => ProjectState::Unknown,
     }
+}
+
+fn visible(project: &ProjectRow, already_open: bool) -> bool {
+    project.started != 0
+        || completed(project)
+        || already_open
+        || (project_state(project) == ProjectState::Cancelled
+            && project.state.current_offset != 0x18)
 }
 
 /// 141EDA6E0 -> 140FCDFE0 -> 141A238C0: fixed5 ratio of prototype
@@ -224,6 +253,21 @@ struct Content {
     politics: Arc<PoliticsContent>,
     definitions: Catalog,
     icons: BTreeMap<String, Result<String, String>>,
+    scoped: Vec<(u64, Arc<history::Names>)>,
+    refusals: Mutex<catalogue::Refusals>,
+}
+
+impl Clone for Content {
+    fn clone(&self) -> Self {
+        Self {
+            catalogue: Arc::clone(&self.catalogue),
+            politics: Arc::clone(&self.politics),
+            definitions: self.definitions.clone(),
+            icons: self.icons.clone(),
+            scoped: self.scoped.clone(),
+            refusals: Mutex::new(Default::default()),
+        }
+    }
 }
 
 impl Content {
@@ -233,6 +277,8 @@ impl Content {
             definitions: Catalog::read(&politics.catalogue.content.layers)?,
             politics,
             icons: BTreeMap::new(),
+            scoped: Vec::new(),
+            refusals: Mutex::default(),
         })
     }
 
@@ -270,6 +316,7 @@ impl Content {
         tag: &str,
         slot: u32,
         frame: &DecodedFrame,
+        definition_id: u32,
     ) -> Option<String> {
         // 140FCDDF0 -> 140A81BB0/14146B580: authored narrative name
         // when nonempty, otherwise the definition's default name; then
@@ -277,12 +324,24 @@ impl Content {
         // Template post-load 140A852A0 writes the LexerToken string to
         // template+0x238 (narrative+0x48), proving the default key.
         let selected = country_key(&self.catalogue, tag, project_name_key(definition, token));
+        if needs_scope(&self.catalogue.localisation, &selected) {
+            return self
+                .scoped
+                .iter()
+                .find(|(branch, _)| *branch == frame.branch)
+                .and_then(|(_, names)| names.at(tag, slot, definition_id, frame.hour));
+        }
         self.name_for(&selected, Some((slot, frame)))
     }
 
     fn name_for(&self, selected: &str, recorded: Option<(u32, &DecodedFrame)>) -> Option<String> {
         if !needs_scope(&self.catalogue.localisation, selected) {
-            return self.catalogue.localised(selected, View::Scripted);
+            return self.catalogue.localised_with_refusals(
+                selected,
+                &[],
+                View::Scripted,
+                &self.refusals,
+            );
         }
         let Some((slot, frame)) = recorded else {
             return self.catalogue.localised_offline_country(selected);
@@ -304,17 +363,19 @@ impl Content {
             || kind.to_owned(),
             |tag| country_key(&self.catalogue, tag, kind),
         );
-        self.catalogue.localised(&key, View::Plain)
+        self.catalogue
+            .localised_with_refusals(&key, &[], View::Plain, &self.refusals)
     }
 
     fn iterations(&self, count: Option<i32>) -> Option<String> {
         // 141ED9730 passes NUMBER as native argument type 5 (Int32).
         let count = count?;
         self.catalogue.localisation.get(ITERATIONS_KEY)?;
-        self.catalogue.localised_with(
+        self.catalogue.localised_with_refusals(
             ITERATIONS_KEY,
             &[("NUMBER", Argument::Int32(count))],
             View::Plain,
+            &self.refusals,
         )
     }
 }
@@ -442,6 +503,39 @@ struct Builder {
     admitted: bool,
     warnings: BTreeMap<String, usize>,
     iteration_texts: BTreeMap<i32, Option<String>>,
+    needs_scope: bool,
+    /// The feed needs dates and episode identity, not every progress change.
+    compact: bool,
+    last_iterations: BTreeMap<usize, i32>,
+    completions: BTreeMap<usize, CompletionObservation>,
+}
+
+#[derive(Clone)]
+struct CompletionObservation {
+    project: ProjectRow,
+    identity: (u32, u32),
+    date: ProjectDate,
+    observed_hour: i32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProjectCompletion {
+    pub tag: String,
+    pub date: ProjectDate,
+    pub observed_hour: i32,
+    pub definition_id: u32,
+    pub item_token: Option<String>,
+    pub name: Option<String>,
+    pub icon: Option<String>,
+    pub icon_missing: Option<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct ProjectCompletions {
+    pub events: Vec<ProjectCompletion>,
+    pub warnings: Vec<String>,
+    pub unavailable: Option<String>,
+    pub refusals: Vec<(String, usize)>,
 }
 
 fn mark(spans: &mut Vec<HourSpan>, hour: i32) {
@@ -530,7 +624,11 @@ impl Builder {
                 .unwrap_or_default();
             let script = character_script_token(character, lexical);
             let saved = String::from_utf8_lossy(&character.token);
-            let name = content.and_then(|content| content.politics.character_name(script, &saved));
+            let name = content.and_then(|content| {
+                content
+                    .politics
+                    .character_name_with_refusals(script, &saved, &content.refusals)
+            });
             // ScientistItem::Refresh 141F03DE0 requests role 4, size 1.
             // Use the shared native holder selection, including its fallback.
             let portrait = recorded_portrait(
@@ -598,7 +696,9 @@ impl Builder {
             let name = match self.scoped_names.get(&project.definition_id) {
                 Some((definition, token)) => content
                     .as_ref()
-                    .and_then(|content| content.name(definition, token, tag, slot, frame))
+                    .and_then(|content| {
+                        content.name(definition, token, tag, slot, frame, project.definition_id)
+                    })
                     .unwrap_or_else(|| token.clone()),
                 None => old.name.clone(),
             };
@@ -663,11 +763,12 @@ impl Builder {
                         .unwrap_or(&token),
                 );
                 if needs_scope(&content.catalogue.localisation, &key) {
+                    self.needs_scope = true;
                     self.scoped_names
                         .insert(project.definition_id, (definition.clone(), token.clone()));
                 }
                 info.name = content
-                    .name(&definition, &token, tag, slot, frame)
+                    .name(&definition, &token, tag, slot, frame, project.definition_id)
                     .unwrap_or_else(|| {
                         self.warn(format!("Project name {token} could not be resolved"));
                         token.clone()
@@ -723,8 +824,7 @@ impl Builder {
         id
     }
 
-    fn observe(&mut self, frame: &DecodedFrame, tag: &str, mut content: Option<&mut Content>) {
-        let hour = frame.hour;
+    fn observe(&mut self, frame: &DecodedFrame, tag: &str, content: Option<&mut Content>) {
         let identity = frame
             .complete::<tables::Countries>()
             .ok()
@@ -734,15 +834,47 @@ impl Builder {
                     .found()
                     .map(|(country, slot)| ((slot, country.id), links))
             });
-        let continuing = identity.is_some_and(|(identity, _)| {
+        let projects = frame.complete::<tables::Projects>().ok();
+        let histories = frame.complete::<tables::ProjectHistory>().ok();
+        let rows = identity.map(|((slot, _), links)| {
+            (
+                projects
+                    .map(|rows| owned_rows(rows, links, slot, |row| row.owner).collect::<Vec<_>>()),
+                histories
+                    .map(|rows| owned_rows(rows, links, slot, |row| row.owner).collect::<Vec<_>>()),
+            )
+        });
+        self.observe_rows(
+            frame,
+            tag,
+            identity.map(|(identity, _)| identity),
+            rows.as_ref().and_then(|(rows, _)| rows.as_deref()),
+            rows.as_ref().and_then(|(_, rows)| rows.as_deref()),
+            content,
+        );
+    }
+
+    /// Both country history and the world feed use this admission/episode path.
+    /// The world caller resolves identities and groups raw owners once per frame.
+    fn observe_rows(
+        &mut self,
+        frame: &DecodedFrame,
+        tag: &str,
+        identity: Option<(u32, u32)>,
+        projects: Option<&[&ProjectRow]>,
+        history_rows: Option<&[&ProjectHistoryRow]>,
+        mut content: Option<&mut Content>,
+    ) {
+        let hour = frame.hour;
+        let continuing = identity.is_some_and(|identity| {
             self.last
                 .is_some_and(|(old, seen)| identity == old && seen.checked_add(1) == Some(hour))
         });
         if !continuing {
             self.admitted = false;
         }
-        self.last = identity.map(|(id, _)| (id, hour));
-        let Some(((slot, country), links)) = identity else {
+        self.last = identity.map(|id| (id, hour));
+        let Some((slot, country)) = identity else {
             return;
         };
         if self.identity.is_some_and(|old| old != (slot, country)) {
@@ -778,40 +910,41 @@ impl Builder {
                 .map(|table| frame.tables[table.index()].identity())
                 .collect();
         }
-        let Ok(projects) = frame.complete::<tables::Projects>() else {
+        let Some(projects) = projects else {
             self.admitted = false;
             return;
         };
         let read = slot_read(&frame.metrics, TableId::Projects, hour);
         if read {
             self.admitted = true;
-            self.reads.push(hour);
+            if !self.compact {
+                self.reads.push(hour);
+            }
         }
         if !self.admitted {
             return;
         }
-        mark(&mut self.available, hour);
+        if !self.compact || self.available.is_empty() {
+            mark(&mut self.available, hour);
+        }
         let mut histories: BTreeMap<u32, Vec<&ProjectHistoryRow>> = BTreeMap::new();
-        let history_rows = frame.complete::<tables::ProjectHistory>();
-        let history_available = history_rows.is_ok();
-        if let Ok(rows) = history_rows {
-            for event in owned_rows(rows, links, slot, |row| row.owner) {
+        let history_available = history_rows.is_some();
+        if let Some(rows) = history_rows {
+            for &event in rows {
                 histories.entry(event.project).or_default().push(event);
             }
         }
         let mut next = BTreeMap::new();
-        for project in owned_rows(projects, links, slot, |row| row.owner) {
+        for &project in projects {
             let state = project_state(project);
             let done = state == ProjectState::Completed;
             // A never-started project also rests at 0x18; only a machine
             // cancellation (0x1e8) or an open episode makes it a lane.
-            if project.started == 0
-                && !done
-                && (state != ProjectState::Cancelled || project.state.current_offset == 0x18)
-                && !self
-                    .open
-                    .contains_key(&(project.local_id, project.definition_id))
-            {
+            if !visible(
+                project,
+                self.open
+                    .contains_key(&(project.local_id, project.definition_id)),
+            ) {
                 continue;
             }
             let key = (project.local_id, project.definition_id);
@@ -823,11 +956,10 @@ impl Builder {
                 self.episodes[*index].runs.last().is_some_and(|run| {
                     matches!(run.state, ProjectState::Completed | ProjectState::Cancelled)
                         && matches!(state, ProjectState::Running | ProjectState::Paused)
-                        || self.episodes[*index]
-                            .runs
-                            .iter()
-                            .rev()
-                            .find_map(|run| run.iterations)
+                        || self
+                            .last_iterations
+                            .get(index)
+                            .copied()
                             .zip(count)
                             .is_some_and(|(old, new)| old > new)
                 })
@@ -864,20 +996,47 @@ impl Builder {
                 }
             });
             let previous = self.episodes[index].runs.last().cloned();
-            let presentation = self.presentation(
-                frame,
-                project,
-                tag,
-                slot,
-                previous.as_ref(),
-                content.as_deref_mut(),
-            );
+            let presentation = if self.compact {
+                // Presentation is resolved only for actual completion rows,
+                // at the event's own hour, after this shared episode scan.
+                0
+            } else {
+                self.presentation(
+                    frame,
+                    project,
+                    tag,
+                    slot,
+                    previous.as_ref(),
+                    content.as_deref_mut(),
+                )
+            };
+            if self.compact
+                && let Some(date) = &completion
+            {
+                self.completions
+                    .entry(index)
+                    .and_modify(|event| {
+                        if event.date != *date {
+                            event.date = date.clone();
+                            event.observed_hour = hour;
+                        }
+                    })
+                    .or_insert_with(|| CompletionObservation {
+                        project: project.clone(),
+                        identity: (slot, country),
+                        date: date.clone(),
+                        observed_hour: hour,
+                    });
+            }
             if let Some(count) = count {
-                self.iteration_texts.entry(count).or_insert_with(|| {
-                    content
-                        .as_ref()
-                        .and_then(|content| content.iterations(Some(count)))
-                });
+                self.last_iterations.insert(index, count);
+                if !self.compact {
+                    self.iteration_texts.entry(count).or_insert_with(|| {
+                        content
+                            .as_ref()
+                            .and_then(|content| content.iterations(Some(count)))
+                    });
+                }
             }
             if state == ProjectState::Unknown {
                 self.warn(format!(
@@ -912,6 +1071,9 @@ impl Builder {
                 run.first_hour = hour;
                 run.last_hour = hour;
             }
+            if self.compact {
+                runs.clear();
+            }
             runs.push(run);
         }
         self.open = next;
@@ -924,159 +1086,73 @@ fn needs_scope(loc: &installed_content::localisation::Localisation, key: &str) -
         .is_ok_and(|text| text.contains('['))
 }
 
-fn scoped_projects_used(
-    replay: &Replay,
+fn project(
+    scan: &history::BranchScan,
     params: &CountryParams,
-    content: &Content,
-    selected: &[TableId],
-    cancelled: &AtomicBool,
-) -> io::Result<bool> {
-    for block in replay
-        .index
-        .iter()
-        .filter(|block| block.branch == params.branch())
-    {
-        let mut decoder = FrameDecoder::for_tables(selected);
-        let Ok(frames) = replay.read_block_selected(block, selected) else {
-            continue;
-        };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Special projects request cancelled",
-                ));
-            }
-            let Ok(frame) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(frame, replay).is_err() {
-                break;
-            }
-            let (Ok(countries), Ok(links), Ok(projects), Ok(tokens)) = (
-                frame.complete::<tables::Countries>(),
-                frame.complete::<tables::CountryLinks>(),
-                frame.complete::<tables::Projects>(),
-                frame.complete::<tables::LexicalTokens>(),
-            ) else {
-                continue;
-            };
-            let Some((_, slot)) = tagged_country(countries, links, &params.tag).found() else {
-                continue;
-            };
-            for project in projects.iter().filter(|project| {
-                link_slot(links, project.owner) == Some(slot)
-                    && (project.started != 0 || completed(project))
-            }) {
-                let Some(token) = tokens
-                    .binary_search_by_key(&project.definition_id, |row| row.token)
-                    .ok()
-                    .and_then(|i| std::str::from_utf8(&tokens[i].literal).ok())
-                else {
-                    continue;
-                };
-                let Some(definition) = content.definitions.projects.get(token) else {
-                    continue;
-                };
-                let key = country_key(
-                    &content.catalogue,
-                    &params.tag,
-                    definition
-                        .name
-                        .as_deref()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or(token),
-                );
-                if needs_scope(&content.catalogue.localisation, &key) {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-    Ok(false)
-}
-
-fn scan(
-    replay: &Replay,
-    params: &CountryParams,
+    identities: Option<&[&CountryIdentityRun]>,
     mut content: Option<&mut Content>,
     cancelled: &AtomicBool,
-) -> io::Result<SpecialProjectsReply> {
+) -> io::Result<(SpecialProjectsReply, bool)> {
+    if let Some(content) = content.as_ref() {
+        *content
+            .refusals
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Default::default();
+    }
     let mut result = Builder {
-        campaign_start: replay
-            .index
-            .iter()
-            .filter(|block| block.branch == params.branch())
-            .map(|block| block.first_hour)
-            .min(),
+        campaign_start: scan.campaign_start,
         ..Default::default()
     };
-    let mut selected = vec![
-        TableId::Campaign,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::Projects,
-        TableId::ProjectPrograms,
-        TableId::ProjectHistory,
-        TableId::Characters,
-        TableId::CharacterPortraits,
-        TableId::LexicalTokens,
-        TableId::CountryAppearance,
-    ];
-    // Only names used by this country require the full scope inputs. Dollar
-    // aliases are expanded by the native localiser before checking for brackets.
-    if content.as_ref().is_some_and(|content| {
-        content.definitions.projects.iter().any(|(token, project)| {
-            let key = country_key(
-                &content.catalogue,
-                &params.tag,
-                project
-                    .name
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(token),
-            );
-            needs_scope(&content.catalogue.localisation, &key)
-        })
-    }) && scoped_projects_used(
-        replay,
-        params,
-        content.as_ref().unwrap(),
-        &selected,
-        cancelled,
-    )? {
-        selected = TableId::ALL.to_vec();
-    }
-    for block in replay
-        .index
-        .iter()
-        .filter(|block| block.branch == params.branch())
-    {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
+    for span in &scan.spans {
+        crate::metadata::check_cancel(cancelled)?;
+        let Some(mut frame) = span.inputs.actor_frame(params.branch(), &params.tag) else {
+            result.admitted = false;
+            result.last = None;
             continue;
         };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Special projects request cancelled",
-                ));
+        let actor = frame
+            .complete::<tables::Countries>()
+            .ok()
+            .and_then(|rows| rows.first())
+            .map(|row| (row.canonical_slot, row.id));
+        for hour in span.first_hour..=span.last_hour {
+            crate::metadata::check_cancel(cancelled)?;
+            if let Some(identities) = identities {
+                let index = identities.partition_point(|identity| identity.last_hour < hour);
+                if identities.get(index).is_none_or(|identity| {
+                    identity.first_hour > hour
+                        || actor != Some((identity.slot, identity.country_id))
+                }) {
+                    result.admitted = false;
+                    result.last = None;
+                    continue;
+                }
             }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            result.observe(decoded, &params.tag, content.as_deref_mut());
+            frame.hour = hour;
+            frame.metrics.table_ns[TableId::Projects.index()] =
+                u64::from(span.reads.binary_search(&hour).is_ok());
+            result.observe(&frame, &params.tag, content.as_deref_mut());
         }
     }
     let mut warnings = content.as_ref().map_or_else(Vec::new, |content| {
         let mut warnings = content.definitions.warnings.clone();
         warnings.extend(content.catalogue.verification.iter().cloned());
         warnings.extend(content.catalogue.warnings.iter().cloned());
-        warnings.extend(content.catalogue.refusal_lines());
+        warnings.extend(content.catalogue.reader_warning_lines());
+        warnings.extend(
+            content
+                .refusals
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .lines("Project texts"),
+        );
+        if let Some((_, names)) = content
+            .scoped
+            .iter()
+            .find(|(branch, _)| *branch == params.branch())
+        {
+            warnings.extend(names.warnings(&params.tag));
+        }
         warnings
     });
     warnings.extend(
@@ -1095,35 +1171,93 @@ fn scan(
     } else {
         None
     };
-    Ok(SpecialProjectsReply {
-        branch_id: params.branch_id.clone(),
-        tag: params.tag.clone(),
-        available: result.available,
-        read_hours: result.reads,
-        projects: result.episodes,
-        presentations: result.presentations,
-        people: result.people,
-        iteration_texts: result.iteration_texts,
-        unavailable,
-        warnings,
-    })
+    let needs_scope = result.needs_scope;
+    Ok((
+        SpecialProjectsReply {
+            branch_id: params.branch_id.clone(),
+            tag: params.tag.clone(),
+            identities: Vec::new(),
+            available: result.available,
+            read_hours: result.reads,
+            projects: result.episodes,
+            presentations: result.presentations,
+            people: result.people,
+            iteration_texts: result.iteration_texts,
+            unavailable,
+            warnings,
+        },
+        needs_scope,
+    ))
 }
+
+fn append_identities(
+    reply: &mut SpecialProjectsReply,
+    identities: &[&CountryIdentityRun],
+) -> io::Result<()> {
+    // The empty [] is already measured in the complete reply. Borrow metadata
+    // until its replacement fits, before copying any native identity runs.
+    let error = || io::Error::other("Special projects reply exceeds its transport reply budget");
+    let base = crate::transport::json_len(reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(error)?;
+    let added =
+        crate::transport::json_len(&identities, MAX_PRODUCT_REPLY_BYTES).ok_or_else(error)?;
+    if base.saturating_sub(2).saturating_add(added) > MAX_PRODUCT_REPLY_BYTES {
+        return Err(error());
+    }
+    reply.identities = identities
+        .iter()
+        .map(|identity| (**identity).clone())
+        .collect();
+    super::check_reply_budget(reply)
+}
+
+type ReplyKey = (u64, String, Vec<String>);
 
 #[derive(Default)]
 struct Cache {
     catalogue: Option<Arc<Catalogue>>,
     content: Option<Content>,
-    replies: VecDeque<((u64, String), SpecialProjectsReply)>,
+    replies: VecDeque<(ReplyKey, SpecialProjectsReply)>,
+    completions: VecDeque<(u64, Arc<ProjectCompletions>)>,
     content_error: Option<String>,
+}
+
+fn prepare_cache(cache: &mut Cache, politics: &io::Result<Arc<PoliticsContent>>) {
+    let catalogue = politics
+        .as_ref()
+        .ok()
+        .map(|content| Arc::clone(&content.catalogue));
+    let same = match (&cache.catalogue, &catalogue) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    };
+    if same {
+        return;
+    }
+    cache.replies.clear();
+    cache.completions.clear();
+    cache.content_error = None;
+    cache.content = match politics.as_ref() {
+        Ok(politics) => match Content::load(Arc::clone(politics)) {
+            Ok(content) => Some(content),
+            Err(error) => {
+                cache.content_error = Some(format!("Special-project content unavailable: {error}"));
+                None
+            }
+        },
+        Err(_) => None,
+    };
+    cache.catalogue = catalogue;
 }
 
 impl Product for SpecialProjects {
     const KEY: &'static str = "special-projects";
     const CONTENT_DEPENDENT: bool = true;
-    type Params = CountryParams;
+    type Params = SpecialProjectsParams;
     type Reply = SpecialProjectsReply;
     fn types() -> Vec<String> {
         vec![
+            SpecialProjectsParams::decl(),
             ProjectDate::decl(),
             ProjectPerson::decl(),
             ProjectPresentation::decl(),
@@ -1134,7 +1268,11 @@ impl Product for SpecialProjects {
         ]
     }
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.validate()
+        params.country().validate()?;
+        for tag in &params.selection_tags {
+            super::validate_tag(tag)?;
+        }
+        Ok(())
     }
     fn load(
         source: &Source,
@@ -1147,36 +1285,55 @@ impl Product for SpecialProjects {
             .and_then(|options| politics_content(source, options));
         let state = source.state::<Cache>();
         let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-        let catalogue = politics
-            .as_ref()
-            .ok()
-            .map(|content| Arc::clone(&content.catalogue));
-        let same = match (&cache.catalogue, &catalogue) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        };
-        if !same {
-            cache.replies.clear();
-            cache.content_error = None;
-            cache.content = match politics.as_ref() {
-                Ok(politics) => match Content::load(Arc::clone(politics)) {
-                    Ok(content) => Some(content),
-                    Err(error) => {
-                        cache.content_error =
-                            Some(format!("Special-project content unavailable: {error}"));
-                        None
-                    }
-                },
-                Err(_) => None,
-            };
-            cache.catalogue = catalogue;
-        }
-        let key = (params.branch(), params.tag.clone());
+        prepare_cache(&mut cache, &politics);
+        let country = params.country();
+        let mut roots = params.selection_tags.clone();
+        roots.sort();
+        roots.dedup();
+        let key = (country.branch(), params.tag.clone(), roots.clone());
         if let Some((_, reply)) = cache.replies.iter().find(|(seen, _)| *seen == key) {
             return Ok(reply.clone());
         }
-        let mut reply = scan(&source.replay(), params, cache.content.as_mut(), cancelled)?;
+        let histories =
+            country_history::branch_histories(source, country.branch(), false, &[], cancelled)?;
+        let selected = country_history::selected_identities(&histories, &roots);
+        let identities: Vec<_> = histories
+            .countries
+            .get(&params.tag)
+            .into_iter()
+            .flat_map(|history| history.identities.iter())
+            .filter(|identity| {
+                roots.is_empty() || selected.contains(&(identity.slot, identity.country_id))
+            })
+            .collect();
+        let scan = history::cached(source, country.branch(), cancelled)?;
+        let (mut reply, scoped) = project(
+            &scan,
+            &country,
+            Some(&identities),
+            cache.content.as_mut(),
+            cancelled,
+        )?;
+        if scoped
+            && let Some(content) = cache.content.as_mut()
+            && !content
+                .scoped
+                .iter()
+                .any(|(branch, _)| *branch == country.branch())
+        {
+            let names = history::scoped_names(
+                source.replay_ref(),
+                &scan,
+                country.branch(),
+                content,
+                cancelled,
+            )?;
+            content.scoped.push((country.branch(), Arc::new(names)));
+            if content.scoped.len() > 4 {
+                content.scoped.remove(0);
+            }
+            reply = project(&scan, &country, Some(&identities), Some(content), cancelled)?.0;
+        }
         // Content only names and draws the recorded projects; the data stays available.
         if let Some(reason) = &cache.content_error {
             reply.warnings.push(reason.clone());
@@ -1192,6 +1349,7 @@ impl Product for SpecialProjects {
                     .into(),
             );
         }
+        append_identities(&mut reply, &identities)?;
         cache.replies.push_back((key, reply.clone()));
         // Response cache budget only, never a country/capture limit.
         while cache.replies.len() > 16 {
@@ -1203,6 +1361,8 @@ impl Product for SpecialProjects {
 
 #[cfg(test)]
 mod bench;
+#[cfg(test)]
+mod history_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1357,7 +1517,7 @@ mod tests {
         assert_eq!(builder.episodes.len(), 2);
     }
 
-    fn frame(hour: i32, read: bool, count: usize) -> DecodedFrame {
+    pub(super) fn frame(hour: i32, read: bool, count: usize) -> DecodedFrame {
         let mut frame = DecodedFrame {
             branch: 1,
             hour,
@@ -1773,6 +1933,8 @@ mod tests {
             politics: Arc::new(PoliticsContent::load(catalogue).unwrap()),
             definitions: catalog,
             icons: BTreeMap::new(),
+            scoped: Vec::new(),
+            refusals: Mutex::default(),
         };
         let mut sample = frame(100, true, 1);
         *sample.tables[TableId::LexicalTokens.index()] =

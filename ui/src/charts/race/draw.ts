@@ -1,3 +1,4 @@
+import { fillHatched } from '../hatch.ts';
 /** Canvas drawing for the race (style A · Clean): hairline value gridlines with
  * their labels under the plot, bars with a 4 px rounded tip and a square baseline,
  * segments split by a surface seam, hatched parts and the corner date. */
@@ -54,26 +55,7 @@ export function barPath(ctx: CanvasRenderingContext2D, x: number, y: number, wid
   ctx.closePath();
 }
 
-/** Diagonal hatching over a rectangle in `color`, on a faint wash of it: a part of
- * the bar that is counted apart, such as damaged factories. */
-export function fillHatched(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, color: string, spacing = 4): void {
-  if (width <= 0 || height <= 0) return;
-  ctx.save();
-  ctx.beginPath(); ctx.rect(x, y, width, height); ctx.clip();
-  ctx.globalAlpha *= 0.25;
-  ctx.fillStyle = color;
-  ctx.fillRect(x, y, width, height);
-  ctx.globalAlpha /= 0.25;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  for (let start = x - height; start < x + width; start += spacing) {
-    ctx.moveTo(start, y + height);
-    ctx.lineTo(start + height, y);
-  }
-  ctx.stroke();
-  ctx.restore();
-}
+export { fillHatched } from '../hatch.ts';
 
 /** One row's bar: its segments stacked as signed values (`barParts`), positive
  * ones right of the baseline and negative ones left of it, each solid then hatched
@@ -98,7 +80,7 @@ export function drawRaceBar(ctx: CanvasRenderingContext2D, layout: RaceLayout, t
       const from = x(part.low);
       const width = x(part.high) - from;
       const color = row.item.segments[part.segment].color;
-      if (part.hatched) fillHatched(ctx, from, top, width, layout.thickness, color);
+      if (part.hatched) fillHatched(ctx, from, top, width, layout.thickness, color, 4, 1.5);
       else { ctx.fillStyle = color; ctx.fillRect(from, top, width, layout.thickness); }
       // A seam where one segment meets another, never at the baseline.
       const seam = side > 0 ? from : from + width;

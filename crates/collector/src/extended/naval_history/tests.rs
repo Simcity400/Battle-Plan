@@ -206,6 +206,7 @@ fn shared_naval_projection_preserves_truncated_prefix_and_growth() {
 
         limits: [2, 3, 2],
         naval_limit: naval.wing_limit(),
+        game_score: false,
     };
     assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings).raw_ok);
     naval.install_wings(&wings);
@@ -278,6 +279,7 @@ fn shared_wing_fallback_charges_acquisition_and_installation() {
 
         limits: [2, 3, 2],
         naval_limit: 0,
+        game_score: false,
     };
     assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings).raw_ok);
     wings.membership_ticks = 101;

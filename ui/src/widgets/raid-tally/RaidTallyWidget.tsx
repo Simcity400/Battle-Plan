@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import WidgetState from '../../components/WidgetState';
 import CountryRaceView from '../../charts/race/CountryRaceView';
-import { runAt } from '../../charts/series';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { countryMatchFilter, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups';
+import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -12,7 +12,7 @@ import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useRaids } from '../../dashboard/useRaids';
 import { readAt } from '../../dashboard/reads';
 import { OPTIONS } from './definition';
-import { tallyEntries, tallyLabel, tallyLines, tallyLineTooltip, tallyModel, tallyTooltip, tallyValue } from './raidTallyData';
+import { tallyEntries, tallyIdentities, tallyLabel, tallyLines, tallyLineTooltip, tallyModel, tallySegmentAt, tallyTooltip, tallyValue } from './raidTallyData';
 import type { TallyMetric } from './raidTallyData';
 
 const NO_WARNINGS: string[] = [];
@@ -34,11 +34,20 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   const playhead = (widget.time.mode === 'follow' || widget.time.mode === 'pin') && window ? window.lastHour : null;
   const moment = Math.floor(playhead ?? extent[1]);
   const series = useMemo(() => tallyModel(data?.series ?? []), [data]);
-  const ranked = useMemo(() => tallyEntries(series, rankedCandidates(resolved, moment, [...series.keys()]), moment, metric, resolved.top, resolved.top != null),
-    [series, resolved, moment, metric]);
-  const lines = useMemo(() => tallyLines(data?.series ?? [], metric, { firstHour: extent[0], lastHour: extent[1] }, resolved.membership),
-    [data, metric, extent[0], extent[1], resolved.membership]);
-  const segmentAt = useCallback((tag: string, hour: number) => runAt(series.get(tag)?.segments ?? [], Math.floor(hour))?.firstHour ?? null, [series]);
+  const identities = useMemo(() => grouped && groups.data ? countryIdentityIndex(groups.data.countryIdentities)
+    : data ? tallyIdentities(data.series) : null, [grouped, groups.data, data]);
+  const counted = useMemo(() => projectResolvedCountries(resolved, countryMatchFilter(widget.countries, fallback ? [fallback] : [],
+    groups.data, track?.branch.lastHour ?? 0, identities, track?.branch.firstHour ?? 0)),
+    [resolved, widget.countries, fallback, groups.data, track?.branch.lastHour, track?.branch.firstHour, identities]);
+  const ranked = useMemo(() => tallyEntries(series, rankedCandidates(counted, moment, [...series.keys()]), moment, metric, resolved.top, resolved.top != null),
+    [series, counted, moment, metric, resolved.top]);
+  const shownSeries = useMemo(() => {
+    const tags = new Set(counted.tags);
+    return data?.series.filter(item => counted.top != null || tags.has(item.tag)) ?? [];
+  }, [data, counted]);
+  const lines = useMemo(() => tallyLines(shownSeries, metric, { firstHour: extent[0], lastHour: extent[1] }, counted.membership),
+    [shownSeries, metric, extent[0], extent[1], counted.membership]);
+  const segmentAt = useCallback((tag: string, hour: number) => tallySegmentAt(series, tag, hour), [series]);
   useEffect(() => {
     const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
@@ -54,7 +63,7 @@ export default function RaidTallyWidget({ widget, runtime, active, onDiagnostics
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="This time is outside the recorded branch." />;
   if (resolved.top == null && !data.series.some(item => item.runs.length)) return <WidgetState kind="unavailable" message="No raid counts were recorded for these countries." />;
   return <CountryRaceView runtime={runtime} track={track} active={active} options={options} view={view} extent={extent} playhead={playhead} moment={moment}
-    slots={resolved.top ?? Math.max(1, resolved.tags.length)} ranked={ranked} lines={lines} segmentAt={segmentAt} label={tallyLabel(metric)}
+    slots={resolved.top ?? Math.max(1, counted.tags.length)} ranked={ranked} lines={lines} segmentAt={segmentAt} label={tallyLabel(metric)}
     presentation={{ exact: false, held: false }}
     beforeChart={metric === 'both' ? view === 'lines'
       ? <p className="chart-line-key"><i aria-hidden="true" />Solid: launched · <i className="is-dashed" aria-hidden="true" />dashed: succeeded</p>

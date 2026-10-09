@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel } from '../../charts/draw';
+import { runAt } from '../../charts/series';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
 import { bandMaxOf, runState, startUnseen, stretchAt } from '../../charts/timeline/runState';
@@ -44,20 +45,24 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
-  const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
-  const at = Math.floor(playhead ?? extent[1]);
+  const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
+  const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 0;
+  const at = Math.floor(playhead ?? last);
+  const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const data = groups.data;
   const { colours, names } = factionColours;
   // Keep member preparation independent of the playhead; names resolve locally by hour.
   const views = useMemo(() => data ? factionViews(data, names, id => colours.get(id) ?? '') : [], [data, names, colours]);
   const dashboardTag = track ? defaultCountryTag(track) : null;
   const lastHour = track?.branch.lastHour ?? 0;
-  const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], data, at, lastHour, views[0]?.lineage), [widget.countries, dashboardTag, data, at, lastHour, views]);
+  const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], data, at, lastHour), [widget.countries, dashboardTag, data, at, lastHour]);
   const [inView, setInView] = useState<[number, number]>([0, 24]);
   // Flags follow the visible lanes; name sorting also reads every compared lane.
   const [named, setNamed] = useState<string[]>([]);
   const [sortNames, setSortNames] = useState<string[]>([]);
-  const { country, revision } = useCountriesAt(runtime.client, track, named, at, active, sortNames);
+  const identityHistories = useMemo(() => new Map(data?.countryIdentities.map(history => [history.tag, history.identities]) ?? []), [data]);
+  const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
+  const { country, revision } = useCountriesAt(runtime.client, track, named, at, active, sortNames, segmentAt);
   // A tooltip names its countries as recorded at the hour hovered, asking only for those.
   const hover = useHoverLabels(runtime.client, track, active, country);
   const branchFirstHour = track?.branch.firstHour ?? 0;
@@ -118,7 +123,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
       const start = life?.firstHour;
       const state = runState(life ? [life] : [], at, unobserved);
       const rows: TooltipRow[] = [
-        { label: 'Leader', value: leader ? named(leader).name : 'Not recorded', icon: leader ? named(leader).flag : undefined, tone: leader ? undefined : 'muted' },
+        { label: 'Leader', value: leader ? named(leader).name : 'Not recorded', countryFlag: leader ? named(leader) : undefined, tone: leader ? undefined : 'muted' },
         { label: 'Members', value: count == null ? 'Not recorded' : String(count), swatch: view.color },
         ...(start != null ? [{ label: 'Founded', value: startUnseen(start, branchFirstHour, unobserved) ? `before ${day(start)}` : day(start) }] : []),
         ...(state.kind === 'ended' ? [{ label: 'Dissolved', value: state.lastSeen == null ? day(state.at) : `by ${day(state.at)}` }]
@@ -129,14 +134,15 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
       hover.ask(hour, leader && !belonged.includes(leader) ? [leader, ...belonged] : belonged);
       const members = belonged
         .sort((a, b) => (a === leader ? -1 : b === leader ? 1 : named(a).name.localeCompare(named(b).name)));
-      const memberRows: TooltipRow[] = members.map((tag, index) => ({ label: `${tag === leader ? `${LEADER_GLYPH} ` : ''}${named(tag).name}`, icon: named(tag).flag,
+      const memberRows: TooltipRow[] = members.map((tag, index) => ({ label: `${tag === leader ? `${LEADER_GLYPH} ` : ''}${named(tag).name}`, countryFlag: named(tag),
         indent: true, short: true, divider: index === 0 }));
       const content: TooltipContent = { title: factionName.name ?? UNNAMED_FACTION, subtitle: `Faction · ${day(hour)}`, rows: [...nameRows, ...rows, ...memberRows], note: NOTE };
       return full ? content : fitTooltip([content], viewport, { more: hidden => `${hidden} more ${hidden === 1 ? 'member' : 'members'}` });
     }
     const member = about.member;
     const tag = tagAt(view, member, hour);
-    hover.ask(hour, [tag]);
+    hover.ask(hour, tag === null ? [] : [tag]);
+    const label = tag === null ? { name: 'Native country identity not recorded', flagReason: 'Native country identity not recorded at this hour.' } : named(tag);
     const run = member.runs.find(item => item.firstHour <= hour && hour <= item.lastHour);
     const led = run ? leadershipParts(run, view.leaders).find(part => part.firstHour <= hour && hour <= part.lastHour)?.leader ?? false : false;
     // An hour whose roster is not known says so, not that the country was out.
@@ -153,7 +159,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
       { label: 'Left', value: state.kind === 'ended' ? (state.lastSeen == null ? day(state.at) : `by ${day(state.at)}`)
         : state.kind === 'unknown' ? `not recorded after ${day(state.lastSeen)}` : 'Still a member' },
     ];
-    return { title: named(tag).name, icon: named(tag).flag, subtitle: `Member · ${day(hour)}`, rows, note: NOTE };
+    return { title: label.name, countryFlag: label, subtitle: `Member · ${day(hour)}`, rows, note: NOTE };
   };
   // What the timeline shows at the moment shown, for keyboard and screen-reader users.
   const description = `${dayLabel(at)}: ${lanes.filter(lane => !lane.depth).map(lane => {
@@ -163,7 +169,7 @@ export default function FactionsWidget({ widget, runtime, active, onDiagnostics 
   return <div className="factions-widget">
     {/* Shown for one faction too: its swatch is where its colour is changed. */}
     {options.legend === true && <Legend label="Factions" items={legend} always />}
-    <Timeline label="Faction membership" extent={extent} playhead={playhead} lanes={lanes} showIcons={false} showNames={false} description={description}
+    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label="Faction membership" extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} description={description}
       unobserved={unobserved} bandMax={bandMax} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active}
       revision={`${revision}:${hover.revision}:${views.length}`} onLanesInView={onLanesInView}
       tooltip={(lane, _span, hour, full) => tooltip(lane.id, hour, full === true)}

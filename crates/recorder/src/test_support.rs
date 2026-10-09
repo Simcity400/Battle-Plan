@@ -87,6 +87,25 @@ pub(crate) fn allocation_records() -> Vec<replay::spool::Record> {
                     TableId::ReservedCountryNaming => {
                         TableRows::ReservedCountryNaming(vec![Default::default()])
                     }
+                    TableId::GameScoreMultipliers => TableRows::GameScoreMultipliers(vec![
+                        replay::rows::GameScoreMultiplierRow {
+                            total_raw: Some(0),
+                            army_raw: Some(0),
+                            navy_raw: Some(0),
+                            air_raw: Some(0),
+                            industry_raw: Some(0),
+                            land_raw: Some(0),
+                            ..Default::default()
+                        },
+                    ]),
+                    TableId::EventFeedHistory => {
+                        TableRows::EventFeedHistory(vec![replay::rows::EventFeedHistoryRow {
+                            read_hour: hour,
+                            coverage: replay::event_feed_rows::EventFeedCoverage::Complete,
+                            counts: Some(Default::default()),
+                            ..Default::default()
+                        }])
+                    }
                     table => TableRows::empty(table),
                 };
                 TableUpdate::Snapshot(rows)

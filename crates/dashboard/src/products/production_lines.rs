@@ -3,16 +3,16 @@
 //! produced variant's name and icon and each organisation's name and icon as the
 //! game's production view shows them.
 //!
-//! A request asks for only what the view draws, so a reply stays bounded however
-//! long the campaign (as `country_factories` does). `production-lines` answers each
+//! A request asks for only what the view draws. `production-lines` answers each
 //! line's life: its factory steps (which change only when factories are assigned or
 //! the variant switches), its final count, and the names, icons and hours recorded.
 //! Values that change at nearly every read (efficiency, output per week, units made,
 //! units ordered) come from `production-line-detail`, one fixed window of
-//! [`DETAIL_HOURS`] at a time. Both replies are measured before they are sent and
-//! refused past [`MAX_REPLY_BYTES`], inside the transport's bound.
+//! [`DETAIL_HOURS`] at a time. `production-line-breakdown` sends one line's selected
+//! modifier factor across the branch. Full histories grow with the campaign;
+//! every reply is measured and refused past [`MAX_REPLY_BYTES`].
 //!
-//! Every line value is a recorded `ProductionLines` field, compared exactly with
+//! Ordinary line values are recorded `ProductionLines` fields, compared with
 //! the save by the fresh-save oracle (`recorder::oracle::production`):
 //!
 //! - `cost_raw` (+0x28) is the IC one unit costs, fixed5, after the organisation's
@@ -80,6 +80,11 @@ use std::{
     },
 };
 use ts_rs::TS;
+mod breakdown;
+pub use breakdown::{
+    ProductionBreakdownParams, ProductionLineBreakdown, ProductionLineBreakdownReply,
+    ProductionModifierGroup, ProductionModifierPart, ProductionModifierRun,
+};
 
 pub struct ProductionLines;
 pub struct ProductionLineDetail;
@@ -330,6 +335,7 @@ pub struct LineDetail {
     pub runs: Vec<LineRun>,
     /// Its output at each read (the same reads as `runs`), where recorded.
     pub output: Vec<OutputRun>,
+    pub modifiers: Vec<ProductionModifierRun>,
 }
 
 /// A produced variant's names and icon as the game's production row shows them;
@@ -457,6 +463,9 @@ pub type IconAt = (i32, Result<Option<Icon>, String>);
 #[derive(Clone, Debug, Default)]
 pub struct ScannedLines {
     pub lines: Vec<ScannedLine>,
+    pub modifiers: BTreeMap<String, Vec<breakdown::RawModifierRun>>,
+    /// Counts supplying reads whose fixed modifier names did not authenticate.
+    pub modifier_layout_refusals: BTreeMap<String, usize>,
     /// Every variant's names over the branch, with where they are known.
     pub variants: VariantCatalogue,
     pub icons: BTreeMap<u64, Vec<IconAt>>,
@@ -579,12 +588,26 @@ pub fn scan(
     icons: Option<&IconContent>,
     cancelled: &AtomicBool,
 ) -> io::Result<ScannedLines> {
+    scan_holder(replay, branch, tag, icons, None, cancelled)
+}
+
+fn scan_holder(
+    replay: &Replay,
+    branch: u64,
+    tag: &str,
+    icons: Option<&IconContent>,
+    holder: Option<(u32, u32)>,
+    cancelled: &AtomicBool,
+) -> io::Result<ScannedLines> {
     // The variant catalogue's tables include the countries and tokens read here too.
     let mut selected = vec![
         TableId::Campaign,
         TableId::ProductionLines,
         TableId::ProductionLineOutput,
         TableId::IndustrialOrganisations,
+        TableId::CountryProductionModifiers,
+        TableId::ProductionLineModifiers,
+        TableId::ModifierDefinitions,
     ];
     selected.extend(VariantCatalogue::TABLES);
     if icons.is_some() {
@@ -599,6 +622,12 @@ pub fn scan(
     }
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Production request cancelled");
     let mut result = ScannedLines::default();
+    let recorded_modifier_language: Arc<str> = replay
+        .identity
+        .language
+        .strip_prefix("l_")
+        .unwrap_or(&replay.identity.language)
+        .into();
     let mut last: Option<((u32, u32), i32)> = None;
     let mut open: BTreeMap<u64, Open> = BTreeMap::new();
     let mut carried = false;
@@ -622,6 +651,7 @@ pub fn scan(
     let mut pending: BTreeSet<u64> = BTreeSet::new();
     // The last hour an output read was due, read or not.
     let mut last_output_due: Option<i32> = None;
+    let mut last_modifier_country: Option<Arc<replay::rows::CountryProductionModifiersRow>> = None;
     for block in replay.index.iter().filter(|block| block.branch == branch) {
         if cancelled.load(Ordering::Acquire) {
             return Err(cancel());
@@ -654,7 +684,18 @@ pub fn scan(
                 .complete::<tables::Countries>()
                 .ok()
                 .zip(decoded.complete::<tables::CountryLinks>().ok());
-            let country = tables.map(|(countries, links)| tagged_country(countries, links, tag));
+            let country = tables.map(|(countries, links)| {
+                let selected_tag = match holder {
+                    None => Some(tag),
+                    Some((slot, id)) => countries
+                        .iter()
+                        .find(|country| country.canonical_slot == slot && country.id == id)
+                        .and_then(|country| std::str::from_utf8(&country.tag).ok()),
+                };
+                selected_tag.map_or(TaggedCountry::Absent, |tag| {
+                    tagged_country(countries, links, tag)
+                })
+            });
             let identity = country
                 .and_then(|country| country.found().map(|(country, slot)| (slot, country.id)));
             let continues = identity.is_some_and(|identity| {
@@ -762,8 +803,23 @@ pub fn scan(
                     if organisations_open {
                         mark(&mut result.organisation_hours, hour);
                     }
+                    let modifiers_carried = decoded
+                        .complete::<tables::CountryProductionModifiers>()
+                        .is_ok()
+                        && decoded
+                            .complete::<tables::ProductionLineModifiers>()
+                            .is_ok();
                     for line in open.values() {
                         let history = &mut result.lines[line.index];
+                        if modifiers_carried
+                            && let Some(modifiers) = result
+                                .modifiers
+                                .get_mut(&history.key)
+                                .and_then(|runs| runs.last_mut())
+                            && modifiers.last_hour.checked_add(1) == Some(hour)
+                        {
+                            modifiers.last_hour = hour;
+                        }
                         if let Some(run) = history.runs.last_mut()
                             && run.last_hour.checked_add(1) == Some(hour)
                         {
@@ -806,6 +862,51 @@ pub fn scan(
                 .iter()
                 .filter(|row| ours(row.country, row.handle))
                 .collect();
+            let naming_tags = Tags::new(
+                countries,
+                links,
+                decoded.complete::<tables::CountryAppearance>().ok(),
+            );
+            let modifier_inputs =
+                (slot_read(&decoded.metrics, TableId::CountryProductionModifiers, hour)
+                    && slot_read(&decoded.metrics, TableId::ProductionLineModifiers, hour))
+                .then(|| {
+                    decoded
+                        .complete::<tables::CountryProductionModifiers>()
+                        .ok()
+                        .zip(decoded.complete::<tables::ProductionLineModifiers>().ok())
+                })
+                .flatten();
+            let modifier_inputs = modifier_inputs.filter(|_| {
+                match replay::fixed_layout::validate_recording(
+                    decoded,
+                    replay::fixed_layout::PRODUCTION_MODIFIERS,
+                ) {
+                    Ok(()) => true,
+                    Err(reason) => {
+                        *result.modifier_layout_refusals.entry(reason).or_default() += 1;
+                        false
+                    }
+                }
+            });
+            let naming_organisations = decoded.complete::<tables::IndustrialOrganisations>().ok();
+            let modifier_country = modifier_inputs
+                .and_then(|(countries, _)| {
+                    countries
+                        .binary_search_by_key(&identity.1, |country| country.country)
+                        .ok()
+                        .map(|index| &countries[index])
+                })
+                .map(|country| {
+                    if last_modifier_country.as_deref() != Some(country) {
+                        last_modifier_country = Some(Arc::new(country.clone()));
+                    }
+                    Arc::clone(
+                        last_modifier_country
+                            .as_ref()
+                            .expect("recorded modifier country"),
+                    )
+                });
             for row in &mine {
                 let Some(kind) = LineKind::of(row.kind) else {
                     result.unknown_kinds += 1;
@@ -849,6 +950,60 @@ pub fn scan(
                     amount: row.amount,
                 };
                 let line = &mut result.lines[index];
+                if let Some((_, lines)) = modifier_inputs
+                    && let Some(country) = modifier_country
+                        .as_ref()
+                        .filter(|country| country.country == row.country)
+                    && let Ok(position) = lines.binary_search_by_key(&row.handle, |line| line.line)
+                {
+                    let operands = &lines[position];
+                    if (
+                        operands.country,
+                        operands.variant,
+                        operands.organisation,
+                        operands.kind,
+                        operands.active_factories,
+                    ) == (
+                        row.country,
+                        row.variant,
+                        row.mio,
+                        row.kind,
+                        row.active_factories,
+                    ) {
+                        let catalogue = icons.and_then(|icons| icons.catalogue.as_deref());
+                        let organisation = naming_organisations.and_then(|rows| {
+                            rows.binary_search_by_key(&row.mio, |organisation| {
+                                organisation.organisation
+                            })
+                            .ok()
+                            .map(|index| &rows[index])
+                        });
+                        let organisation_name =
+                            organisation
+                                .zip(lexical)
+                                .and_then(|(organisation, lexical)| {
+                                    let raw =
+                                        raw_organisation(organisation, hour, &naming_tags, lexical);
+                                    organisation_name(
+                                        &raw,
+                                        catalogue.map(|catalogue| catalogue as &dyn Texts),
+                                    )
+                                });
+                        result.modifiers.entry(line.key.clone()).or_default().push(
+                            breakdown::RawModifierRun {
+                                first_hour: hour,
+                                last_hour: hour,
+                                country: Arc::clone(country),
+                                line: operands.clone(),
+                                run: values,
+                                organisation: organisation_name,
+                                localisation: catalogue
+                                    .map(|catalogue| Arc::clone(&catalogue.localisation)),
+                                recorded_language: Arc::clone(&recorded_modifier_language),
+                            },
+                        );
+                    }
+                }
                 match line.runs.last_mut() {
                     Some(run)
                         if !starts_segment
@@ -971,18 +1126,13 @@ pub fn scan(
                     .map(|row| row.mio)
                     .filter(|mio| *mio != 0)
                     .collect();
-                let tags = Tags::new(
-                    countries,
-                    links,
-                    decoded.complete::<tables::CountryAppearance>().ok(),
-                );
                 for row in organisations
                     .iter()
                     .filter(|row| named.contains(&row.organisation))
                 {
                     version(
                         result.organisations.entry(row.organisation).or_default(),
-                        raw_organisation(row, hour, &tags, lexical),
+                        raw_organisation(row, hour, &naming_tags, lexical),
                         |a, b| {
                             RawOrganisation {
                                 first_hour: 0,
@@ -1065,24 +1215,41 @@ pub fn organisation_name(raw: &RawOrganisation, texts: Option<&dyn Texts>) -> Op
 /// An organisation's icon: its stored sprite, else `GFX_<owner>_<key>`, `GFX_<key>`,
 /// then the game's unknown-organisation sprite; the first the content declares.
 pub fn organisation_icon(raw: &RawOrganisation, exists: impl Fn(&str) -> bool) -> Option<String> {
+    organisation_icon_with_token(raw, true, exists)
+        .ok()
+        .flatten()
+}
+
+/// The same native selector (140DA4410), with a token-read witness. An
+/// explicit stored sprite needs neither that token nor the owner's identity.
+pub(crate) fn organisation_icon_with_token(
+    raw: &RawOrganisation,
+    token_known: bool,
+    exists: impl Fn(&str) -> bool,
+) -> Result<Option<String>, &'static str> {
     if !raw.icon.is_empty() && exists(&raw.icon) {
-        return Some(raw.icon.clone());
+        return Ok(Some(raw.icon.clone()));
     }
     if raw.owner_unknown {
-        return None;
+        return Err("the recorded owner identity is unavailable for fallback icon selection");
+    }
+    if !token_known {
+        return Err(
+            "LexicalTokens does not spell the recorded organisation token for fallback icon selection",
+        );
     }
     let tagged = raw
         .owner_tag
         .as_ref()
         .map(|tag| format!("GFX_{tag}_{}", raw.token));
-    [
+    Ok([
         tagged,
         Some(format!("GFX_{}", raw.token)),
         Some(UNKNOWN_ORGANISATION_ICON.to_owned()),
     ]
     .into_iter()
     .flatten()
-    .find(|name| exists(name))
+    .find(|name| exists(name)))
 }
 
 /// The produced variants' names and icons by hour, merged from the variant catalogue
@@ -1217,18 +1384,7 @@ fn icon_key(icon: &Icon) -> String {
 }
 
 fn icon_image(catalogue: &Catalogue, icon: &Icon) -> io::Result<String> {
-    let layers = &catalogue.content.layers;
-    let decode = *catalogue
-        .gui_decode
-        .as_ref()
-        .map_err(|why| crate::invalid(why.clone()))?;
-    match icon {
-        Icon::Sprite(name) => {
-            let sprite = catalogue.sprites.lookup(name).map_err(crate::invalid)?;
-            catalogue::sprite_frame_png(layers, sprite, decode, 0, ICON_EDGE)
-        }
-        Icon::Path(path) => catalogue::texture_png(layers, path, decode, 1, ICON_EDGE),
-    }
+    super::equipment_icon::image(catalogue, icon, ICON_EDGE)
 }
 
 /// Checks the presentation inputs the product can enumerate without selecting a
@@ -1285,14 +1441,15 @@ pub(crate) fn check_content(
     Ok((findings, diagnostics))
 }
 
-/// A scan's identity: its branch, its tag and the icon content it was made with.
+/// A scan's identity: branch, original tag, native holder and icon content.
 /// The content is the `Arc` itself, kept alive by the entry, so it can never match
 /// other content that reuses its address.
-type ScanKey<T = IconContent> = (u64, String, Option<Arc<T>>);
+type ScanKey<T = IconContent> = (u64, String, Option<Arc<T>>, Option<(u32, u32)>);
 
 fn same_scan<T>(a: &ScanKey<T>, b: &ScanKey<T>) -> bool {
     a.0 == b.0
         && a.1 == b.1
+        && a.3 == b.3
         && match (&a.2, &b.2) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
@@ -1415,6 +1572,14 @@ pub fn detail_lines(scanned: &ScannedLines, first: i32, last: i32) -> Vec<LineDe
                 key: line.key.clone(),
                 runs,
                 output,
+                modifiers: scanned
+                    .modifiers
+                    .get(&line.key)
+                    .into_iter()
+                    .flatten()
+                    .filter(|run| overlaps(run.first_hour, run.last_hour))
+                    .map(|run| run.project(None))
+                    .collect(),
             })
         })
         .collect()
@@ -1442,6 +1607,7 @@ fn cancelled_error() -> io::Error {
 fn scanned_lines(
     source: &Source,
     params: &CountryParams,
+    holder: Option<(u32, u32)>,
     context: &LoadContext,
     cancelled: &AtomicBool,
     warnings: &mut Vec<String>,
@@ -1495,7 +1661,7 @@ fn scanned_lines(
     if let Some(icons) = &icons {
         warnings.extend(icons.warnings());
     }
-    let key: ScanKey = (params.branch(), params.tag.clone(), icons.clone());
+    let key: ScanKey = (params.branch(), params.tag.clone(), icons.clone(), holder);
     let cached = {
         let cache = state.lock().unwrap_or_else(|error| error.into_inner());
         cache
@@ -1507,11 +1673,12 @@ fn scanned_lines(
     let scanned = match cached {
         Some(scanned) => scanned,
         None => {
-            let scanned = Arc::new(scan(
+            let scanned = Arc::new(scan_holder(
                 &source.replay(),
                 params.branch(),
                 &params.tag,
                 icons.as_deref(),
+                holder,
                 cancelled,
             )?);
             let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -1523,6 +1690,12 @@ fn scanned_lines(
             scanned
         }
     };
+    warnings.extend(
+        scanned
+            .modifier_layout_refusals
+            .iter()
+            .map(|(reason, count)| format!("{reason} ({count} supplying reads)")),
+    );
     Ok((catalogue, scanned))
 }
 
@@ -1559,13 +1732,14 @@ impl Product for ProductionLines {
         let state = source.state::<Cache>();
         let mut warnings = Vec::new();
         let (catalogue, scanned) =
-            scanned_lines(source, params, context, cancelled, &mut warnings)?;
+            scanned_lines(source, params, None, context, cancelled, &mut warnings)?;
         let texts = catalogue
             .as_ref()
             .map(|catalogue| catalogue.as_ref() as &dyn Texts);
         let mut shown: BTreeMap<String, Icon> = BTreeMap::new();
         let (variants, unnamed, unknown_icons) =
             variant_entries(&scanned, texts, catalogue.is_some(), &mut shown);
+        warnings.extend(scanned.variants.warnings());
         // Organisations.
         let mut organisations = Vec::new();
         for (id, versions) in &scanned.organisations {
@@ -1681,6 +1855,9 @@ impl Product for ProductionLines {
                 params.tag
             ));
         }
+        if let Some(catalogue) = &catalogue {
+            warnings.extend(catalogue.refusal_lines());
+        }
         bounded(
             ProductionLinesReply {
                 branch_id: params.branch_id.clone(),
@@ -1713,6 +1890,9 @@ impl Product for ProductionLineDetail {
     fn types() -> Vec<String> {
         vec![
             LineRun::decl(),
+            ProductionModifierPart::decl(),
+            ProductionModifierGroup::decl(),
+            ProductionModifierRun::decl(),
             LineDetail::decl(),
             ProductionDetailParams::decl(),
             ProductionLineDetailReply::decl(),
@@ -1741,8 +1921,17 @@ impl Product for ProductionLineDetail {
             tag: params.tag.clone(),
         };
         let mut warnings = Vec::new();
-        let (_, scanned) = scanned_lines(source, &country, context, cancelled, &mut warnings)?;
+        let (_, scanned) =
+            scanned_lines(source, &country, None, context, cancelled, &mut warnings)?;
         let (first_hour, last_hour) = detail_window(params.window).expect("validated window");
+        let lines = detail_lines(&scanned, first_hour, last_hour);
+        for line in &lines {
+            for run in &line.modifiers {
+                warnings.extend(run.warnings.iter().cloned());
+            }
+        }
+        warnings.sort();
+        warnings.dedup();
         bounded(
             ProductionLineDetailReply {
                 warnings,
@@ -1752,7 +1941,7 @@ impl Product for ProductionLineDetail {
                 window: params.window,
                 first_hour,
                 last_hour,
-                lines: detail_lines(&scanned, first_hour, last_hour),
+                lines,
             },
             "This month of production lines",
             "its values cannot be shown.",

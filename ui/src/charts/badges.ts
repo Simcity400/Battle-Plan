@@ -11,6 +11,8 @@ import type { TooltipRow } from './tooltip.ts';
 
 export interface EventBadge {
   hour: number;
+  /** Native actor of a capitulation; the reached tooltip names it at this hour. */
+  capitulationTag?: string;
   /** One short symbol drawn in the badge, such as ⚔ or ★. */
   glyph: string;
   /** What happened, shown in the tooltip. */

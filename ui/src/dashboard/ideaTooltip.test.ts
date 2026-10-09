@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { IdeaInfo, ModifierFormat } from '../generated/dashboard';
-import { fixed5Of, fixed5Text, formatModifier, ideaEffectRows, ideaTooltip, ideaTooltipSources, tooltipRowBudget, tooltipText } from './ideaTooltip.ts';
+import { fixed5Of, fixed5Text, formatModifier, ideaEffectRows, ideaTooltip, ideaTooltipSources, ideaTargetTags, tooltipRowBudget, tooltipText } from './ideaTooltip.ts';
 
 // Recorded definitions (the static examples in the formatting evidence).
 const format = (key: string, index: number, flags: number, precision: number, label: string, postfix: string | null = null): ModifierFormat =>
@@ -182,4 +182,14 @@ test('unknown effects are said to be unknown, with why when content cannot say',
   const gap = 'common/ideas/b.txt is unknown from line 3: x, so what it defines there is unknown';
   const refused = ideaEffectRows(idea({ effectsKnown: false, unknown: gap }), sources);
   assert.deepEqual(refused.rows.map(row => [row.label, row.value]), [['Effects', gap]]);
+});
+
+test('dated idea targets include distinct country and trait targets without equipment type names', () => {
+  const group = (target: string | null) => ({ target, instant: false, lines: [], tooltips: [] });
+  const info = idea({ targeted: [group('opaque | A'), group(null)], equipment: [group('equipment type')],
+    traits: [{ token: 'mod_trait', known: true, unknown: null, name: null, lines: [], tooltips: [], equipment: [],
+      targeted: [group('opaque | A'), group(''), group('opaque | B')] }] });
+  assert.deepEqual(ideaTargetTags(info), ['opaque | A', '', 'opaque | B']);
+  assert.deepEqual(ideaTargetTags(null), []);
+  assert.deepEqual(ideaTargetTags(undefined), []);
 });

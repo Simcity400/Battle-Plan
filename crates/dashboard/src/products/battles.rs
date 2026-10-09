@@ -36,6 +36,9 @@ pub enum BattleEnd {
 pub struct BattlePlace {
     pub name: Option<String>,
     pub hour: i32,
+    #[serde(rename = "namedAt", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub named_at: Option<i32>,
 }
 #[derive(Clone, Debug, Serialize, TS)]
 pub struct BattleCountry {

@@ -39,6 +39,8 @@ export interface WidgetProps {
   mapOptions: MapOptions;
   /** A span inside the widget header for a short live summary. */
   headerSlot: HTMLElement | null;
+  /** A semantic drill's country chip target, separate from the title summary. */
+  countrySlot?: HTMLElement | null;
   onDiagnostics: (warnings: string[]) => void;
   /** Saves one of the widget's own options from inside it (such as chips above a
    * chart), as the settings panel would; absent where the widget is not in a layout. */
@@ -66,12 +68,16 @@ export interface WidgetMeta {
   title: string;
   /** One line for the widget picker. */
   description?: string;
+  /** Optional category shown beside the description in the widget picker. */
+  category?: string;
   icon: IconName;
   timeModes: readonly WidgetTime['mode'][];
   defaultTime: 'follow' | 'campaign';
   scope: 'moment' | 'history';
-  /** Reads recording data: shows the track label and a country choice. */
+  /** Reads recording data: shows the track label and, by default, a country choice. */
   data: boolean;
+  /** False for whole-world views without a country chip or Countries settings. */
+  countrySelection?: boolean;
   /** Has a meaningful whole-campaign view, so the header offers a Live switch.
    * Without one (a map) the widget always follows playback. */
   history: boolean;
@@ -81,8 +87,9 @@ export interface WidgetMeta {
    * countries by its value (offering a top-N group) and can sum a group into one series.
    * `all`: the widget shows the whole world by default (every faction, every
    * overlord, every country's construction), and chosen countries or a group
-   * narrow it. */
-  countries?: { max: number; ranked?: boolean; aggregate?: boolean; all?: boolean };
+   * narrow it. `factions`: offers the shared faction-totals selection. `fixed`:
+   * a single picked country stays explicit even when it matches the dashboard. */
+  countries?: { max: number; ranked?: boolean; aggregate?: boolean; all?: boolean; factions?: boolean; fixed?: boolean };
   /** The countries a new or reset widget shows (the dashboard's country when absent),
    * such as a race's top 10 of all countries. */
   defaultCountries?: CountrySelection;
@@ -99,17 +106,34 @@ export interface WidgetMeta {
  * key; a content set shows each choice's icon (an image URL) when it has one. */
 export type OptionChoices = Readonly<Record<string, readonly { value: string; label: string; icon?: string | null }[]>>;
 
+export interface WidgetPickerItemsProps {
+  definition: WidgetDefinition;
+  runtime: WidgetRuntime;
+  track: BoundTrack | undefined;
+  active: boolean;
+  disabled: boolean;
+  onAdd: (kind: string, initial?: Pick<WidgetSpec, 'title' | 'options'>) => void;
+}
+
+export type WidgetCountryChipProps = Pick<WidgetProps, 'widget' | 'runtime'> & {
+  onSlot: (element: HTMLSpanElement | null) => void;
+};
+
 export interface WidgetDefinition extends WidgetMeta {
   render?: ComponentType<WidgetProps>;
+  /** Content-derived picker entries; the stored widget kind stays the same. */
+  pickerItems?: ComponentType<WidgetPickerItemsProps>;
   /** A hook listing the choices of the widget's content-choice fields from its
    * campaign's content. The settings panel calls it while open. */
   useOptionChoices?: (widget: WidgetSpec, runtime: WidgetRuntime) => OptionChoices;
+  /** A semantic drill mounts its countrySlot target in the default chip position. */
+  countryChip?: ComponentType<WidgetCountryChipProps>;
   /** Replaces the default settings gear, as the map's pop-down does. */
   headerControls?: ComponentType<HeaderControlsProps>;
 }
 
 /** The React half of a widget; its folder's index.ts exports one. */
-export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'headerControls' | 'useOptionChoices'>;
+export type WidgetRenderer = Pick<WidgetDefinition, 'render' | 'headerControls' | 'countryChip' | 'useOptionChoices' | 'pickerItems'>;
 
 const registry = new Map<string, WidgetDefinition>();
 

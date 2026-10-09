@@ -12,6 +12,9 @@ use crate::{
 };
 use std::{collections::BTreeMap, io};
 
+/// GetIconName@1402D0890 literal fallback (142724470), resolved through content.
+pub const UNKNOWN_ICON: &str = "GFX_goal_unknown";
+
 /// Focus definitions by id.
 pub type Focuses = BTreeMap<String, FocusDefinition>;
 
@@ -21,10 +24,63 @@ pub struct FocusDefinition {
     pub description: String,
     /// Authored points before saved progress or country-specific modifiers.
     pub cost: Option<f64>,
-    /// Conditional icon scripts need game evaluation and remain unavailable.
+    /// First unconditional icon case, for consumers without an event scope.
     pub icon: Option<String>,
     /// An authored trigger-chosen icon block, distinct from no icon field.
     pub scripted_icon: bool,
+    pub icons: crate::scripted_keys::ScriptedKey,
+    pub alternate_icons: crate::scripted_keys::ScriptedKey,
+    /// +C8: parsed alternate definitions, even an empty block (1402C71E0).
+    pub alternate_icon_present: bool,
+}
+
+impl FocusDefinition {
+    /// GetIconName 1402D0890 reads alternate cases only when present and the
+    /// window mode selects them. Without that operand, equal normalized choices
+    /// remain exact; differing choices retain the named refusal.
+    pub fn icon(
+        &self,
+        alternate: Option<bool>,
+        mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
+    ) -> Result<Option<&str>, String> {
+        if !self.alternate_icon_present {
+            return self.icons.select(evaluate);
+        }
+        match alternate {
+            Some(true) => self.alternate_icons.select(evaluate),
+            Some(false) => self.icons.select(evaluate),
+            None => {
+                let normal = self.icons.select(&mut evaluate)?;
+                let alternate = self.alternate_icons.select(evaluate)?;
+                if normal.unwrap_or(UNKNOWN_ICON) == alternate.unwrap_or(UNKNOWN_ICON) {
+                    Ok(normal)
+                } else {
+                    Err("focus alternate icon: focus-window mode is not recorded (1402D0890/141378F40)".into())
+                }
+            }
+        }
+    }
+
+    /// 140B32B40 first tries country-qualified and token-qualified sprites;
+    /// neither path reads the normal/alternate icon selector. Notification
+    /// caller 1413630F0 passes the empty suffix, as used for this thumbnail.
+    pub fn sprite_overrides(&self, token: &str, tag: Option<&str>) -> Vec<String> {
+        let mut sprites = Vec::new();
+        if let Some(tag) = tag {
+            sprites.push(format!("GFX_{tag}_{token}"));
+        }
+        sprites.push(format!("GFX_{token}"));
+        sprites
+    }
+
+    /// Normal GetIconName path (1402D0890), independent of the unrecorded
+    /// interface-window alternate-mode flag. Fallback is exe data 142724470.
+    pub fn select_normal_icon(
+        &self,
+        evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
+    ) -> Result<&str, String> {
+        Ok(self.icons.select(evaluate)?.unwrap_or(UNKNOWN_ICON))
+    }
 }
 
 fn scalar<'a>(items: &'a [Item], key: &str) -> io::Result<Option<&'a str>> {
@@ -335,17 +391,27 @@ pub fn parse(
                     return Err(invalid("focus definition has no id"));
                 };
                 let localisation = scalar(children, "text")?.unwrap_or(id);
-                let icon = children
-                    .iter()
-                    .rfind(|item| item.keyword_is("icon"))
-                    .filter(|item| item.value.scalar().is_some())
-                    .map(|item| {
-                        item.value
-                            .c_str()
-                            .map(str::to_owned)
-                            .map_err(|e| invalid(format!("focus {id} icon: {e}")))
-                    })
-                    .transpose()?;
+                let mut icons = crate::scripted_keys::ScriptedKey::default();
+                let mut alternate_icons = crate::scripted_keys::ScriptedKey::default();
+                let mut alternate_icon_present = false;
+                for field in children {
+                    let target = if field.keyword_is("icon") {
+                        &mut icons
+                    } else if field.keyword_is("alternate_icon") {
+                        alternate_icon_present = true;
+                        &mut alternate_icons
+                    } else {
+                        continue;
+                    };
+                    target
+                        .append(&field.value)
+                        .map_err(|why| invalid(format!("focus {id} icon: {why}")))?;
+                }
+                let icon = icons
+                    .cases
+                    .first()
+                    .filter(|case| case.trigger.is_none())
+                    .map(|case| case.key.clone());
                 output.insert(
                     id.to_owned(),
                     FocusDefinition {
@@ -362,10 +428,10 @@ pub fn parse(
                             .filter(|cost| *cost >= 0)
                             .map(|cost| cost as f64 / 100_000.0),
                         icon,
-                        scripted_icon: children
-                            .iter()
-                            .rfind(|item| item.keyword_is("icon"))
-                            .is_some_and(|item| item.value.items().is_some()),
+                        scripted_icon: icons.cases.iter().any(|case| case.trigger.is_some()),
+                        icons,
+                        alternate_icons,
+                        alternate_icon_present,
                     },
                 );
             } else if item.keyword_is("focus_tree") || item.keyword_is("continuous_focus_palette") {
@@ -541,9 +607,41 @@ free_operative = { operative = a } free_operative = { operative = b }
         )
         .unwrap();
         assert_eq!(defs["A"].localisation, "A");
-        assert_eq!(defs["A"].icon, None);
+        assert_eq!(defs["A"].icon.as_deref(), Some("GFX_a"));
         assert_eq!(defs["A"].cost, Some(2.0));
         assert_eq!(defs["B"].icon.as_deref(), Some("GFX_a"));
+    }
+
+    #[test]
+    fn focus_scripted_icons_preserve_repeated_cases_and_refuse_unknown_conditions() {
+        let defs = parse(
+            br#"focus_tree={focus={id=A
+            icon={CONDITIONAL={always=yes}}
+            icon={FALLBACK=yes}
+            alternate_icon={ALTERNATE=yes}
+        }}"#,
+            Database::National,
+            &KeyNames::default(),
+        )
+        .unwrap();
+        let focus = &defs["A"];
+        assert_eq!(
+            focus.select_normal_icon(|_| Ok(true)).unwrap(),
+            "CONDITIONAL"
+        );
+        assert_eq!(focus.select_normal_icon(|_| Ok(false)).unwrap(), "FALLBACK");
+        assert_eq!(
+            focus
+                .select_normal_icon(|_| Err("unknown native operand".into()))
+                .unwrap_err(),
+            "unknown native operand"
+        );
+        assert!(focus.alternate_icon_present);
+        assert_eq!(
+            focus.alternate_icons.select(|_| Ok(false)).unwrap(),
+            Some("ALTERNATE")
+        );
+        assert!(focus.scripted_icon);
     }
 
     #[test]
@@ -626,5 +724,99 @@ free_operative = { operative = a } free_operative = { operative = b }
             assert_eq!(defs[id].cost, None);
         }
         assert_eq!(continuous["E"].cost, None);
+    }
+}
+
+#[cfg(test)]
+mod icon_selection_tests {
+    use super::*;
+
+    fn focus() -> FocusDefinition {
+        let (definitions, _) = parse(
+            br#"focus_tree={focus={id=synthetic
+                icon={GFX_first={always=no} GFX_second={always=yes} GFX_final=yes}
+                alternate_icon=GFX_alternate}}"#,
+            Database::National,
+            &KeyNames::default(),
+        )
+        .unwrap();
+        definitions["synthetic"].clone()
+    }
+
+    #[test]
+    fn first_true_case_wins_and_an_earlier_unknown_is_not_skipped() {
+        let definition = focus();
+        let mut visited = 0;
+        assert_eq!(
+            definition
+                .icon(Some(false), |_| {
+                    visited += 1;
+                    Ok(visited == 2)
+                })
+                .unwrap(),
+            Some("GFX_second")
+        );
+        assert_eq!(visited, 2);
+        assert_eq!(
+            definition
+                .icon(Some(false), |_| Err("missing recorded predicate".into()))
+                .unwrap_err(),
+            "missing recorded predicate"
+        );
+        assert_eq!(
+            definition
+                .icon(Some(true), |_| panic!("unconditional alternate"))
+                .unwrap(),
+            Some("GFX_alternate")
+        );
+        assert!(
+            definition
+                .icon(None, |_| Ok(false))
+                .unwrap_err()
+                .contains("focus-window mode")
+        );
+    }
+
+    #[test]
+    fn native_fallback_agreement_needs_no_window_mode() {
+        let (definitions, _) = parse(
+            br#"focus_tree={
+                focus={id=fallback alternate_icon=GFX_goal_unknown}
+                focus={id=same icon=GFX_same alternate_icon={GFX_same=yes}}
+                focus={id=absent icon={GFX_conditional={always=no}}}
+                focus={id=empty icon=GFX_same alternate_icon={}}
+            }"#,
+            Database::National,
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            definitions["fallback"]
+                .icon(None, |_| panic!("no predicate"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            definitions["same"]
+                .icon(None, |_| panic!("no predicate"))
+                .unwrap(),
+            Some("GFX_same")
+        );
+        assert_eq!(
+            definitions["absent"].icon(None, |_| Ok(false)).unwrap(),
+            None
+        );
+        let empty = &definitions["empty"];
+        assert!(empty.alternate_icon_present);
+        assert_eq!(
+            empty.icon(Some(true), |_| panic!("no predicate")).unwrap(),
+            None
+        );
+        assert!(
+            empty
+                .icon(None, |_| panic!("no predicate"))
+                .unwrap_err()
+                .contains("focus-window mode")
+        );
     }
 }

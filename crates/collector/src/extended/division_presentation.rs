@@ -23,7 +23,7 @@ use replay::{
     },
 };
 
-pub const N: usize = 4;
+pub const N: usize = 5;
 /// DivisionRetreatBans' index in [`TABLES`] and the outcomes.
 pub const BANS: usize = 2;
 pub const TABLES: [TableId; N] = [
@@ -31,6 +31,7 @@ pub const TABLES: [TableId; N] = [
     TableId::DivisionStatus,
     TableId::DivisionRetreatBans,
     TableId::AttritionModifierBreakdowns,
+    TableId::DivisionLandInputs,
 ];
 // Both depend on the shared division census; the combined source read group in
 // extended::read_groups includes their individually measured costs.
@@ -283,6 +284,8 @@ fn status_packet(c: &Capacities) -> carmy::StatusPacket {
 }
 
 pub struct Captured {
+    land: super::division_land::Captured,
+    land_ticks: u64,
     movement: CaptureRows<carmy::MovementRow>,
     status: CaptureRows<carmy::StatusRow>,
     bans: CaptureRows<carmy::RetreatBanRow>,
@@ -327,6 +330,8 @@ impl Captured {
     /// Empty ownership placeholder; constructing it never provisions packets.
     pub(crate) fn vacant() -> Self {
         Self {
+            land: super::division_land::Captured::new(0),
+            land_ticks: 0,
             movement: CaptureRows::new(0),
             status: CaptureRows::new(0),
             bans: CaptureRows::new(0),
@@ -352,6 +357,8 @@ impl Captured {
         let mut attrition = super::attrition_inputs::Captured::new(c.attrition);
         attrition.reserve_rows(c.status);
         Self {
+            land: super::division_land::Captured::new(c.movement.max(c.status)),
+            land_ticks: 0,
             movement: CaptureRows::new(c.movement),
             status: CaptureRows::new(c.status),
             bans: CaptureRows::new(c.bans),
@@ -381,6 +388,8 @@ impl Captured {
     }
 
     pub fn reset(&mut self) {
+        self.land.reset();
+        self.land_ticks = 0;
         self.movement.reset();
         self.status.reset();
         self.bans.reset();
@@ -395,7 +404,8 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.movement.allocated_bytes()
+        self.land.allocated_bytes()
+            + self.movement.allocated_bytes()
             + self.status.allocated_bytes()
             + self.bans.allocated_bytes()
             + self.paths.allocated_bytes()
@@ -449,6 +459,7 @@ impl Captured {
 
     /// Prepare primary packet storage for the complete shared source census.
     pub(crate) fn reserve_sources(&mut self, capacity: usize) {
+        self.land.reserve(capacity);
         self.source_capacity = self.source_capacity.max(capacity);
         let _ = self
             .movement_packet
@@ -591,7 +602,13 @@ impl Captured {
         let ticks = self.capture(memory, context.base, context.game_state, sources);
         let bans = self.capture_bans(memory, context, Sources { rows, outcome }, store);
         CaptureReport {
-            ticks: [ticks[0], ticks[1], bans, self.attrition_ticks],
+            ticks: [
+                ticks[0],
+                ticks[1],
+                bans,
+                self.attrition_ticks,
+                self.land_ticks,
+            ],
         }
     }
 
@@ -687,6 +704,7 @@ impl Captured {
         self.names.len = 0;
         self.cached_names.len = 0;
         self.attrition.fail(reason);
+        self.land.fail(reason);
         self.decode_pending = false;
         CaptureReport::default()
     }
@@ -708,6 +726,7 @@ impl Captured {
         };
         let rows = &sources.rows[..outcome.len()];
         self.source_required = self.source_required.max(rows.len());
+        self.land_ticks = self.land.capture(memory, base, rows, outcome);
         let movement_reads = crate::read_accounting::table(TableId::DivisionMovement);
         let start = qpc();
         let _ = self.geometry.begin(memory, base, state);
@@ -815,6 +834,7 @@ impl Captured {
             self.status.outcome,
             self.bans.outcome,
             self.attrition.outcome(),
+            self.land.outcome(),
         ]
     }
 
@@ -827,7 +847,7 @@ impl Captured {
                 unavailable("division presentation projection pending").into()
             });
         }
-        let [movement, mut status, bans, _] = self.outcomes();
+        let [movement, mut status, bans, _, _] = self.outcomes();
         let breakdowns = self.attrition.table();
         let bans = scalar_table::<tables::DivisionRetreatBans, _>(
             projection.as_deref_mut(),
@@ -980,6 +1000,7 @@ impl Captured {
                 status,
                 bans,
                 breakdowns.into(),
+                self.land.table().into(),
             ];
         };
         let span =
@@ -995,6 +1016,7 @@ impl Captured {
                 status,
                 bans,
                 breakdowns.into(),
+                self.land.table().into(),
             ];
         }
         [
@@ -1047,6 +1069,7 @@ impl Captured {
             status,
             bans,
             breakdowns.into(),
+            self.land.table().into(),
         ]
     }
     fn status_index(&self, division: u64) -> usize {
@@ -1275,8 +1298,13 @@ mod tests {
         captured.decode_inputs();
         let mut scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
-        let [_, TableInput::ComparedChanges { indices, rows, .. }, _, _] =
-            captured.table_inputs(Some(&mut projection))
+        let [
+            _,
+            TableInput::ComparedChanges { indices, rows, .. },
+            _,
+            _,
+            _,
+        ] = captured.table_inputs(Some(&mut projection))
         else {
             panic!("a changed retained cache defeats baseline reuse");
         };
@@ -1808,8 +1836,13 @@ mod tests {
             }),
         ] {
             captured.status.rows[0].naming = changed;
-            let [_, TableInput::ComparedChanges { indices, rows, .. }, _, _] =
-                captured.table_inputs(Some(&mut projection))
+            let [
+                _,
+                TableInput::ComparedChanges { indices, rows, .. },
+                _,
+                _,
+                _,
+            ] = captured.table_inputs(Some(&mut projection))
             else {
                 panic!("every naming operand must defeat reuse");
             };
@@ -2262,6 +2295,7 @@ mod tests {
             TableView::Complete(TableRows::DivisionStatus(s)),
             _,
             _,
+            land,
         ] = capture.tables()
         else {
             panic!("complete companions");
@@ -2286,6 +2320,7 @@ mod tests {
         assert_eq!(s[0].supply_grace_maximum, Recorded::Value(i64::MAX));
         assert_eq!(s[0].supply_grace_remaining, Recorded::Value(i64::MIN));
         assert_eq!(s[0].naming, Recorded::Value(None));
+        assert!(matches!(land, TableView::Unavailable { .. }));
         let mut baseline = std::array::from_fn(|_| unavailable("outside presentation fixture"));
         for (id, view) in TABLES.into_iter().zip(capture.tables()) {
             baseline[id.index()] = view;
@@ -2305,7 +2340,7 @@ mod tests {
         let mut scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
         // The fixture has no country census, so the bans table is unavailable.
-        let [movement, status, bans, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, bans, _, _] = capture.table_inputs(Some(&mut projection));
         assert!(
             [movement, status]
                 .iter()
@@ -2329,7 +2364,7 @@ mod tests {
                 country_modifier: i64::MAX,
                 ..Default::default()
             });
-        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection));
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("current modifier-only change must publish movement");
         };
@@ -2338,7 +2373,7 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         capture.movement.rows[0].strategic_action =
             carmy::StrategicAction::Withheld(carmy::StrategicActionFailure::CountryModifier);
-        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection));
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("a refused query must publish the movement row");
         };
@@ -2353,7 +2388,7 @@ mod tests {
         // A path-only mutation and an independently changing status must both
         // defeat reuse, without changing their keys or arena spans.
         capture.paths.first[3] ^= 1;
-        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection));
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("changed movement must replace its freshly compared row");
         };
@@ -2362,7 +2397,7 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         capture.paths.first[3] ^= 1;
         capture.status.rows[0].has_order = 1;
-        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection));
         assert!(matches!(movement, TableInput::ComparedEqual(_)));
         let TableInput::ComparedChanges { indices, rows, .. } = status else {
             panic!("changed status must replace its freshly compared row");
@@ -2371,7 +2406,7 @@ mod tests {
         assert_eq!(TableView::Complete(rows), capture.tables()[1]);
         capture.status.rows[0].has_order = 0;
         capture.movement.rows[0].alternate_start = usize::MAX;
-        let [movement, status, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection));
         assert!(matches!(
             movement,
             TableInput::Sampled(TableView::Unavailable { .. })

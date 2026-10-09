@@ -1,78 +1,61 @@
 # hoi4re
 
-One tool for reading the decompiled game and saving what you learn. Python 3.11, standard library only.
-Run it from any shell as `python tools/re/hoi4re.py <command>` or `hoi4re <command>`
-(`--help` lists them). `C:/Tools/hoi4_mcp/hoi4re` is a junction to this directory, so both run the same code.
+Read the decompiled game and save native names, fields and notes in a shared knowledge database. The CLI uses Python 3.11 and the standard library. Run `python tools/re/hoi4re.py <command>` from the checkout, or `C:/Tools/hoi4_mcp/hoi4re.cmd <command>` from any shell; `--help` lists commands. The installed `hoi4re` directory is a junction to this tool.
 
-## Data
+Recorder layouts remain authoritative in [engine](../../crates/engine/README.md). Follow [AGENTS.md](../../AGENTS.md) for native evidence and publication rules.
 
-Everything lives in `tools/re/data/` of the main checkout (``). It is git-ignored: it holds decompiled
-game code and multi-GB databases. The tool finds it from a worktree too. Only `knowledge.sqlite3` and its journal hold
-work that cannot be rebuilt: run `backup` (copies them to `L:/hoi4re_backups/<date>`) after any large batch of work.
+## Files and private data
 
-| Path | What |
+| File | Responsibility |
 |---|---|
-| `knowledge.sqlite3`, `knowledge.journal.jsonl` | What agents and scripts learned: `symbols` (names), `notes`, `fields`, `classes` and `vslots` (RTTI), `mentions`, `sources`, `accessors`, `queue`. Every agent write is also appended to the journal. |
-| `function_index.sqlite3` | Decompile, call graph and full-text search for hoi4.exe 1.19.2.0.a729 (read-only). |
-| `builds/a729/` | `index.sqlite3`: functions the first index missed, plus every function's byte and shape fingerprint for patch-day matching. `instructions.sqlite3`: compressed instruction listings for `asm`. New builds go in `builds/<id>/`. |
-| `ghidra/a729/` | The Ghidra project of the a729 exe, for re-exports. |
-| `fleet/` | Batch files and the orchestrator log of the naming fleet. |
-| `backups/` | Local safety copies from maintenance. |
+| [hoi4re.py](hoi4re.py) | CLI, decompile lookup, call graph, knowledge writes and backups. |
+| [rtti.py](rtti.py), [seed.py](seed.py), [derive.py](derive.py) | PE/RTTI reading, imported knowledge and mechanically derived names. |
+| [migrate.py](migrate.py), [ghidra/ExportAll.java](ghidra/ExportAll.java) | New-build export, indexing and symbol matching. |
+| [work.py](work.py), [briefs](briefs/) | Naming queues, claims and review commands. |
 
-Known names replace `FUN_`/`DAT_` labels everywhere they are shown, as `Name@address`. Older documents cite exported files
-as `func_<va>.decompile.c:N`; that is line N of `hoi4re fn <va> --raw`. `<local-path>` is a
-junction to `fleet/`.
+Data lives in ignored `tools/re/data/` in the main checkout, including when run from a worktree. `HOI4RE_DATA`, `HOI4RE_REPO`, `HOI4RE_EXE` and `HOI4RE_BUILD` override defaults.
 
-## Read
+| Data | Purpose |
+|---|---|
+| `knowledge.sqlite3`, `knowledge.journal.jsonl` | Shared names, notes, fields, RTTI and work queues; every agent write also enters the journal. |
+| `function_index.sqlite3` | Read-only decompile, call graph and full-text index for the original indexed build. |
+| `builds/<id>/` | Supplemental/new-build index, byte and instruction-shape fingerprints, and compressed instruction listings. |
+| `ghidra/<id>/` | Private Ghidra projects for export. |
+
+The knowledge database and journal contain work that cannot be rebuilt. Run `backup` after a large batch; the default destination is `L:/hoi4re_backups/<timestamp>`, overridable with `--dest` or `HOI4RE_BACKUP`. Keep decompiles, databases and exports outside Git.
+
+## Read native code
 
 | Command | Use |
 |---|---|
-| `fn <addr or name>` | Name, summary, class, notes, mentions, callers, callees, matching fields, decompile. `--no-body`, `--max-lines N`, `--raw` |
-| `search <fts query>` | Full-text search of decompiled bodies: `"instant_build"`, `NEAR(supply homebase)` |
-| `xrefs <addr>` | Every function that references a global, vtable, string or function |
-| `find <text>` | Names, classes and fields containing the text |
-| `callers` / `callees <addr> [--depth N]`, `path <a> <b>` | Call graph (direct calls only; virtual calls are not edges) |
-| `class <Name>`, `vtable <Name>` | Bases, vtables, fields, named methods; slot list |
-| `field-users <Class> <offset>` | Functions touching an offset, those tied to the class first |
-| `strings <literal>`, `data <addr>`, `asm <addr>` | Literal and its users; initialised bytes; instruction listing |
+| `fn <addr or name>` | Symbol, notes, callers, callees, fields and decompile; `--no-body`, `--max-lines N`, `--raw`. |
+| `asm <addr>`, `data <addr>` | Indexed instructions and initialized bytes. |
+| `search <fts query>`, `find <text>` | Search decompiled bodies or saved names, classes and fields. |
+| `xrefs <addr>`, `strings <literal>` | Functions referencing an address or string. |
+| `callers <addr>`, `callees <addr>`, `path <a> <b>` | Direct-call graph; virtual calls are not graph edges. |
+| `class <Name>`, `vtable <Name>` | Bases, fields, named methods and virtual slots. |
+| `field-users <Class> <offset>` | Functions touching an offset, class-associated functions first. |
 
 
-## Write (do this before you finish)
+## Save findings
+
+Set `HOI4RE_AUTHOR`, pass `--author`, or put `author` in each batch row. Save established findings before finishing:
 
 ```powershell
 $env:HOI4RE_AUTHOR = 'your-name'
 hoi4re name 1422198a0 CApplication::Run --summary "main loop; calls Frame until quit" --confidence medium --evidence "SetThreadAffinityMask then loop on Frame"
 hoi4re note 1401dcef0 "sets tick_busy (+0x4c0) before advancing the hour"
 hoi4re field CGameState 0x4c0 TICK_BUSY --type u8 --meaning "set for the whole hourly tick"
-hoi4re batch '@findings.jsonl'      # lines: {"op":"name","target":"...","name":"..."} | {"op":"note",...} | {"op":"field","cls":...}
+hoi4re batch '@findings.jsonl'
 ```
 
-Confidence is `low`, `medium`, `high` or `verified`; a name never replaces one of higher confidence (it is kept as a note).
-Struct layouts used by the recorder stay authoritative in `crates/engine/src`; `seed engine` re-imports them.
+Batch JSONL rows use `op: name|note|field` and the corresponding command's fields. Confidence is `low`, `medium`, `high` or `verified`; a lower-confidence replacement stays as a note. Agent writes above `medium` are capped unless `HOI4RE_TRUSTED=1`.
 
-## Maintain
+## Maintenance and queues
 
-- `seed [rtti] [engine] [docs] [sources]`: rebuild the imported layers (RTTI from the exe, the engine crate, reports
-  and docs, source files named in assert strings). Re-runnable; agent-written rows are untouched. Run `seed engine`
-  after engine changes. Names and notes imported once from the retired `hoi4_re` server's registry stay as they are.
-- `derive [defines] [plumbing] [accessors] [ctors] [virtuals]`: names a script can prove alone, at confidence `derived`:
-  define globals (with the value and comment from `00_defines.lua`), compiler plumbing (unwind funclets, adjustor thunks,
-  static destructors), one-line accessors, constructors and destructors, and overrides of any named virtual. Naming a
-  virtual re-runs `virtuals` automatically. Re-run the rest after `seed`.
-- `export`: non-RTTI symbols plus all notes and fields as JSONL (`batch` reads it back). `backup [--dest D]`: dated copy of the knowledge
-  database and journal on another drive (`HOI4RE_BACKUP` changes the default).
-- Patch day: `migrate export`, `migrate index`, `migrate names` (see `migrate.py`), then `HOI4RE_BUILD=<id>`.
-  Matching order: RTTI slot, identical bytes, unique instruction shape, call-graph neighbours.
-
-`HOI4RE_DATA`, `HOI4RE_REPO`, `HOI4RE_EXE` and `HOI4RE_BUILD` override the defaults.
-For `migrate export`, set `HOI4RE_GHIDRA` to the Ghidra installation containing
-`support/analyzeHeadless.bat`. Java configuration, including `JAVA_HOME`, is inherited
-from the environment. `migrate index` and `migrate names` do not require Ghidra.
-
-## Fleet work
-
-`todo fill` builds ranked queues; `todo next <kind> --author A --count 5` claims items and prints the brief to follow
-(`briefs/RULES.md` plus one file per kind: `hot`, `cited`, `sourced`, `class`, `docs`); `todo status` shows what is left.
-Function items close when the function gets a name at `low` or better; `todo done` closes the rest. Claims lapse after 3 hours.
-Every agent write needs `--author`, a batch row's `author`, or `HOI4RE_AUTHOR`. Agent confidence above `medium` is capped to `medium` unless `HOI4RE_TRUSTED=1`.
-`review authors`, `review sample --author A`, `review drop --author A` check and, if needed, remove one agent's work.
+- `seed [rtti] [engine] [docs] [sources]` rebuilds imported layers without changing agent-written rows. Run `seed engine` after layout changes.
+- `derive [defines] [plumbing] [accessors] [ctors] [virtuals]` assigns mechanically established names at `derived` confidence. Naming a virtual reruns `virtuals`; rerun the other derivations after seeding.
+- `export` writes non-RTTI symbols, notes and fields as JSONL that `batch` can import.
+- For a new executable, run `migrate export`, `migrate index` and `migrate names` as described in [migrate.py](migrate.py), then select `HOI4RE_BUILD` and `HOI4RE_EXE`. Matching uses RTTI slots, identical bytes, unique instruction shape and call-graph neighbours. Export requires `HOI4RE_GHIDRA` pointing to a Ghidra installation with `support/analyzeHeadless.bat`; Java settings come from the environment. Indexing and name matching do not require Ghidra.
+- `todo fill`, `todo next <kind> --author A --count 5` and `todo status` populate, claim and inspect naming work. Follow [briefs/RULES.md](briefs/RULES.md) and the claimed kind's brief. Function items close at confidence `low` or better; `todo done` closes other items, and claims expire after three hours.
+- `review authors`, `review sample --author A` and `review drop --author A` inspect or remove an author's work.

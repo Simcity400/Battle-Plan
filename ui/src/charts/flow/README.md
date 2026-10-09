@@ -1,7 +1,17 @@
 # Flow diagrams
 
-`FlowDiagram` draws source and target nodes joined by ribbons. The widget owns their meaning and sums the countries beyond `flowCapacity` into its last node; `layout.ts` owns geometry, motion, hit testing and keyboard stops.
+[FlowDiagram.tsx](FlowDiagram.tsx) draws source/target nodes joined by ribbons. Widgets supply meaning, exact tooltip amounts and dated labels; [layout.ts](layout.ts) owns geometry, motion, hit testing and keyboard stops. See the [chart contracts](../README.md) and [Trade flows](../../widgets/trade-flows/README.md).
 
-Pass a memoized `tooltip` callback with every input it reads. `FlowTooltipCache` reuses a still hover's content until its hit or callback changes, then refreshes it. Keyboard hover follows the same callback changes. There is no separate revision list to keep in step with the widget's model.
+## Data and fitting
 
-The widget fits its tooltip with the shared [tooltip kit](../tooltip.ts), and supplies its recorded-hour names and flags with [useHoverLabels](../../dashboard/useHoverLabels.ts). See the [chart rules](../README.md) and [Trade flows](../../widgets/trade-flows/README.md) for the consumer.
+Give nodes/links stable IDs and `order` keys. Nodes sort by size with deterministic ties; `last` keeps a remainder last, and ribbon order stays stable within nodes. `onCapacity` reports the capacity for the current height: the caller sums overflow into its last node without losing amounts. `scale` and `slots` can keep one scale throughout a campaign.
+
+A changed `stretch` or reduced motion snaps geometry. `playbackHour` is the last hour included in cumulative data; moving it backward removes future geometry immediately. `hour` stamps the drawn frame used by `onPick`.
+
+## Interaction
+
+Memoize `tooltip` with every input it reads. [tooltipCache.ts](tooltipCache.ts) refreshes still pointer/keyboard hover when the hit or callback changes. Dated country facts use [useHoverLabels](../../dashboard/useHoverLabels.ts).
+
+With `hour` and `onPick`, click/Enter/Space activates the actual drawn node/ribbon and its supplying hour, retaining caller selection metadata. The context-menu key and Shift+F10 keep the menu action; without `onPick`, Enter opens that menu too. Keyboard stops and pointer hits use the drawn geometry.
+
+Use explicit `countryFlag` for native countries, retaining grey placeholders and dated refusal reasons; aggregates remain flagless. Fitted tooltips decode only shown flags. Scrollable breakdowns retain raw rows and a stable `scrollId`; wheel/Page Up/Down go through shared owner-scoped scrolling, whose mounted viewport decodes row flags. An explicit dated tooltip header takes precedence over the node fallback. See [tooltip.ts](../tooltip.ts) for ownership and full spoken text.

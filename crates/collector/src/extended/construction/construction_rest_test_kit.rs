@@ -11,7 +11,7 @@ use engine::{
 };
 
 pub(crate) const BASE: usize = 0x1000;
-const COUNTRY: usize = 0x3000;
+pub(super) const COUNTRY: usize = 0x3000;
 const STATE: usize = 0x4000;
 const TEMPLATE: usize = 0x5000;
 const RESDATA: usize = 0x5200;
@@ -25,11 +25,10 @@ const RDATA: usize = 0xC000;
 const OCC: usize = 0x7000;
 const OCC_TABLE: usize = 0x7100;
 const OCC_ROWS: usize = 0x7200;
-const OCC_DATA: usize = 0x7300;
+pub(super) const OCC_DATA: usize = 0x7300;
 const LAW_DATA: usize = 0x7500;
-const GAR_TABLE: usize = 0x7600;
 const GAR_DATA: usize = 0x7700;
-const GAR_OBJ: usize = 0x7800;
+pub(super) const GAR_OBJ: usize = 0x7800;
 pub(super) const LAW_OBJ: usize = 0x7900;
 const RESERVE_DATA: usize = 0x7B00;
 const ASSIGN_DATA: usize = 0x7D00;
@@ -435,13 +434,12 @@ pub(crate) fn fixture() -> Vec<u8> {
     put(&mut bytes, LAW_DATA + 8, &0_u32.to_le_bytes());
     put(&mut bytes, LAW_DATA + 16, &(LAW_OBJ as u64).to_le_bytes());
     // Garrison table inside occupation data (one garrison, state 1).
-    put(
+    array(
         &mut bytes,
         OCC_DATA + ccountry_occupation_data::GARRISON_TABLE,
-        &(GAR_TABLE as u64).to_le_bytes(),
+        GAR_DATA,
+        1,
     );
-    put(&mut bytes, GAR_TABLE + 8, &1_u32.to_le_bytes());
-    put(&mut bytes, GAR_TABLE + 12, &1_u32.to_le_bytes());
     put(&mut bytes, GAR_DATA + 4, &[1]);
     put(&mut bytes, GAR_DATA + 8, &1_u32.to_le_bytes());
     put(&mut bytes, GAR_DATA + 16, &(GAR_OBJ as u64).to_le_bytes());
@@ -521,6 +519,8 @@ pub(crate) fn capacities() -> Capacities {
         routes: 8,
         law_bytes: 64,
         occupied: 8,
+        group_laws: 8,
+        equipment: 0,
     }
 }
 
@@ -577,6 +577,17 @@ pub(crate) fn assert_matches_direct(split: &Captured, direct: &Captured) {
         "settings outcome"
     );
     assert_eq!(split.laws.outcome, direct.laws.outcome, "laws outcome");
+    assert_eq!(
+        split.group_laws.outcome, direct.group_laws.outcome,
+        "group laws outcome"
+    );
+    assert_eq!(split.fallback_law, direct.fallback_law, "fallback law");
+    let len = split.group_laws.outcome.len();
+    assert_eq!(
+        &split.group_laws.rows[..len],
+        &direct.group_laws.rows[..len],
+        "group law rows"
+    );
     assert_eq!(
         split.garrisons.outcome, direct.garrisons.outcome,
         "garrisons outcome"

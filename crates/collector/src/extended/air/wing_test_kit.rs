@@ -234,6 +234,7 @@ pub(crate) fn split(memory: &impl Memory) -> (Split, AirWingCopyReport, AirWingJ
 
         limits: [1024, 8192, 4096],
         naval_limit: 4096,
+        game_score: false,
     };
     let mut first = AirWingJob::new();
     let report = super::copy_air_refresh(memory, ctx, &mut first);
@@ -269,6 +270,7 @@ pub(crate) fn split_with(
 
         limits: [1024, capacity.rows[0], capacity.rows[2]],
         naval_limit: 4096,
+        game_score: false,
     };
     let mut first = AirWingJob::new();
     let report = super::copy_air_refresh(memory, ctx, &mut first);
@@ -308,6 +310,7 @@ pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, AirWingCopyReport
 
         limits: [1024, 1, 1],
         naval_limit: 4096,
+        game_score: false,
     };
     let mut first = AirWingJob::new();
     let report = super::copy_air_refresh(memory, ctx, &mut first);

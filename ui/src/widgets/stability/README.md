@@ -1,34 +1,31 @@
 # Stability & War support
 
-Stability and war support over time in one widget, as signed off (mock-ups politics-1/2): each country in its map colour, **stability solid and war support dashed** (a key under the legend names the line styles), on a **fixed 0–100% scale** by default with a **Zoom** option (both bounds fitted to the values drawn in view, following the view as it moves), draw-in playback by default (in whole-campaign playback the lines stop at the playhead unless **Show after the playhead** is on) and values at the line ends ("Stability 96.0%"). Either line can be switched off. Right-click jumps to that moment.
+## What it shows
 
-## Data
+Stability (solid) and war support (dashed) per country, with event markers and signed formula-part drills.
 
-- **Product `country-stability`** (`crates/dashboard/src/products/country_stability.rs`): the displayed values, computed from each country's recorded inputs with the engine's arithmetic (`GetStability`, `GetWarSupport`), as exact runs, and `carried`, the hours whose values come from an earlier read.
-- **The breakdown** is the same product with an `hour`: the read behind the hovered hour (`readHourAt`) is fetched once and kept. It lists the formula's terms and, for the modifier term, the game's own tooltip lines in tree order. Each line is named in the viewer's language from content (an idea, advisor or leader, ideology, static or dynamic modifier) and prefixed with what it is ("National spirit", its law or advisor slot, "Country leader"). A line the recorder could not pair keeps the game's own text in the recording's language, in grey, with a note. Whatever the lines do not add up to is its own "Other / not identified" row; nothing is invented. A formula term the widget does not know shows its key and raw value without a unit; a null term says "Not recorded".
-- **Products `country-styles` and `country-groups`**, as for Political power.
+## Products it reads
 
-## Event markers
+[`country-stability`](../../../../crates/dashboard/src/products/country_stability.rs) supplies values/formulas; [`stability-parts`](../../../../crates/dashboard/src/products/stability_parts.rs) supplies histories. Markers use [`country-groups`](../../../../crates/dashboard/src/products/country_groups.rs), [`idea-history`](../../../../crates/dashboard/src/products/idea_history.rs), [`party-history`](../../../../crates/dashboard/src/products/party_history.rs) and [`national-focus`](../../../../crates/dashboard/src/products/national_focus.rs). Country facts supply dated looks.
 
-Glyphs along the top edge for one country, as signed off (mock-up politics-2), each kind switchable in the settings and all on by default:
-- **⚔ wars and capitulations:** "War with Poland began", dated by the war relation's start hour (the recording does not say whether a country declared or joined as an ally); "Capitulated", and an enemy's "France capitulated", dated by the engine's capitulation hour (`country-groups`); the other country is named as the game showed it at the event's hour (`country-groups` for the events, `country-styles` at each event hour, at most 64 hours, else its name in the recording's metadata); a capitulation is recorded only if a readable sample saw it in force, since its hour is certified only then.
-- **⚑ faction changes:** "Joined" or "Left" a faction; "Founded" only when the country was its sole first member, since the recording names no founder, and a change of the country's tag while a member is neither (`country-groups` lists `identityChanges`). Faction names come from the event hour's literal or recorded template, with campaign display names first; when a faction dissolves at the leaving hour, its final membership read identifies the faction left. A missing name read stays unnamed.
-- **⚙ government changes:** a law or an advisor taken on (`idea-history`), and a change of ruling party (`party-history`). Ideas are read at intervals, so a law or advisor marker says "by then": the hour is the first read that saw it. Only an idea content marks as a law is a law, whatever its slot. The same character staying in its seat, even in another role, is not a new appointment, and an unidentified holder stays unidentified.
-- **★ focuses completed**, at the hour the completion was first seen (`national-focus`), each occurrence of a repeatable one. Reads are not hourly, so every marker says "completed by then": the hour is a bound, never exact.
+## Settings
 
-A start or end next to an unrecorded hour, at the branch's first or last hour, an idea continuing across a change of country identity, or the ideas a new identity starts with (`identityStarts`) are not events. A war start or capitulation is named by the countries its ids named at the event's own hour; one dated before an unrecorded hour or a change of country that preceded its first sighting cannot be named, so it is left out and the reply says so. Every event the chart draws, in its current view, is also listed as text for assistive technology (by the chart kit). With several countries no markers are drawn; a group of one country shows its events only while it is in the group.
+Countries, campaign/follow/pin/range; line/marker toggles, end labels, fixed 0–100% or Zoom, playback/window and drill controls.
 
-## Hover
+## Notable behaviour
 
-Multi-country tooltips use shared viewport fitting, counting rows that do not fit
-and preserving the complete read-out. They keep the chart's existing sampled
-country names. Country choices use the shared selector without a smaller
-widget-specific limit; the single-country breakdown keeps its approved layout.
+- Values/formulas use native arithmetic and supplying reads; carried values say when read. Gaps and identity changes stop values and retained looks.
+- Initial snapshots, gap boundaries and replacements are not events. Preserve observed bounds without inferred war declarers, founders or exact focus completions.
+- Picks use drawn country/measure curves; overlap/key choices hold the date and disable Follow/Pin until selection. Scope/numeric changes invalidate picks; label refresh retains them.
+- Drills keep signed parts, exact residuals and unknown totals within coverage/range/membership. Picking holds; Follow uses the aligned clock independently of parent time. Pin keeps country/measure and branch-relative day or Follow.
+- [Shared drill bindings](../country-measure/drillCountry.ts) save native slot/ID/origin. Parts follow only its aliases; headers use the body date. Invalid holders refuse bodies; older missing-holder pins stay neutral.
+- Mounted rows request flags; completed missing reads clear artwork. Keep full tooltip/event text accessible.
 
-One country: the date, then **Stability** and **War support** each with its signed parts and a bold **Total**, one decimal, green or red by sign (mock-up politics-1). Values carried from an earlier day say which day they were read; the breakdown, character names included, is as recorded at that read. Several countries: one line per country with its two values (a † marks values carried from an earlier read, dated in one note); choosing one country shows the breakdown. A breakdown that fails to load is asked for again a few times, with growing delays, and whenever its day is hovered anew, including after the pointer leaves the chart and comes back. With the keyboard, while focus is in the widget, the breakdown of the moment shown loads once playback rests and every line is announced, with the read it comes from; the current values say when they were carried from an earlier read. Values at the line ends are each line's last sample drawn, never past the recorded hours, and only as many labels as fit are drawn. A country without a recorded map colour stays grey, even with adjusted colours.
+## Files
 
-## Drill-down
-
-As signed off (mock-up drill-1), for one country: clicking the chart opens what makes up the value, in the widget (the default; ← Back returns) or in a panel beside it (the **Breakdown opens** setting). **Stability** and **War support** tabs choose the measure. The chosen day's parts are bars with their signed amount, their share and a **Total**; below, the same parts over time as a stacked chart (positive parts above zero, negative below), whose click picks another day. The largest parts in view take the palette's colours in order, all of them before any grey, and the rest share one grey **Smaller parts** layer. What the recorded lines do not explain is **Other / not identified**, and grey names are the game's own text. While playback runs the breakdown follows it until a day is picked (**Follow playback** returns). **Pin as widget** adds the breakdown below as its own widget: the same widget with **Show** set to Stability parts or War support parts, following its own time; it shows that measure (change it in the settings), without the tabs. Parts are known only where their read recorded its lines, and only in the hours the widget shows the country (its range and a group's membership); elsewhere the day says nothing was recorded. Parts carried from an earlier read say when they were read. With the keyboard, Enter or Space on the chart opens the moment shown. Right-click on the parts chart jumps to that day. The parts chart follows the widget's own playback (grow to now, the whole campaign up to or past the playhead, or a recent window), so it shows the same hours as the main chart; the chosen day is marked on it. A character's part is named as recorded when its read was first seen, and a rename is its own part. A pinned breakdown scrolls, and the main chart's line switches do not apply to it.
-
-- **Product `stability-parts`** (`crates/dashboard/src/products/stability_parts.rs`): each part of one country's stability and war support over the branch, as runs, with the hours whose parts are known.
+| File | Responsibility |
+|---|---|
+| [StabilityWidget.tsx](StabilityWidget.tsx), [stabilityData.ts](stabilityData.ts) | Values/formulas and chart. |
+| [StabilityDrill.tsx](StabilityDrill.tsx), [stabilityDrillData.ts](stabilityDrillData.ts), [partsData.ts](partsData.ts) | Signed parts and histories. |
+| [markers.ts](markers.ts) | Event rules; adjacent helper/render tests. |
+| [definition.ts](definition.ts), [index.ts](index.ts), [stability.css](stability.css) | Options/registration/layout. |

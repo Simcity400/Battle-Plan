@@ -39,8 +39,8 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   const hour = window?.lastHour ?? track?.branch.lastHour ?? 0;
   const top = widget.countries.kind === 'group' && widget.countries.group.type === 'top' ? widget.countries.group.count : null;
   const topField: AgencyRankField = options.topMeasure === 'active' || options.topMeasure === 'maximum' ? options.topMeasure : 'defense';
-  const grouped = widget.countries.kind === 'group' && top === null;
-  const groups = useCountryGroups(runtime, track, active && grouped);
+  const needsGroups = widget.countries.kind !== 'all' && top === null;
+  const groups = useCountryGroups(runtime, track, active && needsGroups);
   const selected = selectedTags(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -51,8 +51,8 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   const filter = useMemo(() => top !== null ? { tags: null, reason: null }
     : worldFilter(widget.countries, fallback, groups.data, hour, track?.branch.lastHour ?? hour),
   [top, widget.countries, fallback, groups.data, hour, track?.branch.lastHour]);
-  const rows = useMemo(() => data && (!grouped || groups.data) && !filter.reason ? agencyRows(data, hour, filter.tags) : NO_ROWS,
-    [data, grouped, groups.data, filter, hour]);
+  const rows = useMemo(() => data && (!needsGroups || groups.data) && !filter.reason ? agencyRows(data, hour, filter.tags) : NO_ROWS,
+    [data, needsGroups, groups.data, filter, hour]);
   const [visible, setVisible] = useState<readonly AgencyRow[]>(NO_ROWS);
   const onVisible = useCallback((rows: readonly AgencyRow[]) => setVisible(rows), []);
   const wanted = useMemo(() => visible.map(row => ({ hour: row.hour, tag: row.tag })), [visible]);
@@ -84,9 +84,9 @@ export default function AgencyComparisonWidget({ widget, runtime, active, onDiag
   if (!track) return <WidgetState kind="empty" icon="shield" message="Load a campaign to compare its intelligence agencies." />;
   if (!window) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (grouped && groups.error) return <WidgetState kind="error" message={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} />;
+  if (needsGroups && groups.error) return <WidgetState kind="error" message={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} />;
   if (filter.reason) return <WidgetState kind="unavailable" message={filter.reason} />;
-  if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading intelligence agencies…" />;
+  if (!data || (needsGroups && !groups.data)) return <WidgetState kind="loading" label="Loading intelligence agencies…" />;
   if (!data.available) return <WidgetState kind="unavailable" message="Intelligence agencies are not in this recording." />;
   if (!runAt(data.observed, hour)) return <WidgetState kind="unavailable" message="Agency values were not recorded at this hour. Gaps stay gaps." />;
   if (!rows.length) return <WidgetState kind="empty" icon="shield" message="No recorded agencies match these countries and settings at this hour." />;

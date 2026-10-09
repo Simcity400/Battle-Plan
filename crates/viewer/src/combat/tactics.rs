@@ -2161,17 +2161,20 @@ mod tests {
     fn facts(content: &Content) -> ContentFacts<'_> {
         ContentFacts {
             state_provinces: Box::leak(Box::default()),
+            state_content: Ok(()),
+            continents: Err("the test has no continent content"),
+            ideologies: Err("the test has no independent ideology database"),
             impassable: Box::leak(Box::default()),
             neighbor_states: Err("the test has no state neighbours"),
             terrain: None,
             dlcs: Box::leak(Box::default()),
-            triggers: &content.names,
+            triggers: Ok(&content.names),
             // Without the country-leader traits, an empty database.
             character_traits: content
                 .character_traits()
                 .or(Ok((&content.leader_traits, Box::leak(Box::default())))),
             tag_aliases: Box::leak(Box::default()),
-            buildings: Box::leak(Box::default()),
+            buildings: Ok(Box::leak(Box::default())),
             resource_bonuses: Err("the test has no resource bonuses"),
             leader_roles: Ok(Box::leak(Box::new(dashboard::triggers::LeaderRoles::new(
                 [
@@ -4700,7 +4703,8 @@ mod tests {
             let mut content = parsed(format!("t = {{ trigger = {{ {trigger} }} }}").as_bytes());
             content.set_count_names(CountTriggerNames::new(&buildings, &ideologies, &[]));
             let facts = ContentFacts {
-                buildings: &buildings,
+                buildings: Ok(&buildings),
+                ideologies: Ok(&ideologies),
                 resource_bonuses: Ok([15_000, 20_000]),
                 ..facts(&content)
             };

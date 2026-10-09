@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { CountryFlagUrl } from '../../components/CountryFlag';
 import { ChipSet } from '../../components/ChipSet';
 import { Icon } from '../../components/Icons';
 import WidgetState from '../../components/WidgetState';
@@ -9,12 +10,14 @@ import { logSettings } from '../../charts/log/logOptions';
 import { jumpItem } from '../../charts/jump';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
+import { stateNameRequests } from '../../dashboard/construction';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { countryMatch } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { contentSet, resolveOptions, storableToken, toggleContentSet, UNSTORABLE } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
+import { useStateNamesAt } from '../../dashboard/useStateNamesAt';
 import { OPTIONS } from './definition';
 import { buildingChoices, describeRow, factoriesShown, jumpHours, levelsLabel, logRows, placeLabel, projectTooltip, projectType, statusLabel, typeName } from './constructionData';
 import type { ProjectAt } from './constructionData';
@@ -35,11 +38,12 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const { track, data, error, retry } = useConstructionLog(widget, runtime, active);
-  const grouped = widget.countries.kind === 'group';
-  const groups = useCountryGroups(runtime, track, active && grouped);
+  const filtered = widget.countries.kind !== 'all';
+  const groups = useCountryGroups(runtime, track, active && filtered);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
+  const inBranch = hour != null && track != null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
   // Tags stay an array end to end: a mod's tag may hold any character, spaces included.
   const tags = selectedTags(widget.countries, track);
   const tagsKey = JSON.stringify(tags);
@@ -55,9 +59,13 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
   [data, hour, match, types, projects, from, order]);
   // Countries are named and flagged as recorded when each drawn row was first read.
   const [visible, setVisible] = useState<readonly LogRow<ProjectAt>[]>(NO_ROWS);
-  const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.item.project.firstRead, tags: [row.item.project.tag] })), [visible]);
-  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
+  const namingActive = active && inBranch && data != null && match.ready;
+  const wanted = useMemo(() => namingActive
+    ? logCountryRequests(visible, row => ({ hour: row.item.project.firstRead, tags: [row.item.project.tag] })) : [], [visible, namingActive]);
+  const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, namingActive);
   const country = useCallback((at: ProjectAt) => labelAt(at.project.firstRead)(at.project.tag), [labelAt]);
+  const wantedStates = useMemo(() => stateNameRequests(visible.map(row => row.item.project), namingActive ? hour ?? null : null), [visible, hour, namingActive]);
+  const stateAt = useStateNamesAt(runtime.client, track, wantedStates, namingActive);
   const chips = useMemo(() => {
     return buildingChoices(data).map(choice => ({ ...choice, unavailable: storableToken(choice.value) ? undefined : UNSTORABLE }));
   }, [data]);
@@ -68,8 +76,8 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
 
   if (!track) return <WidgetState kind="empty" icon="hammer" message="Load a campaign to see its construction." />;
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (!data || (grouped && !groups.data && !groups.error)) return <WidgetState kind="loading" label="Loading the construction log…" />;
-  if (grouped && groups.error) return <WidgetState kind="error" message={`Groups unavailable: ${groups.error}`} onRetry={groups.retry} />;
+  if (filtered && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (!data || !match.ready) return <WidgetState kind="loading" label="Loading the construction log…" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (!data.reads.length && !data.railwayReads.length) return <WidgetState kind="unavailable" message="The construction queue was not recorded in this campaign branch." />;
   if (hour == null || hour < track.branch.firstHour || hour > track.branch.lastHour) return <WidgetState kind="unavailable" message="This time is outside the campaign’s recorded branch." />;
@@ -88,9 +96,9 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
         {(at.repairing || (at.status !== 'building' && at.status !== 'unread' && at.kind === 'repair')) && data.repairIcon && <img className="log-art-overlay" src={data.repairIcon} alt="" />}
       </span>
       <span className="log-text">
-        {label.flag && <img className="log-flag" src={label.flag} alt="" />}<b>{label.name}</b>
+        <CountryFlagUrl className="log-flag" url={label.flag} reason={label.flagReason} pending={label.flagPending} /><b>{label.name}</b>
         <span className="construction-muted"> · </span>{typeName(type)}{levels && <span className="construction-levels"> {levels}</span>}
-        <span className="construction-muted"> in </span>{placeLabel(data, at.project)}
+        <span className="construction-muted"> in </span>{placeLabel(at.project, hour, stateAt)}
       </span>
       <span className={`log-tag construction-status is-${at.status}`}><i />{statusLabel(at)}</span>
       <span className={`log-value${factories == null ? ' is-muted' : ''}`} data-tooltip={factories == null ? 'Not read since a gap in the recording' : 'Factories on it'}>
@@ -109,8 +117,8 @@ export default function ConstructionLogWidget({ widget, runtime, active, onDiagn
     </div>}
     <LogList rows={rows} label="Construction projects" density={log.density} months={log.months}
       animate={log.animate && widget.time.mode === 'follow'} columns={COLUMNS} renderRow={renderRow}
-      describe={row => describeRow(data, row, country(row.item).name)}
-      tooltip={row => projectTooltip(data, row.item, hour, country(row.item).name)}
+      describe={row => describeRow(data, row, country(row.item).name, hour, stateAt)}
+      tooltip={row => projectTooltip(data, row.item, hour, country(row.item).name, stateAt)}
       menu={menu} empty={empty} onVisible={setVisible} />
   </div>;
 }

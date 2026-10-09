@@ -175,5 +175,7 @@ pub fn walk(
     }
 }
 
+pub mod relation;
+
 #[cfg(test)]
 mod tests;

@@ -443,6 +443,7 @@ fn render_raid(fixture: &Fixture) -> Description {
     let provinces = BTreeMap::from([(1, vec![2, 1])]);
     let mut facts = ContentFacts::content_only(&dlcs, &triggers, &aliases);
     facts.state_provinces = &provinces;
+    facts.state_content = Ok(());
     facts.script_constants = Ok(&constants);
     text.set_synthetic_world(World::read(&fixture.frame, facts));
     let context = Context::new(

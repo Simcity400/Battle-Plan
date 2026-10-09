@@ -1,9 +1,32 @@
 # Country balance widgets
 
-The shared widget behind [Political power](../political-power/README.md) and [Command power](../command-power/README.md): one recorded fixed-point balance per country over time, from the `country-measure` product. Each widget kind supplies a `MeasureConfig` (which measure, and how to name it); the look, settings (`options.ts`) and data helpers (`measureData.ts`) are shared, so a change reaches both.
+## What it shows
 
-Country choices use the shared selector without a smaller widget-specific limit.
-Multi-country tooltips use shared viewport fitting, counting rows that do not fit
-and preserving the complete read-out. Names and membership badges keep the
-chart's existing sampled names. Command power keeps its established maximum-row
-cutoff and dates carried maximums in the note when their rows are not listed.
+Shared Political power/Command power balances and income/spending drills; this folder has no registered kind.
+
+## Products it reads
+
+[`country-measure`](../../../../crates/dashboard/src/products/country_measure.rs) supplies balances; [`politics-ledger`](../../../../crates/dashboard/src/products/politics_ledger.rs) supplies accounting/payments; [`country-stability`](../../../../crates/dashboard/src/products/country_stability.rs) supplies CP maximum. Looks/groups use the [shared kit](../README.md#reuse-first).
+
+## Settings
+
+[options.ts](options.ts) owns shared country, time, ticks, fill, end-label, axis and drill choices. Each registered kind supplies a MeasureConfig and its definition.
+
+## Notable behaviour
+
+- Exact signed daily operands, evaluated adjustments and realized balance changes keep independent supplying dates. Later reads never backfill a tooltip; detail failure leaves balances usable.
+- Captured payments can be hidden by income or clamping. Incomplete capture falls back to explicitly net drops. CP reservations and daily deficits are outside payment ticks.
+- Income sources not captured remain Other / not identified; native wrapping is an explicit reconciliation part. Missing totals have no percentages. Gaps and holder changes break accounting/history.
+- Drawn curves, including visible maximum, supply picks. Overlap/keyboard choices hold the date. Scope/numeric changes invalidate gestures; label refresh retains ownership.
+- Picking holds; Follow uses the aligned clock from any time mode. Pins save native slot/ID and branch-relative origin, following only that holder's aliases. Headers use the body date; invalid holders refuse the body and older missing-holder pins stay neutral.
+- Names and flags are dated; only mounted legend rows and the displayed drill country request artwork.
+
+## Files
+
+| File | Responsibility |
+|---|---|
+| [MeasureWidget.tsx](MeasureWidget.tsx), [measureData.ts](measureData.ts) | Chart, validation and local lookups. |
+| [PowerDrill.tsx](PowerDrill.tsx), [powerDrillData.ts](powerDrillData.ts) | Signed parts and history. |
+| [powerActorPick.ts](powerActorPick.ts), [powerPickModel.ts](powerPickModel.ts) | Actor picks and ownership. |
+| [drillCountry.ts](drillCountry.ts), [powerCountryData.ts](powerCountryData.ts) | Shared native bindings and alias-ledger joins. |
+| [options.ts](options.ts), [measure.css](measure.css) | Options/layout; adjacent helper/render tests. |

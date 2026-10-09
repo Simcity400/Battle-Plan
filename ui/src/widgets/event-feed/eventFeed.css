@@ -1,0 +1,36 @@
+.event-feed-notes { padding: 0 var(--space-4) var(--space-3); color: var(--muted); font-size: var(--type-sm); }
+.event-feed-notes summary { cursor: pointer; }
+.event-feed-notes p { margin: var(--space-2) 0; }
+.event-feed-load { padding: var(--space-3) var(--space-4); color: var(--muted); font-size: var(--type-sm); }
+
+/* Only the feed needs the approved date/art/sentence/category grid and the
+   playback entry slide. Existing logs and tables retain their presentation. */
+.event-feed-widget .log-row { grid-template-columns: calc(var(--space-6) * 2 + var(--space-4) + var(--space-1)) var(--log-columns, 1fr);
+  gap: calc(var(--space-3) + var(--space-1)); height: calc(var(--space-6) + var(--space-4) + var(--space-1)); }
+.event-feed-widget .log.is-compact .log-row { height: calc(var(--space-6) + var(--space-2)); gap: var(--space-3); }
+.event-feed-widget .log-scroll:focus-visible { box-shadow: inset 0 0 0 var(--space-1) var(--accent-line); }
+.event-feed-widget .log-row.is-active { box-shadow: inset 0 0 0 calc(var(--space-1) / 2) var(--accent-line); }
+.event-feed-widget .log-when small { font-size: calc(var(--type-sm) - var(--space-1)); }
+.event-feed-widget .log.is-compact .log-when { gap: var(--space-2); }
+.event-feed-widget .log-month { height: var(--space-6); padding-top: calc(var(--space-3) - var(--space-1) / 2); }
+.event-feed-widget .log-art { width: var(--space-6); height: var(--space-6); }
+.event-feed-widget .log-art img { max-width: var(--space-6); max-height: var(--space-6); }
+.event-feed-widget .log.is-compact .log-art,
+.event-feed-widget .log.is-compact .log-art img { width: calc(var(--space-6) - var(--space-2)); height: calc(var(--space-6) - var(--space-2));
+  max-width: calc(var(--space-6) - var(--space-2)); max-height: calc(var(--space-6) - var(--space-2)); }
+.event-feed-widget .log-flag { width: calc(var(--space-5) + var(--space-1)); height: var(--space-4);
+  margin-right: calc(var(--space-2) + var(--space-1) / 2); vertical-align: calc(var(--space-1) / -2);
+  border-radius: calc(var(--space-1) / 2); box-shadow: inset 0 0 0 calc(var(--space-1) / 2) var(--border); }
+.event-feed-widget .log-tag { gap: calc(var(--space-2) + var(--space-1) / 2); font-size: calc(var(--type-sm) - var(--space-1)); }
+.event-feed-widget .log-tag i { width: calc(var(--space-3) - var(--space-1) / 2); height: calc(var(--space-3) - var(--space-1) / 2); }
+.event-feed-widget .log-chips .chip-set { gap: calc(var(--space-2) + var(--space-1) / 2); }
+.event-feed-widget .chip { gap: calc(var(--space-2) + var(--space-1) / 2); min-height: var(--space-6);
+  padding: var(--space-1) calc(var(--space-3) + var(--space-1) / 2) var(--space-1) calc(var(--space-2) + var(--space-1));
+  border-radius: var(--space-6); }
+.event-feed-widget .chip:focus-visible { outline-width: var(--space-1); outline-offset: calc(var(--space-1) / 2); }
+.event-feed-widget .moving-row { transition: transform var(--row-glide, calc(var(--t-slow) * 1.5)) var(--ease), opacity calc(var(--t-slow) * 1.5); }
+.event-feed-widget .moving-row.is-entering { animation: event-feed-row-in calc(var(--t-slow) * 2 + var(--t-fast) * 5 / 6) var(--ease); }
+.event-feed-widget .log.is-compressed .moving-row { transition-property: opacity; }
+.event-feed-widget .log.no-motion .moving-row,
+:root[data-motion='reduced'] .event-feed-widget .moving-row { transition: none; animation: none; }
+@keyframes event-feed-row-in { from { translate: 0 calc(var(--space-3) * -1); opacity: 0; background: var(--accent-soft); } to { translate: 0 0; } }

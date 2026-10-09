@@ -1,8 +1,12 @@
+import { useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
+import type { MovingRow } from './rowMotion';
 import type { ReactNode } from 'react';
+import WindowedRows from './WindowedRows';
+import { useChartTokens } from './useChartTokens';
 import './charts.css';
 
 export interface LegendItem {
-  id: string; label: string; color: string; tooltip?: string; value?: string; flag?: ReactNode;
+  id: string; label: string; color?: string; tooltip?: string; value?: string; flag?: ReactNode;
   /** A value read out to assistive technology only, where the look shows names alone. */
   spokenValue?: string;
   /** Makes the swatch a colour picker, as faction swatches are; the choice applies campaign-wide. */
@@ -12,15 +16,37 @@ export interface LegendItem {
 /** A chart's legend: a swatch (or flag) and name per series, with its current value.
  * Always shown for two or more series, so identity never rests on colour alone; with
  * `always`, for one too (a diagram whose colours mean something, such as resources). */
-export default function Legend({ items, label, always = false }: { items: readonly LegendItem[]; label: string; always?: boolean }) {
+export default function Legend({ items, label, always = false, windowed = false, onVisibleItems }: { items: readonly LegendItem[]; label: string; always?: boolean; windowed?: boolean;
+  /** Mounted windowed entries (including leaving rows); empty when hidden or unmounted. */
+  onVisibleItems?: (items: readonly LegendItem[]) => void }) {
+  useLayoutEffect(() => () => onVisibleItems?.([]), [onVisibleItems]);
+  useEffect(() => {
+    if (!windowed || items.length < (always ? 1 : 2)) onVisibleItems?.(items.length >= (always ? 1 : 2) ? items : []);
+  }, [items, always, windowed, onVisibleItems]);
   if (items.length < (always ? 1 : 2)) return null;
-  return <ul className="chart-legend" aria-label={label}>{items.map(item => <li key={item.id} data-tooltip={item.tooltip}>
+  if (windowed) return <WindowedLegend items={items} label={label} onVisibleItems={onVisibleItems} />;
+  return <ul className="chart-legend" aria-label={label}>{items.map(item => <li key={item.id} data-tooltip={item.tooltip}><Entry item={item} /></li>)}</ul>;
+}
+
+function WindowedLegend({ items, label, onVisibleItems }: { items: readonly LegendItem[]; label: string; onVisibleItems?: (items: readonly LegendItem[]) => void }) {
+  const rowHeight = useChartTokens().fontSize.small * 2;
+  const rows = useMemo(() => items.map(item => ({ key: item.id, item })), [items]);
+  const visible = useCallback((rows: readonly MovingRow<LegendItem>[]) => onVisibleItems?.(rows.map(row => row.item)), [onVisibleItems]);
+  return <div className="chart-legend-window" style={{ height: Math.min(items.length * rowHeight, rowHeight * 3) }}>
+    <WindowedRows items={rows} rowHeight={rowHeight} label={label} className="chart-legend chart-legend-rows" onVisibleRows={visible}>
+      {({ item }) => <div className="chart-legend-entry" tabIndex={0} data-tooltip={item.tooltip}><Entry item={item} /></div>}
+    </WindowedRows>
+  </div>;
+}
+
+function Entry({ item }: { item: LegendItem }) {
+  return <>
     {item.onColor
       ? <label className="chart-legend-swatch" style={{ background: item.color }} data-tooltip="Change colour">
-        <input type="color" value={/^#[0-9a-f]{6}$/i.test(item.color) ? item.color : '#888888'} aria-label={`Colour for ${item.label}`}
+        <input type="color" value={item.color && /^#[0-9a-f]{6}$/i.test(item.color) ? item.color : '#888888'} aria-label={`Colour for ${item.label}`}
           onChange={event => item.onColor!(event.currentTarget.value)} /></label>
-      : <i style={{ background: item.color }} aria-hidden="true" />}
+      : item.color ? <i style={{ background: item.color }} aria-hidden="true" /> : null}
     {item.flag}<span>{item.label}</span>{item.value != null && <b>{item.value}</b>}
     {item.spokenValue != null && <span className="sr-only">: {item.spokenValue}</span>}
-  </li>)}</ul>;
+  </>;
 }

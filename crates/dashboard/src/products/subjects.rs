@@ -56,8 +56,6 @@ use ts_rs::TS;
 
 pub struct Subjects;
 
-/// Runs and level steps kept per branch before the scan refuses.
-const MAX_RUNS: usize = 500_000;
 /// Branches kept per source, so tracks on different branches do not evict each other.
 const CACHED_BRANCHES: usize = 4;
 
@@ -148,26 +146,7 @@ impl Product for Subjects {
         cancelled: &AtomicBool,
     ) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
-        let state = source.state::<Vec<(u64, Arc<Scan>)>>();
-        let cached = {
-            let state = state.lock().unwrap_or_else(|error| error.into_inner());
-            state
-                .iter()
-                .find(|(cached, _)| *cached == branch)
-                .map(|(_, scan)| Arc::clone(scan))
-        };
-        // Scan outside the lock, so requests for other branches are not held up.
-        let scan = match cached {
-            Some(scan) => scan,
-            None => {
-                let scan = Arc::new(scan_branch(&source.replay(), branch, cancelled)?);
-                let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-                state.retain(|(cached, _)| *cached != branch);
-                state.insert(0, (branch, Arc::clone(&scan)));
-                state.truncate(CACHED_BRANCHES);
-                scan
-            }
-        };
+        let scan = scanned_branch(source, branch, cancelled)?;
         let mut warnings = Vec::new();
         let content = match context.content.as_ref() {
             Some(options) => match subject_content(source, options) {
@@ -290,11 +269,57 @@ pub fn active(row: &SubjectRow, hour: i32) -> bool {
     row.cancel == 0 && (row.end_hour <= row.start_hour || hour < row.end_hour)
 }
 
+pub(crate) fn scanned_branch(
+    source: &Source,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Arc<Scan>> {
+    let state = source.state::<Vec<(u64, Arc<Scan>)>>();
+    let cached = {
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        state
+            .iter()
+            .position(|(cached, _)| *cached == branch)
+            .map(|index| {
+                let cached = state.remove(index);
+                let scan = Arc::clone(&cached.1);
+                state.insert(0, cached);
+                scan
+            })
+    };
+    // Scan outside the lock, so requests for other branches are not held up.
+    let scan = match cached {
+        Some(scan) => scan,
+        None => {
+            let scan = Arc::new(scan_branch(&source.replay(), branch, cancelled)?);
+            let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+            state.retain(|(cached, _)| *cached != branch);
+            state.insert(0, (branch, Arc::clone(&scan)));
+            state.truncate(CACHED_BRANCHES);
+            scan
+        }
+    };
+    Ok(scan)
+}
+
 /// One branch's subject history, before levels are named.
 pub struct Scan {
-    runs: Vec<SubjectRun>,
-    unobserved: Vec<HourSpan>,
-    warnings: Vec<String>,
+    pub(crate) runs: Vec<SubjectRun>,
+    pub(crate) unobserved: Vec<HourSpan>,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) starts: Vec<SubjectStart>,
+    pub(crate) observed: bool,
+}
+
+/// The recorded relation date when both identities are known then; otherwise
+/// only a new relation witnessed after a complete preceding hour is an event.
+#[derive(Clone, Debug)]
+pub(crate) struct SubjectStart {
+    pub subject: String,
+    pub overlord: String,
+    pub hour: i32,
+    pub read_hour: i32,
+    pub exact: bool,
 }
 
 #[cfg(test)]
@@ -330,7 +355,17 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
     let mut conflicting = BTreeSet::new();
     let mut unreadable_blocks = 0_u32;
     let mut stopped = 0_u32;
-    let mut kept = 0_usize;
+    let mut starts = Vec::new();
+    let mut seen_starts = BTreeSet::new();
+    let mut named_since: BTreeMap<u32, (String, i32)> = BTreeMap::new();
+    let mut continuous_since = None;
+    let mut first_observed = None;
+    let mut previous_complete = None;
+    let mut previous_identities = BTreeMap::new();
+    let mut identities = BTreeMap::new();
+    let mut identities_changed = false;
+    let mut identity_since = BTreeMap::<u32, (u32, i32)>::new();
+    let mut observed = false;
     // Hours before the first readable frame and after the last are unobserved too.
     let bounds = replay
         .branches
@@ -360,18 +395,49 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                 break;
             }
             let hour = frame.hour;
+            let first_observed = *first_observed.get_or_insert(hour);
             if let Some(previous) = previous_hour
                 && hour > previous + 1
             {
                 mark_unobserved(&mut unobserved, previous + 1, hour - 1);
+                continuous_since = None;
             }
             previous_hour = Some(hour);
-            let (Ok(_), Ok(rows)) = (tags.update(decoded), decoded.complete::<tables::Subjects>())
-            else {
+            let Ok(rebuilt) = tags.update(decoded) else {
                 incomplete += 1;
                 mark_unobserved(&mut unobserved, hour, hour);
+                continuous_since = None;
+                previous_complete = None;
                 continue;
             };
+            if rebuilt {
+                identities_changed = true;
+                identities = decoded
+                    .complete::<tables::Countries>()?
+                    .iter()
+                    .map(|country| (country.canonical_slot, country.id))
+                    .collect();
+                identity_since.retain(|slot, (id, _)| identities.get(slot) == Some(id));
+                for (&slot, &id) in &identities {
+                    identity_since.entry(slot).or_insert((id, hour));
+                }
+                named_since.retain(|raw, (tag, _)| tags.get(*raw) == Some(tag));
+                for (raw, tag) in tags.iter() {
+                    named_since
+                        .entry(*raw)
+                        .or_insert_with(|| (tag.clone(), hour));
+                }
+            }
+            let Ok(rows) = decoded.complete::<tables::Subjects>() else {
+                incomplete += 1;
+                mark_unobserved(&mut unobserved, hour, hour);
+                continuous_since = None;
+                previous_complete = None;
+                continue;
+            };
+            observed = true;
+            let links = decoded.complete::<tables::CountryLinks>()?;
+            let since = *continuous_since.get_or_insert(hour);
             // Each subject's current level this hour, by tag; none when the table is not
             // complete. A subject the rows give two levels has no known level.
             let levels: Option<HashMap<&String, Option<&[u8]>>> =
@@ -428,6 +494,52 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                     last_hour: hour,
                     steps: Vec::new(),
                 });
+                if started {
+                    let identity_key = [row.overlord, row.subject].map(|raw| {
+                        crate::metadata::link_slot(links, raw)
+                            .and_then(|slot| identities.get(&slot).map(|id| (slot, *id)))
+                    });
+                    let identity_key = identity_key[0]
+                        .zip(identity_key[1])
+                        .map(|(overlord, subject)| (overlord, subject, row.start_hour));
+                    let new_identity =
+                        identity_key.is_some_and(|identity| seen_starts.insert(identity));
+                    if new_identity && row.start_hour > first_observed {
+                        // CRelation serializes start_date from +0x20@140D19260;
+                        // names are exact only while both raw links keep their tags.
+                        // A start at or before the first observed frame is an
+                        // initial snapshot, even if first published later.
+                        let date_named =
+                            [row.overlord, row.subject].into_iter().all(|raw| {
+                                named_since
+                                    .get(&raw)
+                                    .is_some_and(|(_, from)| since.max(*from) <= row.start_hour)
+                            }) && identity_key.is_some_and(|(overlord, subject, _)| {
+                                [overlord, subject].into_iter().all(|(slot, id)| {
+                                    identity_since.get(&slot).is_some_and(|(seen, from)| {
+                                        *seen == id && *from <= row.start_hour
+                                    })
+                                })
+                            });
+                        let exact = date_named && row.start_hour <= hour;
+                        let witnessed = previous_complete
+                            .is_some_and(|previous: i32| previous.checked_add(1) == Some(hour))
+                            && identity_key.is_some_and(|(overlord, subject, _)| {
+                                [overlord, subject]
+                                    .into_iter()
+                                    .all(|(slot, id)| previous_identities.get(&slot) == Some(&id))
+                            });
+                        if exact || witnessed {
+                            starts.push(SubjectStart {
+                                subject: subject.clone(),
+                                overlord: overlord.clone(),
+                                hour: if exact { row.start_hour } else { hour },
+                                read_hour: hour,
+                                exact,
+                            });
+                        }
+                    }
+                }
                 let run = &mut runs[open[&key]];
                 match run.steps.last_mut() {
                     Some(step) if step.last_hour == hour => {}
@@ -435,7 +547,6 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                         step.last_hour = hour;
                     }
                     _ => {
-                        kept += 1;
                         run.steps.push(LevelStep {
                             first_hour: hour,
                             last_hour: hour,
@@ -443,15 +554,14 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                         });
                     }
                 }
-                kept += usize::from(started);
             }
             if !named_all {
                 mark_unobserved(&mut unobserved, hour, hour);
             }
-            if kept > MAX_RUNS {
-                return Err(io::Error::other(
-                    "Subject history exceeds its memory budget",
-                ));
+            previous_complete = named_all.then_some(hour);
+            if identities_changed {
+                previous_identities.clone_from(&identities);
+                identities_changed = false;
             }
         }
     }
@@ -506,6 +616,8 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
         runs,
         unobserved,
         warnings,
+        starts,
+        observed,
     })
 }
 

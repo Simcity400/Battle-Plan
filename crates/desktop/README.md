@@ -1,25 +1,23 @@
 # desktop
 
-The Tauri host for the replay application. **Map** embeds the existing native viewer; **Overview** hosts the widget dashboard. The host owns folder selection and the replay library, the native process and an asynchronous data proxy. Recording data and widget products live in the native viewer process, shared with its map consumers.
+Tauri host for the replay app. **Campaign map** embeds the native viewer; **Overview** hosts the dashboard. The host owns folder selection, replay library, native-process lifecycle and an asynchronous data proxy. Replay decoding/products remain in the viewer process, shared with map consumers.
 
 ## Develop
 
-Use the repository's Rust/Windows prerequisites, Node.js 22.12 or newer and the Microsoft Edge WebView2 Runtime. Follow the shared [build commands](../../AGENTS.md#build-commands):
+Use Node.js 22.12+ and Microsoft Edge WebView2; see the [project index](../../README.md) for component guides. Run from the worktree root using the [shared wrapper](../../AGENTS.md#builds-and-merging):
 
 ```powershell
 npm.cmd ci
 bash tools/build-slot.sh "dev/desktop" "npm.cmd run dev"
 ```
 
-The development command builds the native viewer, then starts Tauri and Vite. Frontend edits hot reload; desktop Rust changes rebuild. Restart the command after changing native viewer code so its sibling executable is rebuilt. Ctrl+C stops development.
+This builds the viewer, then starts Tauri/Vite. Frontend changes hot reload; desktop Rust rebuilds. Restart development after viewer changes to rebuild its sibling executable. Ctrl+C must stop both host and child. For UI-only layout work use `npm.cmd run dev:ui`; native features need the host.
 
 Viewer arguments pass through both separators:
 
 ```powershell
 bash tools/build-slot.sh "dev/desktop" "npm.cmd run dev -- -- -- C:/recordings/campaign.battleplan"
 ```
-
-Use `npm.cmd run dev:ui` for frontend-only layout work. Native features require the desktop host.
 
 ## Build and launch
 
@@ -28,68 +26,60 @@ bash tools/build-slot.sh "dev/desktop" "npm.cmd run build:desktop"
 .\.cargo-target\release\replay-desktop.exe C:\recordings\campaign.battleplan
 ```
 
-Keep `replay-desktop.exe` and `viewer.exe` together. Production embeds the frontend and does not need Node or a development server. WebView2 remains a runtime prerequisite. Viewer arguments, including `--game-dir` and `--user-dir`, are forwarded. This workflow produces executables, not an installer or updater. The build copies [third-party notices](../../THIRD_PARTY_NOTICES.md) beside the executables; retain that file and the compiler directory with its upstream licences when distributing the app. Other bundled dependency notices still require the [publication review](../../docs/publication.md).
-
-## Test without taking over the screen
-
-[desktop_ui.py](../../tools/desktop_ui.py) launches the real app and its native viewer on an inactive Windows desktop. It never switches the visible desktop or moves the cursor. It copies the executables and isolates APPDATA, LOCALAPPDATA and WebView2 storage under the supplied session directory, so test settings stay separate. This requires a logged-in Windows session and the normal graphics/WebView2 prerequisites; it is not a service-session or GPU-free renderer.
-
-Build before testing, then keep the launcher running in a background terminal:
-
-```powershell
-npm.cmd run build:ui
-bash tools/build-slot.sh "dev/desktop" "cargo build -p viewer --bin viewer"
-bash tools/build-slot.sh "dev/desktop" "cargo build -p replay-desktop --features custom-protocol"
-python tools/desktop_ui.py --session captures\desktop-ui launch .\.cargo-target\debug\replay-desktop.exe
-```
-
-The custom-protocol feature embeds the built frontend instead of depending on Vite. Python 3 is required; `capture` also needs Pillow. The launcher keeps the desktop handle alive until the app exits. Use a separate session directory and `--port` for concurrent runs. Its local WebView2 debugging port defaults to 9227 and exists only for this test launch.
-
-From another terminal, [desktop_cdp.mjs](../../tools/desktop_cdp.mjs) inspects and sends mouse/keyboard input to the actual desktop WebView2, rejecting pages without the Tauri host. It uses the port recorded in the session directory and Node's built-in WebSocket support (Node 22.12+). Native dialogs and the embedded map are separate Win32 windows; inspect or capture those with the Python helper:
-
-```powershell
-node tools/desktop_cdp.mjs captures\desktop-ui inspect
-node tools/desktop_cdp.mjs captures\desktop-ui click-selector '#tab-settings'
-python tools/desktop_ui.py --session captures\desktop-ui list
-# Replace 12345 with the app HWND returned by list.
-python tools/desktop_ui.py --session captures\desktop-ui capture 12345 captures\desktop-ui\settings.png
-python tools/desktop_ui.py --session captures\desktop-ui close 12345
-```
-
-`children HWND` enumerates native controls; `resize HWND WIDTH HEIGHT` changes the window's physical dimensions without activating it. With exactly one folder dialog open, `choose PATH` selects a folder and `cancel-dialog` cancels it. `message HWND MESSAGE WPARAM LPARAM` and `text HWND VALUE` target native controls on this isolated desktop only. CDP also supports `click X Y`, `key Home|End|Enter|Escape|ArrowDown|ArrowUp|Tab`, `screenshot PATH` (WebView only), and `file PATH` for a JavaScript expression saved outside source. Prefer input commands to exercise controls; use expressions to inspect state. Closing the host must also reap its viewer; check the launcher's exit and process list. Ctrl+C requests closure and provides a bounded fallback for an unresponsive test host.
-
-For settings checks, exercise Apply, Cancel, Revert, restart persistence, all three folder dialogs and a loaded native map. Check saved preferences under the session directory as well as screenshots. Use an existing matched smoke replay for map checks; this does not replace the recorder's fresh-save oracle. Inactive-desktop tests cannot establish visible-monitor VSync/tearing behavior.
-
-## Ownership and lifecycle
-
-Unloading a campaign retires its cached standalone map and clears matching restart/open targets before releasing the frontend lease. A running asset load finishes within its existing worker slot and its obsolete result is discarded; it cannot reopen an unloaded recording. The standalone Map view retains its camera across tab switches and follows the shared top-bar clock through the existing seek command while active. Clock updates include their playing state and a counter that changes only on seeks; coalescing keeps both, so skipped playback hours preserve train/weather animation and an explicit seek resets it. A seek command without clock state is always explicit. Overview and Campaign map share country selection and playback controls; layout editing remains in Overview. Widgets may follow the shared transport, retain a selected period, show the whole campaign or pin a reference moment. Queries can run before map assets are loaded.
-
-The host launches its sibling viewer, contains it in a Windows job object and requests graceful shutdown before the bounded forced-reap fallback. Closing the app or stopping development must not leave an owned viewer process behind. Both host and child require per-monitor-v2 DPI awareness.
-
-`dashboard_service.rs` tracks independent requests and reassembles bounded fragmented replies. Cancellation and admission are ordered so a cancelled source-open cannot start later and leak a binding. The host never parses a reply: the assembled JSON goes to the frontend as raw bytes. One `dashboard_product` command carries every widget data request by product key; `dashboard_open_source`, `dashboard_map_settings`, `dashboard_cancel` and `dashboard_release_source` are the rest of the data surface.
-
-`native.rs` selects the active geometry owner before tabs mount or unmount. Late cleanup from the dashboard cannot hide the standalone map, and vice versa. Map layouts are replacement snapshots; data commands have their own bounded queue. Its count and byte refusals use `NATIVE_QUEUE_FULL`, and busy map controls use `MAP_CONTROLS_BUSY`, from the dashboard’s [retryable refusal catalogue](../dashboard/src/transport.rs), so country facts are retried once the queue drains. Native process failure terminates pending requests rather than leaving widgets loading indefinitely. A restarted process requires sources to be reopened; old source handles are not valid in it. Lease IDs include a fresh service namespace so delayed releases cannot close sources in a restarted process.
-
-Native commands and the data queue use [the shared message byte budget](../dashboard/src/protocol.rs), matching the reply transport budget. A request naming every country can travel intact; requests past the byte budget are refused.
-
-The native data service opens one shared source for a canonical path and revision and returns independently releasable client bindings. Several maps and charts may reference it. Closing one widget cannot cancel another consumer's shared query. See the [dashboard architecture](../../docs/dashboard.md) for the ownership model and limits.
+Keep `replay-desktop.exe` and `viewer.exe` together. Production embeds the frontend, needs WebView2 and forwards viewer arguments such as `--game-dir`/`--user-dir`. This produces an executable directory, not an installer/updater. Retain [third-party notices](../../THIRD_PARTY_NOTICES.md) and the full shader compiler directory; see [distribution](#shader-compiler-distribution) and [publication guidance](../../docs/publication.md).
 
 ## Where to work
 
-The Campaign map settings pop-down sends `map_action` commands to the existing viewer controls. `export_map` and `choose_content_folder` use native system dialogs off the host UI thread. Settings requests `MapDetails` on demand through the normal viewer-state event. The embedded viewer omits its old egui header, timeline and diagnostic strips; its map and native battle interactions retain the existing rendering path. Map diagnostics (technical stats and data limitations over the Campaign map and map widgets) are off by default. **Show diagnostics on maps** in Settings > Diagnostics, or F3 in the app or the native map, toggles them. `video.rs` saves the choice as `mapDiagnostics` in video.json and sends it to the viewer as `MapAction::Diagnostics`; the native map's F3 asks the host through `NativeEvent::ToggleDiagnostics`. `--diagnostics` shows them for one run without saving. These shell-control additions require rebuilding both desktop and viewer before native integration testing.
+| File | Responsibility |
+|---|---|
+| [main.rs](src/main.rs) | Tauri commands, app setup and native folder/export dialogs. |
+| [native.rs](src/native.rs), [native/](src/native/) | Geometry owner, bounded commands, pipe/process/job lifecycle. |
+| [dashboard_service.rs](src/dashboard_service.rs) | Asynchronous requests, cancellation and fragmented reply assembly. |
+| [replay_library.rs](src/replay_library.rs) | Replay folder preferences, recursive listing and validated trailer metadata. |
+| [video.rs](src/video.rs) | UI/map scale, VSync and diagnostics preferences and application. |
 
-All three Settings folder fields have Browse buttons. The native dialogs belong to the app window, identify the requested folder in their titles and start in the field's current directory when valid. Cancelling preserves the field. Game/user selections remain drafts until Apply game folders; replay-folder selection saves immediately.
+[dashboard](../dashboard/README.md) owns protocol/products/generated types; [ui](../../ui/README.md) owns shell and widgets; [viewer](../viewer/README.md) owns rendering and battle interaction. Rebuild both host and viewer after shell-control/protocol changes.
 
-Host implementation is under [src](src/). The [dashboard crate](../dashboard/README.md) owns the protocol, products and generated types; [ui](../../ui/README.md) owns layout and widgets. See [AGENTS.md](../../AGENTS.md) for checks. Exercise open, tab switching, seek, cancellation, close and development shutdown when lifecycle behavior changes.
+## Ownership and lifecycle
 
-`replay_library.rs` lists replay filenames recursively and reads validated trailer metadata to mark partial recordings, without reading frame blocks. The Settings folder is shared with browser development through the user configuration file described in the frontend guide. Folder selection and the recording library's manual file picker use native system dialogs; Load opens through the existing source service. Choosing an individual recording does not change the replay folder. Directory listing runs off the UI thread, excludes hidden folders and symbolic links, and has a traversal budget. Unloading the current default selects another loaded campaign, or clears the default and hides the native map when none remain.
+The sibling viewer belongs to a Windows job object. Shutdown requests graceful exit before bounded forced reap; never leave an owned child after app/dev closure. Host and child require per-monitor-v2 DPI awareness.
 
-`video.rs` owns application UI scale, native-map VSync and the map UI scale in APPDATA/battle-plan/video.json. They inherit the configured HOI4 preferences initially; Revert to HOI4 settings restores inheritance. The map UI scale's inherited value is *Match game*; the host sends it, and VSync, to each viewer it launches and whenever they are applied. The host applies webview zoom and the native surface presentation command, with rollback on failure. Removed resolution/window-mode fields in older preference files are ignored. There is no settings path that resizes windows or widgets, changes fullscreen mode, or queries monitor refresh rates. Widgets use the existing dashboard Edit handles.
+Select the active geometry owner before frontend tabs mount/unmount. Late cleanup from Overview cannot hide Campaign map or vice versa. The standalone map retains camera across tab switches and follows the shared clock while active. Clock coalescing must retain playing state and the seek counter; an unstamped seek is explicit. Preserve the [viewer continuity rules](../viewer/README.md#playback-threading-and-frame-budgets).
 
-The native export dialog accepts an optional dashboard view ID and carries it through the map action. The frontend uses this from the shared map menu in widget headers; standalone export omits the ID.
+Unloading retires the cached map and clears matching open/restart targets before releasing the frontend lease. A running load finishes within its worker slot, then discards its obsolete result; it cannot reopen an unloaded source. Unloading the default selects another loaded campaign or hides the map when none remain. Queries may run before map assets load.
 
-Map-settings requests forward a global, campaign or widget target through the existing bounded service. Global requests require no recording; campaign/widget requests retain source/revision validation.
+Sources share canonical path/revision but return independently releasable bindings. Closing one widget must not cancel another consumer's query. Process failure terminates pending requests. Restart requires reopening sources; lease IDs include a fresh service namespace so delayed releases cannot close new sources. See [dashboard architecture](../../docs/dashboard.md).
+
+The host assembles bounded reply fragments and forwards raw JSON bytes without parsing recording/product data. Cancellation/admission ordering must prevent a cancelled open from later creating a leaked binding. Map layouts replace snapshots; data commands have a separate bounded count/byte queue. Preserve canonical retryable refusals from [transport.rs](../dashboard/src/transport.rs) and the shared [message budget](../dashboard/src/protocol.rs); never truncate requests naming many countries.
+
+## Folders, settings and exports
+
+Library listing runs off the UI thread, excludes hidden folders/symlinks and obeys its traversal budget. It reads validated trailers to identify partial recordings without decoding frame blocks. A manual recording pick does not change the replay folder.
+
+Native dialogs run off the UI thread, belong to the app window, identify their purpose and start in the current valid directory. Cancellation preserves the field. Game/user folder choices stay drafts until Apply; replay-folder choices save immediately.
+
+`video.rs` stores preferences in APPDATA/battle-plan/video.json. UI scale, map scale and VSync initially inherit HOI4; Revert restores inheritance. *Match game* is the inherited map scale. Apply webview zoom/native presentation with rollback on failure and send applied values to existing/new viewers. These settings do not resize windows/widgets or change fullscreen/monitor modes; dashboard Edit handles own widget size.
+
+The host owns embedded controls and hides the viewer's egui header/timeline. Map actions update the existing native controls and rendering path. Map diagnostics default off; Settings > Diagnostics or F3 toggles/saves `mapDiagnostics`. Native F3 requests the host toggle; `--diagnostics` enables one run without saving. `MapDetails` is requested on demand.
+
+Export carries an optional map-view ID through the native action. Widget exports target that view; standalone exports omit the ID. Global map-settings requests need no source; campaign/widget targets retain source/revision validation. Appearance inheritance and content reload rules belong in the [viewer guide](../viewer/README.md#campaign-appearance).
+
+## Test without taking over the screen
+
+Follow [AGENTS.md](../../AGENTS.md) for scoped Rust/UI checks. Lifecycle changes must exercise open, tab switch, seek, cancellation, unload, close and development shutdown. Native integration requires matched built host/viewer executables.
+
+[desktop_ui.py](../../tools/desktop_ui.py) launches the real host/viewer on an inactive Windows desktop without switching desktops or moving the cursor. It copies executables and isolates APPDATA, LOCALAPPDATA and WebView2 storage under the session directory. It needs a logged-in Windows session and normal graphics/WebView2 support. Build the frontend, viewer and host with `custom-protocol` before launch so the host embeds UI instead of needing Vite. Keep the launcher alive; use distinct sessions/ports for concurrent runs.
+
+```powershell
+python tools/desktop_ui.py --session captures\desktop-ui launch .\.cargo-target\debug\replay-desktop.exe
+node tools/desktop_cdp.mjs captures\desktop-ui inspect
+python tools/desktop_ui.py --session captures\desktop-ui list
+```
+
+[desktop_cdp.mjs](../../tools/desktop_cdp.mjs) targets the real Tauri WebView2 using the session's local debugging port. Use mouse/key commands to exercise controls and expressions to inspect state. WebView screenshots exclude native dialogs/map windows; use the Python helper's `capture`, `children`, `resize`, `choose`, `cancel-dialog` and `close` commands for those. `capture` requires Pillow. Native input commands are confined to the isolated desktop.
+
+Settings checks cover Apply, Cancel, Revert, restart persistence, all three folder dialogs and a loaded map; inspect saved session preferences too. Closing the host must reap its viewer: check launcher exit/processes. Ctrl+C requests closure with a bounded fallback. Use a matched smoke replay; this does not replace the [recorder fresh-save oracle](../recorder/README.md). Inactive-desktop checks cannot establish visible-monitor VSync/tearing.
 
 ## Shader compiler distribution
 
-`build:desktop` stages the pinned official DXC distribution in `.cargo-target/release/shader-tools/dxc/`. Ship that whole directory beside `viewer.exe` and `replay-desktop.exe`: the executable, dxcompiler.dll, dxil.dll and all three upstream licence files. [The installer](../../tools/install-shader-compiler.ps1) verifies the archive hash and supports an already downloaded archive. This is part of the executable-directory build; a future installer/updater must retain these files and the distribution terms. Development can stage the same directory beside its viewer or explicitly set `BATTLE_PLAN_SHADER_COMPILER`. Runtime performs no download and never guesses an SDK compiler. See [shader-pipeline](../shader-pipeline/README.md) for the exact cache location, invalidation, runtime refusal and licence contract.
+`build:desktop` stages the pinned official DXC under `.cargo-target/release/shader-tools/dxc/`. Ship the whole directory with both executables, including runtime DLLs and all three unmodified licences. [The installer](../../tools/install-shader-compiler.ps1) verifies the archive hash and accepts a downloaded archive. Development can stage the same sibling directory or set `BATTLE_PLAN_SHADER_COMPILER`; runtime downloads nothing and never guesses an SDK compiler. Future packaging must preserve these files/terms. [shader-pipeline](../shader-pipeline/README.md#compiler-and-packaging) owns discovery, cache and refusal details.

@@ -1,12 +1,21 @@
-//! Agency-upgrade branch database; the archived reader did not establish its RTTI name.
-//!
-//! Source: `extractor/native/lanes/diplomacy_intel_operatives_live/src/agency_upgrade_controller.rs`.
-//! The database is definition state; its old UI-dependent acquisition is excluded.
+//! CAgencyUpgradeDatabase, including its global first-definition registry and
+//! its owning branch registry. Loader@140617860 keeps the first global pointer
+//! for a repeated token across branches; valid branch-owned definitions may be
+//! absent from that global registry. Acquired capture authenticates exact branch
+//! membership rather than selecting a definition by token.
 
+/// Constructor@140615EC0 stores this primary vtable; confirmed pinned RTTI.
+pub const VTABLE_RVA: usize = 0x027c_8d40;
+/// Lookup@140617670 and loader@140617860 use this global definition-pointer vector.
+/// Constructor@140615EC0 installs a native null object in slot zero.
+pub const DEFINITIONS: usize = 0x40;
+
+/// Accessor@14039D6B0 returns the database singleton stored here.
 pub const SINGLETON_RVA: usize = 0x0331_69f0;
-/// Branch database pointer table; confirmed by the old begin reader (source:17,95).
+/// Constructor@140615EC0 and loader@140617860 own this branch-pointer vector,
+/// with the native null object in slot zero and authored branches from one.
 pub const ITEMS: usize = 0x70;
-/// Branch database table count, native u32 including reserved index zero; confirmed by the old begin reader (source:18,98).
+/// Signed live count including the null object; loader@140617860.
 pub const COUNT: usize = 0x7c;
-/// Branch database entries are native 64-bit pointers; confirmed by observe_filtered_branch index arithmetic (source:130).
+/// Loader@140617860 indexes branch pointers by eight bytes.
 pub const ITEM_STRIDE: usize = 8;

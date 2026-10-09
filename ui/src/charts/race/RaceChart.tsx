@@ -3,16 +3,18 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { font } from '../draw';
 import { easeTau } from '../easing';
 import { canvasImage } from '../images';
+import { countryFlagContent, drawCountryFlag } from '../countryFlag';
+import type { CountryFlagLook } from '../../components/CountryFlag';
 import { scheduler } from '../scheduler';
 import type { FrameInfo, FrameTask } from '../scheduler';
 import { backingSize, toLocal } from '../surface';
 import { readTokens, subscribeTokens } from '../tokens';
 import type { ChartTokens } from '../tokens';
-import { hideTooltip, showTooltip, tooltipText } from '../tooltip';
+import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { formatAxisValue } from '../valueAxis';
 import { drawDateOverlay, drawRaceBar, drawRaceGrid, FLAG, NAME_X, VALUE_GAP } from './draw';
-import { fitRows, keyedEntry, MORE_LINE, moreLineY, moreText, paintOrder, raceLayout, raceMoving, raceText, rowAt, rowCentre, stepRace } from './race';
+import { fitRows, keyedEntry, MORE_LINE, moreLineY, moreText, paintOrder, raceLayout, raceMoving, raceText, rowAt, rowCentre, selectRaceRow, stepRace } from './race';
 import type { RaceItem, RaceLayout, RaceRow, RaceState } from './race';
 import '../charts.css';
 
@@ -25,15 +27,20 @@ export interface RaceChartProps {
   /** How many rows to make room for (the top N), so rows keep their height as
    * entries come and go. */
   slots: number;
-  name: (key: string) => string;
+  name: (key: string, item?: RaceItem) => string;
   /** An entry's flag as an image URL; nothing is drawn without one. */
-  flag?: (key: string) => string | undefined;
+  flag?: (key: string, item?: RaceItem) => string | undefined;
+  /** Present only for genuine countries, even when their flag is unavailable. */
+  countryFlag?: (key: string, item?: RaceItem) => CountryFlagLook | undefined;
   /** A value-axis label; `ticks` is every tick drawn. */
   formatTick?: (value: number, ticks: readonly number[]) => string;
   /** Tooltip content for an entry, hovered or reached with the keys. */
-  tooltip?: (key: string) => TooltipContent | null;
+  tooltip?: (key: string, item?: RaceItem) => TooltipContent | null;
+  /** Click or Enter opens the widget's breakdown for this row. */
+  onPick?: (key: string, item?: RaceItem) => void;
+  pickOwner?: unknown;
   /** Right-click on a row, or the context-menu key on the row the keys reached. */
-  onContextMenu?: (key: string, clientX: number, clientY: number) => void;
+  onContextMenu?: (key: string, clientX: number, clientY: number, item?: RaceItem) => void;
   /** The moment shown as a large corner date; none when null. */
   dateOverlay?: string | null;
   /** Said in the plot when there are no entries. */
@@ -41,8 +48,7 @@ export interface RaceChartProps {
   hoursPerSecond?: number;
   /** Off-screen charts stop drawing. */
   active: boolean;
-  /** The label and value columns only grow, so they never jump during playback;
-   * a new `resetKey` (another branch) measures them afresh. */
+  /** The columns only grow during playback; another context resets motion and measurements. */
   resetKey?: string;
 }
 
@@ -66,7 +72,9 @@ export default function RaceChart(props: RaceChartProps) {
   const task = useRef<FrameTask | null>(null);
   // Who drives the hover: the pointer, or the keyboard's entry (read out).
   const hover = useRef<{ pointer: Pointer | null; keyed: string | null; menuKey: boolean }>({ pointer: null, keyed: null, menuKey: false });
-  const shown = useRef<{ layout: RaceLayout; rows: readonly RaceRow[]; items: readonly RaceItem[]; min: number; max: number; rect: DOMRect; width: number; height: number } | null>(null);
+  const shown = useRef<{ layout: RaceLayout; rows: readonly RaceRow[]; items: readonly RaceItem[]; min: number; max: number; rect: DOMRect; width: number; height: number;
+    owner: unknown; resetKey?: string } | null>(null);
+  const keyIntent = useRef(false);
   const [spoken, setSpoken] = useState('');
   const spokenText = useRef('');
 
@@ -75,6 +83,7 @@ export default function RaceChart(props: RaceChartProps) {
     const context = element.getContext('2d')!;
     let tokens: ChartTokens = readTokens();
     let state: RaceState | null = null;
+    let stateKey = props.resetKey;
     let device: { width: number; height: number } | null = null;
     // The widest name and value seen, so the columns only grow.
     let columns = { key: '', label: MIN_LABEL, value: 0 };
@@ -85,6 +94,7 @@ export default function RaceChart(props: RaceChartProps) {
 
     const draw = (info: FrameInfo): boolean => {
       const p = latest.current;
+      if (stateKey !== p.resetKey) { state = null; stateKey = p.resetKey; }
       const layoutWidth = element.clientWidth;
       const layoutHeight = element.clientHeight;
       if (!layoutWidth || !layoutHeight) return false;
@@ -104,12 +114,13 @@ export default function RaceChart(props: RaceChartProps) {
       // Columns fitted to the widest name and value seen.
       if (columns.key !== (p.resetKey ?? '')) columns = { key: p.resetKey ?? '', label: MIN_LABEL, value: 0 };
       context.font = font(tokens, tokens.fontSize.body, 500);
-      for (const row of state.rows) columns.label = Math.max(columns.label, NAME_X + context.measureText(p.name(row.key)).width + NAME_PAD);
+      for (const row of state.rows) columns.label = Math.max(columns.label, NAME_X + context.measureText(p.name(row.key, row.item)).width + NAME_PAD);
       context.font = font(tokens, tokens.fontSize.body, 600);
       for (const row of state.rows) columns.value = Math.max(columns.value, context.measureText(row.item.label).width + VALUE_GAP + VALUE_PAD);
       const labelWidth = Math.min(columns.label, Math.max(MIN_LABEL, layoutWidth * MAX_LABEL_SHARE));
       const layout = raceLayout(layoutWidth, layoutHeight, fit.rows, labelWidth, Math.max(columns.value, 24), fit.hidden ? MORE_LINE : 0);
-      shown.current = { layout, rows: state.rows, items: fitted.shown, min: state.min, max: state.max, rect, width: layoutWidth, height: layoutHeight };
+      shown.current = { layout, rows: state.rows, items: fitted.shown, min: state.min, max: state.max, rect, width: layoutWidth, height: layoutHeight,
+        owner: p.pickOwner, resetKey: p.resetKey };
 
       context.clearRect(0, 0, layoutWidth, layoutHeight);
       if (p.dateOverlay) drawDateOverlay(context, layout, tokens, p.dateOverlay);
@@ -154,14 +165,18 @@ export default function RaceChart(props: RaceChartProps) {
           context.fillRect(0, centre - layout.slot / 2, layoutWidth, layout.slot);
           context.globalAlpha = Math.max(0, Math.min(1, row.alpha));
         }
-        const url = p.flag?.(row.key);
-        const image = url ? canvasImage(url, wake) : null;
-        if (image) context.drawImage(image, FLAG.x, centre - FLAG.height / 2, FLAG.width, FLAG.height);
+        const countryFlag = p.countryFlag?.(row.key, row.item);
+        if (countryFlag) drawCountryFlag(context, countryFlag, FLAG.x, centre - FLAG.height / 2, FLAG.width, FLAG.height, tokens, wake);
+        else {
+          const url = p.flag?.(row.key, row.item);
+          const image = url ? canvasImage(url, wake) : null;
+          if (image) context.drawImage(image, FLAG.x, centre - FLAG.height / 2, FLAG.width, FLAG.height);
+        }
         context.fillStyle = tokens.text;
         context.font = font(tokens, tokens.fontSize.body, 500);
         context.textAlign = 'left';
         context.textBaseline = 'middle';
-        context.fillText(p.name(row.key), NAME_X, centre, Math.max(1, layout.left - NAME_X - NAME_PAD));
+        context.fillText(p.name(row.key, row.item), NAME_X, centre, Math.max(1, layout.left - NAME_X - NAME_PAD));
         const tip = drawRaceBar(context, layout, tokens, row, state.min, state.max);
         context.fillStyle = tokens.text;
         context.font = font(tokens, tokens.fontSize.body, 600);
@@ -171,11 +186,15 @@ export default function RaceChart(props: RaceChartProps) {
       context.restore();
       context.globalAlpha = 1;
 
-      if (hovered && p.tooltip) {
+      const heldTooltip = tooltipStore.get();
+      if (hovered && p.tooltip && (pointer || keyIntent.current || heldTooltip == null || heldTooltip.owner === owner)) {
         if (!tooltipFor || tooltipFor.key !== hovered.key || tooltipFor.item !== hovered.item || tooltipFor.props !== p) {
-          tooltipFor = { key: hovered.key, item: hovered.item, props: p, content: p.tooltip(hovered.key) };
+          tooltipFor = { key: hovered.key, item: hovered.item, props: p, content: p.tooltip(hovered.key, hovered.item) };
         }
-        const content = tooltipFor.content;
+        const flag = p.countryFlag?.(hovered.key, hovered.item);
+        const raw = tooltipFor.content && flag ? { ...tooltipFor.content, countryFlag: flag } : tooltipFor.content;
+        const decoded = raw ? countryFlagContent(fitTooltip([raw], globalThis.innerHeight), undefined, wake) : null;
+        const content = decoded ? fitTooltip([decoded], globalThis.innerHeight) : null;
         // The keyboard's tooltip sits at the row's tip; layout pixels become screen
         // pixels through the widget's Size zoom.
         const at = pointer ?? { clientX: rect.left + Math.min(layoutWidth, ends.get(hovered.key) ?? layout.left) * rect.width / layoutWidth,
@@ -185,6 +204,7 @@ export default function RaceChart(props: RaceChartProps) {
         const text = !pointer && content ? tooltipText(content) : spokenText.current;
         if (text !== spokenText.current) { spokenText.current = text; setSpoken(text); }
       } else { tooltipFor = null; hideTooltip(owner); }
+      keyIntent.current = false;
       return raceMoving(state);
     };
     const current: FrameTask = { frame: draw };
@@ -206,28 +226,36 @@ export default function RaceChart(props: RaceChartProps) {
     const move = (event: PointerEvent) => { hover.current = { ...hover.current, pointer: local(event), keyed: null }; wake(); };
     const leave = () => { hover.current = { ...hover.current, pointer: null }; hideTooltip(owner); wake(); };
     const down = () => { hover.current = { ...hover.current, menuKey: false }; };
+    const select = (event: MouseEvent) => {
+      const at = shown.current;
+      if (!at || !latest.current.active || !latest.current.onPick || at.owner !== latest.current.pickOwner || at.resetKey !== latest.current.resetKey) return;
+      const row = rowAt(at.rows, at.layout, local(event), at.min, at.max);
+      selectRaceRow(row?.key ?? null, 'click', key => latest.current.onPick?.(key, row?.item));
+    };
     const menu = (event: MouseEvent) => {
       // The menu key already opened a menu for the row the keys reached; the
       // browser's own event after it must not open a second.
       if (hover.current.menuKey) { hover.current = { ...hover.current, menuKey: false }; event.preventDefault(); return; }
       const handler = latest.current.onContextMenu;
       const at = shown.current;
-      if (!handler || !at) return;
+      if (!handler || !at || !latest.current.active || at.owner !== latest.current.pickOwner || at.resetKey !== latest.current.resetKey) return;
       const row = rowAt(at.rows, at.layout, local(event), at.min, at.max);
       if (!row) return;
       event.preventDefault();
-      handler(row.key, event.clientX, event.clientY);
+      handler(row.key, event.clientX, event.clientY, row.item);
     };
     element.addEventListener('pointermove', move);
     element.addEventListener('pointerleave', leave);
     element.addEventListener('pointerdown', down);
     element.addEventListener('contextmenu', menu);
+    element.addEventListener('click', select);
     return () => {
       remove(); unsubscribe(); observer?.disconnect(); hideTooltip(owner);
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerleave', leave);
       element.removeEventListener('pointerdown', down);
       element.removeEventListener('contextmenu', menu);
+      element.removeEventListener('click', select);
       task.current = null;
     };
   }, [owner]);
@@ -252,24 +280,32 @@ export default function RaceChart(props: RaceChartProps) {
       // The keyboard takes the hover from the pointer, stepping on from the row shown.
       const from = hover.current.keyed ?? (hover.current.pointer && shown.current ? rowAt(shown.current.rows, shown.current.layout, hover.current.pointer, shown.current.min, shown.current.max)?.key ?? null : null);
       hover.current = { ...hover.current, pointer: null, keyed: keyedEntry(event.key, from, shown.current?.items ?? props.items) };
+      keyIntent.current = true;
       wake();
       return;
     }
     if (event.key === 'Escape' && hover.current.keyed != null) { event.preventDefault(); clearKeyed(); return; }
     const keyed = hover.current.keyed;
-    if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && props.onContextMenu && keyed && shown.current) {
+    const drawn = shown.current;
+    const row = drawn?.rows.find(item => item.key === keyed && item.phase !== 'leaving');
+    const current = latest.current;
+    if (!current.active || drawn?.owner !== current.pickOwner || drawn?.resetKey !== current.resetKey || !row) return;
+    if (selectRaceRow(keyed, event.key, current.onPick ? key => current.onPick?.(key, row.item) : undefined)) {
+      event.preventDefault();
+      return;
+    }
+    if ((event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) && current.onContextMenu && keyed && shown.current) {
       event.preventDefault();
       hover.current = { ...hover.current, menuKey: true };
-      const { rect, layout, rows, height } = shown.current;
-      const row = rows.find(item => item.key === keyed);
-      const y = row ? rect.top + rowCentre(layout, row.y) * rect.height / height : rect.top + rect.height / 2;
-      props.onContextMenu(keyed, rect.left + rect.width / 2, y);
+      const { rect, layout, height } = shown.current;
+      const y = rect.top + rowCentre(layout, row.y) * rect.height / height;
+      current.onContextMenu(keyed, rect.left + rect.width / 2, y, row.item);
     }
   };
   const ranking = raceText(props.items, props.name);
   return <div className="race-chart">
     <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={`${owner}-ranking`}
-      aria-keyshortcuts="ArrowUp ArrowDown Home End" onKeyDown={keyDown} onBlur={clearKeyed} />
+      aria-keyshortcuts={`ArrowUp ArrowDown Home End${props.onPick ? ' Enter Space' : ''}`} onKeyDown={keyDown} onBlur={clearKeyed} />
     <p id={`${owner}-ranking`} className="sr-only">{ranking || props.empty || ''}</p>
     <p className="sr-only" aria-live="polite">{spoken}</p>
   </div>;

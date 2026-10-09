@@ -1,14 +1,19 @@
 import { DATE_OVERLAY_OPTION, RACE_AXIS_OPTIONS, RACE_TIME_OPTIONS, raceViewOption, TOP_COUNTRIES } from '../../charts/race/options.ts';
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
+import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
 
 export const OPTIONS: readonly OptionField[] = [
-  raceViewOption('nuke type'),
-  DATE_OVERLAY_OPTION,
+  { ...raceViewOption('nuke type'), visibleWhen: options => options.show === 'main' },
+  breakdownOption([{ id: 'breakdown', label: 'Nuke types' }], 'Country totals'),
+  { key: 'drillOriginHour', section: 'options', label: 'Country selected at hour', kind: 'number',
+    min: -2147483648, max: 2147483647, step: 1, default: null, visibleWhen: () => false },
+  { ...DATE_OVERLAY_OPTION, visibleWhen: options => options.show === 'main' && options.view === 'race' },
   { key: 'endLabels', section: 'options', label: 'Names at line ends', kind: 'toggle', default: true,
-    visibleWhen: options => options.view === 'lines' },
-  ...RACE_TIME_OPTIONS,
-  ...RACE_AXIS_OPTIONS,
+    visibleWhen: options => options.show === 'main' && options.view === 'lines' },
+  ...[...RACE_TIME_OPTIONS, ...RACE_AXIS_OPTIONS].map(field => ({ ...field,
+    visibleWhen: (options, countries) => field.visibleWhen?.({ ...options, view: options.show === 'breakdown' ? 'mix' : options.view }, countries) ?? true } satisfies OptionField)),
+  { ...DRILL_OPTION, visibleWhen: options => options.show === 'main' },
 ];
 
 export const definition = {

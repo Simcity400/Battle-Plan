@@ -7,6 +7,45 @@ use replay::{
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
+fn air_superiority_inherited_state_is_independent_between_revisions() {
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, vec![source(1, 100, Some(1))])],
+        )
+        .unwrap(),
+    );
+    let make = |revision: &str| {
+        crate::Source::from_replay(
+            crate::SourceKey {
+                source_id: revision.into(),
+                revision: revision.into(),
+            },
+            "memory.battleplan".into(),
+            Arc::clone(&replay),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+    let previous = make("1");
+    previous.append_state::<Vec<i32>>().lock().unwrap().push(23);
+    let next = make("2");
+    next.inherit_append_states(&previous);
+    next.state::<Vec<i32>>().lock().unwrap().push(47);
+    assert_eq!(*previous.append_state::<Vec<i32>>().lock().unwrap(), [23]);
+    assert_eq!(*next.state::<Vec<i32>>().lock().unwrap(), [23, 47]);
+
+    previous
+        .state::<Vec<String>>()
+        .lock()
+        .unwrap()
+        .push("revision local".into());
+    let other = make("3");
+    other.inherit_append_states(&previous);
+    assert!(other.state::<Vec<String>>().lock().unwrap().is_empty());
+}
+
+#[test]
 fn policy_two_lazy_content_warnings_reach_metadata_catalogue_and_cached_products() {
     use crate::products::{ContentOptions, LoadContext};
     use replay::spool::Record;

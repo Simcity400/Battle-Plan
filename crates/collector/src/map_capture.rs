@@ -49,6 +49,18 @@ pub trait MapSources {
     }
     fn begin_air(&mut self) -> u64;
     fn air(&mut self, pointer: usize, pool: usize, row: &cair_wing::Row) -> u64;
+    fn air_owner(&mut self, _slot: u32, _entry: Option<usize>) -> u64 {
+        0
+    }
+    fn air_score_limit(&self) -> Option<usize> {
+        None
+    }
+    fn air_score(&mut self, _pointer: usize, _row: &cair_wing::ScoreLeaf) -> u64 {
+        0
+    }
+    fn finish_air_score(&mut self, _outcome: Outcome) -> u64 {
+        0
+    }
     fn finish_air(&mut self, outcome: Outcome) -> u64;
 }
 
@@ -111,6 +123,7 @@ impl MapCapacities {
 /// details the ships seed, so the game thread never runs the census.
 pub struct ShipCensus {
     pub fleets: CaptureRows<cfleet::Row>,
+    pub fleet_names: Vec<u8>,
     pub task_forces: CaptureRows<ctask_force::Row>,
     pub ships: CaptureRows<cship::Row>,
     /// Fleet, task force and ship walk ticks.
@@ -121,6 +134,7 @@ impl ShipCensus {
     fn new(rows: &[usize]) -> Self {
         Self {
             fleets: CaptureRows::new(rows[0]),
+            fleet_names: Vec::new(),
             task_forces: CaptureRows::new(rows[1]),
             ships: CaptureRows::new(rows[2]),
             ticks: [0; 3],
@@ -132,12 +146,14 @@ impl ShipCensus {
     }
     fn reset(&mut self) {
         self.fleets.reset();
+        self.fleet_names.clear();
         self.task_forces.reset();
         self.ships.reset();
         self.ticks = [0; 3];
     }
     fn allocated_bytes(&self) -> usize {
-        self.fleets.allocated_bytes()
+        self.fleet_names.capacity()
+            + self.fleets.allocated_bytes()
             + self.task_forces.allocated_bytes()
             + self.ships.allocated_bytes()
     }
@@ -152,7 +168,7 @@ impl ShipCensus {
         let mut reads = crate::read_accounting::table(tables[0]);
         let begin = qpc();
         models.begin_sources();
-        let naval = cfleet::walk_timed_with(
+        let naval = cfleet::walk_timed_with_names(
             memory,
             base,
             state,
@@ -164,6 +180,7 @@ impl ShipCensus {
                 qpc() as u64
             },
             |pointer, row| models.visit_source(pointer, row),
+            &mut self.fleet_names,
         );
         models.finish_sources(naval.capture.ships);
         self.fleets.outcome = naval.capture.fleets;
@@ -627,28 +644,54 @@ impl MapCaptured {
         if let Some(reason) = self.air_capture_failure {
             self.air_wings.outcome = Outcome::Unavailable { reason };
         } else if !self.owned_air_captured {
-            let mut nested = sources.begin_air();
+            let nested = std::cell::Cell::new(sources.begin_air());
+            let score_limit = sources.air_score_limit();
+            let source = std::cell::RefCell::new(&mut *sources);
             let mut names = cair_wing::NameArena {
                 bytes: &mut self.air_wing_names,
                 used: 0,
                 required: 0,
                 failures: 0,
             };
-            self.air_wings.outcome = cair_wing::walk_with_names(
+            let walked = cair_wing::walk_game_score_with_owners(
                 memory,
                 base,
                 state,
                 &mut self.air_wings.rows,
-                &mut names,
+                Some(&mut names),
+                score_limit,
                 |pointer, pool, row| {
-                    nested = nested.saturating_add(sources.air(pointer, pool, row))
+                    nested.set(
+                        nested
+                            .get()
+                            .saturating_add(source.borrow_mut().air(pointer, pool, row)),
+                    )
+                },
+                |pointer, row| {
+                    nested.set(
+                        nested
+                            .get()
+                            .saturating_add(source.borrow_mut().air_score(pointer, row)),
+                    )
+                },
+                |slot, entry| {
+                    nested.set(
+                        nested
+                            .get()
+                            .saturating_add(source.borrow_mut().air_owner(slot, entry)),
+                    )
                 },
             );
             self.air_wing_names_len = names.used;
             self.air_wing_names_required = names.required;
             self.air_wing_name_failures = names.failures;
             observe_air_wing_name_refusals(names.failures);
-            nested = nested.saturating_add(sources.finish_air(self.air_wings.outcome));
+            self.air_wings.outcome = walked.shared.map;
+            let source = source.into_inner();
+            let nested = nested
+                .get()
+                .saturating_add(source.finish_air_score(walked.score))
+                .saturating_add(source.finish_air(self.air_wings.outcome));
             ticks[8] = ((qpc() - begin).max(0) as u64).saturating_sub(nested);
         }
 

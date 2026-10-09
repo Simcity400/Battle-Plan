@@ -144,6 +144,8 @@ fn capacity() -> Capacities {
         routes: 4,
         law_bytes: 8,
         occupied: 8,
+        group_laws: 2,
+        equipment: 0,
     }
 }
 
@@ -249,6 +251,8 @@ fn fixture() -> Captured {
         strength_ratio: i64::MAX,
         garrison_required: i64::MIN,
         serialized_flag: 0xff,
+        equipment: None,
+        equipment_failure: Some("fixture equipment source unavailable"),
     };
     captured.assigned_manpower.rows[0] = cstate_garrison_data::ManpowerRow {
         controller: 1,
@@ -351,6 +355,16 @@ fn conversions_preserve_native_widths_order_bytes_and_scope() {
     assert_eq!(
         complete::<tables::StateGarrisons>(&views[7])[0].garrison_required,
         i64::MIN
+    );
+    let rows::Recorded::Value(equipment) =
+        &complete::<tables::StateGarrisons>(&views[7])[0].equipment
+    else {
+        panic!("expected recorded equipment refusal");
+    };
+    assert!(equipment.rows.is_empty());
+    assert_eq!(
+        equipment.failure.as_deref(),
+        Some(b"fixture equipment source unavailable".as_slice())
     );
     assert_eq!(
         complete::<tables::StateAssignedManpower>(&views[8])[0].amount,
@@ -525,6 +539,8 @@ fn construction_rest_truncation_matrix_preserves_unrelated_caps() {
             routes: 64,
             law_bytes: 64,
             occupied: 8,
+            group_laws: 1,
+            equipment: 0,
         };
         let mut expected = capacities;
         expected.rows[5] = expected.rows[5].max(1);
@@ -563,6 +579,8 @@ fn construction_rest_split_copy_matches_direct_walk_under_truncation() {
         routes: 1,
         law_bytes: 4,
         occupied: 8,
+        group_laws: 1,
+        equipment: 0,
     };
     let mut expected = capacities;
     expected.law_bytes = 16;
@@ -633,6 +651,210 @@ fn construction_rest_first_decode_grows_settings_and_shared_law_bytes() {
         assert_eq!((job.settings_required, job.law_bytes_required), (0, 0));
         assert!(!job.law_demand_overflowed);
     }
+}
+
+fn garrison_equipment_fixture() -> Vec<u8> {
+    use super::construction_rest_test_kit as kit;
+    use engine::{cequipment_type as ty, cequipment_variant_pool as pool, garrison_equipment_pool};
+    let mut bytes = kit::fixture();
+    const REQUIRED: usize = 0x18000;
+    const ALLOCATED: usize = REQUIRED + 5_000 * 16;
+    const EQUIPMENT: usize = ALLOCATED + 24;
+    bytes.resize(EQUIPMENT + 0x600 - kit::BASE, 0);
+    let mut put = |at: usize, value: &[u8]| {
+        bytes[at - kit::BASE..at - kit::BASE + value.len()].copy_from_slice(value)
+    };
+    for (offset, vtable, data, count) in [
+        (
+            cstate_garrison_data::REQUIRED_EQUIPMENT,
+            garrison_equipment_pool::VTABLE_RVA,
+            REQUIRED,
+            5_000_i32,
+        ),
+        (
+            cstate_garrison_data::LOCAL_EQUIPMENT,
+            pool::VTABLE_RVA,
+            ALLOCATED,
+            1,
+        ),
+    ] {
+        put(kit::GAR_OBJ + offset, &(vtable as u64).to_le_bytes());
+        put(kit::GAR_OBJ + offset + 8, &(data as u64).to_le_bytes());
+        put(kit::GAR_OBJ + offset + 16, &count.to_le_bytes());
+        put(kit::GAR_OBJ + offset + 20, &count.to_le_bytes());
+    }
+    put(EQUIPMENT, &(ty::VTABLE_RVA as u64).to_le_bytes());
+    put(EQUIPMENT + ty::TOKEN, &700_u32.to_le_bytes());
+    put(EQUIPMENT + ty::ACTIVE, &[1]);
+    put(EQUIPMENT + ty::ARCHETYPE, &(EQUIPMENT as u64).to_le_bytes());
+    put(EQUIPMENT + ty::ARCHETYPE_ID, &1_i32.to_le_bytes());
+    put(EQUIPMENT + ty::BUILD_COST_IC, &200_003_i64.to_le_bytes());
+    put(ALLOCATED, &(EQUIPMENT as u64).to_le_bytes());
+    put(ALLOCATED + 16, &50_000_i64.to_le_bytes());
+    for index in 0..5_000 {
+        put(REQUIRED + index * 16, &(EQUIPMENT as u64).to_le_bytes());
+        put(
+            REQUIRED + index * 16 + 8,
+            &(100_000 + index as i64).to_le_bytes(),
+        );
+    }
+    bytes
+}
+
+#[test]
+fn garrison_equipment_first_acquisition_grows_5000_operands_and_matches_owned_read_witness() {
+    use super::construction_rest_test_kit as kit;
+    let bytes = garrison_equipment_fixture();
+    let memory = engine::memory::SliceMemory {
+        base: kit::BASE,
+        bytes: &bytes,
+    };
+    let (split, report, job) = kit::split(&memory, &kit::capacities());
+    assert!(report.raw_ok);
+    assert!(job.equipment_required >= 5_000);
+    assert!(split.equipment.first.len() >= 5_000);
+    let mut capacity = kit::capacities();
+    capacity.equipment = job.equipment_required;
+    let direct = kit::direct(&memory, &capacity);
+    assert_eq!(split.tables()[7], direct.tables()[7]);
+    let tables = split.tables();
+    let rows = complete::<tables::StateGarrisons>(&tables[7]);
+    let rows::Recorded::Value(inputs) = &rows[0].equipment else {
+        panic!()
+    };
+    assert!(inputs.failure.is_none());
+    assert_eq!(inputs.rows.len(), 5_000);
+    assert_eq!(inputs.rows[4_999].required_raw, 104_999);
+    assert_eq!(inputs.rows[4_999].required_lookup_raw, 100_000);
+    assert_eq!(inputs.rows[4_999].allocated_raw, 50_000);
+    assert_eq!(inputs.rows[4_999].weight_raw, 200_003);
+}
+
+#[test]
+fn garrison_equipment_acquisition_covers_5000_authenticated_countries_without_a_selected_roster() {
+    use super::construction_rest_test_kit as kit;
+    const COUNTRIES: usize = 0x80000;
+    const LINKS: usize = 0x90000;
+    const COUNTRY_BASE: usize = 0x100000;
+    const COUNTRY_STRIDE: usize = 0x2000;
+    let mut bytes = garrison_equipment_fixture();
+    bytes.resize(COUNTRY_BASE + 5_001 * COUNTRY_STRIDE - kit::BASE, 0);
+    let mut put = |at: usize, value: &[u8]| {
+        bytes[at - kit::BASE..at - kit::BASE + value.len()].copy_from_slice(value)
+    };
+    for (header, data) in [
+        (cgame_state::COUNTRIES, COUNTRIES),
+        (cgame_state::COUNTRY_LINKS, LINKS),
+    ] {
+        put(kit::BASE + header, &(data as u64).to_le_bytes());
+        put(kit::BASE + header + 8, &5_001_i32.to_le_bytes());
+        put(kit::BASE + header + 12, &5_001_i32.to_le_bytes());
+    }
+    for id in 1..=5_000_u32 {
+        let country = if id == 1 {
+            kit::COUNTRY
+        } else {
+            COUNTRY_BASE + id as usize * COUNTRY_STRIDE
+        };
+        put(COUNTRIES + id as usize * 8, &(country as u64).to_le_bytes());
+        put(LINKS + id as usize * 4, &id.to_le_bytes());
+        if id == 1 {
+            continue;
+        }
+        let status = country + 0x1800;
+        put(country, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        put(country + ccountry::ID, &id.to_le_bytes());
+        put(
+            country + ccountry::OCCUPATION_STATUS,
+            &(status as u64).to_le_bytes(),
+        );
+        put(
+            status,
+            &(ccountry_occupation_status::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            status + ccountry_occupation_status::SECONDARY_BASE,
+            &(ccountry_occupation_status::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            status + ccountry_occupation_status::ASSIGNED_MANPOWER,
+            &(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes(),
+        );
+    }
+    let memory = engine::memory::SliceMemory {
+        base: kit::BASE,
+        bytes: &bytes,
+    };
+    let mut job = ConstructionRestJob::new();
+    job.log = RawLog::new(1 << 18, 16 << 20);
+    engine::allocation::reserve_exact(&mut job.census, 5_000).unwrap();
+    job.update_capacity_charge();
+    let report = copy_construction_rest_refresh(
+        &memory,
+        ConstructionRestCopyContext {
+            base: 0,
+            game_state: kit::BASE,
+        },
+        &mut job,
+    );
+    assert!(report.raw_ok);
+    assert_eq!(job.census.len(), 5_000);
+    assert_eq!(job.equipment_required, 5_000);
+    let mut captured = Captured::with_capacities(&kit::capacities());
+    captured.decode_construction_rest_payload(0, kit::BASE, &job, &mut [0; 10]);
+    assert_eq!(captured.settings.outcome, Outcome::Rows { len: 5_000 });
+    assert_eq!(captured.equipment.len, 5_000);
+    let tables = captured.tables();
+    let rows = complete::<tables::StateGarrisons>(&tables[7]);
+    assert_eq!(rows.len(), 1);
+    let rows::Recorded::Value(inputs) = &rows[0].equipment else {
+        panic!()
+    };
+    assert!(inputs.failure.is_none());
+    assert_eq!(inputs.rows.len(), 5_000);
+}
+
+#[test]
+fn failed_garrison_equipment_read_keeps_scalar_siblings_and_names_the_local_refusal() {
+    use super::construction_rest_test_kit as kit;
+    struct MissingWeight<'a> {
+        bytes: &'a [u8],
+    }
+    impl engine::Memory for MissingWeight<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            const EQUIPMENT: usize = 0x18000 + 5_000 * 16 + 24;
+            if address == EQUIPMENT + engine::cequipment_type::BUILD_COST_IC {
+                return false;
+            }
+            engine::memory::SliceMemory {
+                base: kit::BASE,
+                bytes: self.bytes,
+            }
+            .copy(address, output)
+        }
+    }
+    let bytes = garrison_equipment_fixture();
+    let memory = MissingWeight { bytes: &bytes };
+    let (split, _, job) = kit::split(&memory, &kit::capacities());
+    let mut capacity = kit::capacities();
+    capacity.equipment = job.equipment_required;
+    let direct = kit::direct(&memory, &capacity);
+    assert_eq!(split.tables()[7], direct.tables()[7]);
+    assert!(matches!(split.garrisons.outcome, Outcome::Rows { len: 1 }));
+    assert!(matches!(
+        split.assigned_manpower.outcome,
+        Outcome::Rows { len: 1 }
+    ));
+    let tables = split.tables();
+    let rows = complete::<tables::StateGarrisons>(&tables[7]);
+    let rows::Recorded::Value(inputs) = &rows[0].equipment else {
+        panic!()
+    };
+    assert_eq!(
+        inputs.failure.as_deref(),
+        Some(b"garrison equipment operand unreadable".as_slice())
+    );
+    assert!(inputs.rows.is_empty());
 }
 
 #[test]
@@ -798,4 +1020,73 @@ fn construction_rest_worst_case_pools_start_above_late_campaign_caps() {
     assert!(capacities.rows[2] >= 4096);
     assert!(capacities.routes >= 4096);
     assert!(capacities.law_bytes >= 16384);
+}
+
+#[test]
+fn occupation_group_and_database_laws_survive_raw_copy_without_changing_state_zero() {
+    use construction_rest_test_kit as kit;
+    const DATABASE: usize = 0x8500;
+    struct DatabaseMemory<'a> {
+        inner: engine::memory::SliceMemory<'a>,
+        fail_group: bool,
+    }
+    impl Memory for DatabaseMemory<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if address == coccupation_law::DATABASE_RVA && destination.len() == 8 {
+                destination.copy_from_slice(&(DATABASE as u64).to_le_bytes());
+                return true;
+            }
+            if self.fail_group && address == kit::OCC_DATA + ccountry_occupation_data::GROUP_LAW {
+                return false;
+            }
+            self.inner.copy(address, destination)
+        }
+    }
+    for (group_present, fail_group) in [(false, false), (true, false), (true, true)] {
+        let mut bytes = kit::fixture();
+        let at = kit::OCC_DATA + ccountry_occupation_data::OCCUPIED_COUNTRY_POINTER - kit::BASE;
+        bytes[at..at + 8].copy_from_slice(&(kit::COUNTRY as u64).to_le_bytes());
+        let at = DATABASE + coccupation_law::DATABASE_FALLBACK - kit::BASE;
+        bytes[at..at + 8].copy_from_slice(&(kit::LAW_OBJ as u64).to_le_bytes());
+        if group_present {
+            let at = kit::OCC_DATA + ccountry_occupation_data::GROUP_LAW - kit::BASE;
+            bytes[at..at + 8].copy_from_slice(&(kit::LAW_OBJ as u64).to_le_bytes());
+        }
+        let memory = DatabaseMemory {
+            inner: engine::memory::SliceMemory {
+                base: kit::BASE,
+                bytes: &bytes,
+            },
+            fail_group,
+        };
+        let direct = kit::direct(&memory, &kit::capacities());
+        let mut capacity = kit::capacities();
+        capacity.group_laws = 0;
+        let (split, _, job) = kit::split(&memory, &capacity);
+        assert_eq!(job.group_laws_required, 2);
+        kit::assert_matches_direct(&split, &direct);
+        let tables = split.tables();
+        let row = &complete::<tables::OccupationSettings>(&tables[5])[0];
+        assert_eq!(
+            row.fallback_law,
+            rows::Recorded::Value(Some(b"civilian".to_vec()))
+        );
+        assert_eq!(
+            complete::<tables::StateOccupationLaws>(&tables[6])[0].state,
+            0
+        );
+        if fail_group {
+            assert_eq!(row.group_laws, rows::Recorded::Value(None));
+            assert_eq!(row.law, b"civilian");
+        } else {
+            assert_eq!(
+                row.group_laws,
+                rows::Recorded::Value(Some(vec![rows::OccupationGroupLaw {
+                    occupied: 1,
+                    scope_country: Some(1),
+                    law: group_present.then(|| b"civilian".to_vec()),
+                }]))
+            );
+        }
+    }
 }

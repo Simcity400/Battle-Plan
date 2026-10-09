@@ -1,6 +1,6 @@
 import type { OptionField } from '../../dashboard/options';
 import { contentKey, setToken } from '../../dashboard/options.ts';
-import type { Sort } from './logic';
+import type { Sort, SortDirection } from './logic';
 
 export const TABLE_OPTIONS: readonly OptionField[] = [
   { key: 'cellBars', section: 'options', label: 'Cell bars', kind: 'toggle', default: true },
@@ -20,12 +20,12 @@ export function tableSortOf(value: unknown, fallback: Sort): Sort {
     return typeof column === 'string' && (direction === 'ascending' || direction === 'descending') ? { column, direction } : fallback;
   } catch { return fallback; }
 }
-type SortColumn = { key: string; label: string; sortable?: boolean };
+type SortColumn = { key: string; label: string; sortable?: boolean; direction?: SortDirection };
 /** Recording-dependent columns use a content choice; header clicks store this token. */
 export const tableSortToken = (sort: Sort): string => setToken(sortKey(sort));
 function sortChoices(columns: readonly SortColumn[], token: (sort: Sort) => string): { value: string; label: string }[] {
-  return columns.filter(column => column.sortable !== false).flatMap(column => (['descending', 'ascending'] as const).map(direction => ({
-    value: token({ column: column.key, direction }), label: `${column.label} · ${direction}`,
+  return columns.filter(column => column.sortable !== false).flatMap(column => (column.direction ? [column.direction] : ['descending', 'ascending'] as const).map(direction => ({
+    value: token({ column: column.key, direction }), label: column.direction ? column.label : `${column.label} · ${direction}`,
   })));
 }
 export function tableSortChoices(columns: readonly SortColumn[]): { value: string; label: string }[] {

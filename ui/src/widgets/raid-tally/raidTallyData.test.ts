@@ -1,14 +1,31 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { syntheticRaids } from '../../dashboard/raids.fixtures.ts';
-import { tallyEntries, tallyLines, tallyLineTooltip, tallyModel, tallyTooltip } from './raidTallyData.ts';
+import { tallyEntries, tallyIdentities, tallyLines, tallyLineTooltip, tallyModel, tallyTooltip } from './raidTallyData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { definition, OPTIONS } from './definition.ts';
 import { resolveOptions } from '../../dashboard/options.ts';
-import { resolveCountries } from '../../dashboard/groups.ts';
+import { countryMatchFilter, projectResolvedCountries, rankedCandidates, resolveCountries } from '../../dashboard/groups.ts';
 import { countryRaceEnds, countryRaceItems } from '../../charts/race/countryRace.ts';
 import { SECONDARY_DASH } from '../../charts/palette.ts';
 import { stepRace } from '../../charts/race/race.ts';
+
+test('raid tally uses selected native holder intervals rather than recursively selecting reused aliases', () => {
+  const data = syntheticRaids();
+  const item = data.series[0];
+  item.identities = [{ firstHour: 100, lastHour: 101, slot: 1, countryId: 11 }, { firstHour: 103, lastHour: 105, slot: 2, countryId: 22 }];
+  data.series.push({ ...item, tag: 'alias', identities: [
+    { firstHour: 100, lastHour: 101, slot: 3, countryId: 33 }, { firstHour: 103, lastHour: 105, slot: 1, countryId: 11 },
+  ] });
+  const selection = { kind: 'tags' as const, tags: ['MOD A'] };
+  const counted = projectResolvedCountries(resolveCountries(selection, [], undefined, 105, Number.MAX_SAFE_INTEGER),
+    countryMatchFilter(selection, [], undefined, 105, tallyIdentities(data.series), 100));
+  assert.deepEqual(rankedCandidates(counted, 101, data.series.map(item => item.tag)), ['MOD A']);
+  assert.deepEqual(new Set(rankedCandidates(counted, 104, data.series.map(item => item.tag))), new Set(['MOD A', 'alias']));
+  assert.deepEqual(tallyLines(data.series, 'launched', { firstHour: 100, lastHour: 105 }, counted.membership).find(line => line.tag === 'alias')!.runs.map(run => [run.firstHour, run.lastHour]), [[103, 105]]);
+  item.identities = [];
+  assert.deepEqual(tallyEntries(tallyModel(data.series), ['MOD A'], 101, 'launched'), []);
+});
 
 test('raid tally keeps recorded zero apart from missing, gaps, and uncertain launches', () => {
   const data = syntheticRaids();
@@ -31,8 +48,13 @@ test('partial country reads never date a new tally to an earlier complete world 
   assert.equal(tallyTooltip(data, 'MOD A', 104.5, 'Country').rows.find(row => row.label === 'Read')?.value, formatDateTime(104));
   data.series.push({ ...data.series[0], tag: 'other', runs: [{ ...data.series[0].runs[1], readHour: 104, firstHour: 104 }] });
   const series = tallyModel(data.series);
-  const tip = tallyLineTooltip(series, 104, ['MOD A', 'other'], () => tag => ({ name: tag }), () => 'country-colour', 'succeeded');
+  const tip = tallyLineTooltip(series, 104, ['MOD A', 'other'], hour => tag => ({ name: tag, flagReason: `Unavailable ${tag} at ${hour}`, flagPending: tag === 'other' }), () => 'country-colour', 'succeeded');
   assert.match(tip.note!, new RegExp(`Read ${formatDateTime(104)}`));
+  assert.deepEqual(tip.rows.map(row => row.countryFlag), [
+    { name: 'MOD A', flagReason: 'Unavailable MOD A at 104', flagPending: false },
+    { name: 'other', flagReason: 'Unavailable other at 104', flagPending: true },
+  ]);
+  assert.equal(tallyLineTooltip(series, 102, ['MOD A'], () => () => ({ name: 'Country' }), () => 'country', 'succeeded').rows[0].countryFlag, undefined);
   assert.equal(tallyTooltip(data, 'MOD A', 102, 'Country').rows.some(row => row.label === 'Read'), false);
 });
 
@@ -92,7 +114,7 @@ test('Both defaults to launched ranking with exact inner successes, including su
   const items = countryRaceItems(entries, new Map(), () => 'country', 'unknown', false);
   assert.equal(items[1].inset?.value, 7);
   const tip = tallyLineTooltip(series, 104, ['MOD A', 'MOD A', 'MOD B'], () => tag => ({ name: `${tag} at hover`, flag: 'hover flag' }), () => 'country', 'both');
-  assert.deepEqual(tip.rows.map(row => [row.label, row.icon, row.value]),
+  assert.deepEqual(tip.rows.map(row => [row.label, row.countryFlag?.flag, row.value]),
     [['MOD A at hover', 'hover flag', '4+ launched · 1+ succeeded'], ['MOD B at hover', 'hover flag', '0+ launched · 7+ succeeded']]);
 });
 

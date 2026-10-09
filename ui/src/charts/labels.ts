@@ -37,3 +37,12 @@ export function fitLabelWidth<T = string>(texts: Iterable<T>, measure: (text: T)
   for (const text of texts) widest = Math.max(widest, measure(text));
   return Math.ceil(Math.min(max, Math.max(min, widest + padding)));
 }
+
+/** Ellipsis preserves the font's proportions in a narrow label column. */
+export function ellipsise(text: string, width: number, measure: (text: string) => number): string {
+  if (measure(text) <= width) return text;
+  if (measure('\u2026') > width) return '';
+  let lo = 0, hi = text.length;
+  while (lo < hi) { const mid = Math.ceil((lo + hi) / 2); if (measure(text.slice(0, mid) + '\u2026') <= width) lo = mid; else hi = mid - 1; }
+  return text.slice(0, lo) + '\u2026';
+}

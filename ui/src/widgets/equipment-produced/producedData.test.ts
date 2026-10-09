@@ -12,7 +12,7 @@ import { countryRaceItems } from '../../charts/race/countryRace.ts';
 import type { EquipmentProducedReply, ProducedKey, ProducedSeries } from '../../generated/dashboard';
 import '../definitions.ts';
 import { definition, OPTIONS } from './definition.ts';
-import { bandValue, column, emptyRace, keyBands, keyLabel, mixBands, producedAt, producedModel, producedRequest, producedTooltips, raceEntries, rankProduced,
+import { bandValue, column, emptyRace, equipmentBandValue, equipmentGroupValue, keyBands, keyLabel, mixBands, producedAt, producedModel, producedRequest, producedTooltips, raceEntries, rankProduced,
   seriesBands, storedValues, totalRuns, typeLabel, validateProducedReply, valueAt } from './producedData.ts';
 
 /** A coded value: 0 before `from`, the running sum of `deltas`, unknown in `unknown`'s ranges. */
@@ -37,6 +37,27 @@ const REPLY: EquipmentProducedReply = {
 
 const read = (values: ReturnType<typeof column> | null, length: number) =>
   Array.from({ length }, (_, index) => valueAt(values, index)).map(value => Number.isNaN(value) ? null : value);
+
+test('independent equipment subtotals are readable without plotting or ranking an unknown combined amount', () => {
+  const reply: EquipmentProducedReply = { ...REPLY, series: [{ ...REPLY.series[0],
+    values: [{ key: 0, values: c(0, [], [0, 4]), equipmentValues: c(0, [-5, 1]) }],
+    total: c(0, [], [0, 4]), }], known: [] };
+  assert.equal(validateProducedReply(reply), reply);
+  const model = producedModel(reply);
+  const series = model.series.get('GER')!;
+  assert.equal(equipmentGroupValue(series, 0, 1), -4);
+  assert.equal(equipmentBandValue(series, { id: '0', keys: [0], color: '#123456', other: false }, 1), -4);
+  assert.equal(producedAt(model, 'GER', 40)?.total, null);
+  assert.deepEqual(rankProduced(model, ['GER'], 40, 10), []);
+  assert.deepEqual(totalRuns(model, 'GER', null, { firstHour: 8, lastHour: 103 }), []);
+  const tooltip = [...producedTooltips(model, 'GER', 'Germany', producedAt(model, 'GER', 40)!, 40, 'Recorded day', [])][0];
+  assert.deepEqual(tooltip.rows.map(row => [row.label, row.value]), [
+    ['Infantry Equipment', 'Not known'], ['Infantry Equipment — Equipment lines', '−4'], ['Total', 'Not known'],
+  ]);
+  assert.match(tooltip.note!, /combined amounts are not known/);
+  assert.throws(() => validateProducedReply({ ...reply, series: [{ ...reply.series[0],
+    values: [{ ...reply.series[0].values[0], equipmentValues: c(0, [Number.MAX_SAFE_INTEGER + 1]) }] }] }));
+});
 
 test('values read from their first nonzero sample, unknown only inside their ranges', () => {
   assert.deepEqual(read(column(c(1, [10, 5])), 4), [0, 10, 15, 15]);

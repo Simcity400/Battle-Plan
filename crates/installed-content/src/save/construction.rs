@@ -70,6 +70,8 @@ pub struct OccupationSettings {
     pub default_law: Option<Vec<u8>>,
     /// 140FEAE70 (secondary +0x18) writes primary +0x60 in this order.
     pub occupied: Vec<Vec<u8>>,
+    /// Occupied-country membership and the nullable +0xA0 law pointer (140FEA660).
+    pub group_laws: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +94,10 @@ pub struct StateGarrison {
     pub serialized_flag: bool,
     /// C5B610 serializes positive rows only, retaining their relative order.
     pub manpower: Vec<Manpower>,
+    /// 140FEB450 always writes both objects. Absence is retained for the oracle.
+    pub equipment: Option<super::production::Pool>,
+    /// 140FFDA90 writes nonzero token/amount entries in native order.
+    pub equipment_need: Option<Vec<(Vec<u8>, Decimal)>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -307,6 +313,7 @@ fn occupation(country: &[u8], items: &[Item], pack: &mut Pack) -> io::Result<()>
             })
             .transpose()?
             .unwrap_or_default(),
+        group_laws: BTreeMap::new(),
     };
     if pack
         .occupation_settings
@@ -329,6 +336,11 @@ fn occupation(country: &[u8], items: &[Item], pack: &mut Pack) -> io::Result<()>
                 return Err(invalid("duplicate occupied country scope"));
             }
             let fields = block(&item.value)?;
+            pack.occupation_settings
+                .get_mut(country)
+                .expect("settings inserted above")
+                .group_laws
+                .insert(occupied.to_vec(), bytes(fields, b"occupation_law")?);
             if let Some(value) = field(fields, b"occupation_law_list")? {
                 for item in block(value)? {
                     let state = integer(
@@ -373,6 +385,29 @@ fn occupation(country: &[u8], items: &[Item], pack: &mut Pack) -> io::Result<()>
                         garrison_required: zero_omitted_fixed(fields, b"garrison_required")?,
                         serialized_flag: false_omitted(fields, b"suppression")?,
                         manpower: manpower(fields, b"manpower_pool")?,
+                        equipment: field(fields, b"equipment")?
+                            .map(|value| super::production::parse_pool(block(value)?))
+                            .transpose()?,
+                        equipment_need: field(fields, b"equipment_need")?
+                            .map(|value| {
+                                block(value)?
+                                    .iter()
+                                    .map(|item| {
+                                        Ok((
+                                            item.key
+                                                .clone()
+                                                .filter(|key| !key.is_empty())
+                                                .ok_or_else(|| {
+                                                    invalid(
+                                                        "garrison requirement lacks equipment name",
+                                                    )
+                                                })?,
+                                            Decimal::parse(scalar(&item.value)?)?,
+                                        ))
+                                    })
+                                    .collect::<io::Result<Vec<_>>>()
+                            })
+                            .transpose()?,
                     };
                     if pack
                         .state_garrisons

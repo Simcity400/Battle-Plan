@@ -8,10 +8,13 @@ import { useProduct } from '../../dashboard/products';
 import type { ResearchEntry, ResearchReply, ResearchSlotHistory, ResearchSlotState } from '../../generated/dashboard';
 import ResearchExplanation from './ResearchExplanation';
 import { researchNumber } from './researchBreakdown';
+import { researchJourney } from './researchJourney';
 import { researchAt, researchColumns, researchProgressAt, researchRequest, researchStateAt, researchView, validateResearchReply } from './researchData';
 import '../national-focus/nationalFocus.css';
 import ListSkeleton from '../../components/Skeleton';
 import { Icon } from '../../components/Icons';
+import { useContextMenu } from '../../components/ContextMenu';
+import { rowJumpProps } from '../../charts/jump';
 import './research.css';
 
 const NO_WARNINGS: string[] = [];
@@ -21,11 +24,12 @@ function ResearchArt({ art }: { art: Art }) {
 }
 
 /** A completed technology. Its row opens the full explanation. */
-function ResearchCard({ history, slots, slot, entry, art }: {
+function ResearchCard({ history, slots, slot, entry, art, jump }: {
   history: ResearchReply['history']; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry; art: Art;
+  jump: ReturnType<typeof rowJumpProps>;
 }) {
   const [open, setOpen] = useState(false);
-  return <li><details className="focus-details research-details" onToggle={event => setOpen(event.currentTarget.open)}>
+  return <li {...jump}><details className="focus-details research-details" onToggle={event => setOpen(event.currentTarget.open)}>
     <summary className="focus-row research-row" aria-label={`${art?.name ?? entry.token}, slot ${slot.index + 1}, show details`}>
       <span className="focus-art">{art?.icon ? <img src={art.icon} alt="" width="66" height="64" /> : <span className="focus-missing-art" aria-label="Game artwork unavailable">&#9671;</span>}</span>
       <span className="focus-label"><strong title={art?.name ?? entry.token}>{art?.name ?? entry.token}</strong></span>
@@ -37,15 +41,16 @@ function ResearchCard({ history, slots, slot, entry, art }: {
 
 /** Live or pinned: the slot's assignment at that hour, with the game's
  * progress line along its lower edge. Clicking it opens the explanation. */
-function CurrentResearch({ history, slots, slot, entry, current, art, hour, live }: {
+function CurrentResearch({ history, slots, slot, entry, current, art, hour, live, jump }: {
   history: ResearchReply['history']; slots: ResearchSlotHistory[]; slot: ResearchSlotHistory; entry: ResearchEntry;
   current: ResearchSlotState; art: Art; hour: number; live: boolean;
+  jump: ReturnType<typeof rowJumpProps>;
 }) {
   const [open, setOpen] = useState(false);
   const progress = researchProgressAt(slot, entry.firstObservedHour, hour);
   const left = current.details?.remainingDays ?? null;
   const name = art?.name ?? entry.token;
-  return <details className="research-now-details" onToggle={event => setOpen(event.currentTarget.open)}>
+  return <details className="research-now-details" onToggle={event => setOpen(event.currentTarget.open)} {...jump}>
     <summary className="focus-now research-now" aria-label={`${name}, researching in slot ${slot.index + 1}, show details`}>
       <ResearchArt art={art} />
       <span className="focus-now-text"><strong title={name}>{name}</strong>
@@ -69,6 +74,7 @@ function IdleSlot({ current }: { current: ResearchSlotState | null }) {
 }
 
 export default function ResearchWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
+  const menu = useContextMenu('Research actions');
   usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const track = runtime.tracks.find(t => t.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track) ?? undefined;
@@ -100,16 +106,18 @@ export default function ResearchWidget({ widget, runtime, active, onDiagnostics 
           return <section className="research-column" key={slot.index} aria-label={`Slot ${slot.index + 1}`}>
           <h3 className="research-column-heading">Slot {slot.index + 1}</h3>
           {moment && (currentEntry && current
-            ? <CurrentResearch history={data.history} slots={slots} slot={slot} entry={currentEntry} current={current} art={artwork.get(currentEntry.token)} hour={hour} live={live} />
+            ? <CurrentResearch history={data.history} slots={slots} slot={slot} entry={currentEntry} current={current} art={artwork.get(currentEntry.token)} hour={hour} live={live}
+                jump={rowJumpProps(runtime, track.id, () => researchJourney(slots, slot, currentEntry).firstHour, menu.open)} />
             : <IdleSlot current={current} />)}
           {moment && earlier.length > 0 && <div className="research-earlier-label">Completed</div>}
           <ol className="research-entries" style={{ paddingTop: `calc(${offset} * var(--research-row-height))` }}>
           {earlier.map(entry => <ResearchCard key={`${entry.firstObservedHour}:${entry.token}`} history={data.history} slots={slots} slot={slot} entry={entry}
-            art={artwork.get(entry.token)} />)}
+            art={artwork.get(entry.token)} jump={rowJumpProps(runtime, track.id, entry.endedByHour, menu.open)} />)}
           </ol>
           {!moment && earlier.length === 0 && <div className="research-empty-slot">No completed research</div>}
         </section>; })}
       </div>
     </div>
+    {menu.menu}
   </section>;
 }

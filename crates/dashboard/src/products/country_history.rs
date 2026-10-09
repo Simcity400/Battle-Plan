@@ -4,7 +4,7 @@ use super::country_groups::HourSpan;
 use super::country_measure::Measure;
 use crate::metadata::{IdentityTrack, link_slot};
 use replay::rows::{CountryLinkRow, CountryRow};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     Source,
@@ -123,6 +123,8 @@ impl RecordedCountry {
 #[derive(Clone, Default)]
 pub(crate) struct RecordedHistories {
     pub countries: BTreeMap<String, RecordedCountry>,
+    /// Complete native identity reads, usable as proof that a holder is absent.
+    pub identity_reads: Vec<HourSpan>,
     pub unreadable_territory: usize,
     pub unresolved_countries: usize,
     pub unnamed: usize,
@@ -353,14 +355,20 @@ fn add_territory(
 
 /// Explicit picks follow their recorded native identities through a tag rename.
 /// Tags remain opaque; no tag spelling or player status establishes an alias.
-pub(crate) fn selected_aliases(history: &RecordedHistories, tags: &[String]) -> Vec<String> {
-    let selected: BTreeSet<_> = tags.iter().map(String::as_str).collect();
-    let identities: BTreeSet<_> = selected
-        .iter()
-        .filter_map(|tag| history.countries.get(*tag))
+pub(crate) fn selected_identities(
+    history: &RecordedHistories,
+    tags: &[String],
+) -> BTreeSet<(u32, u32)> {
+    tags.iter()
+        .filter_map(|tag| history.countries.get(tag))
         .flat_map(|country| country.identities.iter())
         .map(|identity| (identity.slot, identity.country_id))
-        .collect();
+        .collect()
+}
+
+pub(crate) fn selected_aliases(history: &RecordedHistories, tags: &[String]) -> Vec<String> {
+    let selected: BTreeSet<_> = tags.iter().map(String::as_str).collect();
+    let identities = selected_identities(history, tags);
     history
         .countries
         .iter()
@@ -424,7 +432,27 @@ pub(crate) fn scan_histories(
             if let Some(rows) = &counts {
                 out.unreadable_territory += rows.unresolved_rows + rows.duplicate_rows;
             }
-            for (tag, lookup) in tagged_countries(countries, links) {
+            let tagged = tagged_countries(countries, links);
+            let known: HashSet<_> = tagged
+                .iter()
+                .filter_map(|(tag, lookup)| {
+                    let TaggedCountry::Found(row, slot) = lookup else {
+                        return None;
+                    };
+                    (!tag.is_empty() && std::str::from_utf8(tag).is_ok()).then_some((*slot, row.id))
+                })
+                .collect();
+            if countries
+                .iter()
+                .all(|row| known.contains(&(row.canonical_slot, row.id)))
+            {
+                super::country_groups::mark_unobserved(
+                    &mut out.identity_reads,
+                    frame.hour,
+                    frame.hour,
+                );
+            }
+            for (tag, lookup) in tagged {
                 let TaggedCountry::Found(row, slot) = lookup else {
                     out.unresolved_countries += 1;
                     continue;
@@ -607,6 +635,41 @@ mod tests {
                 },
             ]));
         frame
+    }
+
+    #[test]
+    fn absence_proof_requires_every_native_holder_to_have_a_resolved_identity() {
+        let mut unresolved = territory_frame(101, b"initial", 9001, 7);
+        *unresolved.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(vec![]));
+        let opened = opened(&[(
+            1,
+            vec![
+                territory_frame(100, b"initial", 9001, 7),
+                unresolved,
+                territory_frame(102, &[0xff], 9001, 7),
+                territory_frame(103, b"new alias", 9001, 7),
+            ],
+        )]);
+        let history = branch_histories(&opened, 1, false, &[], &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            history.identity_reads,
+            [
+                HourSpan {
+                    first_hour: 100,
+                    last_hour: 100
+                },
+                HourSpan {
+                    first_hour: 103,
+                    last_hour: 103
+                },
+            ]
+        );
+        let upgraded = branch_histories(&opened, 1, true, &[], &AtomicBool::new(false)).unwrap();
+        assert_eq!(
+            upgraded.identity_reads, history.identity_reads,
+            "adding an amount never manufactures identity absence evidence"
+        );
     }
 
     #[test]

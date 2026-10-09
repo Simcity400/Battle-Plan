@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { stackedSegments } from '../../charts/stack.ts';
 import { groupMembers, groupRuns, worldFilter } from '../../dashboard/groups.ts';
-import { Lineage, countryMembership } from '../../dashboard/identity.ts';
+import { Lineage } from '../../dashboard/identity.ts';
+import { countryIdentityIndex, countryIdentityKey } from '../../dashboard/countryIdentity.ts';
 import type { CountryGroupReply, TensionReply } from '../../generated/dashboard';
 import { addedAt, contributionAt, countryKey, eventGroup, eventsOutsideReads, eventsWithin, formatContribution, formatTension, formatTensionAxis, layerKeys, otherRaw,
-  rankedAt, readAt, shareRaw, tensionModel, tensionPlot, tensionStack, validateTensionReply } from './tensionData.ts';
+  layerTagAt, rankedAt, readAt, shareRaw, tensionModel, tensionPlot, tensionStack, validateTensionReply } from './tensionData.ts';
 
 const run = (firstHour: number, lastHour: number, valueRaw: string, startsSegment = false) => ({ firstHour, lastHour, valueRaw, startsSegment });
 const read = (firstHour: number, lastHour: number, tensionRaw: string, sumRaw: string, startsSegment = false, unnamedRaw = '0') =>
@@ -38,17 +39,19 @@ const REPLY: TensionReply = {
 test('country filters and membership retain renamed contributors and distinguish a reused tag by slot', () => {
   const lineage = new Lineage([{ hour: 120, from: 'AAA', to: 'BBB' }]);
   const countries = [
-    { tag: 'AAA', slot: 1, runs: [run(100, 147, '1000000', true)] },
-    { tag: 'AAA', slot: 2, runs: [run(124, 147, '2000000', true)] },
+    { tag: 'AAA', slot: 1, runs: [run(100, 119, '1000000', true)], identities: [{ firstHour: 100, lastHour: 119, slot: 1, countryId: 10 }] },
+    { tag: 'BBB', slot: 1, runs: [run(120, 147, '1000000', true)], identities: [{ firstHour: 120, lastHour: 147, slot: 1, countryId: 10 }] },
+    { tag: 'AAA', slot: 2, runs: [run(124, 147, '2000000', true)], identities: [{ firstHour: 124, lastHour: 147, slot: 2, countryId: 20 }] },
   ];
   const metadata = [{ id: '1', tag: 'AAA', name: 'Original', observedBranchId: '1', observedHour: 100 },
     { id: '2', tag: 'AAA', name: 'Later holder', observedBranchId: '1', observedHour: 124 }];
   const model = tensionModel({ ...REPLY, countries }, lineage, metadata);
-  const filter = worldFilter({ kind: 'tags', tags: ['BBB'] }, [], undefined, 130, 147, lineage);
-  assert.deepEqual(layerKeys(model, 130, 5, filter.tags, filter.countryIds), [countryKey(countries[0])]);
+  const identities = countryIdentityIndex([{ tag: 'AAA', identities: [...countries[0].identities, ...countries[2].identities] }, { tag: 'BBB', identities: countries[1].identities }]);
+  const filter = worldFilter({ kind: 'tags', tags: ['BBB'] }, [], undefined, 130, 147, identities);
+  assert.deepEqual(layerKeys(model, 130, 5, filter.tags, filter.countryIds), [countryKey(countries[1])]);
   assert.equal(rankedAt(model, 130, filter.tags, filter.countryIds)[0].tag, 'BBB');
-  const membership = countryMembership([{ tag: 'AAA', firstHour: 100, lastHour: 119 }, { tag: 'BBB', firstHour: 120, lastHour: 130 }], lineage);
-  const stack = tensionStack(model, [countryKey(countries[0])], false, membership, true);
+  const membership = new Map([[countryIdentityKey(countries[0].identities[0]), [{ firstHour: 100, lastHour: 130 }]]]);
+  const stack = tensionStack(model, [countryKey(countries[1])], false, membership, true, filter.countryIds);
   const before = stack.hours.findIndex(hour => hour === 124);
   const after = stack.hours.findIndex(hour => hour === 131);
   assert.equal(stack.edges[before]?.[0].high, 10);
@@ -125,6 +128,7 @@ test('hourly membership keeps a later top contributor in Other until it joins, i
     countries: ['AAA', 'BBB', 'CCC'].map((tag, slot) => ({ tag, slot, runs: [run(100, 147, `${3_000_000 - slot * 1_000_000}`, true),
       run(196, 300, `${3_000_000 - slot * 1_000_000}`, true)] })) };
   const groups: CountryGroupReply = { branchId: '1', warnings: [], warStarts: [], capitulations: [], identityChanges: [], factions: [], wars: [],
+    countryIdentities: reply.countries.map(country => ({ tag: country.tag, identities: [{ firstHour: 100, lastHour: 300, slot: country.slot, countryId: country.slot }] })),
     unobserved: { humans: [], factions: [], wars: [] },
     humans: [{ tag: 'CCC', firstHour: 100, lastHour: 300 }, { tag: 'AAA', firstHour: 200, lastHour: 249 }, { tag: 'AAA', firstHour: 280, lastHour: 300 }] };
   const model = tensionModel(reply);
@@ -151,6 +155,65 @@ test('hourly membership keeps a later top contributor in Other until it joins, i
     const keys = layerKeys(model, 300, 1, worldFilter({ ...selection, membership: mode }, [], groups, 300, 300).tags);
     assert.equal(stackedSegments(tensionStack(model, keys, true), 110, 110, 0)[0].bands[0].high[0], 30);
   }
+});
+
+test('native selection keeps both X holders, excludes unrelated Y, and clips history at missing native spans', () => {
+  const countries = [
+    { tag: 'X', slot: 1, runs: [run(0, 30, '100000')], identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 30, slot: 1, countryId: 20 }] },
+    { tag: 'Y', slot: 1, runs: [run(10, 19, '200000')], identities: [{ firstHour: 10, lastHour: 19, slot: 1, countryId: 10 }] },
+    { tag: 'Y', slot: 2, runs: [run(20, 30, '300000')], identities: [{ firstHour: 20, lastHour: 30, slot: 2, countryId: 30 }] },
+  ];
+  const model = tensionModel({ ...REPLY, events: [], countries, reads: [read(0, 30, '4000', '400000')] });
+  const identities = countryIdentityIndex([{ tag: 'X', identities: countries[0].identities }, { tag: 'Y', identities: [...countries[1].identities, ...countries[2].identities] }]);
+  const selected = identities.selected(['X']);
+  assert.deepEqual(rankedAt(model, 15, null, selected).map(row => row.key), [countryKey(countries[1])]);
+  assert.deepEqual(rankedAt(model, 25, null, selected).map(row => row.key), [countryKey(countries[0])]);
+  const stack = tensionStack(model, [countryKey(countries[0]), countryKey(countries[1])], false, null, false, selected);
+  const at = (hour: number) => stackedSegments(stack, hour, hour, 0)[0].bands.map(band => band.high[0] - band.low[0]);
+  assert.deepEqual(at(5), [1, 0, 3]);
+  assert.deepEqual(at(15), [0, 2, 2]);
+  assert.deepEqual(at(25), [1, 0, 3]);
+});
+
+test('a native contributor alias after a gap labels its own raw layer without a rename event', () => {
+  const countries = [
+    { tag: 'X', slot: 1, runs: [run(0, 19, '100000')], identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 10 }] },
+    { tag: 'Y', slot: 1, runs: [run(11, 19, '200000')], identities: [{ firstHour: 11, lastHour: 19, slot: 1, countryId: 10 }] },
+  ];
+  const model = tensionModel({ ...REPLY, events: [], countries, reads: [read(0, 10, '1000', '100000'), read(11, 19, '3000', '300000')] }, new Lineage([]));
+  const identities = countryIdentityIndex(countries.map(country => ({ tag: country.tag, identities: country.identities })));
+  const [x, y] = countries.map(countryKey);
+  assert.deepEqual(rankedAt(model, 15, null, identities.selected(['X'])), [{ key: y, tag: 'Y', raw: '200000' }]);
+  assert.equal(layerTagAt(model, x, 10), null);
+  assert.equal(layerTagAt(model, y, 10), null);
+  // Stale native contributions are retained even when their current holder cannot be named.
+  assert.deepEqual(rankedAt(model, 15), [{ key: y, tag: 'Y', raw: '200000' }, { key: x, tag: null, raw: '100000' }]);
+  assert.deepEqual(rankedAt(model, 10), [{ key: x, tag: null, raw: '100000' }]);
+  assert.equal(model.raw.get(x), countries[0].runs);
+  assert.equal(model.raw.get(y), countries[1].runs);
+  assert.equal(contributionAt(model, x, 15), '100000');
+  assert.equal(contributionAt(model, y, 15), '200000');
+  assert.equal(readAt(model, 15)?.firstHour, 11, 'Y is supplied by a fresh read, not inside a prior held read');
+  const keys = [x, y];
+  assert.equal(otherRaw(model, readAt(model, 15)!, keys), '0');
+  const [segment] = stackedSegments(tensionStack(model, keys, false), 15, 15, 0);
+  assert.deepEqual(segment.bands.map((band, index) => ({ key: keys[index] ?? 'Other', value: band.high[0] - band.low[0] })),
+    [{ key: x, value: 1 }, { key: y, value: 2 }, { key: 'Other', value: 0 }]);
+});
+
+test('a later holder on one canonical slot keeps its recorded alias and an explicit missing suffix refuses a label', () => {
+  const countries = [
+    { tag: 'OLD', slot: 1, runs: [run(0, 9, '100000')], identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 10 }] },
+    { tag: 'NEW', slot: 1, runs: [run(10, 19, '200000')], identities: [{ firstHour: 10, lastHour: 19, slot: 1, countryId: 20 }] },
+    { tag: 'UNKNOWN', slot: 2, runs: [run(10, 19, '50000')], identities: [] },
+  ];
+  const model = tensionModel({ ...REPLY, events: [], countries, reads: [read(0, 19, '2500', '250000')] }, new Lineage([]),
+    [{ id: '1', tag: 'OLD', name: 'Earliest', observedBranchId: '1', observedHour: 0 }]);
+  const ranked = rankedAt(model, 15);
+  assert.deepEqual(ranked.map(row => [row.tag, row.raw]), [['NEW', '200000'], [null, '50000']]);
+  assert.deepEqual(rankedAt(model, 15, null, new Set(['[1,10]'])), []);
+  assert.deepEqual(rankedAt(model, 15, null, new Set(['[1,20]'])).map(row => row.tag), ['NEW']);
+  assert.equal(layerTagAt(model, countryKey(countries[2]), 15), null);
 });
 
 test('world tension uses exactly the stack samples through reads, membership boundaries, zoom and gaps', () => {

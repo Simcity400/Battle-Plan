@@ -7,21 +7,24 @@ import type { CountrySelection } from '../../dashboard/model';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import type { ResourceInfo, TradeFlow, TradeFlowsReply } from '../../generated/dashboard';
 import { buildDiagram, campaignScale, coverageNote, decodeTrade, emptyMessage, flowValue, knownSpanAt, leftOutAt, measureAmount, measureRows, OTHER, resourceColours, selectFlows, selectionMessage,
-  sideRanks, unknownNote, unrecordedMessage, validateTradeFlowsReply } from './tradeData.ts';
+  sideRanks, tradeScope, flowCountryAt, identityCountryAt, unknownNote, unrecordedMessage, validateTradeFlowsReply } from './tradeData.ts';
 
 const resource = (id: number, token: string): ResourceInfo => ({ id, token, ordinal: 1, name: null, icon: null });
 /** A flow from runs of [first, last, delivered raw, factories, convoys assigned, required]. */
 const flow = (seller: number, buyer: number, id: number, runs: [number, number, string, number?, number?, number?][]): TradeFlow => ({
-  seller, buyer, resource: id,
+  seller, buyer, resource: id, sellerIdentity: JSON.stringify([seller, seller + 1]), buyerIdentity: JSON.stringify([buyer, buyer + 1]),
+  sellerTags: runs.map(() => seller), buyerTags: runs.map(() => buyer),
   firstHours: runs.map(run => run[0]), lastHours: runs.map(run => run[1]), deliveredRaw: runs.map(run => run[2]),
   factories: runs.map(run => run[3] ?? 1), convoysAssigned: runs.map(run => run[4] ?? 0), convoysRequired: runs.map(run => run[5] ?? 0), deals: runs.map(() => 1),
 });
 
 /** GER sells ITA steel at 10/day for hours 0–47, then 20/day for 48–71; ITA sells
  * SPR oil at 5/day for 24–47; hours 72–95 are not recorded. */
-function reply(): TradeFlowsReply {
+function reply(countries = ['GER', 'ITA', 'SPR']): TradeFlowsReply {
   return {
-    branchId: '1', decimals: 5, resources: [resource(1, 'steel'), resource(2, 'oil')], countries: ['GER', 'ITA', 'SPR'],
+    branchId: '1', decimals: 5, resources: [resource(1, 'steel'), resource(2, 'oil')], countries,
+    countryIdentities: countries.map((tag, slot) => ({ tag, runs: [{ firstHour: 0, lastHour: 575, slot, countryId: slot + 1 }] }))
+      .sort((a, b) => a.tag < b.tag ? -1 : a.tag > b.tag ? 1 : 0),
     reads: [0, 24, 48], known: [{ firstHour: 0, lastHour: 71 }, { firstHour: 96, lastHour: 119 }], partial: [{ firstHour: 24, lastHour: 47, deals: 2 }],
     flows: [flow(0, 1, 1, [[0, 47, '1000000', 2, 3, 4], [48, 71, '2000000', 2, 3, 4]]), flow(1, 2, 2, [[24, 47, '500000', 1]])],
     warnings: [],
@@ -49,6 +52,10 @@ test('a reply is checked for parallel runs in order with exact amounts', () => {
     (item: TradeFlowsReply) => { item.flows[0].resource = 9; },
     (item: TradeFlowsReply) => { item.flows[0].buyer = 3; },
     (item: TradeFlowsReply) => { item.known.reverse(); },
+    (item: TradeFlowsReply) => { item.flows[0].sellerTags.pop(); },
+    (item: TradeFlowsReply) => { item.flows[0].sellerIdentity = 'tag:GER'; },
+    (item: TradeFlowsReply) => { item.countryIdentities[0].runs[0].countryId = 77; },
+    (item: TradeFlowsReply) => { item.flows[0].deliveredRaw[0] = '9223372036854775808'; },
   ];
   for (const breakIt of broken) {
     const item = reply();
@@ -101,7 +108,7 @@ test('chosen countries show trade touching them or only between them, cut to mem
   assert.equal(clipped.length, 1);
   // Hours the group's membership was not recorded count nothing: A is human over 0–47
   // selling 24 a day, with 24–47 unobserved, so 24 is counted, not 48.
-  const item: TradeFlowsReply = { ...reply(), countries: ['A', 'B'], flows: [flow(0, 1, 1, [[0, 47, '2400000']])] };
+  const item: TradeFlowsReply = { ...reply(['A', 'B']), flows: [flow(0, 1, 1, [[0, 47, '2400000']])] };
   const unobserved = [{ firstHour: 24, lastHour: 47 }];
   const counted = selectFlows(decodeTrade(item), { kind: 'countries', tags: ['A'], membership: new Map([['A', [{ firstHour: 0, lastHour: 47 }]]]), unobserved, between: false }, null);
   assert.equal(flowValue(counted[0], 'total', 0, 47), 24);
@@ -113,7 +120,7 @@ test('chosen countries show trade touching them or only between them, cut to mem
 
 test('past the limit a side sums the rest into one node, leaving nothing out', () => {
   const countries = ['A', 'B', 'C', 'D', 'X'];
-  const item: TradeFlowsReply = { ...reply(), countries, flows: [
+  const item: TradeFlowsReply = { ...reply(countries), flows: [
     flow(0, 4, 1, [[0, 10, '400000']]), flow(1, 4, 1, [[0, 10, '300000']]), flow(2, 4, 1, [[0, 10, '200000']]), flow(3, 4, 1, [[0, 10, '100000']]),
   ] };
   const flows = decodeTrade(item).flows;
@@ -121,7 +128,7 @@ test('past the limit a side sums the rest into one node, leaving nothing out', (
   const sources = diagram.nodes.filter(node => node.side === 'source');
   assert.deepEqual(sources.map(node => node.tag ?? OTHER).sort(), ['A', 'B', OTHER].sort());
   const other = sources.find(node => !node.tag)!;
-  assert.deepEqual(other.members, ['C', 'D']);
+  assert.deepEqual(other.members, ['[2,3]', '[3,4]']);
   assert.ok(Math.abs(other.value - 3) < 1e-9);
   assert.ok(Math.abs(diagram.total - 10) < 1e-9);
   // One country past the limit is shown itself rather than as "1 other".
@@ -132,7 +139,7 @@ test('past the limit a side sums the rest into one node, leaving nothing out', (
 
 test('tags are opaque: separators, spaces and dynamic tags never blur two ribbons', () => {
   // Joined naively, "A>t:B" selling to "C" and "A" selling to "B>t:C" could share an id.
-  const item: TradeFlowsReply = { ...reply(), countries: ['A', 'A>t:B', 'B>t:C', 'C', 'D01', 'It aly'], flows: [
+  const item: TradeFlowsReply = { ...reply(['A', 'A>t:B', 'B>t:C', 'C', 'D01', 'It aly']), flows: [
     flow(1, 3, 1, [[0, 10, '100000']]), flow(0, 2, 1, [[0, 10, '200000']]), flow(4, 5, 1, [[0, 10, '300000']]),
   ] };
   const diagram = buildDiagram(decodeTrade(validateTradeFlowsReply(item)).flows, 'current', 0, 5, 12);
@@ -146,8 +153,8 @@ test('each side keeps one order for the whole time shown, largest first', () => 
   const flows = decodeTrade(reply()).flows;
   // Over everything, GER sold 40 and ITA 5; at the end ITA sells nothing, yet the order holds.
   const ranks = sideRanks(flows, 0, 119);
-  assert.deepEqual([...ranks.source], [['GER', 0], ['ITA', 1]]);
-  assert.deepEqual([...ranks.target], [['ITA', 0], ['SPR', 1]]);
+  assert.deepEqual([...ranks.source], [['[0,1]', 0], ['[1,2]', 1]]);
+  assert.deepEqual([...ranks.target], [['[1,2]', 0], ['[2,3]', 1]]);
 });
 
 test('one scale all campaign: the most traded at once, the final total, the largest average', () => {
@@ -205,7 +212,7 @@ test('convoys needed now and then are said, however small their average', () => 
 test('an unrecorded human roster is unknown before an empty selection stops the request', () => {
   const selection: CountrySelection = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false };
   const groups: CountryGroupReply = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
-    unobserved: { humans: [{ firstHour: 0, lastHour: 575 }], factions: [], wars: [] }, warnings: [] };
+    countryIdentities: [], unobserved: { humans: [{ firstHour: 0, lastHour: 575 }], factions: [], wars: [] }, warnings: [] };
   const resolved = resolveCountries(selection, [], groups, 575, 256);
   assert.deepEqual(resolved.tags, []);
   const atMoment = worldFilter(selection, [], groups, 300, 575);
@@ -224,7 +231,7 @@ test('an unrecorded human roster is unknown before an empty selection stops the 
 
 test('a ribbon sums 24 averages of one factory and convoy on the first of 24 days before rounding', () => {
   const countries = [...Array.from({ length: 26 }, (_, index) => `Seller ${index}`), 'Buyer'];
-  const item: TradeFlowsReply = { ...reply(), countries, flows: countries.slice(0, -1).map((_, index) => flow(index, 26, 1,
+  const item: TradeFlowsReply = { ...reply(countries), flows: countries.slice(0, -1).map((_, index) => flow(index, 26, 1,
     [[0, 23, index < 2 ? '10000000' : '100000', 1, 1, 1], [24, 575, index < 2 ? '10000000' : '100000', 0, 0, 0]])) };
   const diagram = buildDiagram(decodeTrade(item).flows, 'current', 0, 575, 2);
   const ribbon = diagram.links.find(link => link.source === `s:${OTHER}`)!;
@@ -237,7 +244,7 @@ test('a ribbon sums 24 averages of one factory and convoy on the first of 24 day
 test('an empty each-hour group says how much membership was unrecorded in totals and averages', () => {
   const selection: CountrySelection = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false };
   const groups: CountryGroupReply = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
-    unobserved: { humans: [{ firstHour: 0, lastHour: 299 }], factions: [], wars: [] }, warnings: [] };
+    countryIdentities: [], unobserved: { humans: [{ firstHour: 0, lastHour: 299 }], factions: [], wars: [] }, warnings: [] };
   const resolved = resolveCountries(selection, [], groups, 575, 256);
   const atMoment = worldFilter(selection, [], groups, 575, 575);
   for (const measure of ['total', 'average'] as const) {
@@ -291,4 +298,86 @@ test('resource colours follow the game order, never the filter, and a ninth fold
   assert.deepEqual([two.get(3), two.get(6)], ['c', 'f']);
   // The ninth shown alone is still "Other", never the palette's first colour.
   assert.deepEqual([...resourceColours([resources[8]], order, palette, 'other').values()], ['other']);
+});
+
+/** Holder [7,11] changes X to Y; unrelated [9,31] takes X. Numeric histories remain
+ * independent, with census names extending after their last trade. */
+function renamedReply(): TradeFlowsReply {
+  const old = { ...flow(1, 0, 1, [[0, 23, '1000000'], [24, 47, '2000000']]), sellerIdentity: '[7,11]', buyerIdentity: '[8,21]', sellerTags: [1, 2] };
+  const replacement = { ...flow(1, 0, 1, [[24, 47, '3000000']]), sellerIdentity: '[9,31]', buyerIdentity: '[8,21]' };
+  return { ...reply(['Buyer', 'X', 'Y']), flows: [old, replacement], countryIdentities: [
+    { tag: 'Buyer', runs: [{ firstHour: 0, lastHour: 71, slot: 8, countryId: 21 }] },
+    { tag: 'X', runs: [{ firstHour: 0, lastHour: 23, slot: 7, countryId: 11 }, { firstHour: 24, lastHour: 71, slot: 9, countryId: 31 }] },
+    { tag: 'Y', runs: [{ firstHour: 24, lastHour: 71, slot: 7, countryId: 11 }] },
+  ] };
+}
+
+test('renames keep weighted history, reused tags keep separate native holders and dated labels', () => {
+  const data = decodeTrade(validateTradeFlowsReply(renamedReply()));
+  assert.notEqual(data.flows[0].key, data.flows[1].key);
+  assert.equal(measureAmount([data.flows[0]], 'average', 0, 47), 1_500_000n);
+  assert.equal(measureAmount(data.flows, 'total', 0, 47), 6_000_000n);
+  assert.equal(flowCountryAt(data.flows[0], 'seller', 23)?.tag, 'X');
+  assert.equal(flowCountryAt(data.flows[0], 'seller', 29)?.tag, 'Y');
+  assert.equal(identityCountryAt(data, '[9,31]', 23), null);
+  assert.equal(identityCountryAt(data, '[7,11]', -1), null);
+  assert.deepEqual(identityCountryAt(data, '[7,11]', 100), { identity: '[7,11]', tag: 'Y', hour: 71, firstHour: 24, lastHour: 71 });
+  const nodes = buildDiagram(data.flows, 'total', 0, 47, 12).nodes.filter(node => node.side === 'source');
+  assert.deepEqual(nodes.map(node => [node.identity, node.tag, node.factHour]), [['[7,11]', 'Y', 47], ['[9,31]', 'X', 47]]);
+  const chosen = selectFlows(data, { kind: 'countries', tags: ['Y'], membership: null, between: false }, null);
+  assert.deepEqual(chosen.map(item => item.key), [data.flows[0].key]);
+  assert.equal(measureAmount(chosen, 'total', 0, 47), 3_000_000n);
+});
+
+test('end and ever groups select dated holders before including their old aliases; hourly groups still clip', () => {
+  const data = decodeTrade(renamedReply());
+  const groups: CountryGroupReply = { branchId: '1', humans: [{ tag: 'Y', firstHour: 24, lastHour: 71 }], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+    countryIdentities: data.reply.countryIdentities.map(({ tag, runs }) => ({ tag, identities: runs })),
+    unobserved: { humans: [], factions: [], wars: [] }, warnings: [] };
+  const selection: CountrySelection = { kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false };
+  const choose = (picked: CountrySelection, roster = groups) => selectFlows(data, tradeScope(data, picked, resolveCountries(picked, [], roster, 71, Infinity), roster, 71, false), null);
+  const end = choose(selection);
+  assert.deepEqual(end.map(item => item.sellerIdentity), ['[7,11]']);
+  assert.equal(measureAmount(end, 'total', 0, 47), 3_000_000n); // Includes X before the end member was called Y.
+  const oldMembers = { ...groups, humans: [{ tag: 'X', firstHour: 0, lastHour: 23 }] };
+  const ever = choose({ ...selection, membership: 'ever' }, oldMembers);
+  assert.deepEqual(ever.map(item => item.sellerIdentity), ['[7,11]']); // X's later replacement was never a member.
+  assert.equal(measureAmount(ever, 'average', 0, 47), 1_500_000n);
+  const hourly = choose({ ...selection, membership: 'hour' });
+  assert.deepEqual(hourly[0].runs.map(run => [run.firstHour, run.lastHour]), [[24, 47]]);
+  assert.equal(measureAmount(hourly, 'total', 0, 47), 2_000_000n);
+});
+
+test('a missing end-group holder is unknown rather than selecting a previous or future holder', () => {
+  const item = renamedReply();
+  item.countryIdentities[2].runs[0].lastHour = 47;
+  const data = decodeTrade(item);
+  const selection: CountrySelection = { kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false };
+  const groups: CountryGroupReply = { branchId: '1', humans: [{ tag: 'Y', firstHour: 24, lastHour: 71 }], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+    countryIdentities: item.countryIdentities.map(({ tag, runs }) => ({ tag, identities: runs })),
+    unobserved: { humans: [], factions: [], wars: [] }, warnings: [] };
+  const scope = tradeScope(data, selection, resolveCountries(selection, [], groups, 71, Infinity), groups, 71, false);
+  assert.ok(scope.kind === 'countries');
+  assert.match(scope.identityNote ?? '', /identities were not recorded/);
+  assert.equal(scope.countryIds?.size, 0);
+  assert.equal(selectFlows(data, scope, null).length, 0);
+});
+
+test('identity lookup does not fill an unrecorded interval from a future rename', () => {
+  const item = renamedReply();
+  item.countryIdentities[1].runs[0].lastHour = 20;
+  const data = decodeTrade(item);
+  assert.deepEqual(identityCountryAt(data, '[7,11]', 22), { identity: '[7,11]', tag: 'X', hour: 20, firstHour: 0, lastHour: 20 });
+  assert.equal(identityCountryAt(data, '[7,11]', 24)?.tag, 'Y');
+  assert.throws(() => validateTradeFlowsReply(item)); // Numeric run cannot span that missing identity evidence.
+});
+
+test('five thousand native holders retain distinct histories and selected end-group identity', () => {
+  const countries = Array.from({ length: 5000 }, (_, index) => `Mod${String(index).padStart(4, '0')}`);
+  const item = { ...reply(countries), flows: countries.map((_, index) => flow(index, (index + 1) % countries.length, 1, [[0, 23, '100000']])) };
+  const data = decodeTrade(validateTradeFlowsReply(item));
+  assert.equal(new Set(data.flows.map(each => each.key)).size, 5000);
+  const chosen = selectFlows(data, { kind: 'countries', tags: [countries[4999]], membership: null, countryIds: new Set(['[4999,5000]']), between: false }, null);
+  assert.deepEqual(chosen.map(each => [each.sellerIdentity, each.buyerIdentity]), [['[4998,4999]', '[4999,5000]'], ['[4999,5000]', '[0,1]']]);
+  assert.equal(buildDiagram(data.flows, 'total', 0, 23, 12).total, 5000);
 });

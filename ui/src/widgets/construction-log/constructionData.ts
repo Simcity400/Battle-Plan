@@ -1,6 +1,7 @@
 import type { ConstructionLogReply, ConstructionProject, EndKind, LevelsBuilt, ProjectRun, UnknownEnd } from '../../generated/dashboard';
 import { formatDateTime } from '../../dashboard/calendar.ts';
-import { CONSTRUCTION_CADENCE, isBuildingInfo, isStateName, placeName, stateName as stateNameIn, typeName } from '../../dashboard/construction.ts';
+import { CONSTRUCTION_CADENCE, GAP_LABELS, isBuildingInfo, isStateName, placeName, typeName } from '../../dashboard/construction.ts';
+import type { StateNameAt } from '../../dashboard/construction';
 import { readAt, readNote } from '../../dashboard/reads.ts';
 import type { LogRow } from '../../charts/log/logData';
 import { newestFirst } from '../../charts/log/logData.ts';
@@ -12,11 +13,10 @@ const RAW = /^-?\d{1,20}$/;
 const END_KINDS: readonly EndKind[] = ['finished', 'removed', 'unknown'];
 /** Why an ending is not known, as the tooltip says it. */
 export const UNKNOWN_END: Readonly<Record<UnknownEnd, string>> = {
+  completionNotRecorded: 'The native queue-completion decision was not recorded across its departure; building changes cannot prove completion.',
   notRecorded: 'Some hours before this read were not recorded, so whether it was finished is not known.',
   sharedTarget: 'Another project was building the same thing there, so which of them the building’s rise belongs to is not known.',
   nothingLeft: 'Its last read showed no levels left to build.',
-  routeUnclear: 'No rise of the railway’s last province that its own construction could have made shows when it was finished, or another railway through it changed then.',
-  risesUnclear: 'Its building also rose in ways its own construction cannot be told apart from (a focus, decision, event or effect), so whether it was finished is not known.',
 };
 
 const int = (value: unknown) => Number.isSafeInteger(value);
@@ -29,6 +29,12 @@ const isProject = (project: ConstructionProject, types: number) => typeof projec
   && [project.state, project.toState, project.province, project.routeProvinces, project.baseLevel, project.targetLevel].every(optionalInt)
   && RAW.test(project.costRaw) && int(project.createdHour) && int(project.firstRead)
   && typeof project.earlierUnknown === 'boolean'
+  && Array.isArray(project.output) && project.output.every((read, index) => int(read.knownAt) && read.knownAt >= project.firstRead
+    && (index === 0 || project.output[index - 1].knownAt < read.knownAt) && optionalInt(read.sinceHour)
+    && [read.constructionRaw, read.repairRaw].every(raw => raw == null || (typeof raw === 'string' && RAW.test(raw)))
+    && (read.reason == null || Object.hasOwn(GAP_LABELS, read.reason))
+    && typeof read.observedSinceCreation === 'boolean' && int(read.repairTicks) && read.repairTicks >= 0
+    && (read.reason == null ? read.constructionRaw != null && read.repairRaw != null : read.constructionRaw == null && read.repairRaw == null))
   && Array.isArray(project.runs) && project.runs.length > 0 && project.runs.every(isRun) && project.runs[0].firstHour === project.firstRead
   && project.runs.every((run, index) => index === 0 || project.runs[index - 1].lastHour < run.firstHour)
   && [project.built, project.unaccounted, project.possible, project.added].every(list => Array.isArray(list) && list.every(levels => typeof levels === 'object' && levels != null
@@ -114,7 +120,8 @@ export function projectAt(project: ConstructionProject, hour: number): ProjectAt
   const events = [...project.built, ...project.unaccounted, ...project.possible].filter(levels => levels.knownAt <= hour);
   // A stretch repairs while it has levels to repair (the engine's repair branch),
   // else builds its remaining new levels.
-  const repaired = runs.some(item => item.repairLevels > 0) || events.some(levels => levels.repair);
+  const repaired = runs.some(item => item.repairLevels > 0) || events.some(levels => levels.repair)
+    || project.output.some(read => read.knownAt <= hour && read.repairTicks > 0);
   // New levels queued behind a repair make it a repair, then new, from the start.
   const builtNew = runs.some(item => item.remaining > 0) || events.some(levels => !levels.repair);
   const kind: ProjectKind = repaired && builtNew ? 'repairThenNew' : repaired ? 'repair' : 'new';
@@ -139,9 +146,6 @@ export function buildingChoices(data: ConstructionLogReply | undefined): { value
   return (data?.types ?? []).flatMap(type => type.token ? [{ value: type.token, label: typeName(type), icon: type.icon }] : [])
     .sort((a, b) => a.label.localeCompare(b.label));
 }
-
-/** A state's name as the game gives it, else its number. */
-export const stateName = (reply: ConstructionLogReply, state: number | null) => stateNameIn(reply.states, state);
 
 export interface LogFilter {
   /** Building type tokens to show; empty shows every type. */
@@ -201,14 +205,14 @@ export function levelsLabel(at: ProjectAt): string | null {
 }
 
 /** Where the project is: its state (a railway: from one state to another). */
-export const placeLabel = (reply: ConstructionLogReply, project: ConstructionProject) =>
-  placeName(reply.states, { state: project.state, toState: project.toState, province: project.province, railway: project.kind === 'railway' });
+export const placeLabel = (project: ConstructionProject, hour: number, stateAt: StateNameAt) =>
+  placeName({ state: project.state, toState: project.toState, province: project.province, railway: project.kind === 'railway' }, hour, stateAt).label;
 
 /** The row read out as one sentence. */
-export function describeRow(reply: ConstructionLogReply, row: LogRow<ProjectAt>, country: string): string {
+export function describeRow(reply: ConstructionLogReply, row: LogRow<ProjectAt>, country: string, hour: number, stateAt: StateNameAt): string {
   const at = row.item;
   const levels = levelsLabel(at);
-  return `${country}, ${typeName(projectType(reply, at.project))}${levels ? ` ${levels}` : ''} in ${placeLabel(reply, at.project)}, ${statusLabel(at).toLowerCase()}, ${row.by ? 'by ' : ''}${formatDateTime(row.hour)}${at.earlierUnknown ? ', work before its first read was not recorded' : ''}`;
+  return `${country}, ${typeName(projectType(reply, at.project))}${levels ? ` ${levels}` : ''} in ${placeLabel(at.project, hour, stateAt)}, ${statusLabel(at).toLowerCase()}, ${row.by ? 'by ' : ''}${formatDateTime(row.hour)}${at.earlierUnknown ? ', work before its first read was not recorded' : ''}`;
 }
 
 /** Levels built as then known, with ranges for work built or dropped unseen and
@@ -246,7 +250,7 @@ export function valuesRead(reply: ConstructionLogReply, at: ProjectAt, hour: num
 
 /** The tooltip, fullest first: when it started and ended, its levels, factories and
  * cost, and (fuller) where exactly; its note dates the read behind the values. */
-export function projectTooltip(reply: ConstructionLogReply, at: ProjectAt, hour: number, country: string): TooltipContent[] {
+export function projectTooltip(reply: ConstructionLogReply, at: ProjectAt, hour: number, country: string, stateAt: StateNameAt): TooltipContent[] {
   const { project } = at;
   const type = projectType(reply, project);
   const end = project.end && project.end.knownAt <= hour ? project.end : null;
@@ -280,16 +284,27 @@ export function projectTooltip(reply: ConstructionLogReply, at: ProjectAt, hour:
   rows.push({ label: 'Factories', value: factories == null ? 'Not recorded since a gap' : String(factories) });
   const cost = formatAmount(project.costRaw, Math.round(Math.log10(reply.costScale)));
   rows.push({ label: 'Cost', value: project.kind === 'railway' ? `${cost} for the route` : `${cost} per ${unit}` });
+  let output: ConstructionProject['output'][number] | undefined;
+  for (let index = project.output.length - 1; index >= 0; index--) {
+    if (project.output[index].knownAt <= hour) { output = project.output[index]; break; }
+  }
+  if (output) {
+    const digits = Math.round(Math.log10(reply.costScale));
+    rows.push({ label: 'New-building factory IC', value: output.constructionRaw == null ? 'Not recorded' : formatAmount(output.constructionRaw, digits, digits) });
+    rows.push({ label: 'Repair factory IC', value: output.repairRaw == null ? 'Not recorded' : formatAmount(output.repairRaw, digits, digits) });
+    rows.push({ label: 'Output read', value: formatDateTime(output.knownAt), tone: 'muted' });
+  }
   const detail: TooltipRow[] = [];
   if (project.province != null) detail.push({ label: 'Province', value: String(project.province), divider: true });
   if (project.kind === 'railway') {
     detail.push({ label: 'Railway level', value: `${project.baseLevel ?? '?'} → ${project.targetLevel ?? '?'}`, divider: true });
     if (project.routeProvinces != null) detail.push({ label: 'Provinces on the route', value: String(project.routeProvinces) });
   }
-  const notes = [end?.unknown ? UNKNOWN_END[end.unknown] : null, end?.kind === 'removed' ? 'It left the queue unfinished: cancelled, or its builder lost the place. The recording does not say which.' : null,
+  const place = placeName({ state: project.state, toState: project.toState, province: project.province, railway: project.kind === 'railway' }, hour, stateAt);
+  const notes = [place.missing, output?.reason ? GAP_LABELS[output.reason] : null, output?.sinceHour != null && !output.observedSinceCreation ? 'Output before observation began is not recorded.' : null, end?.unknown ? UNKNOWN_END[end.unknown] : null, end?.kind === 'removed' ? 'Cancelled or otherwise removed from the queue. Its work remains bounded by the recorded reads.' : null,
     at.earlierUnknown ? 'Work before its first read was not recorded.' : null,
     at.possible ? 'Extra possible completions may have been built with more levels added, or supplied by a focus, decision, event or effect.' : null,
     readNote(valuesRead(reply, at, hour), hour, CONSTRUCTION_CADENCE)].filter(Boolean).join(' ');
-  const base = { title: typeName(type), icon: type?.icon ?? undefined, subtitle: `${country} · ${placeLabel(reply, project)}${at.kind === 'new' ? '' : ` · ${kindLabel(at.kind).toLowerCase()}`}`, note: notes || undefined };
+  const base = { title: typeName(type), icon: type?.icon ?? undefined, subtitle: `${country} · ${place.label}${at.kind === 'new' ? '' : ` · ${kindLabel(at.kind).toLowerCase()}`}`, note: notes || undefined };
   return [{ ...base, rows: [...rows, ...detail] }, { ...base, rows }];
 }

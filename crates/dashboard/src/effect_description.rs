@@ -601,7 +601,7 @@ impl<'c, 'f> Context<'c, 'f> {
     fn world(&self) -> Result<&'c World<'f>, String> {
         match self.expansion.and_then(|scopes| scopes.world) {
             Some(world) => Ok(world),
-            None => self.text.world(),
+            None => self.text.trigger_world(),
         }
     }
 

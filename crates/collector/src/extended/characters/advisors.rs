@@ -615,14 +615,15 @@ static TOOLTIP_FAILURES: std::sync::Mutex<Vec<(&'static str, u64)>> =
 static MODIFIER_CAPTURED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static MODIFIER_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-pub(crate) fn note_modifier_demand(demand: cadvisor::ModifierDemand) {
+pub(crate) fn note_modifier_demand(demand: cadvisor::ModifierDemand) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
-    LIVE_MODIFIER_ROWS.fetch_max(demand.rows, Relaxed);
-    LIVE_MODIFIER_BYTES.fetch_max(demand.bytes, Relaxed);
-    LIVE_TOOLTIP_BYTES.fetch_max(demand.tooltip_bytes, Relaxed);
+    let rows = LIVE_MODIFIER_ROWS.fetch_max(demand.rows, Relaxed);
+    let bytes = LIVE_MODIFIER_BYTES.fetch_max(demand.bytes, Relaxed);
+    let tooltips = LIVE_TOOLTIP_BYTES.fetch_max(demand.tooltip_bytes, Relaxed);
+    demand.rows > rows || demand.bytes > bytes || demand.tooltip_bytes > tooltips
 }
 
-fn live_modifier_demand() -> cadvisor::ModifierDemand {
+pub(crate) fn live_modifier_demand() -> cadvisor::ModifierDemand {
     use std::sync::atomic::Ordering::Relaxed;
     cadvisor::ModifierDemand {
         rows: LIVE_MODIFIER_ROWS.load(Relaxed),

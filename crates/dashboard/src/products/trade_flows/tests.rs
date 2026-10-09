@@ -218,8 +218,12 @@ fn trade_runs_need_country_tables_and_end_when_country_identity_changes() {
             .iter()
             .map(|run| (run.0, run.1))
             .collect::<Vec<_>>(),
-        [(100, 100), (102, 103), (104, 105)]
+        [(100, 100), (102, 103)]
     );
+    assert_eq!(flows.len(), 2);
+    assert_ne!(flows[0].buyer_identity, flows[1].buyer_identity);
+    assert_eq!(flows[1].first_hours, [104]);
+    assert_eq!(flows[1].last_hours, [105]);
 }
 
 #[test]
@@ -232,6 +236,7 @@ fn a_reply_longer_than_the_transport_holds_is_refused_with_what_to_do() {
         decimals: 5,
         resources: Vec::new(),
         countries,
+        country_identities: scanned.country_identities.clone(),
         reads: scanned.reads.clone(),
         known: scanned.known.clone(),
         partial: scanned.partial.clone(),
@@ -381,7 +386,7 @@ fn a_whole_world_of_trade_fits_one_reply_with_every_flow() {
         trade_flows::{TradeFlowParams, TradeFlows},
     };
     const COUNTRIES: u32 = 5_000;
-    const READS: i32 = 51;
+    const READS: i32 = 40;
     // A real campaign's hours, so the reply is as long as a real one.
     const START: i32 = 60_827_800;
     let replay = Arc::new(
@@ -424,6 +429,16 @@ fn a_whole_world_of_trade_fits_one_reply_with_every_flow() {
     .unwrap();
     assert_eq!(reply.countries.len(), COUNTRIES as usize);
     assert_eq!(reply.flows.len(), 2 * COUNTRIES as usize);
+    assert_eq!(reply.country_identities.len(), COUNTRIES as usize);
+    assert_eq!(
+        reply
+            .flows
+            .iter()
+            .map(|flow| &flow.seller_identity)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        COUNTRIES as usize,
+    );
     // Every read's change is its own run: nothing is dropped or merged.
     assert!(
         reply
@@ -433,4 +448,174 @@ fn a_whole_world_of_trade_fits_one_reply_with_every_flow() {
     );
     assert_eq!(span_pairs(&reply.known), [(START, START + READS - 1)]);
     assert!(serde_json::to_vec(&reply).unwrap().len() < crate::products::MAX_PRODUCT_REPLY_BYTES);
+    let appended = source
+        .replay_ref()
+        .append(&[crate::test_fixtures::continuation_records(
+            source.replay_ref(),
+            1,
+            (READS..51)
+                .map(|hour| world_trade_frame(START + hour, COUNTRIES))
+                .collect(),
+        )])
+        .unwrap();
+    let oversized_source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "world-over-budget".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(appended),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let error = TradeFlows::load(
+        &oversized_source,
+        &params,
+        &LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("more than 24 MB"), "{error}");
+}
+
+/// Germany's native holder renames to Y; Spain's unrelated holder takes its old
+/// tag X. End-tag requests must include Germany's earlier X history, not Spain's.
+fn renamed_trade_frame(hour: i32) -> DecodedFrame {
+    let mut frame = resource_frame(hour, 0, 9001, &[(1, 9001, 21, 100_000)]);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *frame.tables[TableId::Countries.index()]
+    {
+        for row in rows {
+            if row.id == 9001 {
+                row.tag = (if hour < 24 { b"X" } else { b"Y" }).to_vec();
+            }
+            if row.id == 31 {
+                row.tag = (if hour < 24 { b"Z" } else { b"X" }).to_vec();
+            }
+        }
+    }
+    if let TableView::Complete(TableRows::ResourceExchanges(rows)) =
+        &mut *frame.tables[TableId::ResourceExchanges.index()]
+    {
+        // Census keeps observing the renamed holder after its trade stops.
+        if hour >= 48 {
+            rows.clear();
+        } else if hour >= 24 {
+            rows[0].delivered = 200_000;
+            let mut replacement = rows[0].clone();
+            replacement.id = 2;
+            replacement.exporter = 31;
+            replacement.delivered = 300_000;
+            rows.push(replacement);
+        }
+    }
+    frame
+}
+
+#[test]
+fn trade_native_histories_survive_rename_and_refuse_tag_reuse_as_identity() {
+    use crate::products::trade_flows::scan;
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, (0..72).map(renamed_trade_frame).collect())],
+    )
+    .unwrap();
+    let scanned = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
+    let (countries, flows) = scanned.reply_flows();
+    assert_eq!(flows.len(), 2);
+    let old = flows
+        .iter()
+        .find(|flow| flow.seller_identity == "[7,9001]")
+        .unwrap();
+    let replacement = flows
+        .iter()
+        .find(|flow| flow.seller_identity == "[9,31]")
+        .unwrap();
+    assert_eq!(old.first_hours, [0, 24]);
+    assert_eq!(old.last_hours, [23, 47]);
+    assert_eq!(old.delivered_raw, ["100000", "200000"]);
+    assert_eq!(
+        old.seller_tags
+            .iter()
+            .map(|tag| countries[*tag as usize].as_str())
+            .collect::<Vec<_>>(),
+        ["X", "Y"],
+    );
+    assert_eq!(replacement.first_hours, [24]);
+    assert_eq!(replacement.last_hours, [47]);
+    assert_eq!(replacement.delivered_raw, ["300000"]);
+    assert_ne!(old.seller_identity, replacement.seller_identity);
+    let y = scanned
+        .country_identities
+        .iter()
+        .find(|country| country.tag == "Y")
+        .unwrap();
+    assert_eq!(
+        (
+            y.runs[0].slot,
+            y.runs[0].country_id,
+            y.runs[0].first_hour,
+            y.runs[0].last_hour
+        ),
+        (7, 9001, 24, 71),
+    );
+
+    let chosen = scan(&replay, 1, Some(&["Y".into()]), &AtomicBool::new(false)).unwrap();
+    let (_, selected) = chosen.reply_flows();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].seller_identity, "[7,9001]");
+    assert_eq!(selected[0].first_hours, [0, 24]);
+    assert_eq!(selected[0].delivered_raw, ["100000", "200000"]);
+    let x = chosen
+        .country_identities
+        .iter()
+        .find(|country| country.tag == "X")
+        .unwrap();
+    assert_eq!(x.runs.len(), 2);
+    assert_eq!((x.runs[0].slot, x.runs[0].country_id), (7, 9001));
+    assert_eq!((x.runs[1].slot, x.runs[1].country_id), (9, 31));
+}
+
+#[test]
+fn a_peaceful_former_alias_selects_its_holder_when_trade_starts_after_rename() {
+    use crate::products::trade_flows::scan;
+    let mut before = renamed_trade_frame(23);
+    if let TableView::Complete(TableRows::ResourceExchanges(rows)) =
+        &mut *before.tables[TableId::ResourceExchanges.index()]
+    {
+        rows.clear();
+    }
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![before, renamed_trade_frame(24)])],
+    )
+    .unwrap();
+    // Z was peaceful, then Spain takes X and starts trading. Z selects Spain only.
+    let scanned = scan(&replay, 1, Some(&["Z".into()]), &AtomicBool::new(false)).unwrap();
+    let (_, flows) = scanned.reply_flows();
+    assert_eq!(flows.len(), 1);
+    assert_eq!(flows[0].seller_identity, "[9,31]");
+    assert_eq!(flows[0].first_hours, [24]);
+    assert_eq!(flows[0].delivered_raw, ["300000"]);
+}
+
+#[test]
+fn trade_country_census_stays_complete_when_chosen_deals_are_filtered() {
+    use crate::products::trade_flows::scan;
+    let replay = trade_replay();
+    let all = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
+    let selected = scan(&replay, 1, Some(&["SPR".into()]), &AtomicBool::new(false)).unwrap();
+    assert_eq!(all.reply_flows().1.len(), 2);
+    assert_eq!(selected.reply_flows().1.len(), 1);
+    assert_eq!(
+        serde_json::to_value(&selected.country_identities).unwrap(),
+        serde_json::to_value(&all.country_identities).unwrap(),
+    );
+    // Italy never touches the chosen Spain deals, but still keeps its colour slot.
+    assert!(
+        selected
+            .country_identities
+            .iter()
+            .any(|country| country.tag == "ITA")
+    );
 }

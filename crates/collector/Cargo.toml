@@ -11,7 +11,8 @@ crate-type = ["cdylib"]
 [features]
 # `opinion_verify`, `relation_verify` and `history_verify` stay on by default until their
 # hooks' burn-in passes (owner rule: verify stays on during burn-in).
-default = ["portrait_changes", "advisor_changes", "relation_changes", "relation_verify", "opinion_changes", "opinion_verify", "history_changes", "history_verify"]
+default = ["politics_capture", "portrait_changes", "advisor_changes", "relation_changes", "relation_verify", "opinion_changes", "opinion_verify", "history_changes", "history_verify"]
+politics_capture = []
 advisor_changes = []
 # Bounded per-section wall/cycle measurements for diagnosing slow captures.
 advisor_profile = ["advisor_changes"]
@@ -19,6 +20,8 @@ advisor_profile = ["advisor_changes"]
 callback_profile = []
 # Diagnostic checked-allocation injection; absent from normal builds.
 alloc-fault-injection = ["engine/alloc-fault-injection"]
+# Parent-run synthetic exception oracle; its native DLL is built separately.
+tap-foreign-probe = []
 # Diagnostic acquisition checks every proposed advisor cache hit.
 advisor_verify = ["advisor_changes"]
 portrait_changes = []
@@ -45,3 +48,10 @@ crossbeam-queue = "0.3"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_SystemInformation"] }
+
+[[example]]
+name = "tap_foreign_unwind"
+required-features = ["tap-foreign-probe"]
+
+[build-dependencies]
+cc = "1"

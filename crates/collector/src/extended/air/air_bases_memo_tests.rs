@@ -6,7 +6,7 @@ const CAPS: [usize; 5] = [8, 8, 256, 16, 64];
 #[test]
 fn daily_aces_are_excluded_from_hourly_memo_inputs_and_outputs() {
     struct Guard<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: kit::SyntheticMemory<'a>,
         aces_active: bool,
         census_reads: std::cell::Cell<usize>,
     }
@@ -161,6 +161,119 @@ fn assert_rows(air: &Captured, fog: &super::super::fog::Captured, expected: &kit
     assert_eq!(regs.outcome, expected.regs.outcome);
     assert_eq!(regs.rows, expected.regs.rows);
     assert_eq!(regs.wings, expected.regs.wings);
+}
+
+#[test]
+fn memo_ace_presentation_heap_bytes_match_raw_and_typed_with_local_failure() {
+    use engine::{cace, cpdx_array, msvc_string};
+    const GUI: usize = 0x74000;
+    const DEFINITION: usize = 0x75000;
+    const DEFINITION_BYTES: usize = 0x75100;
+    const SPRITE: usize = 0x76000;
+    const SPRITE_BYTES: usize = 0x76100;
+    const POOLS: usize = 0x77000;
+    let mut bytes = kit::fixture();
+    let array = |bytes: &mut [u8], at, data, count| {
+        kit::put64(bytes, at, data as u64);
+        kit::put32(bytes, at + 8, count);
+        kit::put32(bytes, at + 12, count);
+    };
+    let heap = |bytes: &mut [u8], head, data, text: &[u8]| {
+        kit::put64(bytes, head, data as u64);
+        kit::put64(bytes, head + msvc_string::LENGTH, text.len() as u64);
+        kit::put64(bytes, head + msvc_string::CAPACITY, text.len() as u64);
+        bytes[data..data + text.len()].copy_from_slice(text);
+        bytes[data + text.len()] = 0;
+    };
+    kit::put64(&mut bytes, kit::GUI_SINGLETON, GUI as u64);
+    kit::put64(&mut bytes, GUI, engine::cgame_gui::VTABLE_RVA as u64);
+    array(&mut bytes, GUI + 0xcb0, POOLS, 3);
+    array(&mut bytes, POOLS + cpdx_array::STRIDE, SPRITE, 1);
+    heap(
+        &mut bytes,
+        DEFINITION + cace::TYPE_NAME,
+        DEFINITION_BYTES,
+        b"authored selected ace definition",
+    );
+    heap(
+        &mut bytes,
+        SPRITE,
+        SPRITE_BYTES,
+        b"GFX_mod_retained_ace_portrait",
+    );
+    kit::put64(
+        &mut bytes,
+        kit::A0 + cace::TYPE_DEFINITION,
+        DEFINITION as u64,
+    );
+    bytes[kit::A0 + cace::PORTRAIT_GENDER] = 7;
+    kit::put32(&mut bytes, kit::A0 + cace::PORTRAIT_POOL_INDEX, 0);
+
+    let direct = kit::direct(&kit::memory(&bytes));
+    let (split, _, job) = kit::split(&kit::memory(&bytes));
+    kit::assert_matches_direct(&split, &direct);
+    assert_eq!(job.log.fault, [false; 3]);
+    let fields = direct.aces[0].presentation.unwrap();
+    assert_eq!((fields.gender, fields.pool_index), (7, 0));
+    let text = |range: cace::TextRange| &direct.ace_names[range.start..range.start + range.len];
+    assert_eq!(
+        text(fields.definition.unwrap()),
+        b"authored selected ace definition"
+    );
+    let portrait = fields.portrait.unwrap();
+    assert_eq!(
+        text(portrait.cached.unwrap()),
+        b"GFX_mod_retained_ace_portrait"
+    );
+    assert_eq!((portrait.culture, portrait.fallback), (None, None));
+
+    let mut memo = AirBasesMemo::default();
+    let (air, fog, report) = run(&mut memo, &job, context(1), CAPS);
+    assert!(report.eligible && report.installed && !report.hit);
+    assert_rows(&air, &fog, &direct);
+    let mut job = AirBasesJob::new();
+    stage(&mut job, &bytes);
+    let (air, fog, report) = run(&mut memo, &job, context(2), CAPS);
+    assert!(report.compared && report.hit && !report.installed);
+    assert_rows(&air, &fog, &direct);
+
+    // Both dependent heap payloads participate in the memo witness.
+    for (seq, address) in [(3, DEFINITION_BYTES), (4, SPRITE_BYTES)] {
+        bytes[address] = bytes[address].wrapping_add(1);
+        stage(&mut job, &bytes);
+        let direct = kit::direct(&kit::memory(&bytes));
+        let (air, fog, report) = run(&mut memo, &job, context(seq), CAPS);
+        assert!(report.compared && !report.hit && report.installed);
+        assert_rows(&air, &fog, &direct);
+    }
+
+    struct Fault<'a> {
+        inner: kit::SyntheticMemory<'a>,
+    }
+    impl Memory for Fault<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address <= DEFINITION_BYTES && DEFINITION_BYTES - address < output.len() {
+                return false;
+            }
+            self.inner.copy(address, output)
+        }
+    }
+    let memory = Fault {
+        inner: kit::memory(&bytes),
+    };
+    let failed = kit::direct(&memory);
+    let (split, _, job) = kit::split(&memory);
+    kit::assert_matches_direct(&split, &failed);
+    assert_eq!(failed.aces_outcome, Outcome::Rows { len: 2 });
+    let mut prefix = direct.aces[0];
+    prefix.presentation = None;
+    assert_eq!(failed.aces[0], prefix);
+    assert_eq!(&failed.ace_names[..6], b"AlBoCy");
+    assert_eq!(job.log.fault, [false, false, true]);
+    let (air, fog, report) = run(&mut memo, &job, context(5), CAPS);
+    assert!(!report.eligible && !report.hit && !report.installed);
+    assert!(memo.key.is_none() && memo.previous.is_none());
+    assert_rows(&air, &fog, &failed);
 }
 
 #[test]

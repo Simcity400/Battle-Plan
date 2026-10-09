@@ -1,12 +1,22 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
+import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+
+export const BREAKDOWN = { id: 'stockpile', label: 'Stockpile breakdown' };
 
 const overTime = (options: Readonly<Record<string, OptionValue>>) => options.view === 'time';
 const grouping = (options: Readonly<Record<string, OptionValue>>) => options.grouping ?? 'type';
 const bars = (options: Readonly<Record<string, OptionValue>>) => options.view !== 'time';
 
 export const OPTIONS: readonly OptionField[] = [
+  { key: 'stockpileCountry', section: 'options', label: 'Selected country', kind: 'content-choice', automatic: 'Selected country', default: '', visibleWhen: () => false },
+  breakdownOption([BREAKDOWN], 'Equipment stockpile'), DRILL_OPTION,
+  { key: 'partGroup', section: 'options', label: 'Breakdown equipment', kind: 'content-choice', default: '',
+    automatic: 'Choose an equipment row', visibleWhen: options => options.show === BREAKDOWN.id },
+  { key: 'partMode', section: 'options', label: 'Breakdown measure', kind: 'choice', default: 'balance',
+    visibleWhen: options => options.show === BREAKDOWN.id,
+    choices: [{ value: 'balance', label: 'Surplus or shortage' }, { value: 'stock', label: 'In stock' }] },
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'bars',
     choices: [{ value: 'bars', label: 'Bars' }, { value: 'time', label: 'Over time' }] },
   { key: 'grouping', section: 'options', label: 'Group by', kind: 'choice', default: 'type',
@@ -40,5 +50,5 @@ export const definition = {
   description: 'Each equipment type’s surplus or shortage as a share of what is needed, and what a country holds and makes per week.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 13 },
-  options: OPTIONS,
+  countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
 } as const satisfies WidgetMeta;

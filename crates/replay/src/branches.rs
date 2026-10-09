@@ -201,6 +201,7 @@ struct LastObservation {
 
 #[derive(Debug)]
 pub struct BranchTracker {
+    world_changed: bool,
     sessions: Vec<SessionId>,
     session: Option<SessionId>,
     last: Option<LastObservation>,
@@ -211,6 +212,7 @@ pub struct BranchTracker {
 impl Default for BranchTracker {
     fn default() -> Self {
         Self {
+            world_changed: false,
             sessions: Vec::new(),
             session: None,
             last: None,
@@ -221,6 +223,10 @@ impl Default for BranchTracker {
 }
 
 impl BranchTracker {
+    /// A witnessed native invalidation also splits an otherwise identical clock.
+    pub fn world_changed(&mut self) {
+        self.world_changed = true;
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -386,6 +392,7 @@ impl BranchTracker {
 
         let reason = match self.last {
             None => Some(BranchReason::SessionStart),
+            Some(_) if self.world_changed => Some(BranchReason::LoadSignal),
             Some(last) if matches!((last.load_signal, load_signal), (Some(a), Some(b)) if a != b) => {
                 Some(BranchReason::LoadSignal)
             }
@@ -460,6 +467,7 @@ impl BranchTracker {
             hour: recorded_hour,
             load_signal: load_signal.or(self.last.and_then(|last| last.load_signal)),
         });
+        self.world_changed = false;
         Ok(Observation { branch, start })
     }
 
@@ -530,6 +538,26 @@ fn continues(previous: Hour, next: Hour, gaps: &[Gap]) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_world_change_splits_an_otherwise_continuous_clock_once() {
+        let mut tracker = BranchTracker::new();
+        tracker.begin_session(1).unwrap();
+        let first = tracker.observe(None, 10, Some(7), &[]).unwrap().branch;
+        tracker.record_hour(first, 10).unwrap();
+        assert_eq!(
+            tracker.observe(Some(11), 11, Some(7), &[]).unwrap().branch,
+            first
+        );
+        tracker.world_changed();
+        let changed = tracker.observe(Some(12), 12, Some(7), &[]).unwrap();
+        assert_ne!(changed.branch, first);
+        assert_eq!(changed.start.unwrap().reason, BranchReason::LoadSignal);
+        assert_eq!(
+            tracker.observe(Some(13), 13, Some(7), &[]).unwrap().branch,
+            changed.branch
+        );
+    }
 
     #[test]
     fn reattaching_the_same_process_preserves_session_and_checks_for_reload() {

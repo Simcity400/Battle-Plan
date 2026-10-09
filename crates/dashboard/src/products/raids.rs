@@ -3,8 +3,10 @@
 //! Counts are observed launches/results, not an invented pre-recording census.
 
 use super::{
-    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_groups::HourSpan, finite_fixed64,
-    validate_tag,
+    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
+    country_groups::HourSpan,
+    country_history::{self, CountryIdentityRun, Identity, RecordedHistories},
+    finite_fixed64, validate_tag,
 };
 use crate::{
     Source,
@@ -170,6 +172,9 @@ pub struct RaidTallySeries {
     pub runs: Vec<RaidTallyRun>,
     pub segments: Vec<HourSpan>,
     pub membership: Option<Vec<HourSpan>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub identities: Option<Vec<CountryIdentityRun>>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -469,14 +474,13 @@ struct Track {
     identity: IdentityTrack,
     segments: Vec<HourSpan>,
     runs: Vec<RaidTallyRun>,
-    launched: u32,
-    succeeded: u32,
     holder: Option<(u32, u32)>,
 }
 
 struct Scan {
     result: ScannedRaids,
     tracks: BTreeMap<String, Track>,
+    tallies: BTreeMap<Identity, (u32, u32)>,
     tags: LinkTags,
     open: BTreeMap<(u32, u32), usize>,
     counted_launch: BTreeSet<(u32, u32)>,
@@ -490,6 +494,7 @@ impl Scan {
         Self {
             result: ScannedRaids::default(),
             tracks: BTreeMap::new(),
+            tallies: BTreeMap::new(),
             tags: LinkTags::default(),
             open: BTreeMap::new(),
             counted_launch: BTreeSet::new(),
@@ -524,10 +529,6 @@ impl Scan {
             let track = self.tracks.get_mut(tag.as_str()).expect("country track");
             let holder = (slot, country.id);
             let continues = track.identity.step(Some(holder), hour);
-            if track.holder.is_some_and(|old| old != holder) {
-                track.launched = 0;
-                track.succeeded = 0;
-            }
             track.holder = Some(holder);
             if continues {
                 track.segments.last_mut().unwrap().last_hour = hour;
@@ -727,16 +728,17 @@ impl Scan {
                 self.refusals.note("terminal result without recorded phase 4 or finite nonzero flight distance; console End@1402574C0 can bypass launch", &id);
             }
             if let Some(tag) = &raider {
-                let track = self.tracks.get_mut(tag).expect("country track");
+                let holder = self.tracks[tag].holder.expect("current country holder");
+                let tally = self.tallies.entry(holder).or_default();
                 if was_launched == Some(true) && self.counted_launch.insert(key) {
-                    track.launched = track
-                        .launched
+                    tally.0 = tally
+                        .0
                         .checked_add(1)
                         .ok_or_else(|| io::Error::other("Raid launch count overflow"))?;
                 }
                 if was_success == Some(true) && self.counted_success.insert(key) {
-                    track.succeeded = track
-                        .succeeded
+                    tally.1 = tally
+                        .1
                         .checked_add(1)
                         .ok_or_else(|| io::Error::other("Raid success count overflow"))?;
                 }
@@ -829,12 +831,17 @@ impl Scan {
         self.open = next;
         for tag in parent_tags.values() {
             let track = self.tracks.get_mut(*tag).expect("country track");
+            let (launched, succeeded) = self
+                .tallies
+                .get(&track.holder.expect("current country holder"))
+                .copied()
+                .unwrap_or_default();
             let run = RaidTallyRun {
                 first_hour: hour,
                 last_hour: hour,
                 read_hour: hour,
-                launched: track.launched,
-                succeeded: track.succeeded,
+                launched,
+                succeeded,
             };
             if let Some(last) = track.runs.last_mut()
                 && last.last_hour.checked_add(1) == Some(hour)
@@ -1017,10 +1024,21 @@ fn measure_reply(reply: &RaidsReply, episodes: &[RaidEpisode]) -> io::Result<()>
     Ok(())
 }
 
+#[cfg(test)]
 fn selected_series(
     scan: &ScannedRaids,
     params: &RaidsParams,
     cancelled: &AtomicBool,
+) -> io::Result<Vec<RaidTallySeries>> {
+    selected_series_with_histories(scan, params, cancelled, None, 2)
+}
+
+fn selected_series_with_histories(
+    scan: &ScannedRaids,
+    params: &RaidsParams,
+    cancelled: &AtomicBool,
+    histories: Option<&RecordedHistories>,
+    mut bytes: usize,
 ) -> io::Result<Vec<RaidTallySeries>> {
     let membership = params
         .top
@@ -1043,10 +1061,16 @@ fn selected_series(
             )
         })
         .transpose()?;
+    let selected_ids = histories
+        .filter(|_| params.top.is_none())
+        .map(|histories| country_history::selected_identities(histories, &params.tags));
     let requested: Vec<String> = membership
         .as_ref()
         .map(|m| m.keys().cloned().collect())
         .unwrap_or_else(|| {
+            if let Some(histories) = histories {
+                return country_history::selected_aliases(histories, &params.tags);
+            }
             params
                 .tags
                 .iter()
@@ -1064,15 +1088,44 @@ fn selected_series(
         runs: &'a [RaidTallyRun],
         segments: &'a [HourSpan],
         membership: Option<&'a [HourSpan]>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        identities: Option<&'a [&'a CountryIdentityRun]>,
     }
-    let mut bytes = 2usize;
     let mut pieces = Vec::new();
     for tag in requested {
-        let Some(runs) = scan.series.get(&tag) else {
+        let runs = scan.series.get(&tag).map_or(&[][..], Vec::as_slice);
+        if histories.is_none() && runs.is_empty() {
             continue;
-        };
-        let spans = membership.as_ref().and_then(|m| m.get(&tag));
-        let segments = scan.segments.get(&tag).map_or(&[][..], Vec::as_slice);
+        }
+        let ranked_spans = membership.as_ref().and_then(|m| m.get(&tag));
+        let identities = histories.map(|histories| {
+            histories
+                .countries
+                .get(&tag)
+                .into_iter()
+                .flat_map(|country| country.identities.iter())
+                .filter(|identity| {
+                    selected_ids.as_ref().is_none_or(|selected| {
+                        selected.contains(&(identity.slot, identity.country_id))
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        let holder_spans = selected_ids.as_ref().map(|_| {
+            identities
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|identity| HourSpan {
+                    first_hour: identity.first_hour,
+                    last_hour: identity.last_hour,
+                })
+                .collect::<Vec<_>>()
+        });
+        let spans = ranked_spans.map(Vec::as_slice).or(holder_spans.as_deref());
+        let segments = holder_spans
+            .as_deref()
+            .unwrap_or_else(|| scan.segments.get(&tag).map_or(&[][..], Vec::as_slice));
         bytes = bytes
             .saturating_add(
                 json_len(
@@ -1080,7 +1133,8 @@ fn selected_series(
                         tag: &tag,
                         runs: &[],
                         segments,
-                        membership: spans.map(Vec::as_slice),
+                        membership: ranked_spans.map(Vec::as_slice),
+                        identities: identities.as_deref(),
                     },
                     MAX_PRODUCT_REPLY_BYTES,
                 )
@@ -1120,11 +1174,12 @@ fn selected_series(
                 "RaidReplyTooLarge: these countries' raid tally exceeds one complete response; no countries or raids were omitted",
             ));
         }
-        pieces.push((tag, spans));
+        pieces.push((tag, ranked_spans, holder_spans, identities));
     }
     let mut series = Vec::new();
-    for (tag, spans) in pieces {
-        let runs = &scan.series[&tag];
+    for (tag, ranked_spans, holder_spans, identities) in pieces {
+        let runs = scan.series.get(&tag).map_or(&[][..], Vec::as_slice);
+        let spans = ranked_spans.map(Vec::as_slice).or(holder_spans.as_deref());
         let runs = if let Some(spans) = spans {
             let mut clipped = Vec::new();
             crate::ranking::for_each_piece(
@@ -1143,13 +1198,15 @@ fn selected_series(
             )?;
             clipped
         } else {
-            runs.clone()
+            runs.to_vec()
         };
         series.push(RaidTallySeries {
-            segments: scan.segments.get(&tag).cloned().unwrap_or_default(),
+            segments: holder_spans
+                .unwrap_or_else(|| scan.segments.get(&tag).cloned().unwrap_or_default()),
             tag,
             runs,
-            membership: spans.cloned(),
+            membership: ranked_spans.cloned(),
+            identities: identities.map(|identities| identities.into_iter().cloned().collect()),
         });
     }
     Ok(series)
@@ -1309,7 +1366,24 @@ impl Product for Raids {
             if params.view == RaidsView::Log {
                 log_scan = Some(scanned);
             } else {
-                reply.series = selected_series(&scanned, params, cancelled)?;
+                if let Some(content) = &content {
+                    for warning in content.catalogue.refusal_lines() {
+                        if !reply.warnings.contains(&warning) {
+                            reply.warnings.push(warning);
+                        }
+                    }
+                }
+                let histories =
+                    country_history::branch_histories(source, branch, false, &[], cancelled)?;
+                let bytes = json_len(&reply, MAX_PRODUCT_REPLY_BYTES).ok_or_else(|| io::Error::other(
+                    "RaidReplyTooLarge: the complete raid reply exceeds one complete response; no countries or raids were omitted"))?;
+                reply.series = selected_series_with_histories(
+                    &scanned,
+                    params,
+                    cancelled,
+                    Some(&histories),
+                    bytes,
+                )?;
             }
         }
         if let Some(content) = &content {

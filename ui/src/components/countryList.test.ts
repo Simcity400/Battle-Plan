@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CountryMetadata } from '../shell/api';
-import { COUNTRY_ROW_HEIGHT, COUNTRY_ROW_OVERSCAN, countryChoices, filterChoices, moveIndex, revealRow, visibleRange } from './countryList.ts';
+import { COUNTRY_ROW_HEIGHT, COUNTRY_ROW_OVERSCAN, allowedCountryChoices, countryChoices, filterChoices, moveIndex, revealRow, visibleRange } from './countryList.ts';
 
 const country = (index: number, branch = '1'): CountryMetadata =>
   ({ id: String(index), tag: `T${index}`, name: `Free Province of Westmarch-${index}`, observedBranchId: branch, observedHour: 100 });
@@ -54,4 +54,41 @@ test('keyboard navigation moves by index and reveals rows that are not rendered'
   assert.equal(revealRow(4_999, 0, LIST), 5_000 * COUNTRY_ROW_HEIGHT - LIST);
   assert.equal(revealRow(0, 1_000, LIST), 0);
   assert.equal(revealRow(31, 1_000, LIST), 1_000);
+});
+
+test('drill choices retain later aliases absent from the first canonical-slot roster', () => {
+  const metadata = [{ id: '1', tag: 'OLD', name: 'First holder', observedBranchId: '1', observedHour: 100 },
+    { id: '2', tag: 'ITA', name: 'Second holder', observedBranchId: '1', observedHour: 100 }];
+  const choices = allowedCountryChoices(metadata, ['GER', 'ITA', 'GER'], { branchId: '2', hour: 150 });
+  assert.deepEqual(choices.map(choice => choice.country.tag).sort(), ['GER', 'ITA']);
+  const renamed = choices.find(choice => choice.country.tag === 'GER')!.country;
+  assert.equal(renamed.name, 'GER');
+  assert.equal(renamed.id, undefined);
+  assert.equal(renamed.observedBranchId, '2');
+  assert.equal(renamed.observedHour, 150);
+  assert.deepEqual(filterChoices(choices, 'ger').map(choice => choice.country.tag), ['GER']);
+  // The normal picker still uses only the ownership roster supplied to it.
+  assert.deepEqual(countryChoices(metadata).map(choice => choice.country.tag), ['OLD', 'ITA']);
+  const tags = Array.from({ length: 5000 }, (_, index) => `LATER${index}`);
+  const many = allowedCountryChoices(metadata, tags, { branchId: '2', hour: 150 });
+  assert.equal(many.length, 5000);
+  const range = visibleRange(many.length, revealRow(4999, 0, LIST), LIST);
+  assert.ok(range.end - range.start <= windowRows);
+  assert.ok(filterChoices(many, 'later4999').some(choice => choice.country.tag === 'LATER4999'));
+});
+
+test('restricted chooser searches the historical name it displays, with tag fallback before loading', () => {
+  const metadata = [{ id: '1', tag: 'ONE', name: 'New Republic', observedBranchId: '1', observedHour: 200 }];
+  const at = { branchId: '1', hour: 100 };
+  const before = allowedCountryChoices(metadata, ['ONE', 'LATER'], at);
+  assert.equal(before.find(choice => choice.country.tag === 'ONE')!.country.name, 'ONE');
+  assert.deepEqual(filterChoices(before, 'New Republic'), []);
+  const seen = new Map([['ONE', 'Old Empire']]);
+  const choices = allowedCountryChoices(metadata, ['ONE', 'LATER'], at, seen);
+  assert.deepEqual(filterChoices(choices, 'Old Empire').map(choice => choice.country.tag), ['ONE']);
+  assert.equal(filterChoices(choices, 'Old Empire')[0].country.name, 'Old Empire');
+  assert.deepEqual(filterChoices(choices, 'New Republic'), []);
+  assert.equal(filterChoices(choices, 'LATER')[0].country.name, 'LATER');
+  assert.deepEqual(choices.map(choice => choice.country.tag), before.map(choice => choice.country.tag), 'loaded names do not move rows and start more reads');
+  assert.deepEqual(filterChoices(allowedCountryChoices(metadata, ['ONE'], { ...at, hour: 200 }), 'Old Empire'), []);
 });

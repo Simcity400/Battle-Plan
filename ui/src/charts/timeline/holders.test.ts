@@ -39,3 +39,18 @@ test('the left column redraws a holder whose name or picture changes under the s
   // And a lane emptying fades out to nothing.
   assert.equal(nextHolder(back, null).current, null);
 });
+
+test('a native country holder updates pending/refusal without restarting its picture fade', () => {
+  const pending = { ...span('country', 'Synthetic country'), countryFlag: { flagPending: true } };
+  const state = nextHolder(undefined, pending);
+  const unavailable = { ...pending, countryFlag: { flagPending: false, flagReason: 'Recorded mod flag is missing.' } };
+  const completed = nextHolder(state, unavailable);
+  assert.equal(completed, state);
+  assert.equal(completed.current?.countryFlag?.flagReason, 'Recorded mod flag is missing.');
+  assert.equal(completed.current?.countryFlag?.flagPending, false);
+  assert.equal(completed.t, 1);
+  const loaded = nextHolder(completed, { ...pending, countryFlag: { flag: 'synthetic-flag.png' } });
+  assert.equal(loaded.previous?.countryFlag?.flagReason, 'Recorded mod flag is missing.');
+  assert.equal(loaded.current?.countryFlag?.flag, 'synthetic-flag.png');
+  assert.equal(loaded.t, 0);
+});

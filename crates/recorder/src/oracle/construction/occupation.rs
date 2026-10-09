@@ -55,6 +55,40 @@ pub(in crate::oracle) fn occupation_settings(
             row.default_law_present,
             u8::from(saved.default_law.is_some()),
         );
+        match &row.group_laws {
+            replay::rows::Recorded::Value(Some(groups)) => {
+                let mut recorded = BTreeMap::new();
+                for group in groups {
+                    let occupied = required_country_tag(group.occupied, links)?.to_vec();
+                    if recorded.insert(occupied, group.law.clone()).is_some() {
+                        return Err(invalid("duplicate resolved occupied-country law"));
+                    }
+                }
+                value(
+                    report,
+                    &format!("{subject}.group_laws"),
+                    &recorded,
+                    &saved.group_laws,
+                );
+            }
+            replay::rows::Recorded::Value(None) => report.difference(
+                format!("{subject}.group_laws"),
+                "capture failed",
+                "saved inventory present",
+            ),
+            replay::rows::Recorded::NotRecorded => report.limitation(
+                "older occupation settings lack the occupied-country law inventory",
+                format!("{subject}.group_laws"),
+            ),
+        }
+        report.limitation(
+            "the retained occupied-country pointer (+0x18) is not serialized; saved group keys certify +0x10 membership, not the pointer's current target",
+            format!("{subject}.scope_country"),
+        );
+        report.limitation(
+            "the database fallback pointer (+0x48, 140FE2FE0) and eligibility trigger results have no text-save counterpart",
+            format!("{subject}.fallback_law"),
+        );
         if let Some(law) = &saved.default_law {
             value(
                 report,
@@ -234,6 +268,86 @@ pub(in crate::oracle) fn assigned_manpower(
         )?;
     }
     report.compared("StateAssignedManpower", matched);
+    Ok(())
+}
+
+/// 140FEB450 writes +90 through 140FFDB00 (variant rows, zero policy) and
+/// +D0 through 140FFDA90 (ordered nonzero token/amount pairs). Allocation
+/// lookups are derived from the saved variants' archetypes; their native
+/// running-total clamp is 140FF7A30, as for StockpileArchetypes.
+pub(in crate::oracle) fn garrison_equipment(
+    frame: &DecodedFrame,
+    saved: &saved::Pack,
+    links: &BTreeMap<u32, &CountryRow>,
+    names: &BTreeMap<u32, &[u8]>,
+    report: &mut Report,
+) -> io::Result<()> {
+    let mut matched = 0;
+    for row in complete::<tables::StateGarrisons>(frame)? {
+        let controller = required_country_tag(row.controller, links)?;
+        let subject = format!(
+            "garrison.{}.{}.equipment",
+            String::from_utf8_lossy(controller),
+            row.state
+        );
+        let Some(saved) = saved.state_garrisons.get(&(controller.to_vec(), row.state)) else {
+            report.difference(subject, "captured garrison", "no saved garrison");
+            continue;
+        };
+        let inputs = match &row.equipment {
+            replay::rows::Recorded::NotRecorded => {
+                report.limitation(
+                    "older garrison rows lack the equipment strength operands",
+                    subject,
+                );
+                continue;
+            }
+            replay::rows::Recorded::Value(inputs) => inputs,
+        };
+        if let Some(reason) = &inputs.failure {
+            report.difference(
+                subject,
+                String::from_utf8_lossy(reason),
+                "saved equipment objects",
+            );
+            continue;
+        }
+        let requirements = inputs
+            .rows
+            .iter()
+            .filter(|entry| entry.required_raw != 0)
+            .map(|entry| {
+                Ok((
+                    token(names, entry.equipment_token)
+                        .map_err(invalid)?
+                        .to_vec(),
+                    entry.required_raw,
+                ))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        match &saved.equipment_need {
+            Some(pool) => value(
+                report,
+                &format!("{subject}.requirements"),
+                requirements,
+                pool.iter()
+                    .map(|(name, amount)| (name.clone(), amount.raw))
+                    .collect(),
+            ),
+            None => report.difference(
+                format!("{subject}.requirements"),
+                "captured inventory",
+                "missing serialized equipment_need",
+            ),
+        }
+        // 140FDFA80 scales and 140FFD700 floors the allocation records (pool+8)
+        // and each variant separately; 140FEB450/140FFDB00 save only the variants.
+        report.limitation("CStateGarrisonData::Serialize@140FEB450 saves the variant pool, not the allocation cache GetArchetypeQuantity@140FF97C0 reads; resistance damage floors each separately, so the save cannot certify allocations", format!("{subject}.allocations"));
+        matched += 1;
+        report.limitation("140FFDA90 omits exactly zero requirements; their membership and absolute ordinal are not save-certified", format!("{subject}.zero_requirements"));
+        report.limitation("the two pool serializers omit live equipment weights, archetype active bytes and pointer-identity lookup operands; these require the source-byte read witness and matched native display", format!("{subject}.live_operands"));
+    }
+    report.compared("StateGarrisons equipment", matched);
     Ok(())
 }
 

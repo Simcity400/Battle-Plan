@@ -78,6 +78,17 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
         report.limitation("reserved country owned-state count unreadable at capture; other naming operands remain available", "ReservedCountryNaming.owned_state_count: guarded read refusal");
     }
     report.limitation("CGameState::Write@1401F2A20 begins its country census at physical slot one and omits reserved Country0, so its exact signed +0x484 getter operand has no fresh-save counterpart", "ReservedCountryNaming.owned_state_count: unsaved reserved getter operand");
+    if let Some(None) = report.recorded(
+        &rows[0].dynamic_tag_boundary,
+        "ReservedCountryNaming.dynamic_tag_boundary",
+        "native dynamic-country boundary",
+    ) {
+        report.limitation(
+            "native dynamic-country boundary unreadable at capture",
+            "ReservedCountryNaming.dynamic_tag_boundary: guarded read refusal",
+        );
+    }
+    report.limitation("CountryDatabase+0x88 is a runtime signed slot boundary read by 140BA61F0; CGameState::Write and CCountry::Serialize do not serialize it, so fresh-save original-tag text cannot certify this predicate", "ReservedCountryNaming.dynamic_tag_boundary: unsaved native predicate; matched-hour memory needed");
     Ok(())
 }
 
@@ -292,6 +303,46 @@ mod original_tag_tests {
                 matches!(value, Recorded::NotRecorded)
             );
             assert_eq!(report.limitations.contains_key("reserved country owned-state count unreadable at capture; other naming operands remain available"), matches!(value, Recorded::Value(None)));
+        }
+    }
+    #[test]
+    fn dynamic_boundary_oracle_reports_unsaved_values_and_explicit_refusals() {
+        let (mut frame, _, _, _) = super::super::tests::fixture();
+        for value in [
+            Recorded::NotRecorded,
+            Recorded::Value(None),
+            Recorded::Value(Some(i32::MIN)),
+            Recorded::Value(Some(0)),
+        ] {
+            *frame.tables[TableId::ReservedCountryNaming.index()] =
+                TableView::Complete(TableRows::ReservedCountryNaming(vec![
+                    ReservedCountryNamingRow {
+                        dynamic_tag_boundary: value,
+                        ..Default::default()
+                    },
+                ]));
+            let mut report = Report::default();
+            reserved_naming(&frame, &mut report).unwrap();
+            assert!(report.differences.is_empty());
+            assert_eq!(report.scalar_checks, 0);
+            assert!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|reason| reason.contains("runtime signed slot boundary"))
+            );
+            assert_eq!(
+                report
+                    .limitations
+                    .contains_key("ReservedCountryNaming.dynamic_tag_boundary not recorded"),
+                matches!(value, Recorded::NotRecorded)
+            );
+            assert_eq!(
+                report
+                    .limitations
+                    .contains_key("native dynamic-country boundary unreadable at capture"),
+                matches!(value, Recorded::Value(None))
+            );
         }
     }
 }

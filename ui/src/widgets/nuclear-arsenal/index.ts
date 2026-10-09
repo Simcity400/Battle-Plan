@@ -1,3 +1,5 @@
 import type { WidgetRenderer } from '../../dashboard/definitions';
 import NuclearArsenalWidget from './NuclearArsenalWidget';
-export default { render: NuclearArsenalWidget } satisfies WidgetRenderer;
+import NuclearCountryChip from './NuclearCountryChip';
+
+export default { render: NuclearArsenalWidget, countryChip: NuclearCountryChip } satisfies WidgetRenderer;

@@ -1,18 +1,30 @@
-//! Retour owns instruction relocation. The five-byte patch is published while
+//! Retour owns ordinary hook relocation. Verified patches are published while
 //! existing process threads are suspended, without heap use in that interval.
 //! The hooked site is CGameState::HourlyUpdate, the once-per-hour full tick,
 //! confirmed the only statically hookable per-hour boundary on the main thread.
 
 use retour::RawDetour;
-use std::{ffi::c_void, io, mem::size_of, ops::Range, ptr};
+use std::{
+    ffi::c_void,
+    io,
+    mem::{ManuallyDrop, size_of},
+    ops::Range,
+    ptr,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, GetLastError, HANDLE,
+        CloseHandle, ERROR_BAD_LENGTH, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER,
+        ERROR_NO_MORE_FILES, ERROR_NOT_ENOUGH_MEMORY, ERROR_RETRY, GetLastError, HANDLE,
         INVALID_HANDLE_VALUE,
     },
     System::{
         Diagnostics::{
-            Debug::{CONTEXT, CONTEXT_CONTROL_AMD64, FlushInstructionCache, GetThreadContext},
+            Debug::{
+                CONTEXT, CONTEXT_CONTROL_AMD64, FlushInstructionCache, GetThreadContext,
+                IMAGE_RUNTIME_FUNCTION_ENTRY, IMAGE_RUNTIME_FUNCTION_ENTRY_0, RtlAddFunctionTable,
+                RtlDeleteFunctionTable,
+            },
             ToolHelp::*,
         },
         Memory::*,
@@ -20,19 +32,65 @@ use windows_sys::Win32::{
     },
 };
 
+/// An initial enable refused before writing any byte and with no owned member.
+pub const BYTE_VERIFICATION_FAILURE: &str = "hook bytes differ from verified snapshot";
+
+/// Covers a counted callback's native target and its uncounted entry/exit.
+pub struct TapSafety {
+    pub in_flight: &'static AtomicUsize,
+    pub stub: Range<usize>,
+}
+
 pub struct Hook {
-    relocation: RawDetour,
+    relocation: ManuallyDrop<RawDetour>,
     relay: *mut c_void,
     site: usize,
     original: [u8; 16],
-    patch: [u8; 5],
+    sentinel_len: usize,
+    patch: [u8; 16],
+    patch_len: usize,
     enabled: bool,
+    needs_flush: bool,
     page_protection: u32,
+    tap: Option<TapSafety>,
 }
 
 impl Hook {
-    /// Caller verified the executable and all 16 sentinel bytes at this site.
+    /// Caller verified the executable, all 16 sentinel bytes, and that no
+    /// native CALL return address falls in the five patched bytes: unwind
+    /// epilogue decoding must never see our jump at a caller's return PC.
     pub unsafe fn new(site: usize, callback: usize, original: [u8; 16]) -> Result<Self, String> {
+        unsafe { Self::new_span(site, callback, original, original.len()) }
+    }
+
+    /// Bind the native flight counter and complete callback range before publication.
+    /// The owner must retain both on native escape and quiesce the DLL before unload.
+    pub(crate) unsafe fn new_with_safety(
+        site: usize,
+        callback: usize,
+        original: [u8; 16],
+        safety: TapSafety,
+    ) -> Result<Self, String> {
+        if safety.stub.is_empty() || !safety.stub.contains(&callback) {
+            return Err("hook safety stub must contain its callback".into());
+        }
+        let mut hook = unsafe { Self::new(site, callback, original) }?;
+        hook.tap = Some(safety);
+        Ok(hook)
+    }
+
+    unsafe fn new_span(
+        site: usize,
+        callback: usize,
+        original: [u8; 16],
+        sentinel_len: usize,
+    ) -> Result<Self, String> {
+        if !(5..=original.len()).contains(&sentinel_len) {
+            return Err("hook sentinel must cover the patch within its storage".into());
+        }
+        if site.checked_add(sentinel_len).is_none() {
+            return Err("hook sentinel address overflow".into());
+        }
         // A relay in rel32 range lets retour relocate exactly the same five-byte
         // prologue that we patch. The known candidates have no hot-patch prefix.
         let aligned = site & !0xffff;
@@ -93,16 +151,21 @@ impl Hook {
             }
             let relative = i32::try_from(relay as i64 - (site + 5) as i64)
                 .map_err(|_| "relay outside rel32 range")?;
-            let mut patch = [0xe9, 0, 0, 0, 0];
-            patch[1..].copy_from_slice(&relative.to_le_bytes());
+            let mut patch = [0; 16];
+            patch[0] = 0xe9;
+            patch[1..5].copy_from_slice(&relative.to_le_bytes());
             Ok(Self {
-                relocation,
+                relocation: ManuallyDrop::new(relocation),
                 relay,
                 site,
                 original,
+                sentinel_len,
                 patch,
+                patch_len: 5,
                 enabled: false,
+                needs_flush: false,
                 page_protection: region.Protect,
+                tap: None,
             })
         })();
         if result.is_err() {
@@ -111,6 +174,10 @@ impl Hook {
             }
         }
         result
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled || self.needs_flush
     }
 
     pub fn trampoline(&self) -> usize {
@@ -126,11 +193,66 @@ impl Hook {
         callback: usize,
         original: [u8; 16],
     ) -> Result<Self, String> {
+        unsafe { Self::new_call_span(site, callback, original, original.len()) }
+    }
+
+    /// Verify only the owned span: naval CALLs 1415B29C0 / 1415B2AC3 need
+    /// 16 / 13 bytes; 1415B2AD0 starts the next native function.
+    pub unsafe fn new_call_span(
+        site: usize,
+        callback: usize,
+        original: [u8; 16],
+        sentinel_len: usize,
+    ) -> Result<Self, String> {
         if original[0] != 0xe8 {
             return Err("call tap requires a five-byte rel32 CALL".into());
         }
+        let mut hook = unsafe { Self::new_span(site, callback, original, sentinel_len) }?;
+        hook.patch[0] = 0xe8;
+        Ok(hook)
+    }
+
+    /// Keep a counted native CALL's entry, original and exit alive through restore.
+    pub unsafe fn new_call_with_safety(
+        site: usize,
+        callback: usize,
+        original: [u8; 16],
+        safety: TapSafety,
+    ) -> Result<Self, String> {
+        if safety.stub.is_empty() || !safety.stub.contains(&callback) {
+            return Err("call tap stub must contain its callback".into());
+        }
+        let mut hook = unsafe { Self::new_call(site, callback, original) }?;
+        hook.tap = Some(safety);
+        Ok(hook)
+    }
+
+    /// DispatchLeaderOnActions@1412A42E0 calls 1412A42F6 / 1412A4314:
+    /// replace FF 90 disp32 with CALL relay; NOP. The counted stub forwards
+    /// the live RAX-based target and native arguments, then returns to site+5.
+    /// Native returns are 1412A42FC / 1412A431A. Their .pdata range
+    /// [1412A42E0,1412A4342) has no handler/chain; site+5 and site+6 share
+    /// the same body unwind state (info142DE1A3C, prologue ten bytes).
+    /// Its counter must cover the target until its return PC is no longer in use,
+    /// including unwind. Rust cleanup must not clear it before Windows finishes
+    /// traversing the stub. The stub range covers uncounted entry/exit instructions.
+    pub unsafe fn new_indirect_call(
+        site: usize,
+        callback: usize,
+        original: [u8; 16],
+        safety: TapSafety,
+    ) -> Result<Self, String> {
+        if original[..2] != [0xff, 0x90] {
+            return Err("indirect call tap requires a six-byte CALL [RAX+disp32]".into());
+        }
+        if safety.stub.is_empty() || !safety.stub.contains(&callback) {
+            return Err("indirect call tap stub must contain its callback".into());
+        }
         let mut hook = unsafe { Self::new(site, callback, original) }?;
         hook.patch[0] = 0xe8;
+        hook.patch[5] = 0x90;
+        hook.patch_len = 6;
+        hook.tap = Some(safety);
         Ok(hook)
     }
 
@@ -143,80 +265,406 @@ impl Hook {
     }
 
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, String> {
-        let mut threads = Threads::open()?;
-        let mut previous = 0;
-        if unsafe {
-            VirtualProtect(
-                self.site as *const c_void,
-                16,
-                PAGE_EXECUTE_READWRITE,
-                &mut previous,
-            )
-        } == 0
-        {
-            return Err(io::Error::last_os_error().to_string());
+        Self::set_family_enabled(std::slice::from_mut(self), enabled)
+    }
+
+    fn bytes_match(&self, enabled: bool) -> bool {
+        let mut expected = self.original;
+        if enabled {
+            expected[..self.patch_len].copy_from_slice(&self.patch[..self.patch_len]);
         }
-        // No formatting, allocation, locks, or destruction while threads are held.
-        let outcome = (|| {
-            threads.suspend()?;
-            if threads.contains_ip(std::slice::from_ref(&(self.site..self.site + 16)))? {
-                return Ok(false);
+        (unsafe { std::slice::from_raw_parts(self.site as *const u8, self.sentinel_len) })
+            == &expected[..self.sentinel_len]
+    }
+
+    /// Prepare protection/ranges before holding threads, validate every site
+    /// before any write, and publish the whole family under one suspension.
+    pub fn set_family_enabled(hooks: &mut [Self], enabled: bool) -> Result<bool, String> {
+        let mut references =
+            engine::allocation::vec(hooks.len()).map_err(|_| "hook family allocation failed")?;
+        references.extend(hooks.iter_mut());
+        Self::set_enabled_batch(&mut references, enabled)
+    }
+
+    pub fn set_enabled_batch(hooks: &mut [&mut Self], enabled: bool) -> Result<bool, String> {
+        Self::set_family_enabled_with_flush(hooks, enabled, || {
+            #[cfg(test)]
+            if FAIL_FLUSHES.with(|remaining| {
+                let value = remaining.get();
+                remaining.set(value.saturating_sub(1));
+                value != 0
+            }) {
+                return Err(31);
             }
-            let target = self.site as *mut u8;
-            let mut expected = self.original;
-            if self.enabled {
-                expected[..5].copy_from_slice(&self.patch);
-            }
-            if unsafe { std::slice::from_raw_parts(target, 16) } != expected {
-                return Err(0);
-            }
-            let bytes = if enabled {
-                &self.patch[..]
+            if unsafe { FlushInstructionCache(GetCurrentProcess(), ptr::null(), 0) } == 0 {
+                Err(unsafe { GetLastError() })
             } else {
-                &self.original[..5]
-            };
-            unsafe {
-                ptr::copy_nonoverlapping(bytes.as_ptr(), target, 5);
+                Ok(())
             }
-            self.enabled = enabled;
-            if unsafe { FlushInstructionCache(GetCurrentProcess(), target.cast(), 16) } == 0 {
-                return Err(unsafe { GetLastError() });
+        })
+    }
+
+    fn set_family_enabled_with_flush(
+        hooks: &mut [&mut Self],
+        enabled: bool,
+        mut flush: impl FnMut() -> Result<(), u32>,
+    ) -> Result<bool, String> {
+        if hooks.is_empty() || !enabled && hooks.iter().all(|hook| !hook.is_enabled()) {
+            return Ok(true);
+        }
+        let mut threads = Threads::open()?;
+        let previous =
+            engine::allocation::map_slice(hooks, |hook| (hook.enabled, hook.is_enabled()))
+                .map_err(|_| "hook state allocation failed")?;
+        let selected = |index: usize| enabled || previous[index].1;
+        let ranges = engine::allocation::collect_vec(
+            hooks
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| selected(*index))
+                .map(|(_, hook)| hook.site..hook.site + hook.sentinel_len),
+        )
+        .map_err(|_| "hook ranges allocation failed")?;
+        let mut protected = 0;
+        let mut prepare_error = None;
+        let mut publication_failed = false;
+        let mut snapshot_refusal = false;
+        for (_, hook) in hooks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| selected(*index))
+        {
+            let mut previous = 0;
+            if unsafe {
+                VirtualProtect(
+                    hook.site as *const c_void,
+                    hook.sentinel_len,
+                    PAGE_EXECUTE_READWRITE,
+                    &mut previous,
+                )
+            } == 0
+            {
+                prepare_error = Some(io::Error::last_os_error().to_string());
+                break;
             }
-            if !enabled && unsafe { std::slice::from_raw_parts(target, 16) } != self.original {
-                return Err(0);
-            }
-            Ok(true)
-        })();
-        let mut ignored = 0;
-        let protection_ok = unsafe {
-            VirtualProtect(
-                self.site as *const c_void,
-                16,
-                self.page_protection,
-                &mut ignored,
-            )
-        } != 0;
+            protected += 1;
+        }
+        // No allocation, formatting, locks or destruction while suspended.
+        let outcome = if prepare_error.is_none() {
+            (|| {
+                threads.suspend()?;
+                if threads.contains_ip(&ranges)? {
+                    return Ok(false);
+                }
+                for (_, hook) in hooks
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| selected(*index))
+                {
+                    let [relay, trampoline] = hook.executable_ranges();
+                    if let Some(tap) = &hook.tap
+                        && (!enabled || !hook.enabled)
+                        && (tap.in_flight.load(Ordering::SeqCst) != 0
+                            || threads.contains_ip(&[relay, trampoline, tap.stub.clone()])?)
+                    {
+                        // A native target can hold site+5 on its stack while
+                        // its current IP is outside every collector range.
+                        return Ok(false);
+                    }
+                    if !hook.bytes_match(hook.enabled) {
+                        snapshot_refusal = enabled && previous.iter().all(|(_, owned)| !*owned);
+                        return Err(0);
+                    }
+                }
+                for (_, hook) in hooks
+                    .iter_mut()
+                    .enumerate()
+                    .filter(|(index, _)| selected(*index))
+                {
+                    if hook.enabled == enabled {
+                        continue;
+                    }
+                    let bytes = if enabled {
+                        &hook.patch[..hook.patch_len]
+                    } else {
+                        &hook.original[..hook.patch_len]
+                    };
+                    unsafe {
+                        ptr::copy_nonoverlapping(
+                            bytes.as_ptr(),
+                            hook.site as *mut u8,
+                            hook.patch_len,
+                        );
+                    }
+                    hook.enabled = enabled;
+                    hook.needs_flush = true;
+                }
+                if let Err(code) = flush() {
+                    publication_failed = true;
+                    // Restore the complete prior family before releasing threads.
+                    // On a second flush failure retain executable allocations and
+                    // let detach retry publication of the restored bytes.
+                    for (index, hook) in hooks.iter_mut().enumerate() {
+                        let was_enabled = previous[index].0;
+                        if !selected(index) || hook.enabled == was_enabled && !hook.needs_flush {
+                            continue;
+                        }
+                        let bytes = if was_enabled {
+                            &hook.patch[..hook.patch_len]
+                        } else {
+                            &hook.original[..hook.patch_len]
+                        };
+                        unsafe {
+                            ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                hook.site as *mut u8,
+                                hook.patch_len,
+                            );
+                        }
+                        hook.enabled = was_enabled;
+                        hook.needs_flush = true;
+                    }
+                    if flush().is_ok()
+                        && hooks
+                            .iter()
+                            .filter(|hook| hook.needs_flush)
+                            .all(|hook| hook.bytes_match(hook.enabled))
+                    {
+                        for hook in hooks.iter_mut() {
+                            hook.needs_flush = false;
+                        }
+                    }
+                    return Err(code);
+                }
+                if hooks
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| selected(*index))
+                    .any(|(_, hook)| !hook.bytes_match(enabled))
+                {
+                    return Err(0);
+                }
+                for hook in hooks.iter_mut() {
+                    hook.needs_flush = false;
+                }
+                Ok(true)
+            })()
+        } else {
+            Ok(false)
+        };
+        let mut protection_ok = true;
+        for (_, hook) in hooks
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| selected(*index))
+            .take(protected)
+        {
+            let mut ignored = 0;
+            protection_ok &= unsafe {
+                VirtualProtect(
+                    hook.site as *const c_void,
+                    hook.sentinel_len,
+                    hook.page_protection,
+                    &mut ignored,
+                )
+            } != 0;
+        }
+        let census_refusal = threads.census_refusal();
         let resume = threads.resume();
+        drop(threads);
         if !protection_ok {
             return Err("failed to restore hook-page protection".into());
         }
         resume.map_err(|code| format!("ResumeThread failed: {code}"))?;
-        outcome
-            .map_err(|code| format!("patch refused or verification failed (Windows error {code})"))
+        if let Some(reason) = prepare_error {
+            return Err(reason);
+        }
+        outcome.map_err(|code| {
+            let publication = if hooks.iter().any(|hook| hook.needs_flush) {
+                "; restored bytes remain unflushed or unverified; executable storage retained for detach"
+            } else {
+                ""
+            };
+            if publication_failed {
+                format!("instruction-cache publication failed (Windows error {code}); prior bytes restored{publication}")
+            } else if snapshot_refusal {
+                BYTE_VERIFICATION_FAILURE.into()
+            } else if let Some(reason) = census_refusal {
+                format!("{reason} (code {code:#x})")
+            } else {
+                format!("patch refused or verification failed (Windows error {code}){publication}")
+            }
+        })
     }
 }
+
+#[cfg(test)]
+std::thread_local! { static FAIL_FLUSHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+pub(crate) fn fail_flushes(count: usize) {
+    FAIL_FLUSHES.with(|remaining| remaining.set(count));
+}
+#[cfg(test)]
+pub(crate) static FAMILY_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Drop for Hook {
     fn drop(&mut self) {
         // The worker never drops an enabled hook or an in-use trampoline.
-        assert!(!self.enabled);
+        if self.is_enabled() {
+            // Retain the relay AND relocation on failed publication. Runtime
+            // restores and drains callbacks before dropping an owned family.
+            return;
+        }
         unsafe {
             VirtualFree(self.relay, 0, MEM_RELEASE);
+            ManuallyDrop::drop(&mut self.relocation);
+        }
+    }
+}
+
+// Off-suspension only: kernel32 RVA 4ab50 -> 4a1c0 allocates at 4a255,
+// retries at 4a310, and creates/maps a section at 27070/270c1.
+fn visit_threads(
+    excluded: &[u32],
+    mut visit: impl FnMut(u32) -> Result<(), u32>,
+) -> Result<(), u32> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(unsafe { GetLastError() });
+    }
+    let result = (|| {
+        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+        entry.dwSize = size_of::<THREADENTRY32>() as u32;
+        let mut found = unsafe { Thread32First(snapshot, &mut entry) };
+        while found != 0 {
+            if entry.th32OwnerProcessID == unsafe { GetCurrentProcessId() }
+                && entry.th32ThreadID != unsafe { GetCurrentThreadId() }
+                && !excluded.contains(&entry.th32ThreadID)
+            {
+                visit(entry.th32ThreadID)?;
+            }
+            found = unsafe { Thread32Next(snapshot, &mut entry) };
+        }
+        let error = unsafe { GetLastError() };
+        if error == ERROR_NO_MORE_FILES {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    })();
+    unsafe {
+        CloseHandle(snapshot);
+    }
+    result
+}
+
+// Installed ntdll NtQuerySystemInformation@RVA161470 dispatches directly
+// through SYSCALL@161482 (INT 2E fallback@161485), without user-mode allocation.
+// SystemProcessInformation (5) writes caller storage; STATUS_INFO_LENGTH_MISMATCH
+// reports the required length. x64 winternl.h: process header 100h, PID@50h;
+// thread record 50h, CLIENT_ID.UniqueThread@30h. No native pointers are followed.
+// https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtQuerySystemInformation(
+        class: u32,
+        buffer: *mut c_void,
+        length: u32,
+        required: *mut u32,
+    ) -> i32;
+}
+const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xc0000004_u32 as i32;
+
+fn query_census(buffer: &mut [usize], required: &mut u32) -> Result<usize, u32> {
+    let bytes = u32::try_from(std::mem::size_of_val(buffer)).map_err(|_| ERROR_BAD_LENGTH)?;
+    let pointer = if buffer.is_empty() {
+        ptr::null_mut()
+    } else {
+        buffer.as_mut_ptr().cast()
+    };
+    let status = unsafe { NtQuerySystemInformation(5, pointer, bytes, required) };
+    if status == STATUS_INFO_LENGTH_MISMATCH {
+        return Err(ERROR_INSUFFICIENT_BUFFER);
+    }
+    // Return NTSTATUS directly, without another user-mode helper while held.
+    if status < 0 {
+        return Err(status as u32);
+    }
+    if *required > bytes {
+        return Err(ERROR_BAD_LENGTH);
+    }
+    Ok(*required as usize)
+}
+
+fn visit_census(
+    bytes: &[u8],
+    process: u32,
+    current: u32,
+    excluded: &[u32],
+    mut visit: impl FnMut(u32) -> Result<(), u32>,
+) -> Result<(), u32> {
+    let mut offset = 0;
+    loop {
+        let record = bytes
+            .get(offset..)
+            .filter(|record| record.len() >= 0x100)
+            .ok_or(ERROR_BAD_LENGTH)?;
+        let next = u32::from_le_bytes(record[..4].try_into().unwrap()) as usize;
+        let end = if next == 0 { record.len() } else { next };
+        let record = record
+            .get(..end)
+            .filter(|record| record.len() >= 0x100)
+            .ok_or(ERROR_BAD_LENGTH)?;
+        let pid = u64::from_le_bytes(record[0x50..0x58].try_into().unwrap());
+        if pid == u64::from(process) {
+            let count = u32::from_le_bytes(record[4..8].try_into().unwrap()) as usize;
+            let length = count.checked_mul(0x50).ok_or(ERROR_BAD_LENGTH)?;
+            let threads = record
+                .get(0x100..)
+                .and_then(|tail| tail.get(..length))
+                .ok_or(ERROR_BAD_LENGTH)?;
+            for thread in threads.chunks_exact(0x50) {
+                let id = u64::from_le_bytes(thread[0x30..0x38].try_into().unwrap());
+                let id = u32::try_from(id).map_err(|_| ERROR_BAD_LENGTH)?;
+                if id != current && !excluded.contains(&id) {
+                    visit(id)?;
+                }
+            }
+            return Ok(());
+        }
+        if next == 0 {
+            return Err(ERROR_INVALID_PARAMETER);
+        }
+        offset = offset.checked_add(next).ok_or(ERROR_BAD_LENGTH)?;
+    }
+}
+
+fn open_thread(id: u32) -> Result<Option<HANDLE>, u32> {
+    let handle = unsafe {
+        OpenThread(
+            THREAD_SUSPEND_RESUME
+                | THREAD_GET_CONTEXT
+                | THREAD_QUERY_LIMITED_INFORMATION
+                | THREAD_SYNCHRONIZE,
+            0,
+            id,
+        )
+    };
+    if !handle.is_null() {
+        Ok(Some(handle))
+    } else {
+        let error = unsafe { GetLastError() };
+        // The snapshot thread exited; an owned handle pins each retained ID.
+        if error == ERROR_INVALID_PARAMETER {
+            Ok(None)
+        } else {
+            Err(error)
         }
     }
 }
 
 struct Thread {
+    id: u32,
     handle: HANDLE,
     suspended: bool,
 }
@@ -228,6 +676,11 @@ struct AlignedContext(CONTEXT);
 
 pub struct Threads {
     threads: Vec<Thread>,
+    excluded: Vec<u32>,
+    census: Vec<usize>,
+    census_required: u32,
+    census_short: bool,
+    census_refusal: Option<&'static str>,
 }
 
 impl Threads {
@@ -239,67 +692,182 @@ impl Threads {
     /// the DLL. Every excluded worker is joined before the final full-image check.
     /// Hook patching always uses `open`, with no worker exclusions.
     pub fn open_excluding(excluded_threads: &[u32]) -> Result<Self, String> {
-        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-        if snapshot == INVALID_HANDLE_VALUE {
-            return Err(io::Error::last_os_error().to_string());
-        }
-        let result = (|| {
-            let mut result = Self {
-                threads: Vec::new(),
-            };
-            let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
-            entry.dwSize = size_of::<THREADENTRY32>() as u32;
-            let mut found = unsafe { Thread32First(snapshot, &mut entry) };
-            while found != 0 {
-                if entry.th32OwnerProcessID == unsafe { GetCurrentProcessId() }
-                    && entry.th32ThreadID != unsafe { GetCurrentThreadId() }
-                    && !excluded_threads.contains(&entry.th32ThreadID)
-                {
-                    let handle = unsafe {
-                        OpenThread(
-                            THREAD_SUSPEND_RESUME
-                                | THREAD_GET_CONTEXT
-                                | THREAD_QUERY_LIMITED_INFORMATION
-                                | THREAD_SYNCHRONIZE,
-                            0,
-                            entry.th32ThreadID,
-                        )
-                    };
-                    if !handle.is_null() {
-                        result.threads.push(Thread {
-                            handle,
-                            suspended: false,
-                        });
-                    } else if unsafe { GetLastError() } != ERROR_INVALID_PARAMETER {
-                        return Err(io::Error::last_os_error().to_string());
-                    }
-                    // ERROR_INVALID_PARAMETER: the thread exited after the
-                    // snapshot, so it cannot be executing the patched range.
-                }
-                found = unsafe { Thread32Next(snapshot, &mut entry) };
+        let mut result = Self {
+            threads: Vec::new(),
+            excluded: engine::allocation::copy_vec(excluded_threads)
+                .map_err(|_| "thread exclusion allocation failed")?,
+            census: Vec::new(),
+            census_required: 0,
+            census_short: false,
+            census_refusal: None,
+        };
+        visit_threads(&result.excluded, |id| {
+            if let Some(handle) = open_thread(id)? {
+                result.threads.push(Thread {
+                    id,
+                    handle,
+                    suspended: false,
+                });
             }
-            if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
-                return Err(io::Error::last_os_error().to_string());
-            }
-            Ok(result)
-        })();
-        unsafe {
-            CloseHandle(snapshot);
-        }
-        result
+            Ok(())
+        })
+        .map_err(|code| format!("thread enumeration failed (Windows error {code})"))?;
+        Ok(result)
     }
 
     pub fn suspend(&mut self) -> Result<(), u32> {
-        for thread in &mut self.threads {
-            if unsafe { WaitForSingleObject(thread.handle, 0) } == 0 {
-                continue;
-            }
-            if unsafe { SuspendThread(thread.handle) } == u32::MAX {
-                return Err(unsafe { GetLastError() });
-            }
-            thread.suspended = true;
+        // Query sizing and prepare aligned caller storage immediately before
+        // acquiring any hold. A resize retry always resumes before preparing.
+        self.prepare_census()?;
+        self.suspend_with(
+            |handle| {
+                if unsafe { WaitForSingleObject(handle, 0) } == 0 {
+                    return Ok(false);
+                }
+                if unsafe { SuspendThread(handle) } == u32::MAX {
+                    let error = unsafe { GetLastError() };
+                    if unsafe { WaitForSingleObject(handle, 0) } == 0 {
+                        return Ok(false);
+                    }
+                    return Err(error);
+                }
+                Ok(true)
+            },
+            Self::discover,
+            |threads| {
+                threads.resume()?;
+                threads.prepare_census()
+            },
+        )
+    }
+
+    fn prepare_census(&mut self) -> Result<(), u32> {
+        if self.threads.iter().any(|thread| thread.suspended) {
+            self.census_refusal = Some("thread census resize requires resumed threads");
+            return Err(ERROR_RETRY);
         }
+        self.census_refusal = Some("thread census sizing failed");
+        let mut required = 0;
+        match query_census(&mut [], &mut required) {
+            Ok(_) | Err(ERROR_INSUFFICIENT_BUFFER) => {}
+            Err(code) => return Err(code),
+        }
+        let required = required.max(self.census_required) as usize;
+        let bytes = required
+            .checked_add(required / 2)
+            .filter(|bytes| *bytes <= u32::MAX as usize)
+            .ok_or(ERROR_BAD_LENGTH)?;
+        let words = bytes.div_ceil(size_of::<usize>());
+        let additional = words.saturating_sub(self.census.len());
+        engine::allocation::reserve_exact(&mut self.census, additional)
+            .map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
+        self.census.resize(words.max(self.census.len()), 0);
+        // Headroom for threads created before every in-process creator is held.
+        let headroom = self.threads.len() / 2 + 16;
+        let additional = (self.threads.len() + headroom).saturating_sub(self.threads.capacity());
+        engine::allocation::reserve_exact(&mut self.threads, additional)
+            .map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
+        self.census_short = false;
+        self.census_refusal = None;
         Ok(())
+    }
+
+    fn census_refusal(&self) -> Option<&'static str> {
+        self.census_refusal
+    }
+
+    fn suspend_with(
+        &mut self,
+        mut suspend: impl FnMut(HANDLE) -> Result<bool, u32>,
+        mut discover: impl FnMut(&mut Self) -> Result<bool, u32>,
+        mut resize: impl FnMut(&mut Self) -> Result<(), u32>,
+    ) -> Result<(), u32> {
+        // Exited newcomers can keep recycling prepared slots. Refuse churn
+        // after a live-sized number of rounds instead of holding threads forever.
+        for _ in 0..=self.threads.capacity() {
+            for thread in self.threads.iter_mut().filter(|thread| !thread.suspended) {
+                thread.suspended = suspend(thread.handle)?;
+            }
+            // A thread can be created between the first snapshot and suspension.
+            // Native CreateThreadWrapper@1420F3A50 is an in-process caller; once
+            // all such callers are held and enumeration adds nobody, they cannot
+            // create another thread during the write. No heap use while held.
+            match discover(self) {
+                Ok(false) => return Ok(()),
+                Ok(true) => {}
+                Err(ERROR_INSUFFICIENT_BUFFER) if self.census_short => {
+                    resize(self)?;
+                    self.census_refusal =
+                        Some("thread census buffer kept growing during suspension");
+                }
+                Err(code) => return Err(code),
+            }
+        }
+        self.census_refusal
+            .get_or_insert("thread census did not reach a stable set");
+        Err(ERROR_RETRY)
+    }
+
+    fn discover(&mut self) -> Result<bool, u32> {
+        // GetThreadContext synchronizes with suspension before the next census.
+        // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadcontext
+        self.contains_ip(&[])?;
+        let length = match query_census(&mut self.census, &mut self.census_required) {
+            Ok(length) => length,
+            Err(code) => {
+                self.census_short = code == ERROR_INSUFFICIENT_BUFFER;
+                self.census_refusal = Some(if self.census_short {
+                    "thread census buffer too small during suspension"
+                } else {
+                    "NtQuerySystemInformation thread census failed"
+                });
+                return Err(code);
+            }
+        };
+        self.census_refusal = None;
+        self.threads.retain(|thread| {
+            if unsafe { WaitForSingleObject(thread.handle, 0) } == 0 {
+                unsafe {
+                    CloseHandle(thread.handle);
+                }
+                false
+            } else {
+                true
+            }
+        });
+        let mut added = false;
+        let bytes =
+            unsafe { std::slice::from_raw_parts(self.census.as_ptr().cast::<u8>(), length) };
+        visit_census(
+            bytes,
+            unsafe { GetCurrentProcessId() },
+            unsafe { GetCurrentThreadId() },
+            &self.excluded,
+            |id| {
+                if self.threads.iter().any(|thread| {
+                    thread.id == id && unsafe { WaitForSingleObject(thread.handle, 0) } != 0
+                }) {
+                    return Ok(());
+                }
+                if self.threads.len() == self.threads.capacity() {
+                    // Never grow while threads are held: resume, grow and retry
+                    // through the bounded census resize path.
+                    self.census_short = true;
+                    self.census_refusal = Some("prepared thread storage insufficient");
+                    return Err(ERROR_INSUFFICIENT_BUFFER);
+                }
+                if let Some(handle) = open_thread(id)? {
+                    self.threads.push(Thread {
+                        id,
+                        handle,
+                        suspended: false,
+                    });
+                    added = true;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(added)
     }
 
     pub fn contains_ip(&self, ranges: &[Range<usize>]) -> Result<bool, u32> {
@@ -307,7 +875,11 @@ impl Threads {
             let mut context = AlignedContext(unsafe { std::mem::zeroed() });
             context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
             if unsafe { GetThreadContext(thread.handle, &mut context.0) } == 0 {
-                return Err(unsafe { GetLastError() });
+                let error = unsafe { GetLastError() };
+                if unsafe { WaitForSingleObject(thread.handle, 0) } == 0 {
+                    continue;
+                }
+                return Err(error);
             }
             if ranges
                 .iter()
@@ -319,16 +891,54 @@ impl Threads {
         Ok(false)
     }
 
+    // A detach deadline cannot release an unresolved suspension. Preserve the
+    // first OS error, but return only after every owned hold resumes or exits.
     pub fn resume(&mut self) -> Result<(), u32> {
-        let mut error = None;
-        for thread in self.threads.iter_mut().rev().filter(|t| t.suspended) {
-            if unsafe { ResumeThread(thread.handle) } == u32::MAX {
-                error = Some(unsafe { GetLastError() });
-            } else {
-                thread.suspended = false;
+        self.resume_with(
+            |handle| {
+                if unsafe { ResumeThread(handle) } == u32::MAX {
+                    Err(unsafe { GetLastError() })
+                } else {
+                    Ok(())
+                }
+            },
+            // Only a signaled owned handle proves thread exit.
+            |handle| unsafe { WaitForSingleObject(handle, 0) } == 0,
+            || unsafe { Sleep(1) },
+        )
+    }
+
+    fn resume_with(
+        &mut self,
+        mut resume: impl FnMut(HANDLE) -> Result<(), u32>,
+        mut exited: impl FnMut(HANDLE) -> bool,
+        mut retry: impl FnMut(),
+    ) -> Result<(), u32> {
+        let mut first_error = None;
+        while self.threads.iter().any(|thread| thread.suspended) {
+            for thread in self
+                .threads
+                .iter_mut()
+                .rev()
+                .filter(|thread| thread.suspended)
+            {
+                match resume(thread.handle) {
+                    Ok(()) => thread.suspended = false,
+                    Err(code) => {
+                        first_error.get_or_insert(code);
+                        if exited(thread.handle) {
+                            thread.suspended = false;
+                        }
+                    }
+                }
+            }
+            if self.threads.iter().any(|thread| thread.suspended) {
+                // Keep handles and publication storage until resume or exit;
+                // no allocation, formatting, lock or destruction while held.
+                retry();
             }
         }
-        error.map_or(Ok(()), Err)
+        first_error.map_or(Ok(()), Err)
     }
 }
 
@@ -342,6 +952,63 @@ impl Drop for Threads {
         }
     }
 }
+
+#[path = "hook/tap.rs"]
+mod tap;
+pub use tap::{Registers, Tap};
+
+#[cfg(test)]
+pub(crate) struct TestCode(*mut c_void);
+#[cfg(test)]
+impl TestCode {
+    pub(crate) fn new() -> Self {
+        let memory = unsafe {
+            VirtualAlloc(
+                ptr::null(),
+                4096,
+                MEM_RESERVE | MEM_COMMIT,
+                PAGE_EXECUTE_READWRITE,
+            )
+        };
+        assert!(!memory.is_null());
+        Self(memory)
+    }
+    // Five NOPs give retour a frameless, position-independent relocation;
+    // the remaining indirect jump preserves every native argument and return.
+    pub(crate) fn stub(&self, offset: usize, target: usize) -> (usize, [u8; 16]) {
+        assert!(offset + 19 <= 4096);
+        let mut code = [0x90; 19];
+        code[5..11].copy_from_slice(&[0xff, 0x25, 0, 0, 0, 0]);
+        code[11..].copy_from_slice(&(target as u64).to_le_bytes());
+        let address = self.0 as usize + offset;
+        unsafe {
+            ptr::copy_nonoverlapping(code.as_ptr(), address as *mut u8, code.len());
+        }
+        assert_ne!(
+            unsafe {
+                FlushInstructionCache(GetCurrentProcess(), address as *const c_void, code.len())
+            },
+            0
+        );
+        (address, code[..16].try_into().unwrap())
+    }
+}
+#[cfg(test)]
+impl Drop for TestCode {
+    fn drop(&mut self) {
+        unsafe {
+            VirtualFree(self.0, 0, MEM_RELEASE);
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "hook/tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "hook/indirect_call_tests.rs"]
+mod indirect_call_tests;
 
 #[cfg(test)]
 mod call_tap_tests {
@@ -363,6 +1030,7 @@ mod call_tap_tests {
     }
     #[test]
     fn call_patch_returns_to_native_continuation_and_restores_exactly() {
+        let _guard = FAMILY_TEST.lock().unwrap();
         let site = call_tap_test_call_site as *const () as usize;
         let sentinel: [u8; 16] = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
             .try_into()
@@ -379,5 +1047,279 @@ mod call_tap_tests {
             unsafe { std::slice::from_raw_parts(site as *const u8, 16) },
             sentinel
         );
+    }
+
+    #[test]
+    fn counted_call_restore_waits_for_the_native_return() {
+        static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+        let _guard = FAMILY_TEST.lock().unwrap();
+        let site = call_tap_test_call_site as *const () as usize;
+        let callback = tapped as *const () as usize;
+        let sentinel = unsafe { std::slice::from_raw_parts(site as *const u8, 16) }
+            .try_into()
+            .unwrap();
+        assert!(
+            unsafe {
+                Hook::new_call_with_safety(
+                    site,
+                    callback,
+                    sentinel,
+                    TapSafety {
+                        in_flight: &IN_FLIGHT,
+                        stub: site..site + 1,
+                    },
+                )
+            }
+            .is_err()
+        );
+        let mut hook = unsafe {
+            Hook::new_call_with_safety(
+                site,
+                callback,
+                sentinel,
+                TapSafety {
+                    in_flight: &IN_FLIGHT,
+                    stub: callback..callback + 1,
+                },
+            )
+        }
+        .unwrap();
+        assert!(hook.set_enabled(true).unwrap());
+        IN_FLIGHT.store(1, Ordering::SeqCst);
+        assert!(!hook.set_enabled(false).unwrap());
+        assert!(hook.is_enabled());
+        IN_FLIGHT.store(0, Ordering::SeqCst);
+        assert!(hook.set_enabled(false).unwrap());
+        assert_eq!(unsafe { call_tap_test_caller(41) }, 42);
+    }
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_hook_refuses_callback_outside_its_stub_before_reading_native_code() {
+        static FLIGHTS: AtomicUsize = AtomicUsize::new(0);
+        for stub in [10..10, 10..11, 20..30] {
+            let safety = TapSafety {
+                in_flight: &FLIGHTS,
+                stub,
+            };
+            assert!(unsafe { Hook::new_with_safety(0, 15, [0; 16], safety) }.is_err());
+        }
+    }
+
+    #[test]
+    fn suspension_reenumerates_and_holds_newcomers_before_declaring_a_stable_set() {
+        let mut threads = ManuallyDrop::new(Threads {
+            threads: vec![Thread {
+                id: 1,
+                handle: 1 as HANDLE,
+                suspended: false,
+            }],
+            excluded: Vec::new(),
+            census: Vec::new(),
+            census_required: 0,
+            census_short: false,
+            census_refusal: None,
+        });
+        threads.threads.reserve(2);
+        let mut rounds = 0;
+        let mut held = Vec::new();
+        let result = threads.suspend_with(
+            |handle| {
+                held.push(handle as usize);
+                Ok(true)
+            },
+            |threads| {
+                assert!(threads.threads.iter().all(|thread| thread.suspended));
+                rounds += 1;
+                if rounds <= 2 {
+                    threads.threads.push(Thread {
+                        id: rounds + 1,
+                        handle: (rounds + 1) as usize as HANDLE,
+                        suspended: false,
+                    });
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            },
+            |_| panic!("stable census must not resize"),
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(rounds, 3);
+        assert_eq!(held, [1, 2, 3]);
+        // Fake handles must never reach OS cleanup.
+        threads.threads.clear();
+        unsafe {
+            ManuallyDrop::drop(&mut threads);
+        }
+    }
+
+    #[test]
+    fn suspension_refuses_repeated_newcomer_churn_within_prepared_capacity() {
+        let mut threads = ManuallyDrop::new(Threads {
+            threads: vec![Thread {
+                id: 1,
+                handle: 1 as HANDLE,
+                suspended: false,
+            }],
+            excluded: Vec::new(),
+            census: Vec::new(),
+            census_required: 0,
+            census_short: false,
+            census_refusal: None,
+        });
+        let limit = threads.threads.capacity() + 1;
+        let mut rounds = 0;
+        let result = threads.suspend_with(
+            |_| Ok(true),
+            |threads| {
+                rounds += 1;
+                assert!(rounds <= limit, "thread census did not refuse churn");
+                // The held thread exited and a newcomer reuses its slot.
+                threads.threads[0] = Thread {
+                    id: rounds as u32 + 1,
+                    handle: (rounds + 1) as HANDLE,
+                    suspended: false,
+                };
+                Ok(true)
+            },
+            |_| panic!("newcomer churn must not resize census storage"),
+        );
+        assert_eq!(result, Err(ERROR_RETRY));
+        assert_eq!(rounds, limit);
+        threads.threads.clear();
+        unsafe {
+            ManuallyDrop::drop(&mut threads);
+        }
+    }
+
+    #[test]
+    fn census_resize_resumes_every_hold_and_retries_within_the_existing_round_bound() {
+        for keeps_growing in [false, true] {
+            let mut threads = ManuallyDrop::new(Threads {
+                threads: vec![Thread {
+                    id: 1,
+                    handle: 1 as HANDLE,
+                    suspended: false,
+                }],
+                excluded: Vec::new(),
+                census: Vec::new(),
+                census_required: 0,
+                census_short: false,
+                census_refusal: None,
+            });
+            let limit = threads.threads.capacity() + 1;
+            let mut rounds = 0;
+            let mut resizes = 0;
+            let result = threads.suspend_with(
+                |_| Ok(true),
+                |threads| {
+                    assert!(threads.threads.iter().all(|thread| thread.suspended));
+                    rounds += 1;
+                    if rounds == 1 || keeps_growing {
+                        threads.census_short = true;
+                        Err(ERROR_INSUFFICIENT_BUFFER)
+                    } else {
+                        Ok(false)
+                    }
+                },
+                |threads| {
+                    threads.resume_with(|_| Ok(()), |_| false, || unreachable!())?;
+                    assert!(threads.threads.iter().all(|thread| !thread.suspended));
+                    threads.census.resize(threads.census.len() + 1, 0);
+                    threads.census_short = false;
+                    resizes += 1;
+                    Ok(())
+                },
+            );
+            if keeps_growing {
+                assert_eq!(result, Err(ERROR_RETRY));
+                assert_eq!(rounds, limit);
+                assert_eq!(resizes, limit);
+                assert_eq!(
+                    threads.census_refusal(),
+                    Some("thread census buffer kept growing during suspension")
+                );
+            } else {
+                assert_eq!(result, Ok(()));
+                assert_eq!(rounds, 2);
+                assert_eq!(resizes, 1);
+            }
+            threads
+                .resume_with(|_| Ok(()), |_| false, || unreachable!())
+                .unwrap();
+            threads.threads.clear();
+            unsafe {
+                ManuallyDrop::drop(&mut threads);
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_system_census_reads_only_this_process_and_refuses_short_thread_records() {
+        let mut bytes = vec![0_u8; 0x100 + 0x100 + 3 * 0x50];
+        bytes[..4].copy_from_slice(&0x100_u32.to_le_bytes());
+        bytes[0x50..0x58].copy_from_slice(&90_u64.to_le_bytes());
+        bytes[0x104..0x108].copy_from_slice(&3_u32.to_le_bytes());
+        bytes[0x150..0x158].copy_from_slice(&91_u64.to_le_bytes());
+        for (index, id) in [10_u64, 11, 12].into_iter().enumerate() {
+            let offset = 0x200 + index * 0x50 + 0x30;
+            bytes[offset..offset + 8].copy_from_slice(&id.to_le_bytes());
+        }
+        let mut ids = Vec::new();
+        visit_census(&bytes, 91, 10, &[12], |id| {
+            ids.push(id);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(ids, [11]);
+        assert_eq!(
+            visit_census(&bytes[..bytes.len() - 1], 91, 10, &[], |_| Ok(())),
+            Err(ERROR_BAD_LENGTH)
+        );
+    }
+
+    #[test]
+    fn resume_recovery_keeps_failed_holds_and_skips_unacquired_or_resolved_ones() {
+        let mut threads = ManuallyDrop::new(Threads {
+            threads: (1..=3)
+                .map(|handle| Thread {
+                    id: handle as u32,
+                    handle: handle as HANDLE,
+                    suspended: handle != 2,
+                })
+                .collect(),
+            excluded: Vec::new(),
+            census: Vec::new(),
+            census_required: 0,
+            census_short: false,
+            census_refusal: None,
+        });
+        let mut calls = [0; 3];
+        let mut waits = 0;
+        let result = threads.resume_with(
+            |handle| {
+                let index = handle as usize - 1;
+                calls[index] += 1;
+                if index == 2 && calls[index] == 1 {
+                    Err(5)
+                } else {
+                    Ok(())
+                }
+            },
+            |_| false,
+            || waits += 1,
+        );
+        assert_eq!(result, Err(5));
+        assert_eq!(calls, [1, 0, 2]);
+        assert_eq!(waits, 1);
+        assert!(threads.threads.iter().all(|thread| !thread.suspended));
+        // Synthetic handles must never reach the OS cleanup.
+        threads.threads.clear();
+        unsafe { ManuallyDrop::drop(&mut threads) };
     }
 }

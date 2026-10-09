@@ -1,18 +1,37 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRaceReadHour, countryRaceSegments, countryRaceTooltipTags, heldStackSegment, partColours } from './countryRace.ts';
-import { barExtent, stepRace } from './race.ts';
+import { countryRaceEnds, countryRaceHours, countryRaceItems, countryRacePickTag, countryRaceReadHour, countryRaceSegments, countryRaceTooltipTags, heldStackSegment, partColours } from './countryRace.ts';
+import { barExtent, selectRaceRow, stepRace } from './race.ts';
 import { linesAt, linesTooltip } from './lines.ts';
 import { buildStack, stackedSegments } from '../stack.ts';
 import { lineLabelHours } from '../series.ts';
 import { fitTooltip } from '../tooltip.ts';
 
-test('sampled race actions use each value read and never invent one for a missing sample', () => {
+test('drill selection accepts row clicks, Enter and Space and preserves the selected hour', () => {
+  const calls: [string | null, number][] = [];
+  const select = (tag: string) => calls.push([tag, 123]);
+  for (const trigger of ['click', 'Enter', ' ']) assert.equal(selectRaceRow('opaque tag', trigger, select), true);
+  assert.equal(selectRaceRow(null, 'click', select), false);
+  assert.equal(selectRaceRow('opaque tag', 'ArrowDown', select), false);
+  assert.equal(selectRaceRow('opaque tag', 'Enter'), false);
+  assert.deepEqual(calls, [['opaque tag', 123], ['opaque tag', 123], ['opaque tag', 123]]);
+  const lines = [{ tag: 'first country', runs: [] }, { tag: 'second country', runs: [] }];
+  assert.equal(countryRacePickTag('lines', lines), null);
+  assert.equal(countryRacePickTag('lines', lines.slice(0, 1)), 'first country');
+  assert.equal(countryRacePickTag('mix', lines, 'mix country'), 'mix country');
+  assert.equal(countryRacePickTag('mix', lines), null);
+});
+
+test('sampled race looks and Jump use each value read and never invent a missing sample', () => {
   const hours = new Map([['mod a|', 119], ['mod b|', 143]]);
   assert.equal(countryRaceReadHour('mod a|', 150, hours), 119);
   assert.equal(countryRaceReadHour('mod b|', 150, hours), 143);
   assert.equal(countryRaceReadHour('unknown', 150, hours), null);
   assert.equal(countryRaceReadHour('mod a|', 150), 150);
+  const readHour = (_tag: string | null, hour: number) => hour < 119 ? null : hour < 143 ? 119 : 143;
+  assert.equal(countryRaceReadHour('mod a|', 118, undefined, readHour), null);
+  assert.equal(countryRaceReadHour('mod a|', 130, undefined, readHour), 119);
+  assert.equal(countryRaceReadHour('mod a|', 150, undefined, readHour), 143);
 });
 
 test('country races keep amounts exact while rows move and type colours follow content order', () => {
@@ -128,11 +147,18 @@ test('country secondary measures keep their own endpoints and opaque identities'
 test('line tooltips use the hovered hour for country names and flags, omitting missing countries', () => {
   const lines = [{ tag: 'a', runs: [{ firstHour: 1, lastHour: 10, value: 2 }] }, { tag: 'b', runs: [{ firstHour: 1, lastHour: 4, value: 3 }] }];
   const labelAt = (hour: number) => (tag: string) => ({ name: `${tag} at ${hour}`, ...(hour < 5 ? { flag: 'early-flag' } : {}) });
-  assert.deepEqual(linesTooltip(4, lines, labelAt, () => 'country', 'Day', 'Count', String).rows.map(row => [row.label, row.icon]),
+  assert.deepEqual(linesTooltip(4, lines, labelAt, () => 'country', 'Day', 'Count', String).rows.map(row => [row.label, row.countryFlag?.flag]),
     [['b at 4', 'early-flag'], ['a at 4', 'early-flag']]);
   assert.deepEqual(linesAt(8, lines), ['a']);
   assert.deepEqual(linesTooltip(8, lines, labelAt, () => 'country', 'Day', 'Count', String).rows.map(row => row.label), ['a at 8']);
   assert.deepEqual(linesTooltip(12, lines, labelAt, () => 'country', 'Day', 'Count', String).rows.map(row => row.label), ['Not recorded']);
+  for (const state of [{ flagPending: true }, { flagReason: 'Content sprite absent', flagPending: false },
+    { flagReason: 'Dated request failed', flagPending: false }, { flag: 'decoded-at-8', flagPending: false }]) {
+    const label = { name: 'a at 8', ...state };
+    const tip = linesTooltip(8, lines, () => () => label, () => 'country', 'Day', 'Count', String);
+    assert.deepEqual(tip.rows[0].countryFlag, label, 'native country presence and the same dated read state survive without a URL');
+    assert.equal(tip.rows[0].icon, undefined);
+  }
 });
 
 test('shared fitting keeps supplied totals and reads the full compacted tooltip aloud', () => {
@@ -164,4 +190,15 @@ test('related hover countries are deduplicated at the hovered hour for 5000 coun
   const tags = Array.from({ length: 5000 }, (_, index) => `Mod country ${index}`);
   assert.deepEqual(countryRaceTooltipTags(102, tags, () => tags), tags);
   assert.deepEqual(countryRaceTooltipTags(102, []), []);
+});
+
+test('shared country races accept dated faction looks without changing country defaults', () => {
+  const faction = { name: (_tag: string, hour?: number) => `Faction at ${hour} · last members before it dissolved on date`,
+    color: () => 'campaign faction colour' };
+  const looks = faction;
+  assert.match(looks.name('opaque faction', 7), /Faction at 7 · last members/);
+  assert.equal(countryRaceItems([{ tag: 'opaque faction', value: 4, label: '4', stretch: 1 }], new Map(), looks.color, 'unknown')[0].segments[0].color,
+    'campaign faction colour');
+  assert.match(countryRaceEnds([{ tag: 'opaque faction', runs: [{ firstHour: 1, lastHour: 7, value: 4 }] }],
+    1, 10, null, looks.name, looks.color, String)[0].text, /Faction at 7 · last members/);
 });

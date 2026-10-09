@@ -5,7 +5,7 @@ import type { OptionField } from '../../dashboard/options';
 export const OPTIONS: readonly OptionField[] = [
   ...LINE_TIME_OPTIONS,
   { key: 'measure', section: 'options', label: 'Measure', kind: 'choice', default: 'banked',
-    choices: [{ value: 'banked', label: 'Banked' }, { value: 'change', label: 'Change per day' }] },
+    choices: [{ value: 'banked', label: 'Banked' }, { value: 'gain', label: 'Daily gain' }, { value: 'change', label: 'Change per day' }] },
   { key: 'army', section: 'options', label: 'Army', kind: 'toggle', default: true },
   { key: 'navy', section: 'options', label: 'Navy', kind: 'toggle', default: true },
   { key: 'air', section: 'options', label: 'Air', kind: 'toggle', default: true },
@@ -15,9 +15,9 @@ export const OPTIONS: readonly OptionField[] = [
 
 export const definition = {
   kind: 'experience', version: 1, title: 'Experience', icon: 'sparkle',
-  description: 'Army, navy and air experience over time, banked or as the net change per day.',
+  description: 'Army, navy and air experience over time: banked, daily gain or net change per day.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 8, h: 10 },
-  countries: { max: 16 },
+  countries: { max: Number.MAX_SAFE_INTEGER },
   options: OPTIONS,
 } as const satisfies WidgetMeta;

@@ -164,6 +164,7 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         cland_combat::Source {
             pointer: 0,
             id: 62,
+            sides: [0; 2],
             attackers: engine::cpdx_array::Array { data: 0, count: 1 },
             defenders: engine::cpdx_array::Array { data: 0, count: 0 },
             provinces: engine::cpdx_array::Array { data: 0, count: 0 },

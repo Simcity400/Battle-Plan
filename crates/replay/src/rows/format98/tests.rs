@@ -890,3 +890,42 @@ fn format98_scope_seeds_and_supply_vehicles_round_trip_at_5000_countries() {
         input.finish().unwrap();
     }
 }
+
+#[test]
+fn state_continent_append_preserves_format98_prefix_and_distinct_failures() {
+    let row = StateRow {
+        id: 5000,
+        owner: 11,
+        controller: 22,
+        continent: Recorded::Value(Some(991)),
+        ..Default::default()
+    };
+    let mut bytes = Vec::new();
+    row.encode_fields(&mut bytes).unwrap();
+    let mut prefix = Decoder::new(&bytes);
+    for kind in &StateRow::SCHEMA[..6] {
+        kind.decode(&mut prefix).unwrap();
+    }
+    let end = bytes.len() - prefix.remaining();
+    let mut input = Decoder::new(&bytes[..end]);
+    input.format = 98;
+    input.recorded_fields = 6;
+    let old = StateRow::decode_fields(row.key(), &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(old.owner, 11);
+    assert_eq!(old.controller, 22);
+    assert_eq!(old.continent, Recorded::NotRecorded);
+    assert_eq!(FormatVersion::read(98).unwrap().fields(TableId::States), 6);
+    assert_eq!(FormatVersion::read(99).unwrap().fields(TableId::States), 6);
+    for continent in [None, Some(0), Some(991), Some(u32::MAX)] {
+        let new = StateRow {
+            continent: Recorded::Value(continent),
+            ..row.clone()
+        };
+        let mut bytes = Vec::new();
+        encode_row(&new, 0, &mut bytes).unwrap();
+        let mut input = Decoder::new(&bytes);
+        assert_eq!(decode_row::<StateRow>(0, &mut input).unwrap(), new);
+        input.finish().unwrap();
+    }
+}

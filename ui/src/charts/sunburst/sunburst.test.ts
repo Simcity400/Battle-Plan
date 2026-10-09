@@ -1,11 +1,453 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { approachColour, arcTargets, findNode, foldTree, foldView, groupTree, keyRings, keyedSlice, labelFits, pathTo, shareText, sliceAt, listed, sliceColours, sliceTooltip, sunGeometry, sunburstSummary, sweepOf, walk } from './layout.ts';
-import type { SunburstItem } from './layout.ts';
+import { createElement } from 'react';
+import type { ReactElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
+import { amountText, approachColour, arcTargets, findNode, foldTree, foldView, groupTree, drawable, hasCorrections, keyRings, keyedSlice, labelFits, notMeasured, pathTo, shareText, spokenAmount, sliceAt, listed, sliceColours, sliceTooltip, sunGeometry, sunburstSummary, sweepOf, walk } from './layout.ts';
+import type { SunburstItem, SunburstNode } from './layout.ts';
 
 const key = (id: string) => ({ id, label: id.toUpperCase() });
 const item = (path: string[], value: number | null, extra: Partial<SunburstItem> = {}): SunburstItem => ({ path: path.map(key), value, ...extra });
 const ROOT = { id: 'all', label: 'All' };
+
+test('an unfolded 5000-country legend mounts only its viewport and formats no full tooltips in render', async () => {
+  let tooltips = 0;
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'sunburst-window-theme', enforce: 'pre', transform(_source, id) {
+      if (id.replaceAll('\\', '/').endsWith('/charts/useChartTokens.ts')) return "export const useChartTokens = () => ({ categories: ['#123'], text: '#fff', surface: '#000', fontSize: { small: 10, body: 12 } });";
+    } }] });
+  try {
+    const { default: Sunburst } = await vite.ssrLoadModule('/ui/src/charts/sunburst/Sunburst.tsx') as typeof import('./Sunburst.tsx');
+    const html = renderToStaticMarkup(createElement(Sunburst, {
+      label: 'Countries', root: ROOT, active: true, fold: false,
+      items: Array.from({ length: 5000 }, (_, index) => ({
+        path: [{ ...key(`country-${index}`), countryFlag: { flag: `country-${index}.png` } }],
+        value: index + 1, exact: BigInt(index + 1),
+      })),
+      text: { format: (_value, exact) => String(exact), unit: 'units', valueLabel: 'Amount' },
+      tooltip: () => { tooltips++; return [{ title: 'Full country tooltip', rows: [] }]; },
+      settings: { growth: 'share', labels: false, legend: true, breadcrumb: false, dimming: true },
+    }));
+    assert.equal(tooltips, 0, 'full tooltips are built only on hover/focus');
+    const mounted = (html.match(/class="sunburst-name"/g) ?? []).length;
+    assert.ok(mounted > 0 && mounted < 100, String(mounted));
+    assert.equal((html.match(/class="sunburst-icon"/g) ?? []).length, mounted);
+    assert.match(html, /aria-setsize="5000"/);
+    assert.match(html, /COUNTRY-0: 1 units/, 'the complete spoken inventory is retained');
+  } finally { await vite.close(); }
+});
+
+test('a focused legend row formats its full tooltip lazily and refreshes at the shown value', async () => {
+  const state = { tip: null as { id: string; x: number; y: number; row: HTMLElement } | null,
+    effects: [] as (() => void)[], rows: undefined as { items: { item: SunburstNode }[];
+      children: (row: { item: SunburstNode }) => ReactElement } | undefined, shown: [] as unknown[] };
+  const host = globalThis as typeof globalThis & { __sunburstTip?: typeof state };
+  host.__sunburstTip = state;
+  let formatted = 0;
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'sunburst-tip-fixture', enforce: 'pre', transform(source, id) {
+      const path = id.replaceAll('\\', '/');
+      if (path.endsWith('/charts/useChartTokens.ts')) return "export const useChartTokens = () => ({ categories: ['#123'], text: '#fff', surface: '#000', fontSize: { body: 12 } });";
+      if (path.endsWith('/charts/WindowedRows.tsx')) return 'export default props => { globalThis.__sunburstTip.rows = props; return null; };';
+      if (path.endsWith('/charts/tooltip.ts')) return `export const tooltipStore = { get: () => null };
+        export const hideTooltip = () => {}; export const fitTooltip = content => content;
+        export const tooltipText = content => content.title;
+        export const showTooltip = (_owner, content) => globalThis.__sunburstTip.shown.push(content);`;
+      if (path.endsWith('/sunburst/Sunburst.tsx')) return source
+        .replace(/const \[legendTip, setLegendTip\] = .*;/,
+          'const [legendTip, setLegendTip] = [globalThis.__sunburstTip.tip, tip => { globalThis.__sunburstTip.tip = tip; }];')
+        .replace(/\buseEffect\(/g, '(effect => globalThis.__sunburstTip.effects.push(effect))(');
+    } }] });
+  try {
+    const { default: Sunburst } = await vite.ssrLoadModule('/ui/src/charts/sunburst/Sunburst.tsx');
+    const render = (value: number) => {
+      state.effects = [];
+      renderToStaticMarkup(createElement(Sunburst, { label: 'Exact amounts', root: ROOT, active: true,
+        fold: false, items: [item(['correction'], value, { exact: BigInt(value) })],
+        text: { format: (_value: number, exact: bigint | null) => String(exact), unit: 'units', valueLabel: 'Amount' },
+        tooltip: (node: SunburstNode) => { formatted++; return [{ title: node.label,
+          rows: [{ label: 'Exact amount', value: String(node.exact) }], note: 'Recorded correction reason' }]; },
+        settings: { growth: 'share', labels: false, legend: true, breadcrumb: false, dimming: true } }));
+    };
+    render(-1);
+    assert.equal(formatted, 0);
+    const row = state.rows!.children({ item: state.rows!.items[0].item });
+    const entry = (row.props as { children: ReactElement<{ onFocus: (event: { currentTarget: HTMLElement }) => void }> }).children;
+    entry.props.onFocus({ currentTarget: { getBoundingClientRect: () => ({ left: 5, bottom: 10 }) } as unknown as HTMLElement });
+    render(-2);
+    const effect = state.effects.find(effect => String(effect).includes('shownTip.current'));
+    assert.ok(effect);
+    effect();
+    assert.equal(formatted, 1);
+    assert.deepEqual(state.shown, [[{ title: 'CORRECTION', rows: [{ label: 'Exact amount', value: '-2' }], note: 'Recorded correction reason' }]]);
+  } finally { await vite.close(); delete host.__sunburstTip; }
+});
+
+test('signed rows stay exact while only positive amounts receive area', () => {
+  const root = groupTree([
+    item(['positive'], 10, { exact: 10n }),
+    item(['correction'], -20, { exact: -20n }),
+  ], ROOT);
+  const positive = root.children.find(node => node.key === 'positive')!;
+  const correction = root.children.find(node => node.key === 'correction')!;
+  assert.equal(root.exact, -10n);
+  assert.equal(listed(correction), true);
+  for (const growth of ['share', 'fill'] as const) {
+    const arcs = arcTargets(root, root, growth);
+    assert.equal(arcs.get(correction.id)?.shown, false);
+    assert.equal(arcs.get(positive.id)?.shown, true);
+    assert.equal(arcs.get(positive.id)?.a1, Math.PI * 2);
+  }
+  const text = { format: (_value: number, exact: bigint | null) => String(exact), unit: 'units', valueLabel: 'Amount' };
+  assert.match(sunburstSummary(root, text), /CORRECTION: -20 units/);
+  assert.equal(sliceTooltip(correction, root, text)[0].rows[0].value, '-20 units');
+  assert.equal(sliceTooltip(positive, root, text)[0].rows.length, 1);
+  const cancelled = groupTree([
+    item(['group', 'positive'], 10, { exact: 10n }),
+    item(['group', 'correction'], -10, { exact: -10n }),
+  ], ROOT);
+  const group = cancelled.children[0];
+  assert.equal(group.exact, 0n);
+  assert.equal(listed(group), true);
+  const zoomed = arcTargets(cancelled, group, 'share');
+  assert.equal(zoomed.get(group.children.find(node => node.key === 'positive')!.id)?.shown, true);
+  assert.equal(zoomed.get(group.children.find(node => node.key === 'correction')!.id)?.shown, false);
+});
+
+test('nested corrections suppress net shares and Fill through positive groups and Other', () => {
+  const parts = [
+    item(['source', 'group', 'positive'], 20, { exact: 20n, final: 40 }),
+    item(['source', 'group', 'correction'], -10, { exact: -10n, final: 10 }),
+  ];
+  const root = groupTree(parts, ROOT);
+  const positive = root.children[0].children[0].children.find(node => node.key === 'positive')!;
+  const text = { format: (_value: number, exact: bigint | null) => String(exact), unit: 'units', valueLabel: 'Amount' };
+  assert.equal(root.value, 10);
+  assert.equal(hasCorrections(root), true);
+  assert.equal(sweepOf(root, 'fill'), Math.PI * 2);
+  assert.deepEqual(sliceTooltip(positive, root, text)[0].rows.map(row => row.label), ['Amount']);
+  assert.doesNotMatch(sunburstSummary(root, text), /%/);
+  const future = groupTree([
+    item(['source', 'group', 'positive'], 20, { exact: 20n, final: 40 }),
+    item(['source', 'group', 'correction'], null, { present: false, final: -10 }),
+  ], ROOT);
+  assert.equal(future.value, 20);
+  assert.equal(hasCorrections(future), true);
+  assert.equal(sweepOf(future, 'fill'), Math.PI * 2);
+  const collapsedFuture = groupTree([
+    item(['source', 'group', 'positive'], 20, { exact: 20n, final: 40 }),
+    item(['source', 'group', 'correction'], null, { present: false, final: -10 }),
+  ], ROOT, [true, false, false], { value: 20, exact: 20n, final: 30 });
+  assert.equal(hasCorrections(collapsedFuture), true);
+  assert.equal(hasCorrections(collapsedFuture.children[0]), true);
+  assert.equal(sweepOf(collapsedFuture, 'fill'), Math.PI * 2);
+  assert.deepEqual(sliceTooltip(collapsedFuture.children[0], collapsedFuture, text)[0].rows.map(row => row.label), ['Amount']);
+  const folded = foldTree(groupTree([
+    item(['large'], 100, { exact: 100n }),
+    ...parts,
+    item(['second', 'positive'], 20, { exact: 20n, final: 40 }),
+    item(['second', 'correction'], -10, { exact: -10n, final: 10 }),
+  ], ROOT), 2);
+  const other = folded.children.find(node => node.other)!;
+  assert.equal(other.value, 20);
+  assert.equal(hasCorrections(other), true);
+  assert.equal(sweepOf(other, 'fill'), Math.PI * 2);
+});
+
+test('an incomplete full total keeps exact known geometry without percentage claims', () => {
+  const root = groupTree([item(['known'], 30, { exact: 30n, final: 60, finalUnknown: true, unknown: { unread: 2 }, note: 'Two native amounts were not recorded.' }),
+    item(['other'], 10, { exact: 10n, final: 20, finalUnknown: true })], ROOT);
+  const known = root.children.find(node => node.key === 'known')!;
+  const text = { format: (_value: number, exact: bigint | null) => String(exact), unit: 'units', valueLabel: 'Amount' };
+  const partial = { ...text, shares: false };
+  assert.equal(root.valueUnknown, false);
+  assert.equal(root.finalUnknown, true);
+  assert.equal(amountText(root, partial), '40');
+  for (const growth of ['share', 'fill'] as const) {
+    const arcs = arcTargets(root, root, growth);
+    assert.equal(arcs.get(known.id)?.shown, true);
+    assert.equal(arcs.get(known.id)?.a1, Math.PI * 1.5);
+  }
+  assert.deepEqual(sliceTooltip(known, root, partial)[0].rows.map(row => [row.label, row.value]),
+    [['Amount', '30 units'], ['Not counted', '2'], ['unread', '2']]);
+  assert.equal(sliceTooltip(known, root, partial)[0].note, 'Two native amounts were not recorded.');
+  assert.equal(spokenAmount(known, root, partial), '30 units, 2 not counted');
+  assert.equal(sunburstSummary(root, partial), 'All: 40 units, 2 not counted; KNOWN: 30 units, 2 not counted; OTHER: 10 units');
+  assert.ok(sliceTooltip(known, root, text)[0].rows.some(row => row.label === 'Of All' && row.value === '75%'));
+  assert.match(spokenAmount(known, root, text), /75%/);
+  assert.match(sunburstSummary(root, text), /75%/);
+});
+
+test('zooming into a zero-net group closes sibling subtrees and keeps ancestor motion', () => {
+  const root = groupTree([
+    item(['a', 'positive'], 10, { exact: 10n }),
+    item(['a', 'correction'], -10, { exact: -10n }),
+    item(['b', 'leaf'], 10, { exact: 10n }),
+  ], ROOT);
+  const a = root.children.find(node => node.key === 'a')!;
+  const b = root.children.find(node => node.key === 'b')!;
+  for (const growth of ['share', 'fill'] as const) {
+    const targets = arcTargets(root, a, growth);
+    assert.equal(targets.get(a.children.find(node => node.key === 'positive')!.id)!.shown, true);
+    for (const outside of walk(b)) {
+      const target = targets.get(outside.id)!;
+      assert.equal(target.shown, false);
+      assert.equal(target.a1, target.a0);
+    }
+    assert.deepEqual(targets.get(root.id), { a0: 0, a1: Math.PI * 2, ring: -1, shown: false });
+  }
+});
+
+test('exact signed rows and unavailable country flags keep their legend presentation', async () => {
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'sunburst-theme', enforce: 'pre', transform: (_source, id) =>
+      id.replaceAll('\\', '/').endsWith('/charts/useChartTokens.ts')
+        ? "export const useChartTokens = () => ({ categories: ['#123'], text: '#fff', surface: '#000', fontSize: { small: 10, body: 12 } });" : undefined }] });
+  try {
+    const { default: Sunburst } = await vite.ssrLoadModule('/ui/src/charts/sunburst/Sunburst.tsx') as typeof import('./Sunburst.tsx');
+    const render = (positive: bigint, correction: bigint, levels?: readonly boolean[],
+      extra: SunburstItem[] = [item(['unknown'], null, { unknownValue: true }), item(['unmeasured'], null)]) => renderToStaticMarkup(createElement(Sunburst, {
+      label: 'Signed amounts', root: ROOT, active: true, levels,
+      items: [item(['group', 'positive'], Number(positive), { exact: positive }), item(['group', 'correction'], Number(correction), { exact: correction }), ...extra],
+      text: { format: (_value: number, exact: bigint | null) => String(exact), unit: 'units', valueLabel: 'Amount' },
+      settings: { growth: 'share', labels: true, legend: true, breadcrumb: true, dimming: true },
+    }));
+    const partial = (shares?: boolean) => renderToStaticMarkup(createElement(Sunburst, {
+      label: 'Known subtotal', root: ROOT, active: true, fold: false,
+      items: [item(['known'], 30, { exact: 30n, final: 60, finalUnknown: true, unknown: { unread: 2 }, note: 'Two native amounts were not recorded.' }),
+        item(['other'], 10, { exact: 10n, final: 20, finalUnknown: true })],
+      text: { format: (_value: number, exact: bigint | null) => String(exact), unit: 'units', valueLabel: 'Amount', shares },
+      settings: { growth: 'fill', labels: true, legend: true, breadcrumb: true, dimming: true },
+    }));
+    const subtotal = partial(false);
+    assert.match(subtotal, /<b>30<sup aria-hidden="true">\+\?<\/sup><\/b><small><\/small>/);
+    assert.match(subtotal, /aria-label="KNOWN. 30 units"/);
+    assert.match(subtotal, /All: 40 units, 2 not counted; KNOWN: 30 units, 2 not counted; OTHER: 10 units/);
+    assert.doesNotMatch(subtotal, /%|Of All|Not known|Not measured/);
+    assert.match(partial(), /<small>75%<\/small>/);
+    assert.match(partial(true), /<small>75%<\/small>/);
+    const flags = (loaded: boolean) => renderToStaticMarkup(createElement(Sunburst, {
+      label: 'Countries', root: ROOT, active: true, fold: false,
+      items: [{ path: [{ id: 'pending', label: 'Pending country', countryFlag: { flagPending: true } }], value: 2, exact: 2n },
+        { path: [{ id: 'failed', label: 'Failed country', countryFlag: { flagReason: 'Dated read failed' } }], value: -1, exact: -1n },
+        { path: [{ id: 'loaded', label: 'Loaded country', countryFlag: loaded ? { flag: 'dated-flag.png' } : {} }], value: 0, exact: 0n, unknown: { source: 1 } },
+        { path: [{ id: 'rest', label: 'Rest of world' }], value: 1, exact: 1n }],
+      text: { format: (_value: number, exact: bigint | null) => String(exact), unit: 'units', valueLabel: 'Amount' },
+      settings: { growth: 'share', labels: false, legend: true, breadcrumb: false, dimming: true },
+    }));
+    for (const loaded of [false, true]) {
+      const html = flags(loaded);
+      assert.match(html, /class="windowed-rows sunburst-legend-rows has-icons"/);
+      assert.equal((html.match(/country-flag-unavailable/g) ?? []).length, loaded ? 2 : 3);
+      assert.match(html, /Flag loading/);
+      assert.match(html, /Flag not available: Dated read failed/);
+      assert.doesNotMatch(html, /No artwork|is-missing/);
+      assert.match(html, /<span class="sunburst-icon" aria-hidden="true"><\/span><span class="sunburst-name"[^>]*>Rest of world/);
+      if (loaded) assert.match(html, /src="dated-flag.png"/);
+    }
+    for (const [positive, correction] of [[10n, -10n], [9007199254740993n, -9007199254740992n]]) {
+      const html = render(positive, correction);
+      const group = html.match(/<button[^>]*aria-label="GROUP\. [01] units\. Zoom in"[^>]*>.*?<\/button>/)?.[0];
+      assert.ok(group, html);
+      assert.ok(group.includes(`<b>${positive + correction}</b>`));
+      assert.doesNotMatch(group, /is-unmeasured|Not counted/);
+      assert.match(html, /<div class="is-unmeasured"><div[^>]*aria-label="UNKNOWN. Not known"/);
+      assert.match(html, /<div class="is-unmeasured"><div[^>]*aria-label="UNMEASURED. Not measured"/);
+    }
+    for (const [positive, correction] of [[9007199254740993n, -9007199254740992n], [9007199254740992n, -9007199254740993n]]) {
+      const amount = positive + correction;
+      const html = render(positive, correction, [true, false], []);
+      assert.match(html, /<div><div[^>]*aria-label="GROUP. -?1 units"/);
+      assert.ok(html.includes(`<b>${amount}</b>`));
+      assert.doesNotMatch(html, /Nothing yet|Not measured|is-unmeasured/);
+      const withMissing = render(positive, correction, [true, false], [item(['group', 'unmeasured'], null, { note: 'Another part was not recorded.' })]);
+      assert.ok(withMissing.includes(`<b>${amount}</b>`));
+      assert.doesNotMatch(withMissing, /Not measured|is-unmeasured/);
+      assert.match(withMissing, /GROUP: -?1 units/);
+      const tree = groupTree([item(['group', 'positive'], Number(positive), { exact: positive }),
+        item(['group', 'correction'], Number(correction), { exact: correction })], ROOT, [true, false]);
+      const group = tree.children[0];
+      assert.equal(sliceTooltip(group, tree, { format: (_value, exact) => String(exact), unit: 'units', valueLabel: 'Amount' })[0].rows[0].value, `${amount} units`);
+      assert.equal(group.value, Number(amount));
+      assert.equal(arcTargets(tree, tree, 'share').get(group.id)!.shown, amount > 0n);
+    }
+  } finally { await vite.close(); }
+});
+
+test('extra coverage legends remain below slices when zoomed, empty or with slice rows switched off', async () => {
+  const shared = globalThis as typeof globalThis & { __sunburstLegendFocus?: readonly string[] };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'sunburst-legend-state', enforce: 'pre', transform(source, id) {
+      const path = id.replaceAll('\\', '/');
+      if (path.endsWith('/charts/useChartTokens.ts')) return "export const useChartTokens = () => ({ categories: ['#123'], text: '#fff', surface: '#000', fontSize: { small: 10, body: 12 } });";
+      if (path.endsWith('/sunburst/Sunburst.tsx')) return source.replace('useState<readonly string[]>([])',
+        'useState<readonly string[]>(globalThis.__sunburstLegendFocus ?? [])');
+    } }] });
+  try {
+    const { default: Sunburst } = await vite.ssrLoadModule('/ui/src/charts/sunburst/Sunburst.tsx') as typeof import('./Sunburst.tsx');
+    const { default: Legend } = await vite.ssrLoadModule('/ui/src/charts/Legend.tsx') as typeof import('../Legend.tsx');
+    const entries = [item(['group', 'design'], 5), item(['other'], 2)];
+    const extra = createElement('section', { 'aria-label': 'Loss coverage' }, createElement('h3', null, 'Coverage'),
+      createElement(Legend, { items: [{ id: 'unknown', label: 'Unknown: native writer unavailable', color: '#123' }], label: 'Loss coverage states', always: true }));
+    const render = (legend: boolean, includeExtra = true, items = entries, zoomed = false) => {
+      shared.__sunburstLegendFocus = zoomed ? [groupTree(items, ROOT).children[0].id] : [];
+      return renderToStaticMarkup(createElement(Sunburst, {
+        label: 'Losses', root: ROOT, active: true, items, ...(includeExtra ? { legendExtra: extra } : {}), footnote: 'Counting start',
+        text: { format: value => String(value), unit: 'units', valueLabel: 'Losses', emptyLabel: 'No removals yet' },
+        settings: { growth: 'share', labels: true, legend, breadcrumb: true, dimming: true },
+      }));
+    };
+    for (const zoomed of [false, true]) {
+      const html = render(true, true, entries, zoomed);
+      assert.match(html, new RegExp(`<h3>${zoomed ? 'GROUP' : 'All'}</h3>`));
+      assert.ok(html.indexOf('sunburst-legend-rows') < html.indexOf('class="sunburst-legend-extra"'));
+      assert.ok(html.indexOf('aria-label="Loss coverage states"') < html.indexOf('class="sunburst-footnote"'));
+      assert.match(html, /class="chart-legend"/);
+      if (zoomed) assert.match(html, /class="sunburst-name"[^>]*>DESIGN/);
+    }
+    const empty = render(true, true, []);
+    assert.ok(empty.indexOf('class="sunburst-empty"') < empty.indexOf('class="sunburst-legend-extra"'));
+    assert.match(empty, /No removals yet/);
+    const rowsOff = render(false);
+    assert.match(rowsOff, /class="sunburst-legend"/);
+    assert.match(rowsOff, /Unknown: native writer unavailable/);
+    assert.doesNotMatch(rowsOff, /no-legend|sunburst-name|sunburst-empty|sunburst-footnote is-under/);
+    const omitted = render(false, false);
+    assert.match(omitted, /class="sunburst no-legend"/);
+    assert.match(omitted, /class="sunburst-footnote is-under"/);
+    assert.doesNotMatch(omitted, /class="sunburst-legend"|sunburst-legend-extra|Loss coverage/);
+    const ordinary = render(true, false);
+    assert.match(ordinary, /<h3>All<\/h3>/);
+    assert.match(ordinary, /class="sunburst-name"/);
+    assert.doesNotMatch(ordinary, /sunburst-legend-extra|Loss coverage/);
+  } finally { delete shared.__sunburstLegendFocus; await vite.close(); }
+});
+
+test('a collapsed exact remainder with huge fractional operands remains measured without unsafe geometry', () => {
+  const denominator = 10n ** 400n;
+  const root = groupTree([
+    item(['group', 'positive'], 0, { exact: denominator + 1n, exactDenominator: denominator }),
+    item(['group', 'correction'], 0, { exact: -denominator, exactDenominator: denominator }),
+    item(['group', 'missing'], null, { note: 'An independently unmeasured part.' }),
+  ], ROOT, [true, false]);
+  const group = root.children[0];
+  assert.deepEqual([group.exact, group.exactDenominator], [1n, denominator]);
+  assert.equal(group.value, 0);
+  assert.equal(Number.isFinite(group.value), true);
+  assert.equal(listed(group), true);
+  assert.equal(notMeasured(group), false);
+  const text = { format: (_value: number, exact: bigint | null, units = 1n) => `${exact}/${units}`, unit: 'states', valueLabel: 'Amount' };
+  assert.equal(sliceTooltip(group, root, text)[0].rows[0].value, `1/${denominator} states`);
+});
+
+test('fractions remain exact through hidden levels, grouping, folding and text formatting', () => {
+  const fractions = [
+    item(['country', 'a'], 1 / 3, { exact: 1n, exactDenominator: 3n, final: 1 / 3 }),
+    item(['country', 'b'], 1 / 2, { exact: 1n, exactDenominator: 2n, final: 1 / 2 }),
+    item(['country', 'c'], 1 / 6, { exact: 1n, exactDenominator: 6n, final: 1 / 6 }),
+  ];
+  const root = groupTree(fractions, ROOT);
+  assert.equal(root.children[0].exact, 1n);
+  assert.equal(root.children[0].exactDenominator, undefined);
+  assert.equal(groupTree(fractions, ROOT, [true, false]).children[0].exact, 1n);
+  const text = { format: (_value: number, exact: bigint | null, denominator = 1n) => `${exact}/${denominator}`,
+    unit: 'states', valueLabel: 'Controlled' };
+  const first = root.children[0].children.find(node => node.key === 'a')!;
+  assert.equal(sliceTooltip(first, root, text)[0].rows[0].value, '1/3 states');
+  const folded = foldTree(groupTree(fractions, ROOT), 1).children[0].children[0];
+  assert.equal(folded.other, true);
+  assert.equal(folded.exact, 1n);
+  assert.equal(folded.exactDenominator, undefined);
+});
+
+test('signed fractions keep exact totals, correction rows, zeros and focused geometry together', () => {
+  const parts = [
+    item(['source', 'type', 'positive'], 2 / 3, { exact: 2n, exactDenominator: 3n, final: 4 / 3 }),
+    item(['source', 'type', 'correction'], -1 / 3, { exact: -1n, exactDenominator: 3n, final: -2 / 3 }),
+    item(['cancelled', 'positive'], 1 / 2, { exact: 1n, exactDenominator: 2n }),
+    item(['cancelled', 'correction'], -1 / 2, { exact: -1n, exactDenominator: 2n }),
+    { path: [key('cancelled'), { ...key('zero'), keepZero: true, colour: '#888888' }], value: 0, exact: 0n },
+    item(['sibling', 'leaf'], 1 / 6, { exact: 1n, exactDenominator: 6n }),
+  ];
+  const root = groupTree(parts, ROOT, [], { value: 1 / 2, exact: 1n, exactDenominator: 2n, final: 5 / 6 });
+  const source = root.children.find(node => node.key === 'source')!;
+  const correction = source.children[0].children.find(node => node.key === 'correction')!;
+  const cancelled = root.children.find(node => node.key === 'cancelled')!;
+  const zero = cancelled.children.find(node => node.key === 'zero')!;
+  const text = { format: (_value: number, exact: bigint | null, denominator = 1n) => `${exact}/${denominator}`,
+    unit: 'states', valueLabel: 'Amount' };
+  assert.deepEqual([root.exact, root.exactDenominator], [1n, 2n]);
+  assert.deepEqual([source.exact, source.exactDenominator], [1n, 3n]);
+  assert.equal(hasCorrections(root), true);
+  assert.equal(sweepOf(root, 'fill'), Math.PI * 2);
+  assert.deepEqual(sliceTooltip(correction, root, text)[0].rows.map(row => [row.label, row.value]), [['Amount', '-1/3 states']]);
+  assert.equal(listed(correction), true);
+  assert.equal(listed(cancelled), true);
+  assert.equal(listed(zero), true);
+  assert.equal(sliceTooltip(cancelled, root, text)[0].rows[0].value, '0/1 states');
+  assert.equal(sliceColours(cancelled, ['#123456'], { light: '#ffffff', dark: '#000000' }).get(zero.id), '#888888');
+  const targets = arcTargets(root, cancelled, 'fill');
+  assert.equal(targets.get(cancelled.children.find(node => node.key === 'positive')!.id)!.shown, true);
+  assert.equal(targets.get(cancelled.children.find(node => node.key === 'correction')!.id)!.shown, false);
+  assert.equal(targets.get(zero.id)!.shown, false);
+  for (const sibling of root.children.filter(node => node !== cancelled)) for (const node of walk(sibling)) {
+    assert.equal(targets.get(node.id)!.shown, false);
+    assert.equal(targets.get(node.id)!.a0, targets.get(node.id)!.a1);
+  }
+  const hidden = groupTree(parts, ROOT, [false, false, true]);
+  assert.deepEqual([hidden.exact, hidden.exactDenominator], [1n, 2n]);
+  const collapsed = groupTree(parts, ROOT, [true, false, false], { value: 1 / 2, exact: 1n, exactDenominator: 2n, final: 5 / 6 });
+  const collapsedSource = collapsed.children.find(node => node.key === 'source')!;
+  const collapsedCancellation = collapsed.children.find(node => node.key === 'cancelled')!;
+  assert.equal(hasCorrections(collapsed), true);
+  assert.equal(hasCorrections(collapsedSource), true);
+  assert.equal(hasCorrections(collapsedCancellation), true);
+  assert.equal(collapsedCancellation.children.length, 0);
+  assert.equal(listed(collapsedCancellation), true);
+  assert.deepEqual([collapsedCancellation.exact, collapsedCancellation.exactDenominator], [0n, undefined]);
+  assert.equal(sweepOf(collapsed, 'fill'), Math.PI * 2);
+  assert.deepEqual(sliceTooltip(collapsedSource, collapsed, text)[0].rows.map(row => row.label), ['Amount']);
+  assert.doesNotMatch(sunburstSummary(collapsed, text), /%/);
+  assert.equal(listed(groupTree([item(['ordinary-zero'], 0, { exact: 0n })], ROOT).children[0]), false);
+  const folded = foldTree(groupTree(parts, ROOT), 1);
+  const other = folded.children.find(node => node.other)!;
+  assert.deepEqual([other.exact, other.exactDenominator], [1n, 2n]);
+  assert.equal(hasCorrections(other), true);
+  assert.equal(sweepOf(other, 'fill'), Math.PI * 2);
+  assert.doesNotMatch(sunburstSummary(folded, text), /%/);
+});
+
+test('exact IC keeps missing-name, language and native-cause notes through grouping and tooltips', () => {
+  const missingName = 'The state name was not recorded at this read.';
+  const language = 'The recorded literal is unavailable in this language.';
+  const cause = 'Native daily event; credit observed at the recorded hour.';
+  const parts = [
+    item(['building', 'state'], 2, { exact: 2n, note: missingName }),
+    item(['building', 'state'], 3, { exact: 3n, note: missingName }),
+    item(['building', 'state'], 4, { exact: 4n, note: language }),
+    item(['building', 'state'], 1, { exact: 1n, note: cause }),
+  ];
+  const root = groupTree(parts, ROOT);
+  const text = { format: (_value: number, exact: bigint | null) => String(exact), unit: 'IC', valueLabel: 'Spent' };
+  for (const node of walk(root)) {
+    assert.equal(node.valueUnknown, false);
+    assert.equal(node.unmeasured, false);
+    assert.equal(node.exact, 10n);
+    assert.deepEqual(node.notes, [missingName, language, cause]);
+    for (const tip of sliceTooltip(node, root, text)) {
+      assert.equal(tip.rows[0].value, '10 IC');
+      assert.equal(tip.note, `${missingName} ${language} ${cause}`);
+    }
+  }
+  assert.deepEqual(groupTree(parts, ROOT, [false, true]).children[0].notes, [missingName, language, cause]);
+  const folded = foldTree(groupTree([...parts, item(['large'], 20, { exact: 20n })], ROOT), 1);
+  assert.equal(sliceTooltip(folded.children[0], folded, text)[0].note, `${missingName} ${language} ${cause}`);
+});
 
 test('an independent whole remains exact when content cannot completely attribute its groups', () => {
   const parts = [
@@ -125,6 +567,114 @@ test('a level switched off joins its children, adding the same keys together', (
   const flat = groupTree(items, ROOT, [false, false, false]);
   assert.equal(flat.children.length, 0);
   assert.equal(flat.value, 42);
+});
+
+test('a correction to zero retains recorded peak palette slots and folded contributors', () => {
+  const parts = (value: number) => [
+    item(['source', 'peak'], value, { exact: BigInt(value), final: 0, weight: 20 }),
+    item(['source', 'next'], 10, { exact: 10n }),
+    item(['source', 'small'], 5, { exact: 5n }),
+    item(['source', 'large'], 30, { exact: 30n }),
+  ];
+  const early = groupTree(parts(20), ROOT, [false, true]);
+  const end = groupTree(parts(0), ROOT, [false, true]);
+  const palette = ['#ff0000', '#00ff00', '#0000ff', '#ffff00'];
+  const shades = { light: '#ffffff', dark: '#000000' };
+  for (const tree of [early, end]) {
+    assert.deepEqual(tree.children.map(node => node.key), ['large', 'peak', 'next', 'small']);
+    assert.equal(tree.weight, 65);
+    assert.equal(tree.final, 45);
+    const colours = sliceColours(tree, palette, shades);
+    assert.equal(colours.get(tree.children[1].id), palette[1]);
+    assert.equal(colours.get(tree.children[2].id), palette[2]);
+    const other = foldTree(tree, 2).children.find(node => node.other)!;
+    assert.deepEqual(other.children.map(node => node.key), ['peak', 'next', 'small']);
+    assert.equal(other.weight, 35);
+    assert.equal(other.final, 15);
+  }
+  const peak = end.children.find(node => node.other)!.children[0];
+  assert.equal(drawable(peak), true);
+  assert.equal(peak.exact, 0n);
+  assert.equal(arcTargets(end, end, 'share').get(peak.id)!.shown, false);
+  assert.equal(end.exact, 45n);
+  const negative = groupTree([item(['peak'], -5, { exact: -5n, final: -5, weight: 20 }),
+    item(['positive'], 10, { exact: 10n })], ROOT);
+  assert.equal(negative.children[0].key, 'peak');
+  assert.equal(negative.children[0].exact, -5n);
+  assert.equal(listed(negative.children[0]), true);
+  assert.equal(negative.final, 5);
+  assert.equal(hasCorrections(negative), true);
+  assert.equal(sweepOf(negative, 'fill'), Math.PI * 2);
+  const arcs = arcTargets(negative, negative, 'share');
+  assert.equal(arcs.get(negative.children[0].id)!.shown, false);
+  assert.equal(arcs.get(negative.children[1].id)!.a1 - arcs.get(negative.children[1].id)!.a0, Math.PI * 2);
+});
+
+test('mixed stable weights preserve exact fractions, truthful Fill and unknown folded attribution', () => {
+  const parts = [
+    item(['old', 'design'], 1 / 3, { exact: 1n, exactDenominator: 3n, final: 2 / 3,
+      weight: 20, note: 'Recorded design note.', counted: ['same'] }),
+    item(['new', 'design'], 1 / 6, { exact: 1n, exactDenominator: 6n, final: 1 / 3, counted: ['same'] }),
+  ];
+  const total = { value: 1 / 2, exact: 1n, exactDenominator: 2n, final: 1 };
+  for (const inputs of [parts, [...parts].reverse()]) {
+    const tree = groupTree(inputs, ROOT, [false, true], total);
+    const design = tree.children[0];
+    assert.equal(design.weight, 20 + 1 / 3);
+    assert.equal(design.final, 1);
+    assert.equal(design.exact, 1n);
+    assert.equal(design.exactDenominator, 2n);
+    assert.equal(design.count, 1);
+    assert.deepEqual(design.notes, ['Recorded design note.']);
+    assert.equal(sweepOf(design, 'fill'), Math.PI);
+    assert.equal(tree.final, 1);
+  }
+  const unknownWhole = groupTree([item(['design'], 1 / 2,
+    { exact: 1n, exactDenominator: 2n, weight: 20, final: null, finalUnknown: true })], ROOT);
+  assert.equal(unknownWhole.weight, 20);
+  assert.equal(unknownWhole.finalUnknown, true);
+  assert.equal(unknownWhole.exact, 1n);
+  assert.equal(sweepOf(unknownWhole, 'fill'), Math.PI * 2);
+  const tree = foldTree(groupTree([...parts,
+    item(['unknown', 'unread'], null, { weight: 4, final: null, finalUnknown: true, unknownValue: true,
+      unknown: { missing: 2 }, note: 'The read is unavailable.' }),
+  ], ROOT, [false, true], total), 1);
+  const other = tree.children[0];
+  assert.equal(other.weight, 24 + 1 / 3);
+  assert.equal(other.valueUnknown, true);
+  assert.equal(other.finalUnknown, true);
+  assert.equal(other.exact, null);
+  assert.deepEqual(other.unknown, { missing: 2 });
+  assert.deepEqual(other.notes, ['Recorded design note.', 'The read is unavailable.']);
+  assert.equal(tree.exact, 1n);
+  assert.equal(tree.exactDenominator, 2n);
+  assert.equal(tree.final, 1);
+  assert.equal(tree.valueUnknown, false);
+  assert.equal(sweepOf(other.children.find(node => node.key === 'unread')!, 'fill'), 0);
+});
+
+test('omitting weight retains signed final order, zero membership and independent whole semantics', () => {
+  const tree = groupTree([
+    item(['future'], 0, { present: false, final: 20 }),
+    item(['current'], 10, { exact: 10n, final: 10 }),
+    item(['negative'], -2, { exact: -2n, final: -5 }),
+    item(['zero'], 0, { exact: 0n }),
+    item(['unread'], null, { unknownValue: true, note: 'Not read.', unknown: { missing: 1 } }),
+  ], ROOT, [], { value: 8, exact: 8n, final: 40 });
+  assert.ok(walk(tree).every(node => node.weight === undefined));
+  assert.deepEqual(tree.children.map(node => node.key), ['future', 'current', 'unread', 'zero', 'negative']);
+  assert.deepEqual(tree.children.filter(drawable).map(node => node.key), ['future', 'current', 'negative']);
+  const colours = sliceColours(tree, ['#ff0000', '#00ff00', '#0000ff'], { light: '#ffffff', dark: '#000000' });
+  assert.equal(colours.get(tree.children.at(-1)!.id), '#0000ff');
+  const other = foldTree(tree, 2).children.find(node => node.other)!;
+  assert.deepEqual(other.children.map(node => node.key), ['current', 'negative']);
+  assert.equal(other.weight, undefined);
+  assert.equal(other.exact, 8n);
+  assert.equal(other.final, 5);
+  assert.equal(tree.exact, 8n);
+  assert.equal(tree.final, 40);
+  assert.equal(tree.valueUnknown, false);
+  assert.deepEqual(tree.unknown, { missing: 1 });
 });
 
 test('more slices than colours fold their smallest into Other, the same ones all playback long', () => {
@@ -434,4 +984,24 @@ test('a merged category with unmeasured parts and nothing counted stays listed',
   // Its tooltip says so too, not "0 IC".
   const [tip] = sliceTooltip(civ, root, text);
   assert.deepEqual(tip.rows[0], { label: 'Spent', value: 'Not measured', tone: 'muted' });
+});
+
+test('grouping and folding retain dated country flags without marking aggregates or changing exact notes', () => {
+  const statuses = [{ flagPending: true }, { flagReason: 'Recorded content lacks this flag' }, { flag: 'dated.png' }];
+  const tree = foldTree(groupTree(statuses.map((countryFlag, index) => ({
+    path: [{ id: String(index), label: `Country ${index}`, countryFlag }], value: index + 1, exact: BigInt(index + 1),
+    note: 'Name content not available',
+  })), ROOT), 2);
+  const other = tree.children.find(node => node.other)!;
+  assert.equal(tree.countryFlag, undefined);
+  assert.equal(other.countryFlag, undefined);
+  for (const node of walk(tree).filter(node => node.countryFlag !== undefined)) {
+    assert.equal(node.countryFlag, statuses[Number(node.key)]);
+    const [tip] = sliceTooltip(node, tree, { format: (_value, exact) => String(exact), unit: 'units', valueLabel: 'Amount' });
+    assert.equal(tip.countryFlag, node.countryFlag);
+    assert.equal(tip.note, 'Name content not available');
+    assert.equal(node.valueUnknown, false);
+    assert.equal(node.exact, BigInt(Number(node.key) + 1));
+  }
+  assert.equal(walk(tree).filter(node => node.countryFlag !== undefined).length, 3);
 });

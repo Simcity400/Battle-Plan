@@ -494,6 +494,7 @@ fn wing_daily_private_fields_and_capacities_do_not_gate_hourly_equipment() {
                 force_full: false,
                 limits: [2, 3, if cumulative { 2 } else { usize::MAX }],
                 naval_limit: if theatres { 2 } else { usize::MAX },
+                game_score: false,
             },
             &mut job,
         );
@@ -780,6 +781,7 @@ fn shared_wing_map_caps_do_not_bound_extension_or_membership_censuses() {
 
             limits: [map_limit, 3, 2],
             naval_limit: 4096,
+            game_score: false,
         };
         let report = super::copy_air_refresh(&memory, context, &mut first);
         assert!(report.raw_ok);
@@ -818,6 +820,7 @@ fn shared_wing_naval_cap_keeps_tail_leaf_failure_local() {
 
         limits: [2, 3, 2],
         naval_limit: 1,
+        game_score: false,
     };
     let report = super::copy_air_refresh(&memory, context, &mut first);
     assert!(report.raw_ok);
@@ -1014,6 +1017,7 @@ fn wing_staging_overflow_falls_back_to_typed_walk() {
 
         limits: [1024, 8192, 4096],
         naval_limit: 4096,
+        game_score: false,
     };
     let mut tiny = AirWingJob::default();
     let report = super::copy_air_refresh(&memory, ctx, &mut tiny);
@@ -1270,7 +1274,7 @@ fn air_base_container_chunks_preserve_null_slots_and_boundary_faults() {
     kit::put32(&mut bytes, header + 8, 130);
     kit::put32(&mut bytes, header + 12, 130);
     struct Fault<'a> {
-        source: engine::memory::SliceMemory<'a>,
+        source: kit::SyntheticMemory<'a>,
         address: Option<usize>,
     }
     impl Memory for Fault<'_> {
@@ -1647,7 +1651,7 @@ fn air_bases_link_index_validates_hints_and_resets_between_passes() {
 fn air_bases_link_index_keeps_the_complete_capture_read_trace() {
     use super::air_bases_test_kit as kit;
     struct Trace<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: kit::SyntheticMemory<'a>,
         calls: std::cell::RefCell<Vec<(usize, usize)>>,
     }
     impl Memory for Trace<'_> {
@@ -1964,7 +1968,7 @@ fn air_bases_copy_sizes_cover_documented_read_set() {
     use engine::Memory;
     use std::collections::BTreeSet;
     struct Recorder<'a> {
-        inner: engine::memory::SliceMemory<'a>,
+        inner: kit::SyntheticMemory<'a>,
         sizes: std::cell::RefCell<BTreeSet<usize>>,
     }
     impl Memory for Recorder<'_> {

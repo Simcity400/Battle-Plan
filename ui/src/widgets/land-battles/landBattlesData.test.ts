@@ -3,7 +3,8 @@ import test from 'node:test';
 import type { LandBattleHistory, LandBattlesReply, LandBattlesManifestReply, CountryGroupReply } from '../../generated/dashboard';
 import type { CountrySelection } from '../../dashboard/model';
 import { battleWarnings, battleWindowIndex, battleWindows, rankedLandBattleRows, landBattleRows, landBattlePlaceRequests, namedLandBattles,
-  shownCensusHour, validatePlaceNamesReply, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking } from './landBattlesData.ts';
+  shownCensusHour, validateLandBattlesReply, validateLandBattlesManifest, validateLandBattlesRanking } from './landBattlesData.ts';
+import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import { casualtyRankingNote, landCasualtiesMissing, landCasualtyText, landDivisionText, landLossText } from './landBattlesData.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { OPTIONS, definition } from './definition.ts';
@@ -11,11 +12,36 @@ import { resolveOptions } from '../../dashboard/options.ts';
 import { countryMatch, countryMatchFilter } from '../../dashboard/groups.ts';
 
 const history = (id = 'episode'): LandBattleHistory => ({ id, provinceId: 17, start: { hour: 10, bound: 'exact' }, end: { hour: 21, bound: 'exact' },
-  endUnknownHour: null, counterBase: 0, priorPeak: null, losses: [],
-  runs: [{ firstHour: 10, lastHour: 20, counts: [3, 2], countries: [['mod/tag'], ['other']], countriesUnknown: [false, false], duration: 1 }] });
+  endUnknownHour: null, counterBase: 0, priorPeak: null, losses: [], result: null,
+  runs: [{ firstHour: 10, lastHour: 20, counts: [3, 2], rosterUnknown: false, countries: [['mod/tag'], ['other']], countriesUnknown: [false, false], duration: 1 }] });
 const reply = (rows = [history()], window = 0): LandBattlesReply => ({ window, interval: { firstHour: 10, lastHour: 21 },
   rows, observed: [[10, 21]], warnings: [], contentWarnings: [] });
 const read = (h = history(), at = 20, all = true, matches = (_tag: string, _hour: number) => true) => landBattleRows(new Map([[0, reply([h])]]), at, matches, all);
+const countryGroups = (): CountryGroupReply => ({ branchId: '1', warnings: [], identityChanges: [], factions: [], wars: [],
+  warStarts: [], capitulations: [], humans: [{ tag: 'other', firstHour: 10, lastHour: 40 }],
+  unobserved: { humans: [{ firstHour: 19, lastHour: 20 }], factions: [], wars: [] },
+  countryIdentities: [
+    { tag: 'mod/tag', identities: [{ firstHour: 10, lastHour: 40, slot: 1, countryId: 11 }] },
+    { tag: 'other', identities: [{ firstHour: 10, lastHour: 40, slot: 2, countryId: 22 }] },
+    { tag: 'former/other', identities: [{ firstHour: 1, lastHour: 9, slot: 2, countryId: 22 }] },
+  ],
+});
+
+test('recorded final winners wait for their supplying hour and terminal-only rosters stay unknown', () => {
+  const h = history();
+  h.result = { hour: 21, duration: 25, winner: { side: 1 }, countries: [['late attacker'], ['late defender']], countriesUnknown: [false, false] };
+  assert.deepEqual(read(h, 20)[0].winner, { unknown: 'Result not recorded' });
+  assert.deepEqual(read(h, 21)[0].winner, { side: 1 });
+  assert.equal(read(h, 21)[0].sides[0].countries[0].tag, 'late attacker');
+  assert.equal(read(h, 21)[0].sides[0].countries[0].hour, 21);
+  assert.equal(read(h, 21)[0].length.value, 25);
+  const transient = { ...h, start: { hour: 21, bound: 'by' as const },
+    runs: [{ ...h.runs[0], firstHour: 21, lastHour: 21, counts: [0, 0] as [number, number], rosterUnknown: true }] };
+  const row = read(transient, 21)[0];
+  assert.equal(row.peakUnknown, true);
+  assert.equal(row.sides[0].counts[0].value, null);
+  assert.equal(validateLandBattlesReply(reply([transient])).rows.length, 1);
+});
 
 test('division text pluralises and compact summaries retain exact values without repeated unit labels', () => {
   assert.equal(landDivisionText({ label: 'Divisions (incl. reserves)', value: 1 }, false), '1 division');
@@ -64,7 +90,7 @@ test('peaks retain the earliest supplying hour, lengths use native rounds withou
 test('network order and prefetched future windows cannot leak later reads or peaks', () => {
   const early = reply();
   const later = reply([{ ...history(), priorPeak: { value: 100, hour: 25 }, end: null,
-    runs: [{ firstHour: 30, lastHour: 31, counts: [50, 50], countries: [['future'], []], countriesUnknown: [false, false], duration: 21 }] }], 1);
+    runs: [{ firstHour: 30, lastHour: 31, counts: [50, 50], rosterUnknown: false, countries: [['future'], []], countriesUnknown: [false, false], duration: 21 }] }], 1);
   later.interval = { firstHour: 30, lastHour: 40 };
   const rows = landBattleRows(new Map([[1, later], [0, early]]), 20, () => true, true);
   assert.equal(rows[0].peak.value, 5);
@@ -76,16 +102,26 @@ test('network order and prefetched future windows cannot leak later reads or pea
 });
 
 test('client countryMatch filters either side before ranking, including group membership gaps', () => {
-  const groups = { humans: [{ tag: 'other', firstHour: 10, lastHour: 40 }], factions: [], wars: [],
-    unobserved: { humans: [{ firstHour: 19, lastHour: 20 }], factions: [], wars: [] } } as unknown as CountryGroupReply;
+  const groups = countryGroups();
   const selection: CountrySelection = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false };
   const match = countryMatch(selection, [], groups, 40);
   assert.equal(read(history(), 20, false, match.matches).length, 0);
   assert.equal(read(history(), 18, false, match.matches).length, 1);
-  const chosen = countryMatch({ kind: 'tags', tags: ['other'] }, [], undefined, 40);
+  const chosen = countryMatch({ kind: 'tags', tags: ['other'] }, [], groups, 40);
   assert.equal(read(history(), 20, false, chosen.matches).length, 1);
-  assert.equal(read(history(), 20, false, countryMatch({ kind: 'tags', tags: ['departed'] }, [], undefined, 40).matches).length, 0);
+  assert.equal(chosen.matches('former/other', 5), true);
+  assert.equal(chosen.matches('former/other', 10), false);
+  assert.equal(chosen.matches('mod/tag', 18), false);
+  assert.equal(read(history(), 20, false, countryMatch({ kind: 'tags', tags: ['departed'] }, [], groups, 40).matches).length, 0);
+});
 
+test('pending native country catalogues refuse manual rows and serialize an empty ranking predicate', () => {
+  const selection: CountrySelection = { kind: 'tags', tags: ['other'] };
+  const pending = countryMatch(selection, [], undefined, 40);
+  assert.equal(pending.ready, false);
+  assert.equal(pending.reason, null);
+  assert.equal(read(history(), 20, false, pending.matches).length, 0);
+  assert.deepEqual(countryMatchFilter(selection, [], undefined, 40), { tags: null, membership: [], unobserved: [] });
 });
 
 test('diagnostics stop at the selected hour; shown-read status dates the census, not a battle', () => {
@@ -207,12 +243,12 @@ test('unknown participants pass country selection and carry an explicit side mar
 });
 
 test('server ranking predicate equals countryMatch, and ranked summaries retain whole-battle measures', () => {
-  const groups = { humans: [{ tag: 'other', firstHour: 10, lastHour: 40 }], factions: [], wars: [],
-    unobserved: { humans: [{ firstHour: 19, lastHour: 20 }], factions: [], wars: [] } } as unknown as CountryGroupReply;
+  const groups = countryGroups();
   const selection: CountrySelection = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false };
   const filter = countryMatchFilter(selection, [], groups, 40);
   assert.deepEqual(filter, { tags: null, membership: groups.humans, unobserved: groups.unobserved.humans });
-  assert.deepEqual(countryMatchFilter({ kind: 'tags', tags: ['other'] }, [], undefined, 40), { tags: ['other'], membership: null, unobserved: [] });
+  assert.deepEqual(countryMatchFilter({ kind: 'tags', tags: ['other'] }, [], groups, 40), { tags: null,
+    membership: [{ tag: 'former/other', firstHour: 1, lastHour: 9 }, { tag: 'other', firstHour: 10, lastHour: 40 }], unobserved: [] });
   const ranking = validateLandBattlesRanking({ rows: [history()], censusHour: 20, effectiveMeasure: 'Peak size', warnings: [], contentWarnings: [] });
   assert.equal(rankedLandBattleRows(ranking, 20)[0].peak.value, 5);
   assert.equal(rankedLandBattleRows(ranking, 20)[0].length.value, 11);
@@ -246,6 +282,21 @@ test('terminal values are shown only at their supplying hour, and absence cannot
   const missingTerminal = read(h, 21)[0];
   assert.equal(landCasualtyText(missingTerminal.casualties, missingTerminal), '8 so far');
   assert.equal(missingTerminal.lossRead?.terminal, false);
+});
+
+test('equipment loss text retains fixed5 fractions and wide signed corrections', () => {
+  const h = history();
+  h.losses = [{ hour: 10, terminal: false, equipmentRaw: [['-100001', '-100001'], ['-9223372036854775807']], sides: [
+    [{ label: 'Manpower lost', value: 3 }, { label: 'Equipment lost', value: -1.00001 }, { label: 'Equipment lost: mod variant', value: -1.00001 }],
+    [{ label: 'Manpower lost', value: 5 }, { label: 'Equipment lost', value: null, unknown: 'Exact amount exceeds number precision' }],
+  ] }];
+  assert.equal(validateLandBattlesReply(reply([h])).rows.length, 1);
+  const row = read(h)[0];
+  assert.equal(row.casualties.value, 8);
+  assert.equal(landLossText(row.sides[0].losses[2], row, 0, false), '−1.00001 so far');
+  assert.equal(landLossText(row.sides[1].losses[1], row, 1, true), `−92,233,720,368,547.75807 so far, as of ${formatDateTime(10)}`);
+  h.losses[0].equipmentRaw![0][0] = '1e5';
+  assert.throws(() => validateLandBattlesReply(reply([h])), /malformed/);
 });
 
 test('missing casualties stay unknown, exact zero is retained, and ranking explains so-far or fallback', () => {

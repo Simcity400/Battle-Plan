@@ -8,8 +8,13 @@ import { groupLabel } from './groups';
 import { useCountryGroups } from './useCountryGroups';
 import { resolveWidgetCampaign } from './campaigns';
 import { selectedTags } from './countrySelection';
-import type { WidgetRuntime } from './definitions';
+import type { WidgetCountryChipProps, WidgetRuntime } from './definitions';
 import type { WidgetSpec } from './model';
+
+/** Parts breakdowns publish the holder and date shown by their body here. */
+export function PartsCountryChip(props: WidgetCountryChipProps) {
+  return props.widget.options?.show === 'breakdown' ? <span className="dash-widget-country-slot" ref={props.onSlot} /> : <CountryChip {...props} />;
+}
 
 /** The widget header's country: flag and name, with "+N" when it shows several.
  * Names are the recording's own; the tooltip lists every country. */
@@ -27,6 +32,7 @@ export default function CountryChip({ widget, runtime }: { widget: WidgetSpec; r
   const tags = selectedTags(widget.countries, track);
   const name = (tag: string) => track?.source.metadata.countries.find(country => country.tag === tag)?.name || tag;
   if (track && widget.countries.kind === 'all') return <span className="dash-widget-country"><Icon name="globe" /><span>All countries</span></span>;
+  if (track && widget.countries.kind === 'factions') return <span className="dash-widget-country"><Icon name="layers" /><span>Top {widget.countries.count} factions</span></span>;
   if (track && widget.countries.kind === 'group') return <span className="dash-widget-country" data-tooltip={nameReason ?? undefined}>
     <Icon name="layers" /><span>{groupLabel(widget.countries.group, groups.data, name, hour, overrides)}</span></span>;
   if (!track || !tags.length) return null;

@@ -43,6 +43,9 @@ struct Options {
     output: PathBuf,
     user: Option<PathBuf>,
     once: bool,
+    game_score: bool,
+    operation_outcomes: bool,
+    politics_capture: bool,
     #[cfg(feature = "alloc-fault-injection")]
     alloc_fault: Option<AllocationFault>,
 }
@@ -104,20 +107,71 @@ fn usage() -> String {
     #[cfg(not(feature = "alloc-fault-injection"))]
     let fault_option = "";
     format!(
-        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once]{fault_option}
+        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
 recorder detach [--out <directory>]
 recorder refresh [--out <directory>]
 recorder finalize <session-directory> [--out <directory>]
 recorder inspect <campaign.battleplan>
 recorder inspect <campaign.battleplan> --characters <substring> --hour <n> --branch <id>
 {}
+{}
 {}",
+        crate::metrics::USAGE,
         crate::oracle::USAGE,
         crate::movement_oracle::USAGE
     )
 }
 
+fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> {
+    let mut options = Options {
+        output: PathBuf::from(r"captures"),
+        user: None,
+        once: false,
+        game_score: true,
+        operation_outcomes: true,
+        politics_capture: true,
+        #[cfg(feature = "alloc-fault-injection")]
+        alloc_fault: None,
+    };
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--out") => options.output = PathBuf::from(args.next().ok_or_else(usage)?),
+            Some("--user-dir") if command == "record" => {
+                options.user = Some(PathBuf::from(args.next().ok_or_else(usage)?))
+            }
+            Some("--once") if command == "record" => options.once = true,
+            Some("--no-game-score") if command == "record" => options.game_score = false,
+            Some("--disable-operation-outcomes") if command == "record" => {
+                options.operation_outcomes = false
+            }
+            Some("--disable-politics-capture") if command == "record" => {
+                options.politics_capture = false
+            }
+            #[cfg(feature = "alloc-fault-injection")]
+            Some("--alloc-fault") if command == "record" && options.alloc_fault.is_none() => {
+                options.alloc_fault = Some(allocation_fault(&args.next().ok_or_else(usage)?)?);
+            }
+            #[cfg(not(feature = "alloc-fault-injection"))]
+            Some("--alloc-fault") if command == "record" => {
+                return Err("--alloc-fault requires recorder feature alloc-fault-injection".into());
+            }
+            _ => return Err(usage()),
+        }
+    }
+    Ok(options)
+}
+
 pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
+    // bench.ps1 passes these four positionals directly to its MetricsTool.
+    if args.first().is_some_and(|arg| {
+        Path::new(arg)
+            .extension()
+            .and_then(OsStr::to_str)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("battleplan") || extension.eq_ignore_ascii_case("hoi4replay"))
+    }) {
+        return crate::metrics::command(args);
+    }
     let command = if args
         .first()
         .is_some_and(|arg| !arg.to_string_lossy().starts_with('-'))
@@ -138,6 +192,9 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     if command == "movement-oracle" {
         return crate::movement_oracle::command(args);
     }
+    if command == "metrics" {
+        return crate::metrics::command(args);
+    }
     if command == "--help" || args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("{}", usage());
         return Ok(());
@@ -147,32 +204,7 @@ pub fn command(mut args: Vec<OsString>) -> Result<(), String> {
     } else {
         None
     };
-    let mut options = Options {
-        output: PathBuf::from(r"captures"),
-        user: None,
-        once: false,
-        #[cfg(feature = "alloc-fault-injection")]
-        alloc_fault: None,
-    };
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--out") => options.output = PathBuf::from(args.next().ok_or_else(usage)?),
-            Some("--user-dir") if command == "record" => {
-                options.user = Some(PathBuf::from(args.next().ok_or_else(usage)?))
-            }
-            Some("--once") if command == "record" => options.once = true,
-            #[cfg(feature = "alloc-fault-injection")]
-            Some("--alloc-fault") if command == "record" && options.alloc_fault.is_none() => {
-                options.alloc_fault = Some(allocation_fault(&args.next().ok_or_else(usage)?)?);
-            }
-            #[cfg(not(feature = "alloc-fault-injection"))]
-            Some("--alloc-fault") if command == "record" => {
-                return Err("--alloc-fault requires recorder feature alloc-fault-injection".into());
-            }
-            _ => return Err(usage()),
-        }
-    }
+    let mut options = parse_options(&command, args)?;
     fs::create_dir_all(&options.output).map_err(|e| e.to_string())?;
     options.output = options.output.canonicalize().map_err(|e| e.to_string())?;
     match command.as_str() {
@@ -297,9 +329,24 @@ fn record(options: Options) -> Result<(), String> {
             continue;
         };
         #[cfg(feature = "alloc-fault-injection")]
-        let detached = capture(pid, &options.output, &user, options.alloc_fault.as_ref())?;
+        let detached = capture(
+            pid,
+            &options.output,
+            &user,
+            options.game_score,
+            options.operation_outcomes,
+            options.politics_capture,
+            options.alloc_fault.as_ref(),
+        )?;
         #[cfg(not(feature = "alloc-fault-injection"))]
-        let detached = capture(pid, &options.output, &user)?;
+        let detached = capture(
+            pid,
+            &options.output,
+            &user,
+            options.game_score,
+            options.operation_outcomes,
+            options.politics_capture,
+        )?;
         if detached || options.once || STOP.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -311,6 +358,9 @@ fn capture(
     pid: u32,
     output: &Path,
     user: &Path,
+    game_score: bool,
+    operation_outcomes: bool,
+    politics_capture: bool,
     #[cfg(feature = "alloc-fault-injection")] alloc_fault: Option<&AllocationFault>,
 ) -> Result<bool, String> {
     let process = Process::open(pid, true)?;
@@ -434,7 +484,7 @@ fn capture(
     let cancel_file = bin.join("collector.cancel");
     let expected_mounts = &content.expected_mounts;
     create_failure_witness(&directory, session.id, session.process_start_time)?;
-    let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":output,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors});
+    let config = json!({"session_id":session.id,"output_dir":directory,"replay_dir":output,"session_start":session_bytes,"ready_event":ready_name,"detach_event":detach_name,"done_event":done_name,"cancel_file":cancel_file,"content_order_note":content.order_note,"expected_mounts":expected_mounts,"mod_descriptors":content.mod_descriptors,"game_score":game_score,"operation_outcomes":operation_outcomes,"politics_capture":politics_capture});
     #[cfg(feature = "alloc-fault-injection")]
     let config = fault_config(config, alloc_fault);
     write_json(&bin.join("collector.json"), &config)?;
@@ -1181,6 +1231,59 @@ pub(crate) fn resolve_user_directory() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn politics_capture_defaults_on_and_can_only_be_disabled_for_recording() {
+        assert!(parse_options("record", vec![]).unwrap().politics_capture);
+        let option: OsString = "--disable-politics-capture".into();
+        assert!(
+            !parse_options("record", vec![option.clone()])
+                .unwrap()
+                .politics_capture
+        );
+        for command in ["detach", "refresh", "finalize"] {
+            assert!(parse_options(command, vec![option.clone()]).is_err());
+        }
+        #[cfg(feature = "alloc-fault-injection")]
+        {
+            let options = parse_options(
+                "record",
+                vec![option, "--alloc-fault".into(), "callback:1".into()],
+            )
+            .unwrap();
+            assert!(!options.politics_capture);
+            assert_eq!(options.alloc_fault.unwrap().ordinal, 1);
+        }
+    }
+
+    #[test]
+    fn game_score_cli_defaults_enabled_and_disables_at_attach() {
+        assert!(parse_options("record", Vec::new()).unwrap().game_score);
+        let options = parse_options(
+            "record",
+            vec![
+                "--once".into(),
+                "--no-game-score".into(),
+                "--out".into(),
+                "output".into(),
+                "--user-dir".into(),
+                "user".into(),
+            ],
+        )
+        .unwrap();
+        assert!(!options.game_score);
+        assert!(options.once);
+        assert_eq!(options.output, PathBuf::from("output"));
+        assert_eq!(options.user, Some(PathBuf::from("user")));
+        assert!(usage().contains("[--no-game-score]"));
+    }
+
+    #[test]
+    fn game_score_cli_refuses_disable_for_other_commands() {
+        for command in ["detach", "refresh", "finalize"] {
+            assert!(parse_options(command, vec!["--no-game-score".into()]).is_err());
+        }
+    }
 
     #[cfg(feature = "alloc-fault-injection")]
     #[test]

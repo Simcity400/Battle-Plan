@@ -9,8 +9,10 @@
 //! incomplete tables, gaps and identity changes never become zero.
 
 use super::{
-    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_groups::HourSpan,
-    country_history::observe_identity, validate_tag,
+    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
+    country_groups::HourSpan,
+    country_history::{RecordedHistories, branch_histories, observe_identity, selected_identities},
+    validate_tag,
 };
 use crate::{
     Source,
@@ -44,6 +46,9 @@ pub struct NukesParams {
     pub branch_id: String,
     pub tags: Vec<String>,
     pub top: Option<u32>,
+    /// A drill selects the native country holding its tag at this recorded hour.
+    #[serde(default)]
+    pub origin_hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -342,23 +347,78 @@ pub fn type_info(
         .collect()
 }
 
-pub fn requested_series(
+pub(crate) fn requested_series(
     scanned: &ScannedNukes,
     params: &NukesParams,
+    history: Option<&RecordedHistories>,
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<NukeSeries>> {
-    let membership = params
-        .top
-        .map(|count| {
-            crate::ranking::top_membership(
-                &scanned.series,
-                count as usize,
-                |run| (run.first_hour, run.last_hour),
-                |run| run.total.filter(|total| *total != 0).map(i64::from),
-                cancelled,
-            )
-        })
-        .transpose()?;
+    if params.origin_hour.is_some() && history.is_none() {
+        return Err(io::Error::other(
+            "Nuclear drill identity history is unavailable",
+        ));
+    }
+    let membership = if let Some(history) = history.filter(|_| params.top.is_none()) {
+        let selected = if let Some(hour) = params.origin_hour {
+            params
+                .tags
+                .first()
+                .and_then(|tag| history.countries.get(tag))
+                .and_then(|country| {
+                    country
+                        .identities
+                        .iter()
+                        .find(|run| run.first_hour <= hour && hour <= run.last_hour)
+                })
+                .map(|run| (run.slot, run.country_id))
+                .into_iter()
+                .collect()
+        } else {
+            selected_identities(history, &params.tags)
+        };
+        let aliases: BTreeMap<String, Vec<HourSpan>> = history
+            .countries
+            .iter()
+            .filter_map(|(tag, country)| {
+                let spans: Vec<_> = country
+                    .identities
+                    .iter()
+                    .filter(|run| selected.contains(&(run.slot, run.country_id)))
+                    .map(|run| HourSpan {
+                        first_hour: run.first_hour,
+                        last_hour: run.last_hour,
+                    })
+                    .collect();
+                (!spans.is_empty()).then(|| (tag.clone(), spans))
+            })
+            .collect();
+        if params.origin_hour.is_some() {
+            let mut spans: Vec<_> = aliases.values().flatten().collect();
+            spans.sort_by_key(|span| span.first_hour);
+            if spans
+                .windows(2)
+                .any(|pair| pair[0].last_hour >= pair[1].first_hour)
+            {
+                return Err(io::Error::other(
+                    "NuclearDrillIdentityAmbiguous: multiple recorded tags hold the selected native country at one hour",
+                ));
+            }
+        }
+        Some(aliases)
+    } else {
+        params
+            .top
+            .map(|count| {
+                crate::ranking::top_membership(
+                    &scanned.series,
+                    count as usize,
+                    |run| (run.first_hour, run.last_hour),
+                    |run| run.total.filter(|total| *total != 0).map(i64::from),
+                    cancelled,
+                )
+            })
+            .transpose()?
+    };
     let tags: BTreeSet<&str> = match &membership {
         Some(top) => top.keys().map(String::as_str).collect(),
         None => params.tags.iter().map(String::as_str).collect(),
@@ -395,7 +455,11 @@ pub fn requested_series(
         let measure = SeriesMeasure {
             tag,
             runs: if spans.is_some() { &[] } else { runs },
-            segments: scanned.segments.get(*tag).map_or(&[][..], Vec::as_slice),
+            segments: if params.top.is_none() && history.is_some() {
+                spans.map_or(&[][..], Vec::as_slice)
+            } else {
+                scanned.segments.get(*tag).map_or(&[][..], Vec::as_slice)
+            },
             membership: spans.map(Vec::as_slice),
         };
         if bytes > 2 {
@@ -468,7 +532,11 @@ pub fn requested_series(
         series.push(NukeSeries {
             tag: tag.to_owned(),
             runs: kept,
-            segments: scanned.segments.get(tag).cloned().unwrap_or_default(),
+            segments: if params.top.is_none() && history.is_some() {
+                spans.cloned().unwrap_or_default()
+            } else {
+                scanned.segments.get(tag).cloned().unwrap_or_default()
+            },
             membership: spans.cloned(),
         });
     }
@@ -539,6 +607,9 @@ impl Product for CountryNukes {
         {
             return Err("Invalid top countries");
         }
+        if params.origin_hour.is_some() && (params.top.is_some() || params.tags.len() != 1) {
+            return Err("A nuclear drill needs one tag at its origin hour");
+        }
         Ok(())
     }
     fn load(
@@ -596,7 +667,21 @@ impl Product for CountryNukes {
         if unknown_hours > 0 {
             warnings.push(format!("{unknown_hours} country-hours have a hole in their native nuclear array; totals stay unknown."));
         }
-        let series = requested_series(&scanned, params, cancelled)?;
+        let history = (params.origin_hour.is_some() || !params.tags.is_empty())
+            .then(|| {
+                branch_histories(
+                    source,
+                    params.branch_id.parse().expect("validated branch"),
+                    false,
+                    &[],
+                    cancelled,
+                )
+            })
+            .transpose()?;
+        let series = requested_series(&scanned, params, history.as_deref(), cancelled)?;
+        if params.origin_hour.is_some() && series.is_empty() {
+            warnings.push("No nuclear stockpile or native country identity was recorded for the selected country at its origin hour.".into());
+        }
         let reply = CountryNukesReply {
             branch_id: params.branch_id.clone(),
             read_hours: scanned.read_hours.clone(),

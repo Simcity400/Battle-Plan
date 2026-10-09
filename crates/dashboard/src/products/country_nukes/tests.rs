@@ -218,7 +218,9 @@ fn country_nukes_top_omits_zero_missing_and_absent_but_chosen_zero_is_exact() {
             branch_id: "1".into(),
             tags: Vec::new(),
             top: Some(10),
+            origin_hour: None,
         },
+        None,
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -237,7 +239,9 @@ fn country_nukes_top_omits_zero_missing_and_absent_but_chosen_zero_is_exact() {
             branch_id: "1".into(),
             tags: vec!["C00001".into(), "C00003".into()],
             top: None,
+            origin_hour: None,
         },
+        None,
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -254,14 +258,15 @@ fn country_nukes_all_zero_top_is_empty_and_signed_nonzero_totals_still_rank() {
         branch_id: "1".into(),
         tags: Vec::new(),
         top: Some(10),
+        origin_hour: None,
     };
     assert!(
-        requested_series(&zeros, &params, &AtomicBool::new(false))
+        requested_series(&zeros, &params, None, &AtomicBool::new(false))
             .unwrap()
             .is_empty()
     );
     let signed = scanned(vec![frame(10, &[(1, 0, 0, 0), (2, 0, -100_000_000, 0)], 2)]);
-    let top = requested_series(&signed, &params, &AtomicBool::new(false)).unwrap();
+    let top = requested_series(&signed, &params, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(top.len(), 1);
     assert_eq!(top[0].tag, "C00002");
     assert_eq!(top[0].runs[0].total, Some(-1));
@@ -345,7 +350,9 @@ fn country_nukes_5000_countries_are_ranked_without_player_status_filtering() {
             branch_id: "1".into(),
             tags: Vec::new(),
             top: Some(10),
+            origin_hour: None,
         },
+        None,
         &AtomicBool::new(false),
     )
     .unwrap();
@@ -362,15 +369,17 @@ fn country_nukes_5000_countries_are_ranked_without_player_status_filtering() {
             branch_id: "1".into(),
             tags: result.series.keys().cloned().collect(),
             top: None,
+            origin_hour: None,
         },
         NukesParams {
             branch_id: "1".into(),
             tags: Vec::new(),
             top: Some(5000),
+            origin_hour: None,
         },
     ] {
         CountryNukes::validate(&params).unwrap();
-        let series = requested_series(&result, &params, &AtomicBool::new(false)).unwrap();
+        let series = requested_series(&result, &params, None, &AtomicBool::new(false)).unwrap();
         assert_eq!(series.len(), 5000);
     }
 }
@@ -398,9 +407,10 @@ fn country_nukes_only_serialized_reply_bytes_bound_the_selection() {
         branch_id: "1".into(),
         tags: vec!["opaque".into()],
         top: None,
+        origin_hour: None,
     };
     // The old per-count estimate refused this reply despite its actual fit.
-    let selected = requested_series(&result, &params, &AtomicBool::new(false)).unwrap();
+    let selected = requested_series(&result, &params, None, &AtomicBool::new(false)).unwrap();
     assert!(crate::transport::json_len(&selected, MAX_PRODUCT_REPLY_BYTES).is_some());
     let counts = &mut result.series.get_mut("opaque").unwrap()[0].counts;
     counts.extend(
@@ -409,7 +419,7 @@ fn country_nukes_only_serialized_reply_bytes_bound_the_selection() {
             value: 0,
         }),
     );
-    let error = requested_series(&result, &params, &AtomicBool::new(false)).unwrap_err();
+    let error = requested_series(&result, &params, None, &AtomicBool::new(false)).unwrap_err();
     assert!(error.to_string().starts_with("NuclearReplyTooLarge:"));
 }
 
@@ -451,4 +461,119 @@ fn country_nukes_modded_type_names_come_from_the_content_stack() {
     // Test artefacts stay under the designated scratch root when invoked by the worker.
     assert!(root.starts_with(&scratch));
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn country_nukes_selections_follow_native_holders_through_rename_and_tag_reuse() {
+    let mut first = frame(10, &[(1, 0, 200_000_000, 0)], 1);
+    let mut renamed = frame(11, &[(1, 0, 300_000_000, 0)], 1);
+    let mut reused = frame(12, &[(1, 0, 400_000_000, 0), (2, 0, 9_900_000_000, 0)], 2);
+    let mut replaced = frame(13, &[(1, 0, 700_000_000, 0), (2, 0, 10_000_000_000, 0)], 2);
+    for (frame, tags) in [
+        (&mut first, vec!["OLD"]),
+        (&mut renamed, vec!["NEW"]),
+        (&mut reused, vec!["NEW", "OLD"]),
+        (&mut replaced, vec!["NEW", "OLD"]),
+    ] {
+        let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        else {
+            panic!("countries")
+        };
+        for (row, tag) in rows.iter_mut().zip(tags) {
+            row.tag = tag.as_bytes().to_vec();
+        }
+    }
+    let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *replaced.tables[TableId::Countries.index()]
+    else {
+        panic!("countries")
+    };
+    rows[0].id = 90;
+    rows.sort_by_key(|row| row.id);
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![first, renamed, reused, replaced])],
+    )
+    .unwrap();
+    let cancel = AtomicBool::new(false);
+    let history =
+        super::super::country_history::scan_histories(&replay, 1, false, &[], &cancel).unwrap();
+    let scanned = scan(&replay, 1, &cancel).unwrap();
+    let params = NukesParams {
+        branch_id: "1".into(),
+        tags: vec!["OLD".into()],
+        top: None,
+        origin_hour: Some(10),
+    };
+    CountryNukes::validate(&params).unwrap();
+    let selected = requested_series(&scanned, &params, Some(&history), &cancel).unwrap();
+    let old = selected.iter().find(|series| series.tag == "OLD").unwrap();
+    let new = selected.iter().find(|series| series.tag == "NEW").unwrap();
+    assert_eq!(
+        old.runs
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour, run.total))
+            .collect::<Vec<_>>(),
+        [(10, 10, Some(2))]
+    );
+    assert_eq!(
+        new.runs
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour, run.total))
+            .collect::<Vec<_>>(),
+        [(11, 11, Some(3)), (12, 12, Some(4))]
+    );
+    assert_eq!(
+        old.segments,
+        [HourSpan {
+            first_hour: 10,
+            last_hour: 10
+        }]
+    );
+    assert_eq!(
+        new.segments,
+        [HourSpan {
+            first_hour: 11,
+            last_hour: 12
+        }]
+    );
+    let manual = NukesParams {
+        origin_hour: None,
+        ..params.clone()
+    };
+    let selected = requested_series(&scanned, &manual, Some(&history), &cancel).unwrap();
+    let old = selected.iter().find(|series| series.tag == "OLD").unwrap();
+    let new = selected.iter().find(|series| series.tag == "NEW").unwrap();
+    // A manual root includes every holder of OLD; NEW is included only while
+    // it belongs to one of those identities, never its unrelated replacement.
+    assert_eq!(
+        old.runs.iter().map(|run| run.total).collect::<Vec<_>>(),
+        [Some(2), Some(99), Some(100)]
+    );
+    assert_eq!(
+        new.runs
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour, run.total))
+            .collect::<Vec<_>>(),
+        [(11, 11, Some(3)), (12, 12, Some(4))]
+    );
+    assert_eq!(new.membership, Some(new.segments.clone()));
+    let missing = NukesParams {
+        origin_hour: Some(9),
+        ..params.clone()
+    };
+    assert!(
+        requested_series(&scanned, &missing, Some(&history), &cancel)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(requested_series(&scanned, &params, None, &cancel).is_err());
+    let new_holder = NukesParams {
+        origin_hour: Some(12),
+        ..params
+    };
+    let selected = requested_series(&scanned, &new_holder, Some(&history), &cancel).unwrap();
+    assert_eq!(selected.len(), 1);
+    assert!(selected[0].runs.iter().all(|run| run.total.unwrap() >= 99));
 }

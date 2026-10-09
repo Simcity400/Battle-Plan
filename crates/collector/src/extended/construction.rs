@@ -9,7 +9,7 @@ use crate::{
 };
 use engine::{
     Memory,
-    allocation::{copy_vec, owned_vec, reserve, reserve_exact, vec},
+    allocation::{copy_vec, map_slice, owned_vec, reserve, reserve_exact, vec},
     carmy_manpower_values, cbuilding, cbuilding_production_line, cbuilding_status, ccountry,
     ccountry_collaboration_data, ccountry_collaboration_status, ccountry_occupation_data,
     ccountry_occupation_status, cgame_state, cgeneral_production_line, coccupation_law,
@@ -54,6 +54,8 @@ pub struct Capacities {
     routes: usize,
     law_bytes: usize,
     occupied: usize,
+    group_laws: usize,
+    equipment: usize,
 }
 
 impl Default for Capacities {
@@ -65,6 +67,8 @@ impl Default for Capacities {
             routes: 4096,
             law_bytes: 16384,
             occupied: 0,
+            group_laws: 0,
+            equipment: 0,
         }
     }
 }
@@ -137,6 +141,8 @@ pub struct Captured {
     railway_construction: CaptureRows<crailway_production_line::Row>,
     settings: CaptureRows<ccountry_occupation_status::Row>,
     laws: CaptureRows<ccountry_occupation_data::LawRow>,
+    group_laws: CaptureRows<ccountry_occupation_data::GroupLawRow>,
+    fallback_law: Option<(usize, usize)>,
     garrisons: CaptureRows<cstate_garrison_data::Row>,
     assigned_manpower: CaptureRows<cstate_garrison_data::ManpowerRow>,
     reserve_manpower: CaptureRows<ccountry_occupation_status::ReserveManpowerRow>,
@@ -145,6 +151,7 @@ pub struct Captured {
     routes: Arena<u32>,
     law_bytes: Arena<u8>,
     occupied: Arena<u32>,
+    equipment: Arena<cstate_garrison_data::equipment::Row>,
     /// Raw-copy split gate for scheduled construction-rest tables.
     /// Set when an acquisition job returns a valid raw payload; `capture`
     /// then skips those typed walks and the decode worker fills the rows
@@ -186,6 +193,8 @@ impl Captured {
             routes: 0,
             law_bytes: 0,
             occupied: 0,
+            group_laws: 0,
+            equipment: 0,
         })
     }
 
@@ -201,6 +210,8 @@ impl Captured {
             railway_construction: CaptureRows::new(capacity.rows[4]),
             settings: CaptureRows::new(capacity.rows[5]),
             laws: CaptureRows::new(capacity.rows[6]),
+            group_laws: CaptureRows::new(capacity.group_laws),
+            fallback_law: None,
             garrisons: CaptureRows::new(capacity.rows[7]),
             assigned_manpower: CaptureRows::new(capacity.rows[8]),
             reserve_manpower: CaptureRows::new(capacity.rows[9]),
@@ -209,6 +220,7 @@ impl Captured {
             routes: Arena::new(capacity.routes),
             law_bytes: Arena::new(capacity.law_bytes),
             occupied: Arena::new(capacity.occupied),
+            equipment: Arena::new(capacity.equipment),
             rest_raw_mode: false,
         }
     }
@@ -222,6 +234,8 @@ impl Captured {
         self.railway_construction.reset();
         self.settings.reset();
         self.laws.reset();
+        self.group_laws.reset();
+        self.fallback_law = None;
         self.garrisons.reset();
         self.assigned_manpower.reset();
         self.reserve_manpower.reset();
@@ -230,6 +244,7 @@ impl Captured {
         self.routes.reset();
         self.law_bytes.reset();
         self.occupied.reset();
+        self.equipment.reset();
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -239,6 +254,7 @@ impl Captured {
             + self.railway_construction.allocated_bytes()
             + self.settings.allocated_bytes()
             + self.laws.allocated_bytes()
+            + self.group_laws.allocated_bytes()
             + self.garrisons.allocated_bytes()
             + self.assigned_manpower.allocated_bytes()
             + self.reserve_manpower.allocated_bytes()
@@ -247,12 +263,14 @@ impl Captured {
             + self.routes.allocated_bytes()
             + self.law_bytes.allocated_bytes()
             + self.occupied.allocated_bytes()
+            + self.equipment.allocated_bytes()
     }
 
     pub fn grow(&mut self, capacity: &mut Capacities) {
         capacity.rows[0] = capacity.rows[0].max(self.buildings.state_buildings.rows.len());
         capacity.rows[1] = capacity.rows[1].max(self.buildings.province_buildings.rows.len());
         capacity.rows[5] = capacity.rows[5].max(self.settings.rows.len());
+        capacity.group_laws = capacity.group_laws.max(self.group_laws.rows.len());
         capacity.law_bytes = capacity.law_bytes.max(self.law_bytes.first.len());
         self.buildings.state_buildings.grow(&mut capacity.rows[0]);
         self.buildings
@@ -263,6 +281,7 @@ impl Captured {
         self.railway_construction.grow(&mut capacity.rows[4]);
         self.settings.grow(&mut capacity.rows[5]);
         self.laws.grow(&mut capacity.rows[6]);
+        self.group_laws.grow(&mut capacity.group_laws);
         self.garrisons.grow(&mut capacity.rows[7]);
         self.assigned_manpower.grow(&mut capacity.rows[8]);
         self.reserve_manpower.grow(&mut capacity.rows[9]);
@@ -271,6 +290,8 @@ impl Captured {
         self.routes.grow(&mut capacity.routes);
         self.law_bytes.grow(&mut capacity.law_bytes);
         self.occupied.grow(&mut capacity.occupied);
+        capacity.equipment = capacity.equipment.max(self.equipment.first.len());
+        self.equipment.grow(&mut capacity.equipment);
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -342,6 +363,8 @@ impl Captured {
             self.railway_construction.reset();
             self.settings.reset();
             self.laws.reset();
+            self.group_laws.reset();
+            self.fallback_law = None;
             self.garrisons.reset();
             self.assigned_manpower.reset();
             self.reserve_manpower.reset();
@@ -349,12 +372,14 @@ impl Captured {
             self.collaboration.reset();
             self.routes.reset();
             self.law_bytes.reset();
+            self.equipment.reset();
         }
         let mut ticks = [0; N];
         if !replay::cadence::should_walk(TableId::StateBaseResources, hour, force_full) {
             self.fail_construction_rest_capture(replay::cadence::SKIPPED_REASON);
             self.routes.reset();
             self.law_bytes.reset();
+            self.equipment.reset();
             return ticks;
         }
         if self.rest_raw_mode {
@@ -391,15 +416,19 @@ impl Captured {
             ccountry_occupation_status::Buffers {
                 settings: &mut self.settings.rows,
                 laws: &mut self.laws.rows,
+                group_laws: &mut self.group_laws.rows,
                 garrisons: &mut self.garrisons.rows,
                 manpower: &mut self.assigned_manpower.rows,
                 reserve_manpower: &mut self.reserve_manpower.rows,
                 names: &mut self.law_bytes.first,
+                equipment: &mut self.equipment.first,
             },
             &mut self.occupied.first,
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
+        self.group_laws.outcome = occupation.group_laws;
+        self.fallback_law = occupation.fallback_law;
         self.garrisons.outcome = occupation.garrisons;
         self.assigned_manpower.outcome = occupation.manpower;
         self.reserve_manpower.outcome = occupation.reserve_manpower;
@@ -407,6 +436,8 @@ impl Captured {
         self.law_bytes.required = occupation.required_bytes;
         self.occupied.len = occupation.occupied_len;
         self.occupied.required = occupation.required_occupied;
+        self.equipment.len = occupation.equipment_len;
+        self.equipment.required = occupation.required_equipment;
         ticks[5] = elapsed(begin);
         reads.select(TABLES[10]);
         ticks[10] = single(&mut self.resistance, |output| {
@@ -417,6 +448,35 @@ impl Captured {
             ccountry_collaboration_status::walk(memory, base, game_state, output)
         });
         ticks
+    }
+
+    fn garrison_equipment(
+        &self,
+        row: &cstate_garrison_data::Row,
+    ) -> rows::Recorded<rows::GarrisonEquipmentInputs> {
+        let mut inputs = rows::GarrisonEquipmentInputs::default();
+        match row.equipment {
+            Some((start, count)) => {
+                let span = &self.equipment.first[..self.equipment.len][start..start + count];
+                inputs.rows = owned_vec(map_slice(span, |value| rows::GarrisonEquipment {
+                    equipment_token: value.equipment_token,
+                    archetype_token: value.archetype_token,
+                    archetype_active: value.archetype_active,
+                    required_raw: value.required_raw,
+                    required_lookup_raw: value.required_lookup_raw,
+                    allocated_raw: value.allocated_raw,
+                    weight_raw: value.weight_raw,
+                }));
+            }
+            None => {
+                inputs.failure = Some(owned_vec(copy_vec(
+                    row.equipment_failure
+                        .unwrap_or("garrison equipment capture not supplied")
+                        .as_bytes(),
+                )))
+            }
+        }
+        rows::Recorded::Value(inputs)
     }
 
     /// Runs only on the spool thread. All twelve tables use shared sort,
@@ -466,7 +526,13 @@ impl Captured {
                 },
             ),
             railway_table(&self.railway_construction, &self.routes),
-            settings_table(&self.settings, &self.law_bytes, &self.occupied),
+            settings_table(
+                &self.settings,
+                &self.group_laws,
+                self.fallback_law,
+                &self.law_bytes,
+                &self.occupied,
+            ),
             law_table(&self.laws, &self.law_bytes),
             table::<tables::StateGarrisons, _>(
                 self.garrisons.outcome,
@@ -479,6 +545,7 @@ impl Captured {
                     strength_ratio: row.strength_ratio,
                     garrison_required: row.garrison_required,
                     serialized_flag: row.serialized_flag,
+                    equipment: self.garrison_equipment(row),
                 },
             ),
             table::<tables::StateAssignedManpower, _>(
@@ -620,6 +687,8 @@ fn railway_table(
 
 fn settings_table(
     captured: &CaptureRows<ccountry_occupation_status::Row>,
+    groups: &CaptureRows<ccountry_occupation_data::GroupLawRow>,
+    fallback: Option<(usize, usize)>,
     arena: &Arena<u8>,
     occupied: &Arena<u32>,
 ) -> TableView {
@@ -636,6 +705,8 @@ fn settings_table(
     {
         return unavailable("occupation default law lies outside the captured arena");
     }
+    let groups = source_groups(groups, names).ok();
+    let fallback = fallback.and_then(|(start, len)| range(names, start, len));
     table::<tables::OccupationSettings, _>(outcome, source, |row| rows::OccupationSettingsRow {
         country: row.country,
         garrison_template: row.garrison_template,
@@ -648,7 +719,43 @@ fn settings_table(
                 .and_then(|end| occupied.first.get(span.start..end))
                 .map(|values| owned_vec(copy_vec(values)))
         })),
+        group_laws: rows::Recorded::Value(groups.map(|groups| {
+            let first = groups.partition_point(|group| group.controller < row.country);
+            let count = groups[first..].partition_point(|group| group.controller == row.country);
+            owned_vec(map_slice(&groups[first..first + count], |group| {
+                rows::OccupationGroupLaw {
+                    occupied: group.occupied,
+                    scope_country: group.scope_country,
+                    law: (group.present != 0).then(|| {
+                        owned_vec(copy_vec(
+                            &names[group.name_start..group.name_start + group.name_len],
+                        ))
+                    }),
+                }
+            }))
+        })),
+        fallback_law: rows::Recorded::Value(fallback.map(|name| owned_vec(copy_vec(name)))),
     })
+}
+
+fn source_groups<'a>(
+    groups: &'a CaptureRows<ccountry_occupation_data::GroupLawRow>,
+    names: &[u8],
+) -> Result<&'a [ccountry_occupation_data::GroupLawRow], &'static str> {
+    let Outcome::Rows { len } = groups.outcome else {
+        return Err("occupied-country law inventory incomplete");
+    };
+    let groups = groups
+        .rows
+        .get(..len)
+        .ok_or("occupied-country law inventory length invalid")?;
+    if groups
+        .iter()
+        .any(|row| range(names, row.name_start, row.name_len).is_none())
+    {
+        return Err("occupied-country law lies outside the captured arena");
+    }
+    Ok(groups)
 }
 
 fn law_table(

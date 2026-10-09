@@ -2,14 +2,17 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { MenuItem } from '../../components/ContextMenu';
 import { useContextMenu } from '../../components/ContextMenu';
 import { canvasImage } from '../images';
+import { countryFlagContent, drawCountryFlag } from '../countryFlag';
+import type { CountryFlagLook } from '../../components/CountryFlag';
 import { revealRow } from '../../components/countryList';
 import { approach, approachAcrossGap, easeTau } from '../easing';
 import { nextRows } from '../rowMotion';
 import type { MovingRow } from '../rowMotion';
 import { scheduler } from '../scheduler';
+import { SECONDARY_DASH } from '../palette';
 import type { FrameTask } from '../scheduler';
 import { backingSize, toLocal } from '../surface';
-import { fitTooltip, hideTooltip, showTooltip, tooltipText } from '../tooltip';
+import { fitTooltip, hideTooltip, showTooltip, tooltipStore, tooltipText } from '../tooltip';
 import type { TooltipContent } from '../tooltip';
 import { useChartTokens, useViewportHeight } from '../useChartTokens';
 import { butterflyLabelWidth, butterflyLayout, butterflyMinimumHeight, butterflyRowViewport, butterflyScale, butterflySurface, butterflyTextWidths, ellipsizeLabel } from './layout';
@@ -18,7 +21,7 @@ import '../charts.css';
 import './butterfly.css';
 
 export interface ButterflyItem extends ButterflyValue {
-  label: string; flag?: string; color: string;
+  label: string; flag?: string; countryFlag?: CountryFlagLook; color: string;
   /** Already formatted exact values; shape easing never changes these strings. */
   leftText: string; rightText: string; ratioText: string;
   /** Identifies an unbroken data stretch. Changing it prevents easing across a gap. */
@@ -33,6 +36,8 @@ export interface ButterflyProps<T extends ButterflyItem> {
   active: boolean; hoursPerSecond?: number;
   tooltip?: (item: T) => TooltipContent | null;
   contextItems?: (item: T) => readonly MenuItem[];
+  /** Enter opens the left value; Shift+Enter opens the right. */
+  onSelect?: (item: T, side: 'left' | 'right') => void;
 }
 
 interface Shape { slot: number; left: number | null; right: number | null; segment: string }
@@ -50,7 +55,9 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
   latest.current = { props, tokens, viewport };
   const hits = useRef<{ item: T; y: number; slot: number }[]>([]);
   const headerHeight = useRef(0);
+  const rightEdge = useRef(0);
   const keyed = useRef<string | null>(null);
+  const keyIntent = useRef(false);
   const pointer = useRef<{ y: number; x: number; clientX: number; clientY: number } | null>(null);
   const [spoken, setSpoken] = useState('');
   const menu = useContextMenu(`${props.label} actions`);
@@ -141,19 +148,28 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
         const y = layout.top + (shape.slot + 0.5) * layout.slot;
         if (row.phase !== 'leaving') hits.current.push({ item, y, slot: layout.slot });
         if (y + layout.slot / 2 < visible.start || y - layout.slot / 2 > visible.end) continue;
-        const l = Math.max(0, Math.min(layout.half, (shape.left ?? 0) / scale * layout.half)), r = Math.max(0, Math.min(layout.half, (shape.right ?? 0) / scale * layout.half));
+        rightEdge.current = layout.right;
+        const l = Math.min(layout.half, Math.abs(shape.left ?? 0) / scale * layout.half), r = Math.min(layout.half, Math.abs(shape.right ?? 0) / scale * layout.half);
         const selected = keyed.current === item.id || pointer.current && pointer.current.y >= layout.top && Math.abs(pointer.current.y + scrollTop - y) < layout.slot / 2;
         if (selected && row.phase !== 'leaving') { ctx.globalAlpha = opacity; ctx.fillStyle = t.raised; ctx.fillRect(0, y - layout.slot / 2, width, layout.slot); }
         ctx.fillStyle = item.color;
         const radius = t.fontSize.small / 3;
-        if (shape.left != null && shape.left >= 0) { ctx.globalAlpha = opacity * 0.5; ctx.beginPath(); ctx.roundRect(layout.left - l, y - layout.barHeight / 2, l, layout.barHeight, [radius, 0, 0, radius]); ctx.fill(); }
-        if (shape.right != null && shape.right >= 0) { ctx.globalAlpha = opacity; ctx.beginPath(); ctx.roundRect(layout.right, y - layout.barHeight / 2, r, layout.barHeight, [0, radius, radius, 0]); ctx.fill(); }
+        const bar = (x: number, size: number, value: number | null, alpha: number, radii: number[]) => {
+          if (value == null) return;
+          ctx.globalAlpha = opacity * alpha; ctx.beginPath(); ctx.roundRect(x, y - layout.barHeight / 2, size, layout.barHeight, radii); ctx.fill();
+          if (value < 0) { ctx.save(); ctx.setLineDash([...SECONDARY_DASH]); ctx.strokeStyle = t.text; ctx.lineWidth = t.lineWidth.series; ctx.stroke(); ctx.restore(); }
+        };
+        bar(layout.left - l, l, shape.left, 0.5, [radius, 0, 0, radius]);
+        bar(layout.right, r, shape.right, 1, [0, radius, radius, 0]);
         ctx.globalAlpha = opacity; ctx.fillStyle = t.text; ctx.font = `${t.fontSize.body}px ${t.font}`; ctx.textAlign = 'left';
         const flagX = layout.left + t.fontSize.body / 2, flagWidth = t.fontSize.body * 1.5, flagHeight = t.fontSize.body;
         if (flags) {
-          const flag = item.flag ? canvasImage(item.flag, loaded) : null;
-          if (flag) ctx.drawImage(flag, flagX, y - flagHeight / 2, flagWidth, flagHeight);
-          else { ctx.strokeStyle = t.border; ctx.lineWidth = t.lineWidth.grid; ctx.strokeRect(flagX, y - flagHeight / 2, flagWidth, flagHeight); }
+          if (item.countryFlag) drawCountryFlag(ctx, item.countryFlag, flagX, y - flagHeight / 2, flagWidth, flagHeight, t, loaded);
+          else {
+            const flag = item.flag ? canvasImage(item.flag, loaded) : null;
+            if (flag) ctx.drawImage(flag, flagX, y - flagHeight / 2, flagWidth, flagHeight);
+            else { ctx.strokeStyle = t.border; ctx.lineWidth = t.lineWidth.grid; ctx.strokeRect(flagX, y - flagHeight / 2, flagWidth, flagHeight); }
+          }
         }
         let short = shortened.get(item.label);
         if (short === undefined) { short = ellipsizeLabel(item.label, shortRoom, text => ctx.measureText(text).width); shortened.set(item.label, short); }
@@ -171,13 +187,21 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
       if (ratio) { ctx.textAlign = 'right'; ctx.fillText(p.ratioLabel, layout.ratioX, layout.top / 2); }
       const hit = keyed.current ? hits.current.find(hit => hit.item.id === keyed.current)
         : pointer.current && pointer.current.y >= layout.top ? hits.current.find(hit => Math.abs(hit.y - pointer.current!.y - scrollTop) < hit.slot / 2) : undefined;
-      const content = hit && hit.y + hit.slot / 2 >= visible.start && hit.y - hit.slot / 2 <= visible.end && p.tooltip?.(hit.item);
-      if (content) {
-        const fitted = fitTooltip([content], room, { keep: 1 });
-        showTooltip(owner, fitted, pointer.current?.clientX ?? rect.left + rect.width / 2,
-          pointer.current?.clientY ?? rect.top + (hit!.y - scrollTop) * rect.height / Math.max(1, height));
-        if (keyed.current) setSpoken(tooltipText(fitted));
-      } else { hideTooltip(owner); setSpoken(''); }
+      const heldTooltip = tooltipStore.get();
+      if (!keyed.current || keyIntent.current || heldTooltip == null || heldTooltip.owner === owner) {
+        const content = hit && hit.y + hit.slot / 2 >= visible.start && hit.y - hit.slot / 2 <= visible.end
+          ? p.tooltip?.(hit.item) ?? null : null;
+        const flag = flags ? hit?.item.countryFlag : undefined;
+        const raw = content && flag ? { ...content, countryFlag: flag } : content;
+        const decoded = raw ? countryFlagContent(fitTooltip([raw], room, { keep: 1 }), undefined, loaded) : null;
+        const fitted = decoded ? fitTooltip([decoded], room, { keep: 1 }) : null;
+        if (fitted) {
+          showTooltip(owner, fitted, pointer.current?.clientX ?? rect.left + rect.width / 2,
+            pointer.current?.clientY ?? rect.top + (hit!.y - scrollTop) * rect.height / Math.max(1, height));
+          if (keyed.current) setSpoken(tooltipText(fitted));
+        } else { hideTooltip(owner); setSpoken(''); }
+      }
+      keyIntent.current = false;
       return moving;
     } };
     task.current = frameTask;
@@ -199,6 +223,13 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
     <div className="butterfly-content" style={{ minHeight: butterflyMinimumHeight(props.items.length, tokens.fontSize.body) }}>
       <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label}
         onPointerDown={() => { menuKey.current = false; }}
+        onClick={event => {
+          if (!props.onSelect) return;
+          const element = canvas.current!, rect = element.getBoundingClientRect();
+          const point = toLocal(event.clientX, event.clientY, rect, element.clientWidth, element.clientHeight);
+          const hit = point.y >= headerHeight.current ? hits.current.find(hit => Math.abs(hit.y - point.y - root.current!.scrollTop) < hit.slot / 2) : undefined;
+          if (hit) props.onSelect(hit.item, point.x >= rightEdge.current ? 'right' : 'left');
+        }}
         onPointerMove={event => {
           const element = canvas.current!, rect = element.getBoundingClientRect();
           pointer.current = { ...toLocal(event.clientX, event.clientY, rect, element.clientWidth, element.clientHeight), clientX: event.clientX, clientY: event.clientY };
@@ -220,12 +251,15 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
             const index = items.findIndex(item => item.id === keyed.current);
             const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : index < 0 ? 0
               : Math.max(0, Math.min(items.length - 1, index + (event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 1)));
-            keyed.current = items[next].id; pointer.current = null;
+            keyed.current = items[next].id; pointer.current = null; keyIntent.current = true;
             const hit = hits.current.find(hit => hit.item.id === keyed.current);
             const container = root.current;
             if (hit && container) container.scrollTop = Math.max(0, revealRow((hit.y - headerHeight.current) / hit.slot - 0.5,
               container.scrollTop, butterflyRowViewport(headerHeight.current, container.clientHeight, container.scrollTop).height, hit.slot));
             wake();
+          } else if (event.key === 'Enter' && props.onSelect) {
+            const hit = hits.current.find(hit => hit.item.id === keyed.current);
+            if (hit) { event.preventDefault(); props.onSelect(hit.item, event.shiftKey ? 'right' : 'left'); }
           } else if (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey) {
             const hit = hits.current.find(hit => hit.item.id === keyed.current);
             if (hit) { event.preventDefault(); menuKey.current = true; const rect = canvas.current!.getBoundingClientRect(); open(hit.item, rect.left + rect.width / 2, rect.top + (hit.y - root.current!.scrollTop) * rect.height / Math.max(1, canvas.current!.clientHeight)); }

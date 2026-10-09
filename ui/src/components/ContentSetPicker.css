@@ -1,0 +1,18 @@
+.content-set-picker > button { display: inline-flex; align-items: center; gap: 8px; }
+.content-set-picker > button > svg { width: 14px; height: 14px; }
+.content-picker { width: 340px; padding: 8px; }
+.content-picker-search { position: relative; display: flex; align-items: center; gap: 8px; padding-bottom: 8px; }
+.content-picker-search > svg { position: absolute; left: 10px; width: 15px; height: 15px; color: var(--muted); pointer-events: none; }
+.content-picker-search > input { min-width: 0; padding-left: 32px; }
+.content-picker-list { max-height: 340px; overflow-y: auto; margin-top: 8px; }
+.content-picker-options { position: relative; outline: none; }
+/* Match COUNTRY_ROW_HEIGHT and the shared virtual list geometry. */
+.content-picker-option { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: 8px; height: 36px; padding: 6px 8px; border-radius: var(--r-sm); font-size: 13px; cursor: pointer; }
+.content-picker-option > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.content-picker-option > img, .content-picker-option > svg { width: 20px; height: 20px; flex: 0 0 20px; object-fit: contain; }
+.content-picker-option > svg { color: var(--selection); }
+.content-picker-option[aria-selected='true'] { background: var(--selection-soft); }
+.content-picker-option:hover, .content-picker-options:focus-visible .content-picker-option[data-active] { background: var(--hover); }
+.content-picker-options:focus-visible .content-picker-option[data-active] { outline: 2px solid var(--accent); outline-offset: -2px; }
+.content-picker-option[aria-disabled='true'] { color: var(--quiet); cursor: default; }
+.content-picker-empty { margin: 0; padding: 18px 8px; color: var(--muted); font-size: 12px; text-align: center; }

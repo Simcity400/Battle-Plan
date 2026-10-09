@@ -54,6 +54,36 @@ fn cache_for(bytes: &[u8]) -> Cache {
     let demand = cadvisor::modifier_demand(&kit::memory(bytes), IMAGE, ADDRESS).unwrap();
     Cache::with_modifier_demand(demand)
 }
+
+#[test]
+fn advisor_modifier_sizing_survives_an_unreadable_political_census() {
+    struct World<'a>(&'a [u8]);
+    impl Memory for World<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == IMAGE + engine::cgame_state::SINGLETON_RVA && output.len() == 8 {
+                output.copy_from_slice(&(ADDRESS as u64).to_le_bytes());
+                return true;
+            }
+            if address == ADDRESS + engine::cgame_state::COUNTRIES && output.len() == 16 {
+                output[..8].copy_from_slice(&((ADDRESS + 0x3000) as u64).to_le_bytes());
+                output[8..12].copy_from_slice(&2_u32.to_le_bytes());
+                output[12..].copy_from_slice(&2_u32.to_le_bytes());
+                return true;
+            }
+            kit::memory(self.0).copy(address, output)
+        }
+    }
+    let bytes = kit::mapped_fixture();
+    let memory = World(&bytes);
+    assert!(crate::country_scale::observe_politics(&memory, IMAGE).is_err());
+    let demand = crate::country_scale::observe_advisor_modifiers(&memory, IMAGE)
+        .unwrap()
+        .unwrap();
+    assert!(demand.rows > 0);
+    let mut cache = Cache::with_modifier_demand(demand);
+    cache.capture(&memory, context(), &Observer::new(), None);
+    assert_eq!(cache.modifiers.shortfall, 0);
+}
 fn assert_fresh(cache: &Section, bytes: &[u8]) {
     for entry in &cache.current.entries {
         for row in &cache.current.rows[entry.rows.clone()] {

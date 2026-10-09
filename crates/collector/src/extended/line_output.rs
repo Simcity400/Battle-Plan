@@ -12,18 +12,21 @@
 use super::output_continuity::OutputMap;
 pub(crate) use super::output_continuity::holds_publication;
 use super::output_continuity::{self, Progress, Reasons, State};
-use crate::line_output::{Drained, Entry};
+use crate::line_output::{Drained, Entry, OutputKind};
 use crate::spooling::unavailable;
 use engine::allocation::{owned_vec, reserve, reserve_exact, reserve_map};
 use replay::{
     BranchId,
     frame::{TableInput, TableView},
-    rows::{ProductionLineOutputRow, ProductionLineRow, TableId, TableRows},
+    rows::{ProductionLineOutputRow, ProductionLineRow, Recorded, TableId, TableRows},
 };
 use std::io;
 
-pub const N: usize = 1;
-pub const TABLES: [TableId; N] = [TableId::ProductionLineOutput];
+pub const N: usize = 2;
+pub const TABLES: [TableId; N] = [
+    TableId::ProductionLineOutput,
+    TableId::RocketProductionOutput,
+];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// The spool replaces this placeholder with the published table.
@@ -39,7 +42,7 @@ impl output_continuity::Observation for Observation {
         crate::line_output::drain(entries)
     }
 }
-pub type Captured = output_continuity::Captured<Observation>;
+pub type Captured = output_continuity::Captured<Observation, N>;
 
 /// What a line produced under one (country, variant, organisation), in
 /// first-seen order: one row.
@@ -50,6 +53,8 @@ struct Output {
     mio: u64,
     units: i64,
     credit: i64,
+    spent: Option<i64>,
+    instant: Option<i64>,
     exact: bool,
 }
 
@@ -67,6 +72,8 @@ struct Line {
 #[derive(Debug, Default)]
 pub struct Totals {
     shared: output_continuity::Totals<Line>,
+    rocket: super::rocket_output::Totals,
+    unknown_delivery: bool,
 }
 
 impl Totals {
@@ -85,8 +92,25 @@ impl Totals {
         }
         let published = self.publish(hour, &tables[TableId::ProductionLines.index()]);
         tables[TableId::ProductionLineOutput.index()] = TableInput::Sampled(published);
+        let rockets = match self
+            .rocket
+            .publication(&tables[TableId::ProductionLines.index()])
+        {
+            Ok(Ok(rows)) => TableView::Complete(TableRows::RocketProductionOutput(rows)),
+            Ok(Err(reason)) => unavailable(reason),
+            Err(_) => return,
+        };
+        tables[TableId::RocketProductionOutput.index()] = TableInput::Sampled(rockets);
     }
 
+    /// The same retained rows are used by the source regressions.
+    #[cfg(test)]
+    pub(crate) fn rocket_publication(
+        &self,
+        production_lines: &TableInput,
+    ) -> io::Result<Result<Vec<replay::rows::RocketProductionOutputRow>, &'static str>> {
+        self.rocket.publication(production_lines)
+    }
     /// After a frame of this campaign was written, with whether it held the
     /// last publication ([`holds_publication`], taken before the write).
     pub(crate) fn written(&mut self, held_publication: bool) {
@@ -94,6 +118,13 @@ impl Totals {
     }
 
     fn observe(&mut self, branch: BranchId, hour: i32, captured: &Captured) -> io::Result<()> {
+        self.rocket.observe(
+            branch,
+            hour,
+            captured.drained,
+            captured.handed_over(),
+            Entry::rocket_event,
+        )?;
         let progress = self.shared.observe(
             branch,
             hour,
@@ -106,11 +137,21 @@ impl Totals {
             },
         );
         match progress {
-            Progress::Restart => {}
+            Progress::Restart => {
+                self.unknown_delivery = false;
+            }
             Progress::Entries(range) => {
                 let entries = &captured.handed_over()[range];
-                reserve_map(&mut self.shared.lines, entries.len())?;
-                for entry in entries {
+                self.unknown_delivery |= entries
+                    .iter()
+                    .any(|entry| matches!(entry.kind, OutputKind::UnknownDelivery));
+                let equipment = || {
+                    entries
+                        .iter()
+                        .filter(|entry| matches!(entry.kind, OutputKind::Equipment))
+                };
+                reserve_map(&mut self.shared.lines, equipment().count())?;
+                for entry in equipment() {
                     let line = self.shared.lines.entry(entry.line).or_insert_with(|| Line {
                         first_hour: hour,
                         outputs: Vec::new(),
@@ -119,7 +160,7 @@ impl Totals {
                     });
                     line.pending = line.pending.saturating_add(1);
                 }
-                for entry in entries {
+                for entry in equipment() {
                     let line = self.shared.lines.get_mut(&entry.line).unwrap();
                     if line.pending != 0 {
                         reserve(&mut line.outputs, line.pending)?;
@@ -191,6 +232,8 @@ impl Totals {
                     mio: row.mio,
                     units: 0,
                     credit: 0,
+                    spent: Some(0),
+                    instant: Some(0),
                     exact: true,
                 });
             }
@@ -200,6 +243,7 @@ impl Totals {
         })?;
         let mut rows = Vec::new();
         reserve_exact(&mut rows, count)?;
+        let delivery_exact = !self.unknown_delivery;
         for (&handle, line) in &mut self.shared.lines {
             line.ended = !live(handle);
             // Absent from the first census and first seen after it: created
@@ -217,7 +261,9 @@ impl Totals {
                     since_hour,
                     observed_since_creation,
                     ended: line.ended,
-                    exact: output.exact,
+                    exact: output.exact && delivery_exact,
+                    spent_raw: Recorded::Value(output.spent),
+                    instant_raw: Recorded::Value(output.instant),
                 }
             }));
         }
@@ -244,15 +290,50 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) {
                 mio: entry.mio,
                 units: 0,
                 credit: 0,
+                spent: Some(0),
+                instant: Some(0),
                 exact: true,
             });
             line.outputs.len() - 1
         }
     };
     let output = &mut line.outputs[index];
-    output.units += i64::from(entry.units);
-    output.credit += i64::from(entry.credit);
+    for (total, value) in [
+        (&mut output.units, entry.units),
+        (&mut output.credit, entry.credit),
+    ] {
+        if let Some(next) = total.checked_add(i64::from(value)) {
+            *total = next;
+        } else {
+            output.exact = false;
+        }
+    }
     output.exact &= entry.exact;
+    // Classification is coupled by the native instant predicate. Once known,
+    // branch-total overflow is field-local and can never recover to zero.
+    let (spent, instant) = entry.spending.map_or((None, None), |(spent, instant)| {
+        (Some(spent), Some(instant))
+    });
+    for (total, value, reason) in [
+        (
+            &mut output.spent,
+            spent,
+            "production line spent_raw cumulative overflow",
+        ),
+        (
+            &mut output.instant,
+            instant,
+            "production line instant_raw cumulative overflow",
+        ),
+    ] {
+        let next = total
+            .zip(value)
+            .and_then(|(total, value)| total.checked_add(value));
+        if total.is_some() && value.is_some() && next.is_none() {
+            crate::line_output::refuse_spending(reason);
+        }
+        *total = next;
+    }
 }
 
 #[cfg(test)]
@@ -291,12 +372,14 @@ mod tests {
 
     fn entry(line: u64, variant: u64, mio: u64, units: i32, credit: i32) -> Entry {
         Entry {
+            kind: OutputKind::Equipment,
             country: 5001,
             line,
             variant,
             mio,
             units,
             credit,
+            spending: Some((0, 0)),
             exact: true,
         }
     }
@@ -380,7 +463,76 @@ mod tests {
             observed_since_creation,
             ended,
             exact: true,
+            spent_raw: Recorded::Value(Some(0)),
+            instant_raw: Recorded::Value(Some(0)),
         }
+    }
+
+    #[test]
+    fn signed_zero_unit_spending_and_field_local_overflow_survive_publication() {
+        let mut totals = Totals::default();
+        let lines = [(LINE_A, TANK, ORG)];
+        assemble(&mut totals, 7, 100, &frame(1, 0, &[]), census(&lines));
+        let mut tick = entry(LINE_A, TANK, ORG, 0, 0);
+        tick.spending = Some((i64::MAX, -11));
+        let first = rows(assemble(
+            &mut totals,
+            7,
+            124,
+            &frame(1, 0, &[tick]),
+            census(&lines),
+        ));
+        assert_eq!(first[0].spent_raw, Recorded::Value(Some(i64::MAX)));
+        assert_eq!(first[0].instant_raw, Recorded::Value(Some(-11)));
+        assert!(first[0].exact);
+        assert_eq!((first[0].units, first[0].mio_credit), (0, 0));
+        tick.spending = Some((1, -7));
+        tick.units = 2;
+        tick.credit = 2;
+        let second = rows(assemble(
+            &mut totals,
+            7,
+            148,
+            &frame(1, 1, &[tick]),
+            census(&lines),
+        ));
+        assert_eq!(second[0].spent_raw, Recorded::Value(None));
+        assert_eq!(second[0].instant_raw, Recorded::Value(Some(-18)));
+        assert!(second[0].exact);
+        assert_eq!((second[0].units, second[0].mio_credit), (2, 2));
+        tick.spending = Some((-1, 0));
+        let last = rows(assemble(
+            &mut totals,
+            7,
+            172,
+            &frame(1, 2, &[tick]),
+            census(&[]),
+        ));
+        assert!(last[0].ended && last[0].exact);
+        assert_eq!(last[0].spent_raw, Recorded::Value(None));
+        assert_eq!(last[0].instant_raw, Recorded::Value(Some(-18)));
+    }
+
+    #[test]
+    fn failed_classification_keeps_known_units_and_both_spending_fields_unavailable() {
+        let mut totals = Totals::default();
+        let lines = [(LINE_A, TANK, ORG)];
+        assemble(&mut totals, 7, 100, &frame(1, 0, &[]), census(&lines));
+        let mut tick = entry(LINE_A, TANK, ORG, 3, 3);
+        tick.spending = None;
+        let known = rows(assemble(
+            &mut totals,
+            7,
+            124,
+            &frame(1, 0, &[tick]),
+            census(&lines),
+        ));
+        assert_eq!(
+            (known[0].units, known[0].mio_credit, known[0].exact),
+            (3, 3, true)
+        );
+        assert_eq!(known[0].spent_raw, Recorded::Value(None));
+        assert_eq!(known[0].instant_raw, Recorded::Value(None));
     }
 
     /// Ticks drained at the branch's first frame came before its sample; later
@@ -680,5 +832,183 @@ mod tests {
                 ..row(LINE_B, 0, (SHIP, 0), (1, 2), (false, true))
             }
         );
+    }
+
+    #[test]
+    fn admitted_empty_rocket_drain_publishes_world_coverage() {
+        let mut totals = Totals::default();
+        let mut tables: Vec<TableInput> = (0..TABLE_COUNT)
+            .map(|_| TableInput::Sampled(unavailable("absent")))
+            .collect();
+        tables[TableId::ProductionLines.index()] = census(&[]);
+        totals.assemble(7, 100, &frame(1, 0, &[]), &mut tables);
+        let TableInput::Sampled(TableView::Complete(TableRows::RocketProductionOutput(rows))) =
+            tables.swap_remove(TableId::RocketProductionOutput.index())
+        else {
+            panic!("empty admitted drain must publish");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].country, rows[0].variant, rows[0].since_hour),
+            (0, 0, 100)
+        );
+        assert!(rows[0].exact && rows[0].units_exact);
+    }
+
+    #[test]
+    fn mixed_common_indices_and_unknown_delivery_preserve_spending_and_refuse_units() {
+        use engine::line_output_sites::RocketFailure;
+        let mut totals = Totals::default();
+        let lines = [(LINE_A, TANK, ORG)];
+        assemble(&mut totals, 7, 100, &frame(1, 0, &[]), census(&lines));
+        let mut first = entry(LINE_A, TANK, ORG, 3, 3);
+        first.spending = Some((11, 0));
+        let mut second = entry(LINE_A, TANK, ORG, 4, 4);
+        second.spending = Some((13, 0));
+        let mixed = [
+            Entry {
+                kind: OutputKind::Spending(RocketFailure::None),
+                country: 5001,
+                variant: SHIP,
+                spending: Some((-7, 0)),
+                exact: true,
+                ..Entry::default()
+            },
+            first,
+            Entry {
+                kind: OutputKind::UnknownDelivery,
+                ..Entry::default()
+            },
+            Entry {
+                kind: OutputKind::Delivery { units_known: true },
+                country: 5001,
+                variant: SHIP,
+                units: -2,
+                exact: true,
+                ..Entry::default()
+            },
+            second,
+        ];
+        let equipment = rows(assemble(
+            &mut totals,
+            7,
+            124,
+            &frame(1, 0, &mixed),
+            census(&lines),
+        ));
+        assert_eq!(equipment.len(), 1); // no Rocket/fake line0 in equipment
+        assert_eq!((equipment[0].units, equipment[0].mio_credit), (7, 7));
+        assert_eq!(equipment[0].spent_raw, Recorded::Value(Some(24)));
+        assert!(!equipment[0].exact);
+        let rocket = totals.rocket_publication(&census(&lines)).unwrap().unwrap();
+        let world = rocket
+            .iter()
+            .find(|row| (row.country, row.variant) == (0, 0))
+            .unwrap();
+        assert!(world.exact && !world.units_exact);
+        assert_eq!(
+            (world.ticks, world.deliveries, world.inexact_deliveries),
+            (1, 2, 1)
+        );
+        let design = rocket.iter().find(|row| row.variant == SHIP).unwrap();
+        assert_eq!((design.spent_raw, design.units), (-7, -2));
+        assert!(design.exact && design.units_exact);
+        // Replay of already-consumed common indices never duplicates either arm.
+        let repeated = rows(assemble(
+            &mut totals,
+            7,
+            125,
+            &frame(1, 0, &mixed),
+            census(&lines),
+        ));
+        assert_eq!(
+            (repeated[0].units, repeated[0].spent_raw),
+            (7, Recorded::Value(Some(24)))
+        );
+        let quiet = rows(assemble(
+            &mut totals,
+            7,
+            148,
+            &frame(1, 5, &[]),
+            census(&lines),
+        ));
+        assert!(!quiet[0].exact);
+        let world_again = totals.rocket_publication(&census(&lines)).unwrap().unwrap();
+        assert_eq!(
+            world_again
+                .iter()
+                .find(|row| row.country == 0)
+                .unwrap()
+                .deliveries,
+            2
+        );
+        // Synthetic admitted branch input resets observation; it does not prove a load.
+        let reset = rows(assemble(
+            &mut totals,
+            8,
+            200,
+            &frame(1, 5, &[]),
+            census(&lines),
+        ));
+        assert!(reset[0].exact);
+        assert_eq!(reset[0].units, 0);
+    }
+
+    #[test]
+    fn short_mixed_drain_keeps_original_common_indices_and_finishes_once() {
+        use engine::line_output_sites::RocketFailure;
+        let mut totals = Totals::default();
+        let lines = [(LINE_A, TANK, ORG)];
+        assemble(&mut totals, 7, 100, &frame(1, 0, &[]), census(&lines));
+        let rocket = Entry {
+            kind: OutputKind::Spending(RocketFailure::None),
+            country: 5001,
+            variant: SHIP,
+            spending: Some((17, 0)),
+            exact: true,
+            ..Entry::default()
+        };
+        let equipment = entry(LINE_A, TANK, ORG, 2, 2);
+        let mut short = Captured::with_capacities(&Capacities::default());
+        short.set_drained_for_test(
+            Ok(Drained {
+                epoch: 1,
+                first: 0,
+                cursor: 3,
+                copied: 2,
+                pending: 3,
+            }),
+            &[rocket, equipment],
+        );
+        assert_eq!(
+            reason(assemble(&mut totals, 7, 124, &short, census(&lines))),
+            "production ticks before this hour's sample are still in the log"
+        );
+        assert_eq!(
+            totals
+                .rocket_publication(&census(&lines))
+                .unwrap()
+                .unwrap_err(),
+            "rocket events before this sample are still in the log"
+        );
+        let last = Entry {
+            kind: OutputKind::Delivery { units_known: true },
+            country: 5001,
+            variant: SHIP,
+            units: 1,
+            exact: true,
+            ..Entry::default()
+        };
+        let known = rows(assemble(
+            &mut totals,
+            7,
+            125,
+            &frame(1, 2, &[last]),
+            census(&lines),
+        ));
+        assert_eq!(known[0].units, 2);
+        let rocket = totals.rocket_publication(&census(&lines)).unwrap().unwrap();
+        let design = rocket.iter().find(|row| row.variant == SHIP).unwrap();
+        assert_eq!((design.spent_raw, design.units), (17, 1));
     }
 }

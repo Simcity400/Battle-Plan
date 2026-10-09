@@ -1,20 +1,20 @@
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { dayLabel, tracePath } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import { categoricalPalette, SECONDARY_DASH } from '../../charts/palette';
-import { curveSegments } from '../../charts/series';
+import { curveSegments, runAt, spansCovered } from '../../charts/series';
 import Timeline from '../../charts/timeline/Timeline';
 import type { LaneGeometry, TimelineLane } from '../../charts/timeline/Timeline';
 import type { ChartTokens } from '../../charts/tokens';
 import type { TooltipRow } from '../../charts/tooltip';
 import { useChartTokens } from '../../charts/useChartTokens';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
+import { countryIdentityIndex } from '../../dashboard/countryIdentity';
 import { useCountryLooks } from '../../dashboard/countryLooks';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { groupRuns, groupUnobserved, worldFilter } from '../../dashboard/groups';
-import { Lineage, countryMembership } from '../../dashboard/identity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -24,7 +24,7 @@ import { useHoverLabels } from '../../dashboard/useHoverLabels';
 import { inSpans } from '../../charts/timeline/layout';
 import type { AutonomyReply } from '../../generated/dashboard';
 import { mix } from '../../shell/appearance/color';
-import { absentAt, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, runOf, subjectLane,
+import { absentAt, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, overlordIdentityUnknownFor, runOf, subjectLane,
   validateAutonomyReply } from './autonomyData';
 import type { SubjectLane } from './autonomyData';
 import { OPTIONS } from './definition';
@@ -32,8 +32,6 @@ import './autonomy.css';
 
 const NO_WARNINGS: string[] = [];
 const NO_SPANS: { firstHour: number; lastHour: number }[] = [];
-/** Most subjects drawn at once; the rest are named in the diagnostics. */
-const MAX_LANES = 64;
 /** A lane's height, as signed off (mock-up diplo-1). */
 const LANE_HEIGHT = 54;
 /** Room between a lane's edge and its thresholds. */
@@ -99,38 +97,54 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   const lastHour = track?.branch.lastHour ?? 0;
   const groups = useCountryGroups(runtime, track, active);
   const fallback = defaultCountryTag(track);
-  const lineage = useMemo(() => new Lineage(groups.data?.identityChanges ?? []), [groups.data?.identityChanges]);
+  const identities = useMemo(() => groups.data ? countryIdentityIndex(groups.data.countryIdentities) : null, [groups.data]);
+  const identityHistories = useMemo(() => new Map(groups.data?.countryIdentities.map(country => [country.tag, country.identities]) ?? []), [groups.data]);
   const bySubject = options.countriesAre === 'subjects';
   // Read the branch once; country identities and group membership are resolved locally.
   const request = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'autonomy',
     params: { branchId: track.branch.id, overlords: [], subjects: [] } } : null;
   const { data, error, retry } = useProduct<AutonomyReply>(runtime.client, request, active, validateAutonomyReply);
+  const missingNativeSubjects = useMemo(() => data?.subjects.filter(subject => !spansCovered(subject.runs, identityHistories.get(subject.tag) ?? [])).length ?? 0,
+    [data, identityHistories]);
 
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
-  const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
-  const head = Math.floor(playhead ?? extent[1]);
-  const filter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, head, lastHour, lineage),
-    [widget.countries, fallback, groups.data, head, lastHour, lineage]);
+  const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
+  const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 0;
+  const head = Math.floor(playhead ?? last);
+  const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
+  const filter = useMemo(() => worldFilter(widget.countries, fallback ? [fallback] : [], groups.data, head, lastHour),
+    [widget.countries, fallback, groups.data, head, lastHour]);
   // Hourly groups choose every member's history, then clip it at membership hours.
   const selection = useMemo(() => worldFilter(widget.countries.kind === 'group' && widget.countries.membership === 'hour'
-    ? { ...widget.countries, membership: 'ever' } : widget.countries, fallback ? [fallback] : [], groups.data, head, lastHour, lineage),
-  [widget.countries, fallback, groups.data, head, lastHour, lineage]);
+    ? { ...widget.countries, membership: 'ever' } : widget.countries, fallback ? [fallback] : [], groups.data, head, lastHour),
+  [widget.countries, fallback, groups.data, head, lastHour]);
   const hourlyGroup = widget.countries.kind === 'group' && widget.countries.membership === 'hour';
-  const membership = useMemo(() => hourlyGroup && widget.countries.kind === 'group' && groups.data
-    ? countryMembership(groupRuns(groups.data, widget.countries.group) ?? [], lineage) : null, [hourlyGroup, widget.countries, groups.data, lineage]);
+  const membership = useMemo(() => {
+    if (!hourlyGroup || widget.countries.kind !== 'group' || !groups.data || !identities) return null;
+    const byCountry = new Map<string, { firstHour: number; lastHour: number }[]>();
+    for (const span of identities.membershipRuns(groupRuns(groups.data, widget.countries.group) ?? [])) {
+      const key = identities.keyAt(span.tag, span.firstHour)!;
+      const spans = byCountry.get(key);
+      if (spans) spans.push(span); else byCountry.set(key, [span]);
+    }
+    for (const spans of byCountry.values()) spans.sort((a, b) => a.firstHour - b.firstHour);
+    return byCountry;
+  }, [hourlyGroup, widget.countries, groups.data, identities]);
 
   // A group counted at each hour shows each subject only while it (or its overlord) belongs,
   // and hours whose membership was not recorded as unknown. A group counted at one moment
   // chose its countries there: its unrecorded hours elsewhere hide nothing.
   const unobserved = useMemo(() => hourlyGroup && widget.countries.kind === 'group' && groups.data
     ? groupUnobserved(groups.data, widget.countries.group) : NO_SPANS, [hourlyGroup, widget.countries, groups.data]);
-  const views = useMemo(() => data ? autonomyViews(data, lineage) : [], [data, lineage]);
-  const chosen = useMemo(() => selection.countryIds ? chosenViews(views, selection.countryIds, bySubject, lineage) : views,
-    [views, selection.countryIds, bySubject, lineage]);
-  const subjects = useMemo(() => chosen.map(subject => clipSubject(subject, bySubject, membership, unobserved, lineage)).filter(subject => subject.runs.length),
-    [chosen, bySubject, membership, unobserved, lineage]);
-  const lanesData = useMemo(() => data ? subjects.slice(0, MAX_LANES).map(subject => subjectLane(subject, data.levels)) : [], [data, subjects]);
+  const views = useMemo(() => data && identities ? autonomyViews(data, identities) : [], [data, identities]);
+  const missingNativeOverlords = useMemo(() => !bySubject && selection.countryIds != null && identities
+    ? views.filter(subject => overlordIdentityUnknownFor(subject, identities)).length : 0, [views, bySubject, selection.countryIds, identities]);
+  const chosen = useMemo(() => selection.countryIds && identities ? chosenViews(views, selection.countryIds, bySubject, identities) : views,
+    [views, selection.countryIds, bySubject, identities]);
+  const subjects = useMemo(() => chosen.map(subject => clipSubject(subject, bySubject, membership, unobserved, identities ?? undefined)).filter(subject => subject.runs.length),
+    [chosen, bySubject, membership, unobserved, identities]);
+  const lanesData = useMemo(() => data ? subjects.map(subject => subjectLane(subject, data.levels)) : [], [data, subjects]);
   // Level colours in level order (the palette's fixed order), never by a level's name.
   const palette = useMemo(() => categoricalPalette(tokens.surface), [tokens.surface]);
   const levelColour = (level: number) => palette[level % palette.length];
@@ -138,8 +152,9 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   // The lanes' names and flags as recorded near the moment shown, never across a gap
   // (`useCountryLooks`), and a tooltip's countries as recorded at the hour hovered
   // (`useHoverLabels`), each part (name, flag) on its own.
-  const laneTags = useMemo(() => lanesData.map(lane => lineage.tagOf(lane.id, head)), [lanesData, lineage, head]);
-  const looks = useCountryLooks(runtime.client, track, laneTags, head, active);
+  const laneTags = useMemo(() => lanesData.map(lane => identities?.aliasesAt(new Set([lane.id]), head)[0] ?? null), [lanesData, identities, head]);
+  const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
+  const looks = useCountryLooks(runtime.client, track, laneTags.filter((tag): tag is string => tag !== null), head, active, segmentAt);
   const metadataNames = useMemo(() => new Map(track?.source.metadata.countries.map(country => [country.tag, country.name])), [track?.source]);
   const metadataName = (tag: string) => metadataNames.get(tag) ?? tag;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -147,21 +162,24 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
 
   const menu = useContextMenu('Timeline actions');
   useEffect(() => {
-    const dropped = subjects.length - lanesData.length;
     const warnings = [...(data?.warnings ?? []), ...(groups.data?.warnings ?? []),
-      ...(dropped > 0 ? [`${dropped} more subjects are left out; this widget draws at most ${MAX_LANES}.`] : []),
+      ...(missingNativeSubjects ? [`Autonomy histories with unrecorded native subject identity spans: ${missingNativeSubjects}.`] : []),
+      ...(missingNativeOverlords ? [`Autonomy histories with unrecorded native overlord identity spans affecting selection: ${missingNativeOverlords}.`] : []),
       ...(groups.error ? [`Country identity changes could not be loaded: ${groups.error}`] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, groups.data, groups.error, subjects.length, lanesData.length, onDiagnostics]);
+  }, [data, groups.data, groups.error, missingNativeSubjects, missingNativeOverlords, subjects.length, lanesData.length, onDiagnostics]);
 
   const lanes = useMemo<TimelineLane[]>(() => !data ? [] : lanesData.map((lane, index) => {
     const run = runOf(lane, head);
-    const labels = laneLabels(data, lane, head, unobserved);
+    const tag = laneTags[index];
+    const labels = laneLabels(data, lane, head, unobserved, tag !== null);
     const colourOf = (span: string) => levelColour(lane.spanLevels.get(span) ?? 0);
     return {
       id: lane.id, label: labels.label, spans: lane.spans,
-      identity: { label: looks.name(laneTags[index]), icon: looks.flag(laneTags[index]) },
+      identity: { label: tag === null ? lane.tag : looks.name(tag), countryFlag: tag === null
+        ? { flagReason: 'Native country identity not recorded at this hour.' } : { flag: looks.flag(tag),
+          flagPending: looks.flagPending?.(tag), flagReason: looks.flagReason?.(tag) } },
       pill: { text: labels.pill, color: run ? levelColour(run.level) : mix(tokens.surface, tokens.text, 0.25) },
       // Not a subject at the moment shown (released, not yet a subject, or not recorded): faded.
       muted: !run || run.overlord == null,
@@ -171,14 +189,17 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
 
   if (!track) return <WidgetState kind="empty" icon="link" message="Load a campaign to see its subjects’ autonomy." />;
   if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (widget.countries.kind === 'group' && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the campaign's recorded branch." />;
+  if (groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
   const reason = hourlyGroup ? selection.reason : filter.reason;
   if (reason) return <WidgetState kind="empty" message={reason} />;
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading autonomy…" />;
+  if (!data || !identities) return <WidgetState kind="loading" label="Loading autonomy…" />;
   // Tables missing at every hour: not recorded, never "no subjects".
   if (!data.recorded.length) return <WidgetState kind="unavailable" message="Subjects’ autonomy was not recorded in this campaign branch." />;
   if (!lanesData.length) {
+    if (missingNativeSubjects) return <WidgetState kind="unavailable" message="Native country identities were not recorded for some autonomy histories; their absence cannot establish that the chosen countries had no subjects." />;
+    if (missingNativeOverlords) return <WidgetState kind="unavailable" message="Some overlord native identities were not recorded; the recording cannot establish whether the chosen countries had subjects in those hours." />;
     // Unknown membership that cut a lane away is said, never read as "no subjects".
     return <WidgetState kind="empty" message={noLanesMessage(data, { firstHour: track.branch.firstHour, lastHour: track.branch.lastHour }, bySubject,
       [...selection.tags ?? []].map(metadataName), membershipUnknownFor(chosen, bySubject, unobserved))} />;
@@ -186,36 +207,39 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
 
   const byId = new Map(lanesData.map(lane => [lane.id, lane]));
   const description = `${dayLabel(head)}: ${lanesData.map((lane, index) => {
-    return `${looks.name(laneTags[index])}: ${laneLabels(data, lane, head, unobserved).description}`;
+    const tag = laneTags[index];
+    return `${tag === null ? lane.tag : looks.name(tag)}: ${laneLabels(data, lane, head, unobserved, tag !== null).description}`;
   }).join('; ')}.`;
   return <div className="autonomy">
-    <Timeline label={`Autonomy of ${laneTags.map(tag => looks.name(tag)).join(', ')}`} extent={extent} playhead={playhead} lanes={lanes}
+    {missingNativeOverlords > 0 && <p>Some overlord native identities were not recorded; matching subjects is incomplete in those hours.</p>}
+    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label={`Autonomy of ${laneTags.map((tag, index) => tag === null ? lanesData[index].tag : looks.name(tag)).join(', ')}`} extent={extent} playhead={playhead} labelHour={head} preserveZoomOnExtentChange={options.grow === true} lanes={lanes}
       rowHeight={LANE_HEIGHT} showIcons={false} showNames={false} description={description} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond}
       active={active} revision={`${head}:${data.branchId}:${looks.revision}:${hover.revision}`}
       tooltip={(lane, _span, hour) => {
         const subject = byId.get(lane.id);
         const run = subject ? runOf(subject, hour) : null;
         // The subject and its overlord are named as recorded at the hour hovered.
-        const tag = lineage.tagOf(lane.id, hour);
-        const overlordTag = run?.overlord == null ? null : lineage.tagOf(lineage.countryAt(run.overlord, run.firstHour), hour);
-        hover.ask(hour, overlordTag != null ? [tag, overlordTag] : [tag]);
+        const tag = identities.aliasesAt(new Set([lane.id]), hour)[0] ?? null;
+        const overlordTag = run?.overlord == null || identities.keyAt(run.overlord, hour) === null ? null : run.overlord;
+        hover.ask(hour, [...(tag === null ? [] : [tag]), ...(overlordTag === null ? [] : [overlordTag])]);
         const named = hover.labelAt(hour);
-        const name = named(tag).name;
+        const label = tag === null ? { name: subject?.tag ?? lane.id, flagReason: 'Native country identity not recorded at this hour.' } : named(tag);
+        const name = label.name;
         if (!subject || !run) {
-          return { title: `${name} · ${dayLabel(hour)}`, rows: [{ label: 'Autonomy', value: absentAt(data, hour, unobserved).text, tone: 'muted' }] };
+          return { title: `${name} · ${dayLabel(hour)}`, countryFlag: label, rows: [{ label: 'Autonomy', value: tag === null ? 'Native country identity not recorded' : absentAt(data, hour, unobserved).text, tone: 'muted' }] };
         }
         const overlord = overlordTag == null ? null : named(overlordTag);
         const level = levelName(data.levels[run.level]);
         const rows: TooltipRow[] = [
           { label: 'Subject level', value: level, swatch: levelColour(run.level) },
           // An hour with an overlord the recording does not name may have hidden this one.
-          { label: 'Overlord', value: overlord?.name ?? (inSpans(data.unidentified, hour) ? 'Not known at this hour' : 'None recorded'), icon: overlord?.flag, tone: overlord ? undefined : 'muted' },
+          { label: 'Overlord', value: overlord?.name ?? (run.overlord !== null ? 'Native country identity not recorded' : inSpans(data.unidentified, hour) ? 'Not known at this hour' : 'None recorded'), countryFlag: overlord ?? undefined, tone: overlord ? undefined : 'muted' },
           { label: run.highest ? 'Progress within the level' : 'Progress to the next level', value: formatProgress(run) },
           { label: 'Autonomy score', value: formatScore(data, run.scoreRaw), divider: true },
           { label: 'Moves down below', value: `${formatScore(data, run.lowerRaw)}${run.lowest ? ' · no lower level' : ''}` },
           { label: 'Moves up at', value: `${formatScore(data, run.upperRaw)}${run.highest ? ' · no higher level' : ''}` },
         ];
-        return { title: `${name} · ${dayLabel(hour)}`, rows };
+        return { title: `${name} · ${dayLabel(hour)}`, countryFlag: label, rows };
       }}
       onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     {menu.menu}

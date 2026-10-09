@@ -1,0 +1,130 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { registerWidgets } from '../../dashboard/definitions.ts';
+import type { BoundTrack, WidgetSpec } from '../../dashboard/model';
+import { resolveOptions } from '../../dashboard/options.ts';
+import type { TensionReply } from '../../generated/dashboard';
+import { definition, OPTIONS } from './definition.ts';
+import { compactStack } from '../../charts/stack.ts';
+import { runAt } from '../../charts/series.ts';
+import { orderedDrillParts } from '../../charts/drill/parts.ts';
+import { tensionModel, tensionPlot } from './tensionData.ts';
+import { pinTensionDrill, tensionCauseAt, tensionDrillAt, tensionDrillHistory, tensionLookAt, tensionShareText, tensionVisibleParts } from './tensionDrill.ts';
+
+const reply = (): TensionReply => ({ branchId: 'branch', tensionScale: 1000, contributionScale: 100000, ceilingRaw: '10000000', warnings: [],
+  reads: [{ firstHour: 100, lastHour: 123, startsSegment: true, tensionRaw: '100000', sumRaw: '13350000', unnamedRaw: '50000' },
+    { firstHour: 150, lastHour: 150, startsSegment: true, tensionRaw: '0', sumRaw: '-300000', unnamedRaw: '0' }],
+  countries: [{ tag: 'mod country', slot: 1, runs: [{ firstHour: 100, lastHour: 123, valueRaw: '13500000', startsSegment: true }] },
+    { tag: 'same tag', slot: 2, runs: [{ firstHour: 100, lastHour: 123, valueRaw: '-200000', startsSegment: true }] }],
+  events: [{ hour: 99, tag: 'mod country', reason: 'Native cause text', firstRead: 100, lastRead: 123,
+    added: [{ hour: 100, addedRaw: '20000000' }, { hour: 120, addedRaw: '19000000' }] }],
+});
+
+test('full tension drill keeps signed native aggregates, the exact unidentified remainder and independent world total', () => {
+  const model = tensionModel(reply());
+  const at = tensionDrillAt(model, 110)!;
+  assert.deepEqual(at.parts.map(part => part.raw), ['13500000', '-200000']);
+  assert.equal(at.remainder, '50000');
+  assert.equal(at.read.sumRaw, '13350000');
+  assert.equal(at.read.tensionRaw, '100000');
+  const stack = tensionPlot(model, at.parts.map(part => part.key), false);
+  assert.deepEqual(stack.edges[0]?.[1], { low: -2, high: 0 });
+  assert.equal(stack.edges[0]?.at(-1)?.high, 100);
+  assert.equal(tensionDrillAt(model, 124), null);
+  assert.equal(tensionDrillAt(model, 150)?.remainder, '-300000');
+});
+
+test('all 5000 native country slots retain separate drill rows even when their tags coincide', () => {
+  const data = reply();
+  data.countries = Array.from({ length: 5000 }, (_, slot) => ({ tag: 'shared tag', slot,
+    runs: [{ firstHour: 100, lastHour: 123, valueRaw: '1', startsSegment: true }] }));
+  data.reads[0].sumRaw = '5000';
+  const at = tensionDrillAt(tensionModel(data), 110)!;
+  assert.equal(at.parts.length, 5000);
+  assert.equal(new Set(at.parts.map(part => part.key)).size, 5000);
+  assert.equal(at.remainder, '0');
+});
+
+test('a selected cause never backfills a final amount or treats it as the current aggregate', () => {
+  const data = reply();
+  const event = data.events[0];
+  assert.equal(tensionCauseAt(event, 99), null);
+  assert.deepEqual(tensionCauseAt(event, 110), { hour: 100, addedRaw: '20000000' });
+  assert.deepEqual(tensionCauseAt(event, 130), { hour: 120, addedRaw: '19000000' });
+  assert.notEqual(tensionCauseAt(event, 110)?.addedRaw, tensionDrillAt(tensionModel(data), 110)!.parts[0].raw);
+});
+
+test('tension drill is an ordinary saved view with inline defaults, full country choices and a held-day pin', () => {
+  registerWidgets([definition]);
+  assert.equal(resolveOptions(OPTIONS, undefined).drill, 'inline');
+  assert.equal(resolveOptions(OPTIONS, undefined).show, 'main');
+  assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
+  const source = { id: 'source', kind: definition.kind, configVersion: 1, title: 'World tension', campaign: 'tracks', trackIds: ['track'],
+    countries: { kind: 'all' }, time: { mode: 'follow' }, contentScale: 125, options: { drill: 'popout', values: 'share' } } satisfies WidgetSpec;
+  const track = { id: 'track', branch: { firstHour: 100 } } as Pick<BoundTrack, 'id' | 'branch'>;
+  const held = pinTensionDrill(source, track, 120.9, false);
+  assert.deepEqual(held.time, { mode: 'pin', windows: { track: { firstOffset: 20, lastOffset: 20 } } });
+  assert.equal(resolveOptions(OPTIONS, held.options).show, 'breakdown');
+  assert.deepEqual(held.countries, source.countries);
+  assert.deepEqual(pinTensionDrill(source, track, 120, true).time, source.time);
+  assert.deepEqual(pinTensionDrill(held, track, 130, true).time, { mode: 'follow' });
+});
+
+test('signed shares and wide native ordering never depend on rounded plotting numbers', () => {
+  assert.equal(tensionShareText('-200000', '13350000'), '\u22121.50%');
+  assert.equal(tensionShareText('-1', '-2'), '\u221250.00%');
+  assert.equal(tensionShareText('1', null), 'Not known');
+  assert.equal(tensionShareText('1', '0'), 'Not known');
+  const rows = orderedDrillParts([
+    { id: 'small', label: 'Small', value: Number(9007199254740992n), raw: 9007199254740992n },
+    { id: 'large', label: 'Large', value: Number(9007199254740993n), raw: 9007199254740993n },
+    { id: 'correction', label: 'Correction', value: Number(-9007199254740994n), raw: -9007199254740994n },
+  ]);
+  assert.deepEqual(rows.map(row => row.id), ['correction', 'large', 'small']);
+  assert.equal(tensionShareText('-9007199254740994', '9007199254740993'), '\u2212100.00%');
+});
+
+test('ten years of unchanged 5000-country daily reads retain only native changes and all countries', () => {
+  const data = reply();
+  const days = 3650;
+  data.reads = Array.from({ length: days }, (_, day) => ({ firstHour: 100 + day * 24, lastHour: 123 + day * 24,
+    startsSegment: day === 0, tensionRaw: '5000', sumRaw: '500000', unnamedRaw: '0' }));
+  data.countries = Array.from({ length: 5000 }, (_, slot) => ({ tag: `opaque ${slot}`, slot,
+    runs: [{ firstHour: 100, lastHour: data.reads.at(-1)!.lastHour, valueRaw: '100', startsSegment: true }] }));
+  const model = tensionModel(data);
+  const history = tensionDrillHistory(model, [...model.raw.keys()]);
+  assert.equal(history.bands.length, 5001);
+  assert.equal(history.bands.reduce((sum, band) => sum + band.length, 0), 5001);
+  assert.equal(history.world.length, 1);
+  assert.equal(compactStack(history.bands).hours.length, 3);
+  assert.equal(runAt(history.bands[4999], data.reads.at(-1)!.lastHour)?.value, 0.001);
+  assert.deepEqual(tensionVisibleParts(tensionDrillAt(model, 110)!.parts, ['opaque 4999\u00004999']).map(part => part.key), ['opaque 4999\u00004999']);
+});
+
+test('compressed full history preserves signed residuals, independent world totals, zeros and gaps', () => {
+  const model = tensionModel(reply());
+  const history = tensionDrillHistory(model, [...model.raw.keys()]);
+  assert.deepEqual(history.bands.map(band => runAt(band, 110)?.value), [135, -2, 0.5]);
+  assert.equal(runAt(history.world, 110)?.value, 100);
+  assert.ok(history.bands.every(band => runAt(band, 124) == null));
+  assert.deepEqual(history.bands.map(band => runAt(band, 150)?.value), [0, 0, -3]);
+  assert.ok(history.bands.every(band => runAt(band, 150)?.startsSegment));
+});
+
+test('country looks distinguish native slots sharing a reused tag and refuse an unproved holder', () => {
+  const data = reply();
+  data.countries = [
+    { tag: 'OLD', slot: 1, runs: [{ firstHour: 100, lastHour: 123, valueRaw: '100', startsSegment: true }],
+      identities: [{ firstHour: 100, lastHour: 105, slot: 1, countryId: 11 }] },
+    { tag: 'OLD', slot: 2, runs: [{ firstHour: 110, lastHour: 123, valueRaw: '200', startsSegment: false }],
+      identities: [{ firstHour: 110, lastHour: 123, slot: 2, countryId: 22 }] },
+  ];
+  const branch = { firstHour: 100, lastHour: 150, gaps: [] };
+  const model = tensionModel(data);
+  assert.equal(tensionLookAt(model, 'OLD\u00001', 120, branch)?.hour, 100);
+  assert.equal(tensionLookAt(model, 'OLD\u00002', 120, branch)?.hour, 110);
+  data.countries[0].identities!.push({ firstHour: 115, lastHour: 123, slot: 1, countryId: 99 });
+  assert.equal(tensionLookAt(tensionModel(data), 'OLD\u00001', 120, branch), null);
+  delete data.countries[0].identities;
+  assert.equal(tensionLookAt(tensionModel(data), 'OLD\u00001', 120, branch), null);
+});

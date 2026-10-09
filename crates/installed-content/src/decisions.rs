@@ -14,10 +14,21 @@ use std::{
     io,
 };
 
+/// CTriggeredText (14116AB10, 14116C100). Conditions remain data until a
+/// consumer supplies the recorded event scope of the row's hour.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TriggeredIcon {
+    pub text: String,
+    pub trigger: Vec<Item>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Decision {
     pub id: Vec<u8>,
     pub name: Vec<u8>,
+    /// Each CTriggeredText appends, including scalar icons (140725B40/14116AB10).
+    pub icons: Vec<TriggeredIcon>,
+    pub icon_refusal: Option<String>,
     pub source: String,
     /// CDecision+0x140: authored identifier's folded FNV-1a (140716650).
     pub seed_component: i32,
@@ -42,6 +53,96 @@ pub struct Decision {
     /// Category+0x3E0 selects EFFECT_UNLOCK_DECISION_BOP (140399360).
     pub power_balance: bool,
     pub refused: Option<String>,
+}
+
+impl Decision {
+    /// 1407209E0/140720D40 call 14071C840 only when the highlight conjunction
+    /// holds a child or its targets object is present. 140717210 constructs
+    /// both empty. Use the shared LoadKey dispatch to distinguish ignored keys.
+    pub fn name_selects_state(
+        &self,
+        has_children: impl FnOnce(&[Item]) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        if self.has_state_targets {
+            Ok(true)
+        } else if self.highlight_conditions.is_empty() {
+            Ok(false)
+        } else {
+            has_children(&self.highlight_conditions)
+        }
+    }
+
+    /// 140721730: cosmetic tag, current tag, then no tag; at each step
+    /// first the ruling ideology suffix, then the base key. Only localisation
+    /// presence selects the key, before scoped expansion (140720B40).
+    pub fn name_key(
+        &self,
+        tag: &str,
+        cosmetic: &str,
+        ideology: &str,
+        mut defines: impl FnMut(&str) -> bool,
+    ) -> Result<String, String> {
+        let base = std::str::from_utf8(&self.name)
+            .map_err(|why| format!("{} decision name: {why}", self.source))?;
+        for prefix in [cosmetic, tag] {
+            if prefix.is_empty() {
+                continue;
+            }
+            let own = format!("{prefix}_{base}");
+            let ruling = format!("{own}_{ideology}");
+            if defines(&ruling) {
+                return Ok(ruling);
+            }
+            if defines(&own) {
+                return Ok(own);
+            }
+        }
+        let ruling = format!("{base}_{ideology}");
+        Ok(if defines(&ruling) {
+            ruling
+        } else {
+            base.to_owned()
+        })
+    }
+
+    /// 14071FE20 -> 14116C180 with random=false: one entry bypasses its
+    /// trigger; otherwise first true wins, and no true entry returns the first.
+    /// A condition whose result is unknown ends selection, never false.
+    pub fn select_icon(
+        &self,
+        mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
+    ) -> Result<Option<&str>, String> {
+        if let Some(reason) = &self.icon_refusal {
+            return Err(reason.clone());
+        }
+        match self.icons.as_slice() {
+            [] => Ok(None),
+            [one] => Ok(Some(&one.text)),
+            icons => {
+                for icon in icons {
+                    if evaluate(&icon.trigger)? {
+                        return Ok(Some(&icon.text));
+                    }
+                }
+                Ok(Some(&icons[0].text))
+            }
+        }
+    }
+
+    /// 140B360E0: own-token sprite first; then the selected text with the
+    /// native prefix, then its direct sprite; the native unknown is last.
+    /// The executable owns both strings (data 142934378, 142934388).
+    pub fn sprite_candidates(&self, selected: Option<&str>) -> Result<Vec<String>, String> {
+        let token = std::str::from_utf8(&self.id)
+            .map_err(|why| format!("{} decision identifier: {why}", self.source))?;
+        let mut names = vec![format!("GFX_decision_{token}")];
+        if let Some(selected) = selected.filter(|text| !text.is_empty()) {
+            names.push(format!("GFX_decision_{selected}"));
+            names.push(selected.to_owned());
+        }
+        names.push("GFX_decision_unknown".to_owned());
+        Ok(names)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -89,6 +190,7 @@ enum Node {
     File,
     Category,
     Decision,
+    Icon,
     Highlight,
     Targets,
     Mtth,
@@ -157,6 +259,7 @@ fn append(
                     }
                     Some(b"ai_will_do") => Shape::Object(Node::Mtth),
                     Some(b"highlight_states") => Shape::Object(Node::Highlight),
+                    Some(b"icon") => Shape::ObjectIfOpen(Node::Icon),
                     // 140301220 appends one CScopedVariable, whose vf3 takes the held token.
                     Some(
                         b"war_with_on_remove" | b"war_with_on_complete" | b"war_with_on_timeout",
@@ -164,7 +267,6 @@ fn append(
                     Some(
                         b"name"
                         | b"priority"
-                        | b"icon"
                         | b"cost"
                         | b"alert_days"
                         | b"fire_only_once"
@@ -201,6 +303,12 @@ fn append(
                 ) => Shape::One,
                 // This reader ignores unknown tokens without RecordError or skipping.
                 _ => Shape::One,
+            },
+            // CTriggeredText::vf4 14116C100 replaces text/key and appends triggers.
+            Node::Icon => match field.keyword().as_deref() {
+                Some(b"text" | b"key") => Shape::One,
+                Some(b"trigger") => Shape::Trigger,
+                _ => Shape::Skip,
             },
             Node::Targets => targets(field).unwrap_or(Shape::Skip),
             Node::Mtth => native::mean_time_to_happen(field),
@@ -249,6 +357,16 @@ fn append(
             decision.fixed_random_seed =
                 parser::read_bool_field(fields, "fixed_random_seed", false);
             for field in fields {
+                if field.keyword_is("icon") {
+                    match triggered_icon(&field.value) {
+                        Ok(icon) => decision.icons.push(icon),
+                        Err(reason) => {
+                            let reason = format!("{}: decision icon: {reason}", decision.source);
+                            database.notes.push(reason.clone());
+                            decision.icon_refusal.get_or_insert(reason);
+                        }
+                    }
+                }
                 if field.keyword_is("complete_effect") {
                     decision
                         .complete_effect
@@ -353,6 +471,30 @@ fn append(
             }
         }
     }
+}
+
+fn triggered_icon(value: &parser::Value) -> Result<TriggeredIcon, String> {
+    let mut icon = TriggeredIcon::default();
+    if let Some(body) = value.items() {
+        for item in body {
+            if item.keyword_is("text") || item.keyword_is("key") {
+                icon.text = item
+                    .value
+                    .read_str()
+                    .map_err(|why| why.to_string())?
+                    .to_owned();
+            } else if item.keyword_is("trigger") {
+                icon.trigger
+                    .extend_from_slice(item.value.items().unwrap_or_default());
+            }
+        }
+    } else {
+        // Scalar constructor uses strlen; block text/key use ReadStringInto (14116AB10).
+        icon.text = std::str::from_utf8(parser::c_string(value.scalar().unwrap_or_default()))
+            .map_err(|why| why.to_string())?
+            .to_owned();
+    }
+    Ok(icon)
 }
 
 /// 140723270 loads category names before decision bodies; both directories use mode 0.

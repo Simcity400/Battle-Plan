@@ -19,7 +19,7 @@
 //! the log is multi-producer safe anyway, and the railway pairing is per thread.
 //!
 //! A site whose prologue differs from the pinned sentinel, or that cannot be
-//! detoured, leaves all three uninstalled: the collector still attaches and
+//! detoured, leaves all six uninstalled: the collector still attaches and
 //! ConstructionLineOutput is unavailable with the reason (`unhooked` in
 //! `status.json`).
 pub use crate::output_log::Drained;
@@ -31,7 +31,9 @@ use crate::{
 use engine::{
     Memory,
     construction_ic_sites::{
-        BUILDING_SPEED, BUILDING_SPEND_RETURN, RAILWAY_ADVANCE, RAILWAY_PROGRESS, Site,
+        BUILDING_COMPLETE, BUILDING_SPEED, BUILDING_SPEND_RETURN, COMPLETE_RETURN,
+        LINKED_COMPLETE_RETURN, RAILWAY_ADVANCE, RAILWAY_COMPLETE, RAILWAY_PROGRESS,
+        REMOVE_GENERAL_LINE, Site,
     },
 };
 use std::{
@@ -52,9 +54,9 @@ static OBSERVATION: Log = Log::new(LOG);
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
 pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
-/// The trampolines: building speed, railway advance, railway progress.
-static INSTALLED: [AtomicBool; 3] = [const { AtomicBool::new(false) }; 3];
-static ORIGINAL: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+/// The spend and native completion trampolines.
+static INSTALLED: [AtomicBool; 6] = [const { AtomicBool::new(false) }; 6];
+static ORIGINAL: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
 /// The module base the RVAs are relative to.
 static BASE: AtomicUsize = AtomicUsize::new(0);
 /// The next entry the hourly drain hands over; only the callback moves it.
@@ -74,8 +76,10 @@ const REPAIR: u8 = 2;
 const INSTANT: u8 = 4;
 const LINKED: u8 = 8;
 const CARRY: u8 = 16;
+const COMPLETE: u8 = 32;
+const CANCELLED: u8 = 64;
 
-/// One construction spend or railway carry.
+/// One construction spend, railway carry or native completion decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
     /// The line's CID (+0x08), the construction tables' `id`.
@@ -94,6 +98,11 @@ pub struct Entry {
     /// A building line linked to another country's: its speed includes the
     /// partner's factories.
     pub partner: Option<u64>,
+    /// A native daily or linked-line completion, independent of spending.
+    pub completion: Option<replay::rows::ConstructionCompletion>,
+    /// The secondary receiver completed inside its primary's advance; its share
+    /// stays unknown even if the primary spend preceded this observation.
+    pub linked_completion: bool,
 }
 
 thread_local! {
@@ -126,7 +135,16 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
     } else {
         operands.instant
     };
-    if amount < 0 || operands.bank < 0 || (!carry && !instant && operands.bank > amount) {
+    // Building speed is stored unclamped after an optional assertion at
+    // 140F594C2 and added signed to progress at 140F557F5/813. Industrial
+    // modifiers alone clamp at 140F58220; the final infrastructure product and
+    // speed+bank ADD can still be signed. Bank reservation 141448820 is >=0.
+    // Railway spend requires speed>0 at 1419EF314/317; carry is gated by RBX>=0 at
+    // 1419EF528..52F/5A2. A nonnegative speed below its bank is not that sum.
+    if (railway && amount < 0)
+        || operands.bank < 0
+        || (!carry && !instant && amount >= 0 && operands.bank > amount)
+    {
         refuse("construction output amount or CIC bank draw unsupported");
         return;
     }
@@ -145,6 +163,8 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
         instant,
         partner: operands.partner,
         carry,
+        completion: None,
+        linked_completion: false,
     });
 }
 
@@ -168,6 +188,51 @@ fn observe_building(line: usize, caller: usize) {
     }
     COUNTERS[0].fetch_add(1, Ordering::Relaxed);
     observe(line, 0, false, false);
+}
+
+fn observe_completion(line: usize, caller: usize, result: u8, railway: bool) {
+    let base = BASE.load(Ordering::Relaxed);
+    if result == 0 || caller != base.wrapping_add(COMPLETE_RETURN) {
+        return;
+    }
+    let memory = unsafe { engine::memory::LiveMemory::new() };
+    let event = match engine::construction_ic_sites::completion(&memory, base, line, railway) {
+        Ok(event) => event,
+        Err(reason) => {
+            refuse(reason);
+            return;
+        }
+    };
+    append_completion(event, railway, false);
+}
+
+fn observe_linked_completion(status: usize, line: usize, caller: usize) {
+    let base = BASE.load(Ordering::Relaxed);
+    if caller != base.wrapping_add(LINKED_COMPLETE_RETURN) {
+        return;
+    }
+    let memory = unsafe { engine::memory::LiveMemory::new() };
+    match engine::construction_ic_sites::linked_completion(&memory, base, status, line) {
+        Ok(event) => append_completion(event, false, true),
+        Err(reason) => refuse(reason),
+    }
+}
+
+fn append_completion(
+    event: engine::construction_ic_sites::Completion,
+    railway: bool,
+    linked: bool,
+) {
+    append(Entry {
+        line: event.line,
+        railway,
+        completion: Some(replay::rows::ConstructionCompletion {
+            hour: event.hour,
+            cancelled: event.cancelled,
+        }),
+        linked_completion: linked,
+        ..Entry::default()
+    });
 }
 
 /// After a segment-progress call with `amount`, inside the advance of the
@@ -200,11 +265,19 @@ fn append(entry: Entry) {
     let flags = (u8::from(entry.railway) * RAILWAY)
         | (u8::from(entry.repair) * REPAIR)
         | (u8::from(entry.instant) * INSTANT)
-        | (u8::from(entry.partner.is_some()) * LINKED)
-        | (u8::from(entry.carry) * CARRY);
+        | (u8::from(entry.partner.is_some() || entry.linked_completion) * LINKED)
+        | (u8::from(entry.carry) * CARRY)
+        | (u8::from(entry.completion.is_some()) * COMPLETE)
+        | (u8::from(entry.completion.is_some_and(|event| event.cancelled)) * CANCELLED);
     LINES[slot].store(entry.line, Ordering::SeqCst);
     PARTNERS[slot].store(entry.partner.unwrap_or(0), Ordering::SeqCst);
-    AMOUNTS[slot].store(entry.amount as u64, Ordering::SeqCst);
+    // Completion entries use this slot for the native hour, never IC.
+    AMOUNTS[slot].store(
+        entry
+            .completion
+            .map_or(entry.amount, |event| i64::from(event.hour)) as u64,
+        Ordering::SeqCst,
+    );
     BANKS[slot].store(entry.bank as u64, Ordering::SeqCst);
     FLAGS[slot].store(flags, Ordering::SeqCst);
     OBSERVATION.finish(index);
@@ -212,15 +285,22 @@ fn append(entry: Entry) {
 
 fn entry(slot: usize) -> Entry {
     let flags = FLAGS[slot].load(Ordering::SeqCst);
+    let amount = AMOUNTS[slot].load(Ordering::SeqCst) as i64;
     Entry {
         line: LINES[slot].load(Ordering::SeqCst),
         carry: flags & CARRY != 0,
-        amount: AMOUNTS[slot].load(Ordering::SeqCst) as i64,
+        amount: if flags & COMPLETE == 0 { amount } else { 0 },
         bank: BANKS[slot].load(Ordering::SeqCst) as i64,
         railway: flags & RAILWAY != 0,
         repair: flags & REPAIR != 0,
         instant: flags & INSTANT != 0,
-        partner: (flags & LINKED != 0).then(|| PARTNERS[slot].load(Ordering::SeqCst)),
+        partner: (flags & LINKED != 0 && flags & COMPLETE == 0)
+            .then(|| PARTNERS[slot].load(Ordering::SeqCst)),
+        completion: (flags & COMPLETE != 0).then_some(replay::rows::ConstructionCompletion {
+            hour: amount as i32,
+            cancelled: flags & CANCELLED != 0,
+        }),
+        linked_completion: flags & (COMPLETE | LINKED) == (COMPLETE | LINKED),
     }
 }
 
@@ -270,14 +350,21 @@ pub fn status() -> impl serde::Serialize {
         "unobserved_drains": counters[10],
         "refused_entries": counters[11],
         "refused": REFUSED.get(),
-        "scope": "cumulative since attach; building_spends count the speed reads at the advance's spend site (other_speed_reads every other caller, such as the repair rate and the production screen); entries include spends, railway carries and zero-IC building advances"
+        "scope": "cumulative since attach; building_spends count the speed reads at the advance's spend site (other_speed_reads every other caller, such as the repair rate and the production screen); entries include spends, railway carries, zero-IC building advances and native daily/linked completion decisions"
     }))
 }
 
 pub struct Hooks {
-    shared: output_hooks::Hooks<3>,
+    shared: output_hooks::Hooks<6>,
 }
-const SITES: [&Site; 3] = [&BUILDING_SPEED, &RAILWAY_ADVANCE, &RAILWAY_PROGRESS];
+const SITES: [&Site; 6] = [
+    &BUILDING_SPEED,
+    &RAILWAY_ADVANCE,
+    &RAILWAY_PROGRESS,
+    &BUILDING_COMPLETE,
+    &RAILWAY_COMPLETE,
+    &REMOVE_GENERAL_LINE,
+];
 #[cfg(test)]
 fn validate_sentinels(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
     output_hooks::validate_sentinels(
@@ -311,6 +398,9 @@ impl Hooks {
                         speed_entry as *const () as usize,
                         railway_advance as *const () as usize,
                         railway_progress as *const () as usize,
+                        building_complete_entry as *const () as usize,
+                        railway_complete_entry as *const () as usize,
+                        linked_complete_entry as *const () as usize,
                     ],
                     domain,
                     Ok(()),
@@ -336,6 +426,49 @@ fn original(site: usize) -> usize {
 #[unsafe(naked)]
 unsafe extern "system" fn speed_entry() {
     core::arch::naked_asm!("mov r8, qword ptr [rsp]", "jmp {body}", body = sym speed);
+}
+
+// IsComplete takes only RCX and returns AL. RDX retains the game's return
+// address without touching the stack; the body passes the original AL through.
+#[unsafe(naked)]
+unsafe extern "system" fn building_complete_entry() {
+    core::arch::naked_asm!("mov rdx, qword ptr [rsp]", "jmp {body}", body = sym building_complete);
+}
+#[unsafe(naked)]
+unsafe extern "system" fn railway_complete_entry() {
+    core::arch::naked_asm!("mov rdx, qword ptr [rsp]", "jmp {body}", body = sym railway_complete);
+}
+
+unsafe extern "system" fn building_complete(line: usize, caller: usize) -> u8 {
+    let _call = OBSERVATION.enter();
+    let original: unsafe extern "system" fn(usize) -> u8 =
+        unsafe { std::mem::transmute(original(3)) };
+    let result = unsafe { original(line) };
+    observe_completion(line, caller, result, false);
+    result
+}
+unsafe extern "system" fn railway_complete(line: usize, caller: usize) -> u8 {
+    let _call = OBSERVATION.enter();
+    let original: unsafe extern "system" fn(usize) -> u8 =
+        unsafe { std::mem::transmute(original(4)) };
+    let result = unsafe { original(line) };
+    observe_completion(line, caller, result, true);
+    result
+}
+
+// RemoveGeneralLine takes RCX/RDX; R8 retains the native return address.
+// The receiver must be observed before the original deletes it. Other removal
+// callers perform no operand reads and emit no completion.
+#[unsafe(naked)]
+unsafe extern "system" fn linked_complete_entry() {
+    core::arch::naked_asm!("mov r8, qword ptr [rsp]", "jmp {body}", body = sym linked_complete);
+}
+unsafe extern "system" fn linked_complete(status: usize, line: usize, caller: usize) {
+    let _call = OBSERVATION.enter();
+    observe_linked_completion(status, line, caller);
+    let original: unsafe extern "system" fn(usize, usize) =
+        unsafe { std::mem::transmute(original(5)) };
+    unsafe { original(status, line) };
 }
 
 // Signatures from the pinned decompiles; every argument is passed through
@@ -399,6 +532,52 @@ mod tests {
         LINKED_LINE, REPAIR_LEVELS,
     };
     use engine::cproduction_line;
+
+    #[test]
+    fn completion_entries_keep_native_date_and_do_not_become_output() {
+        let _lock = test_lock();
+        observe_for_test(true, 0);
+        // Neither a false result nor another caller may read this null line.
+        observe_completion(0, COMPLETE_RETURN, 0, false);
+        observe_completion(0, COMPLETE_RETURN + 1, 1, false);
+        // A command/hourly removal may never become a linked completion.
+        observe_linked_completion(0, 0, LINKED_COMPLETE_RETURN + 1);
+        for cancelled in [false, true] {
+            append(Entry {
+                line: 9,
+                railway: true,
+                completion: Some(replay::rows::ConstructionCompletion {
+                    hour: -1,
+                    cancelled,
+                }),
+                ..Entry::default()
+            });
+        }
+        append_completion(
+            engine::construction_ic_sites::Completion {
+                line: 10,
+                hour: -1,
+                cancelled: false,
+            },
+            false,
+            true,
+        );
+        let (result, rows) = drained(4);
+        assert!(result.unwrap().complete());
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.completion.unwrap().cancelled)
+                .collect::<Vec<_>>(),
+            [false, true, false]
+        );
+        assert!(
+            rows.iter()
+                .all(|row| row.amount == 0 && row.bank == 0 && row.completion.unwrap().hour == -1)
+        );
+        assert!(rows[2].linked_completion && rows[2].partner.is_none());
+        observe_for_test(false, 0);
+    }
 
     /// Owned memory standing in for the two globals the detours read (the instant
     /// flag and the invalid reference), placed so each is at its RVA from `base`;
@@ -612,6 +791,29 @@ mod tests {
     }
 
     #[test]
+    fn native_signed_building_speed_is_output_without_changing_counters() {
+        let _lock = test_lock();
+        let image = Image::new();
+        observe_for_test(true, image.base());
+        let mut building = Line::new(&image, false, 0x35_0000_003b, 0, 0, false);
+        observe_speed(&mut building, -25, spend_site(&image));
+        building.line[CIC_BANK_DRAW / 8] = 1;
+        // Native ADD: MAX factory speed plus one bank unit becomes MIN.
+        observe_speed(&mut building, i64::MIN, spend_site(&image));
+        let (result, entries) = drained(4);
+        assert!(result.unwrap().complete());
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.amount, e.bank))
+                .collect::<Vec<_>>(),
+            [(-25, 0), (i64::MIN, 1)]
+        );
+        assert!(entries.iter().all(|e| e.completion.is_none() && !e.carry));
+        observe_for_test(false, 0);
+    }
+
+    #[test]
     fn railway_without_a_segment_call_spends_nothing_and_instant_many_calls_stay_apart() {
         let _lock = test_lock();
         let mut image = Image::new();
@@ -793,7 +995,7 @@ mod tests {
 
     #[test]
     fn every_sentinel_is_checked_before_installation() {
-        struct Prologues([[u8; 16]; 3]);
+        struct Prologues([[u8; 16]; 6]);
         impl Memory for Prologues {
             fn copy(&self, address: usize, out: &mut [u8]) -> bool {
                 let Some(index) = SITES.iter().position(|s| s.rva == address) else {

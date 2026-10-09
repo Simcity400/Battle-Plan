@@ -1,8 +1,14 @@
 //! `NCombatLog::CStatsObserver`, embedded in `CLandCombatant+0x1b0`.
 //!
-//! The first leader-tally entry was only a last-non-null cache observation in
-//! the old reader; it did not establish a current leader or freshness. The loss
-//! reader brackets excluded event callbacks, not the rewrite's hourly boundary.
+//! Serialize@140CD1240 delegates observer
+//! +0x58 under token 0x3754 to SCombatSideData::Serialize@140CD15D0: positive
+//! manpower +8 is token 0x3750; equipment +0x18 is token 0x3753, gated by
+//! archetype allocations (140FFB8F0), not variant count. Pool serializer
+//! 140FFDB00 omits zero entries unless its allow_zero_entries flag is set.
+//! Those are observer+0x60/+0x70, not unrelated saved counters. A terminal read
+//! must follow FinalizeCombat@1412A43A0's original: base finalizer@1413CD9F0
+//! calls OnCombatEnded@1413CDA60 -> 140C7B370 -> active_damage@140C7BFC0,
+//! flushing pending losses before manager RemoveCombat@140BAAF60 deletes sides.
 
 /// NCombatLog::CStatsObserver primary vtable; archived offsets.rs:819, confirmed by a729 RTTI.
 pub const VTABLE_RVA: usize = 0x0294_6f68;
@@ -18,7 +24,376 @@ pub const DAMAGE: usize = 0x38;
 pub const DAMAGE_CAPACITY: usize = 0x40;
 /// CStatsObserver damage-array u32 count; archived offsets.rs:822 and attribution header reader.
 pub const DAMAGE_COUNT: usize = 0x44;
-/// CStatsObserver manpower loss, old i32 read widened to i64; archived x2_carriers.rs:172,5323, full storage width unproved.
+/// Signed i32 manpower loss. AccumulateCombatLogDamage@140CCB010 adds EDI
+/// into dword [RBX+60] at 140CCB07F. active_damage@140C7BFC0 supplies removed
+/// manpower; participant_lifecycle@141299850 supplies remaining manpower.
 pub const MANPOWER_LOSS: usize = 0x60;
-/// CStatsObserver embedded equipment-loss map; archived x2_carriers.rs:173,5328, vector at map+0x20.
+/// Embedded CEquipmentVariantPool. AccumulateCombatLogEquipmentByCategory
+/// @140CCAA10 adds to this aggregate and one category pool. AddPoolQuantities
+/// @140FF7830 uses variant pointer/i64 fixed5 pairs of stride 0x10,
+/// data at pool+0x20, signed count at +0x2C.
 pub const EQUIPMENT_LOSSES: usize = 0x70;
+
+use crate::memory::{RecordField, RecordLayout, RecordSources};
+use crate::{Memory, cequipment_variant, cequipment_variant_pool, cpdx_array::Array};
+
+/// Native 16-byte pool record, with its pointer replaced by the authenticated
+/// full variant handle after acquisition. No machine pointer is serialized.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct LossEntry {
+    pub variant: u64,
+    pub amount_raw: i64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LossSpan {
+    pub manpower: i32,
+    pub start: usize,
+    pub len: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LossPlan {
+    pub manpower: i32,
+    pub equipment: Array,
+}
+
+const LOSS_LAYOUT: RecordLayout<'static> = RecordLayout::new(
+    &[
+        RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 8,
+        },
+        RecordField {
+            source_offset: MANPOWER_LOSS,
+            destination_offset: 8,
+            len: 4,
+        },
+        RecordField {
+            source_offset: EQUIPMENT_LOSSES,
+            destination_offset: 12,
+            len: 8,
+        },
+        RecordField {
+            source_offset: EQUIPMENT_LOSSES + cequipment_variant_pool::ITEMS,
+            destination_offset: 20,
+            len: 16,
+        },
+    ],
+    36,
+)
+.unwrap();
+
+impl LossPlan {
+    /// The caller authenticates the land side; its embedded observer and pool
+    /// authenticate independently. Counters mutate in place: pool size or sum
+    /// equality is not a witness that the per-variant amounts are unchanged.
+    pub fn read(memory: &impl Memory, base: usize, side: usize) -> Result<Self, &'static str> {
+        if side == 0 {
+            return Err("land loss side null");
+        }
+        let observer = side
+            .checked_add(crate::cland_combatant::STATS_OBSERVER)
+            .ok_or("land loss observer address overflow")?;
+        let mut header = [0; 36];
+        if memory.copy_records(
+            RecordSources::Pointers(&[observer]),
+            &LOSS_LAYOUT,
+            &mut header,
+        ) != 4
+        {
+            return Err("land loss observer header unreadable");
+        }
+        Self::from_header(base, header)
+    }
+
+    fn from_header(base: usize, header: [u8; 36]) -> Result<Self, &'static str> {
+        if u64::from_le_bytes(header[..8].try_into().unwrap())
+            != base
+                .checked_add(VTABLE_RVA)
+                .ok_or("land loss observer vtable address overflow")? as u64
+        {
+            return Err("land loss observer vtable mismatch");
+        }
+        if u64::from_le_bytes(header[12..20].try_into().unwrap())
+            != base
+                .checked_add(cequipment_variant_pool::VTABLE_RVA)
+                .ok_or("land loss pool vtable address overflow")? as u64
+        {
+            return Err("land loss pool vtable mismatch");
+        }
+        let manpower = i32::from_le_bytes(header[8..12].try_into().unwrap());
+        let equipment = Array::from_header(
+            header[20..].try_into().unwrap(),
+            crate::equipment_entry::STRIDE,
+        )
+        .ok_or("land loss pool array invalid")?;
+        Ok(Self {
+            manpower,
+            equipment,
+        })
+    }
+
+    /// Attacker/defender observers share one ordered guarded header batch.
+    pub fn read_sides(
+        memory: &impl Memory,
+        base: usize,
+        sides: [usize; 2],
+    ) -> Result<[Self; 2], &'static str> {
+        let mut observers = [0; 2];
+        for (at, side) in observers.iter_mut().zip(sides) {
+            if side == 0 {
+                return Err("land loss side null");
+            }
+            *at = side
+                .checked_add(crate::cland_combatant::STATS_OBSERVER)
+                .ok_or("land loss observer address overflow")?;
+        }
+        let mut headers = [[0; 36]; 2];
+        if memory.copy_records(
+            RecordSources::Pointers(&observers),
+            &LOSS_LAYOUT,
+            headers.as_flattened_mut(),
+        ) != 8
+        {
+            return Err("land loss observer headers unreadable");
+        }
+        Ok([
+            Self::from_header(base, headers[0])?,
+            Self::from_header(base, headers[1])?,
+        ])
+    }
+
+    /// Both complete pools and their identities take two guarded batches,
+    /// regardless of variant count. The caller supplies their combined arena.
+    pub fn copy_sides(
+        plans: [Self; 2],
+        memory: &impl Memory,
+        base: usize,
+        entries: &mut [LossEntry],
+        pointers: &mut [usize],
+        identities: &mut [[u8; 16]],
+    ) -> Result<(), &'static str> {
+        let first = plans[0].equipment.count as usize;
+        let count = first
+            .checked_add(plans[1].equipment.count as usize)
+            .ok_or("land loss count overflow")?;
+        if count > entries.len() || count > pointers.len() || count > identities.len() {
+            return Err("land loss arena capacity exceeded");
+        }
+        if count == 0 {
+            return Ok(());
+        }
+        let (attacker, defender) = entries[..count].split_at_mut(first);
+        let mut destinations = [entry_bytes(attacker)?, entry_bytes(defender)?];
+        if memory.copy_scattered(plans.map(|p| p.equipment.data), &mut destinations) != 2 {
+            return Err("land loss equipment entries unreadable");
+        }
+        authenticate(memory, base, &mut entries[..count], pointers, identities)
+    }
+
+    /// Private log words: manpower, count, then full handle/amount pairs.
+    /// Terminal hooks cannot allocate scratch, so they stream exact entries.
+    pub fn words(self) -> Result<usize, &'static str> {
+        (self.equipment.count as usize)
+            .checked_mul(2)
+            .and_then(|v| v.checked_add(2))
+            .ok_or("land loss event words overflow")
+    }
+    pub fn stream(
+        self,
+        memory: &impl Memory,
+        base: usize,
+        put: &mut impl FnMut(u64),
+    ) -> Result<(), &'static str> {
+        put(self.manpower as u64);
+        put(u64::from(self.equipment.count));
+        for ordinal in 0..self.equipment.count {
+            let at = self
+                .equipment
+                .element(ordinal, crate::equipment_entry::STRIDE)
+                .ok_or("land loss equipment address overflow")?;
+            let entry = crate::equipment_entry::read(memory, base, at, ordinal)?;
+            put(entry.variant_handle);
+            put(entry.amount_raw as u64);
+        }
+        Ok(())
+    }
+}
+
+fn entry_bytes(entries: &mut [LossEntry]) -> Result<&mut [u8], &'static str> {
+    // Exactly two integer words; every bit pattern is valid.
+    const {
+        assert!(std::mem::size_of::<LossEntry>() == crate::equipment_entry::STRIDE);
+    }
+    let bytes = entries
+        .len()
+        .checked_mul(crate::equipment_entry::STRIDE)
+        .ok_or("land loss entry bytes overflow")?;
+    Ok(unsafe { std::slice::from_raw_parts_mut(entries.as_mut_ptr().cast::<u8>(), bytes) })
+}
+fn authenticate(
+    memory: &impl Memory,
+    base: usize,
+    entries: &mut [LossEntry],
+    pointers: &mut [usize],
+    identities: &mut [[u8; 16]],
+) -> Result<(), &'static str> {
+    let count = entries.len();
+    for (pointer, entry) in pointers[..count].iter_mut().zip(&*entries) {
+        *pointer =
+            usize::try_from(entry.variant).map_err(|_| "land loss variant pointer overflow")?;
+    }
+    const IDENTITY: RecordLayout<'static> = RecordLayout::new(
+        &[RecordField {
+            source_offset: 0,
+            destination_offset: 0,
+            len: 16,
+        }],
+        16,
+    )
+    .unwrap();
+    if memory.copy_records(
+        RecordSources::Pointers(&pointers[..count]),
+        &IDENTITY,
+        identities[..count].as_flattened_mut(),
+    ) != count
+    {
+        return Err("land loss variant identities unreadable");
+    }
+    let expected = base
+        .checked_add(cequipment_variant::VTABLE_RVA)
+        .ok_or("land loss variant vtable address overflow")?;
+    for (entry, identity) in entries.iter_mut().zip(&identities[..count]) {
+        entry.variant = cequipment_variant::identity_from_header(expected, *identity)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+    fn put(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    #[test]
+    fn land_losses_preserve_signed_widths_complete_variants_and_refuse_short_copy() {
+        const SIDE: usize = 0x100;
+        let observer = SIDE + crate::cland_combatant::STATS_OBSERVER;
+        let pool = observer + EQUIPMENT_LOSSES;
+        let mut bytes = vec![0; 0x1000];
+        put(&mut bytes, observer, VTABLE_RVA as u64);
+        bytes[observer + MANPOWER_LOSS..observer + MANPOWER_LOSS + 4]
+            .copy_from_slice(&i32::MIN.to_le_bytes());
+        put(&mut bytes, pool, cequipment_variant_pool::VTABLE_RVA as u64);
+        put(&mut bytes, pool + cequipment_variant_pool::ITEMS, 0x800);
+        put(
+            &mut bytes,
+            pool + cequipment_variant_pool::CAPACITY,
+            2 | (2 << 32),
+        );
+        for (n, amount) in [i64::MIN, i64::MAX].into_iter().enumerate() {
+            put(&mut bytes, 0x800 + n * 16, (0x900 + n * 16) as u64);
+            put(&mut bytes, 0x808 + n * 16, amount as u64);
+            put(
+                &mut bytes,
+                0x900 + n * 16,
+                cequipment_variant::VTABLE_RVA as u64,
+            );
+            put(&mut bytes, 0x908 + n * 16, (n as u64 + 1) << 32 | 70);
+        }
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let plan = LossPlan::read(&memory, 0, SIDE).unwrap();
+        let plans = [
+            plan,
+            LossPlan {
+                manpower: 0,
+                equipment: Array::default(),
+            },
+        ];
+        assert_eq!(plan.manpower, i32::MIN);
+        let mut entries = [LossEntry::default(); 2];
+        let mut pointers = [0; 2];
+        let mut identities = [[0; 16]; 2];
+        LossPlan::copy_sides(
+            plans,
+            &memory,
+            0,
+            &mut entries,
+            &mut pointers,
+            &mut identities,
+        )
+        .unwrap();
+        assert_eq!(
+            entries[0],
+            LossEntry {
+                variant: 1 << 32 | 70,
+                amount_raw: i64::MIN
+            }
+        );
+        assert_eq!(entries[1].amount_raw, i64::MAX);
+        let mut streamed = Vec::new();
+        plan.stream(&memory, 0, &mut |word| streamed.push(word))
+            .unwrap();
+        assert_eq!(
+            streamed,
+            [
+                i32::MIN as u64,
+                2,
+                entries[0].variant,
+                i64::MIN as u64,
+                entries[1].variant,
+                i64::MAX as u64
+            ]
+        );
+        assert!(
+            LossPlan::copy_sides(
+                plans,
+                &memory,
+                0,
+                &mut entries[..1],
+                &mut pointers,
+                &mut identities
+            )
+            .is_err()
+        );
+        let short = SliceMemory {
+            base: 0,
+            bytes: &bytes[..0x91f],
+        };
+        assert!(
+            LossPlan::copy_sides(
+                plans,
+                &short,
+                0,
+                &mut entries,
+                &mut pointers,
+                &mut identities
+            )
+            .is_err()
+        );
+        assert!(LossPlan::read(&memory, 0, 0).is_err());
+        put(
+            &mut bytes,
+            pool + cequipment_variant_pool::CAPACITY,
+            u64::MAX,
+        );
+        assert!(
+            LossPlan::read(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes
+                },
+                0,
+                SIDE
+            )
+            .is_err()
+        );
+    }
+}

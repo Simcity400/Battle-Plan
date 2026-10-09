@@ -2,7 +2,7 @@
 //! database loaders as their other consumers, with an unread suffix kept
 //! as a named gap instead of treating an unknown key as a miss.
 
-use std::{collections::BTreeSet, io};
+use std::{collections::BTreeSet, io, sync::Arc};
 
 use crate::{ResolvedLayers, equipment, modifier_definitions, terrain, tokens::Token, unit_leader};
 
@@ -13,6 +13,7 @@ pub(crate) struct EffectNames {
     pub terrains: BTreeSet<Vec<u8>>,
     pub terrains_gap: Option<String>,
     pub equipment: BTreeSet<Vec<u8>>,
+    pub equipment_database: Option<Arc<equipment::Database>>,
     pub equipment_gap: Option<String>,
     pub equipment_upgrades: BTreeSet<Vec<u8>>,
     pub equipment_upgrades_gap: Option<String>,
@@ -70,7 +71,8 @@ impl EffectNames {
         result.equipment = crate::technology::equipment_pool_roster(&database);
         result.equipment_upgrades = token_names(database.registered_upgrades());
         result.equipment_gap = database.lost.clone();
-        result.equipment_upgrades_gap = database.lost;
+        result.equipment_upgrades_gap = database.lost.clone();
+        result.equipment_database = Some(Arc::new(database));
         Ok(result)
     }
 }
@@ -304,6 +306,19 @@ mod tests {
             effects: names,
             ..KeyNames::default()
         };
+        let database = lookup.equipment_database().unwrap();
+        assert!(std::ptr::eq(
+            database.named("Active_Alias").unwrap(),
+            database.named("Active_Equipment").unwrap()
+        ));
+        let cloned = lookup.clone();
+        assert!(Arc::ptr_eq(database, cloned.equipment_database().unwrap()));
+        assert!(
+            lookup
+                .at(super::super::Point::IdeaTags)
+                .equipment_database()
+                .is_none()
+        );
         assert_eq!(
             crate::modifiers::registered(b"ACTIVE_UNIT_MODIFIER", Some(&lookup)),
             Some(true)

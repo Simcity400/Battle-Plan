@@ -75,3 +75,28 @@ test('tag change hours are bounded to the range, without walking its hours', () 
   assert.deepEqual(lineage.changeHours('BBB', -2_000_000_000, 2_000_000_000), [10, 30]);
   assert.deepEqual(lineage.changeHours('OTHER', 0, 40), []);
 });
+
+test('holder starts use per-tag binary search and are bounds, not native presence', () => {
+  const changes = Array.from({ length: 5000 }, (_, i) => ({ hour: i + 1, from: `country ${i}`, to: `alias ${i}` }));
+  const countries = new Lineage(changes);
+  for (const { hour, from, to } of changes) {
+    assert.equal(countries.holderStart(to, hour), hour);
+    assert.equal(countries.holderStart(to, hour - 1), -Infinity);
+    assert.equal(countries.holderStart(from, hour), hour, 'a vacated tag bound does not certify a country exists');
+  }
+  assert.equal(countries.holderStart('not recorded', 1e9), -Infinity);
+  const chain = new Lineage(Array.from({ length: 5000 }, (_, i) => ({ hour: i + 1,
+    from: i % 2 ? 'B' : 'A', to: i % 2 ? 'A' : 'B' })));
+  const held = Reflect.get(chain, 'held') as Map<string, { hour: number; country: string }[]>;
+  const list = held.get('A')!;
+  let reads = 0;
+  held.set('A', new Proxy(list, { get(target, key, receiver) {
+    if (typeof key === 'string' && /^\d+$/.test(key)) reads++;
+    return Reflect.get(target, key, receiver);
+  } }));
+  for (const hour of [0, 2379, 5000]) {
+    reads = 0;
+    assert.equal(chain.holderStart('A', hour), hour ? hour : -Infinity);
+    assert.ok(reads <= Math.ceil(Math.log2(list.length)) + 1, 'only logarithmically many held entries are read');
+  }
+});

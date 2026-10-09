@@ -1,0 +1,8 @@
+.faction-parts { display: flex; flex-direction: column; min-height: 0; height: 100%; gap: var(--space-3); overflow-y: auto; }
+.faction-race-drill { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.faction-race-drill > .faction-parts, .faction-race-drill > .drill-host { flex: 1; min-height: 0; }
+.faction-parts > .drill-inventory { flex: 1 1 50%; min-height: 8em; }
+.faction-parts-history { flex: 1 1 50%; min-height: 12em; }
+.faction-member-chooser { display: flex; flex-direction: column; min-height: 0; height: 100%; gap: var(--space-3); }
+.faction-member-chooser .windowed-rows { flex: 1; min-height: 8em; }
+.faction-member-chooser .moving-row button { width: 100%; height: 100%; text-align: left; }

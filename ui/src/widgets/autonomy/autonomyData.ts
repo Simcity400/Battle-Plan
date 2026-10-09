@@ -3,7 +3,7 @@ import type { Run, Span } from '../../charts/series';
 import { inSpans } from '../../charts/timeline/layout.ts';
 import type { TimelineSpan } from '../../charts/timeline/layout';
 import { formatFixed } from '../../charts/valueAxis.ts';
-import { Lineage, joinTagChanges } from '../../dashboard/identity.ts';
+import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import type { AutonomyLevel, AutonomyReply, AutonomyRun, AutonomySubject } from '../../generated/dashboard';
 
 /** Subjects' autonomy (the `autonomy` product): each subject's level spans, its
@@ -112,43 +112,61 @@ export function subjectLane(subject: AutonomySubject & { countryId?: string }, l
 
 /** One subject country across its recorded tags, with overlord tag changes split
  * too. A known rename continues its line; a gap or another country still breaks it. */
-export function autonomyViews(reply: AutonomyReply, lineage: Lineage): (AutonomySubject & { countryId: string })[] {
-  const runs = reply.subjects.flatMap(subject => subject.runs.map(run => ({ ...run, tag: subject.tag, sourceFirstHour: run.firstHour })));
-  return joinTagChanges(runs, lineage, run => run.overlord == null ? [] : [run.overlord]).map(runs => ({
-    tag: runs[0].tag,
-    countryId: lineage.countryAt(runs[0].tag, runs[0].firstHour),
-    runs: runs.map(({ tag, sourceFirstHour, ...run }, index) => {
-      const previous = runs[index - 1];
-      const renamed = previous && previous.tag !== tag && previous.lastHour + 1 === run.firstHour;
-      // A split continues the recorded run; only its original start carries a gap.
-      return { ...run, startsSegment: run.startsSegment && run.firstHour === sourceFirstHour && !renamed };
-    }),
-  }));
+export function autonomyViews(reply: AutonomyReply, identities: CountryIdentityIndex): (AutonomySubject & { countryId: string })[] {
+  const holders = new Map<string, { tag: string; countryId: string; runs: (AutonomyRun & { tag: string })[] }>();
+  for (const subject of reply.subjects) {
+    const spans = identities.membershipRuns(subject.runs.map(run => ({ tag: subject.tag, firstHour: run.firstHour, lastHour: run.lastHour })));
+    for (const span of spans) {
+      const source = runAt(subject.runs, span.firstHour)!;
+      const countryId = identities.keyAt(subject.tag, span.firstHour)!;
+      let holder = holders.get(countryId);
+      if (!holder) { holder = { tag: subject.tag, countryId, runs: [] }; holders.set(countryId, holder); }
+      // Overlord lifetime changes split the operands, even if the tag stays the same.
+      const overlords = source.overlord === null ? [] : identities.membershipRuns([{ ...span, tag: source.overlord }]);
+      const cuts = [...new Set([span.firstHour, span.lastHour + 1, ...overlords.flatMap(part => [part.firstHour, part.lastHour + 1])])].sort((a, b) => a - b);
+      for (let index = 0; index + 1 < cuts.length; index++) holder.runs.push({ ...source, tag: subject.tag,
+        firstHour: cuts[index], lastHour: cuts[index + 1] - 1,
+        startsSegment: source.startsSegment && cuts[index] === source.firstHour });
+    }
+  }
+  for (const holder of holders.values()) {
+    holder.runs.sort((a, b) => a.firstHour - b.firstHour);
+  }
+  return [...holders.values()].map(holder => ({ ...holder, runs: holder.runs.map(({ tag, ...run }, index) => {
+    const previous = holder.runs[index - 1];
+    const continues = previous?.lastHour === run.firstHour - 1;
+    return { ...run, startsSegment: !continues || run.startsSegment && previous?.tag === tag };
+  }) }));
 }
 
 /** The chosen subject countries or subjects of chosen overlord countries. A
  * country keeps its whole history across renames; a reused tag names its new holder. */
 export function chosenViews(views: readonly (AutonomySubject & { countryId: string })[], countryIds: ReadonlySet<string>, bySubject: boolean,
-  lineage: Lineage): (AutonomySubject & { countryId: string })[] {
+  identities: CountryIdentityIndex): (AutonomySubject & { countryId: string })[] {
   return views.filter(subject => bySubject ? countryIds.has(subject.countryId)
-    : subject.runs.some(run => run.overlord != null && countryIds.has(lineage.countryAt(run.overlord, run.firstHour))));
+    : subject.runs.some(run => run.overlord != null && countryIds.has(identities.keyAt(run.overlord, run.firstHour) ?? '')));
+}
+
+/** An unresolved overlord cannot prove a known subject falls outside the selection. */
+export function overlordIdentityUnknownFor(subject: AutonomySubject, identities: CountryIdentityIndex): boolean {
+  return subject.runs.some(run => run.overlord !== null && identities.keyAt(run.overlord, run.firstHour) === null);
 }
 
 /** The recorded run at an hour, or null. */
 export const runOf = (lane: SubjectLane, hour: number) => runAt(lane.runs, Math.floor(hour));
 
 /** A subject's runs cut to the hours it is shown for a smart group counted at each
- * hour (`membership`, by tag, null for none): as a chosen subject (`bySubject`), while
+ * hour (`membership`, by native key, null for none): as a chosen subject (`bySubject`), while
  * it is a member itself; else while its overlord at that hour is one (a run without an
  * overlord then shows nowhere). Hours whose membership was not recorded
  * (`unobserved`) are cut out too, as unknown, but only then: a group counted at one
  * moment (no `membership`) chose its countries there, and its gaps elsewhere cut
  * nothing. A cut starts a new line where hours are missing between the pieces. */
 export function clipSubject<S extends AutonomySubject & { countryId?: string }>(subject: S, bySubject: boolean, membership: ReadonlyMap<string, readonly Span[]> | null,
-  unobserved: readonly Span[], lineage?: Lineage): S {
+  unobserved: readonly Span[], identities?: CountryIdentityIndex): S {
   let runs: AutonomyRun[] = subject.runs.slice();
   if (membership) {
-    if (bySubject) runs = clipToSpans(runs, membership.get(subject.countryId ?? subject.tag) ?? []);
+    if (bySubject) runs = clipToSpans(runs, membership.get(subject.countryId ?? '') ?? []);
     else {
       // Each overlord's runs are cut by its membership in one pass (`clipToSpans` is
       // linear), never once per run: a membership counted at each hour can hold tens
@@ -156,7 +174,8 @@ export function clipSubject<S extends AutonomySubject & { countryId?: string }>(
       const byOverlord = new Map<string, AutonomyRun[]>();
       for (const run of runs) {
         if (run.overlord == null) continue;
-        const overlord = lineage?.countryAt(run.overlord, run.firstHour) ?? run.overlord;
+        const overlord = identities?.keyAt(run.overlord, run.firstHour) ?? null;
+        if (overlord === null) continue;
         const held = byOverlord.get(overlord);
         if (held) held.push(run); else byOverlord.set(overlord, [run]);
       }
@@ -202,7 +221,8 @@ export function absentAt(reply: AutonomyReply, hour: number, unobserved: readonl
 
 /** A lane's labels at an hour: its level, else what is known of its absence, as the
  * tooltip says it. */
-export function laneLabels(reply: AutonomyReply, lane: SubjectLane, hour: number, unobserved: readonly Span[]): { label: string; pill: string; description: string } {
+export function laneLabels(reply: AutonomyReply, lane: SubjectLane, hour: number, unobserved: readonly Span[], identityRecorded = true): { label: string; pill: string; description: string } {
+  if (!identityRecorded) return { label: 'Native country identity not recorded', pill: 'Not recorded', description: 'Native country identity not recorded' };
   const run = runOf(lane, hour);
   if (run) {
     const label = levelName(reply.levels[run.level]);

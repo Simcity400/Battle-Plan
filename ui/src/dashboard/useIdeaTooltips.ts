@@ -18,8 +18,8 @@ import type { BoundTrack } from './model';
 /** How long a missing name waits before it is asked for again. */
 const RETRY_MS = 10_000;
 
-export function useIdeaTooltips(data: IdeaHistoryReply | undefined, track: Pick<BoundTrack, 'source' | 'branch'> | undefined,
-  client: DashboardClient, active: boolean) {
+export function useIdeaTooltips(data: Pick<IdeaHistoryReply, 'ideas' | 'artwork' | 'modifiers' | 'texts'> | undefined, track: Pick<BoundTrack, 'source' | 'branch'> | undefined,
+  client: DashboardClient, active: boolean, fallbackName?: (tag: string) => string) {
   const [requested, setRequested] = useState<NameAt[]>([]);
   // When each name was last asked for, so one still missing is asked again, at most every few seconds.
   const asked = useRef(new Map<string, number>());
@@ -29,7 +29,7 @@ export function useIdeaTooltips(data: IdeaHistoryReply | undefined, track: Pick<
   const names = useCountryNamesAt(client, track, requested, active, Infinity, attempt);
   return useMemo(() => {
     if (!data || !track) return null;
-    const metadataName = (tag: string) => track.source.metadata.countries.find(country => country.tag === tag)?.name ?? tag;
+    const metadataName = fallbackName ?? ((tag: string) => track.source.metadata.countries.find(country => country.tag === tag)?.name ?? tag);
     const nameAt = (tag: string, hour: number) => {
       const key = nameKey(hour, tag);
       const found = names.get(key);
@@ -53,5 +53,5 @@ export function useIdeaTooltips(data: IdeaHistoryReply | undefined, track: Pick<
       infos: new Map(data.ideas.map(info => [info.token, info])),
       art: new Map(data.artwork.map(item => [item.token, item])),
     };
-  }, [data, track, names, active]);
+  }, [data, track, names, active, fallbackName]);
 }

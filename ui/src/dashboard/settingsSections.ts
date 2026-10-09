@@ -15,10 +15,10 @@ export const SECTION_TITLES: Record<SettingsSection, string> = {
 export function settingsSections(meta: WidgetMeta | undefined, resolved: Readonly<Record<string, OptionValue>>, canReset: boolean): SettingsSection[] {
   const fields = meta?.options;
   const reads = meta?.data !== false;
-  const timeModes = meta?.history ? meta.timeModes.length > 1 : false;
+  const timeModes = reads && (meta?.timeModes.length ?? 0) > 1;
   const has: Record<SettingsSection, boolean> = {
     campaign: reads,
-    countries: reads,
+    countries: reads && meta?.countrySelection !== false,
     time: timeModes || sectionFields(fields, 'time', resolved).length > 0,
     size: true,
     options: sectionFields(fields, 'options', resolved).length > 0,

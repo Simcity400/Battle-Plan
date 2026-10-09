@@ -952,6 +952,8 @@ fn copy_oob_root(
     // (already above), theatre/theater-group/parent/leader/provider
     // references with target authentication for non-null pointers.
     let own = copy_oob_root_spans(log, memory, pointer);
+    // Name-only failures retain the unchanged roster prefix; its suffix is None.
+    copy_theatre_name(log, memory, pointer.checked_add(corders_group::NAME), 0);
     let is_army_group = own[0].map(|start| log.bytes[start]);
     for (index, offset) in [
         corders_group::THEATRE,

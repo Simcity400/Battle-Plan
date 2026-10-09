@@ -191,6 +191,7 @@ fn render_with_nato(
     let blocked = impassable.iter().copied().collect();
     let mut facts = ContentFacts::content_only(&dlcs, &triggers, &aliases);
     facts.state_provinces = &provinces;
+    facts.state_content = Ok(());
     facts.impassable = &blocked;
     let scripted = fixture.catalogue.scripted_content().unwrap();
     let text = ScriptedText::new(&fixture.frame, &fixture.catalogue.localisation, scripted, 1)

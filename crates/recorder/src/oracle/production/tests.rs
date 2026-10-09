@@ -48,6 +48,17 @@ fn credit_frame(
                 )
                 .collect(),
         ));
+    *frame.tables[TableId::ProductionLines.index()] =
+        TableView::Complete(TableRows::ProductionLines(
+            rows.iter()
+                .map(|&(handle, variant, mio, _)| ProductionLineRow {
+                    handle,
+                    variant,
+                    mio,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
     *frame.tables[TableId::IndustrialOrganisationHistory.index()] =
         TableView::Complete(TableRows::IndustrialOrganisationHistory(
             history
@@ -196,10 +207,19 @@ fn line_output_credits_are_checked_after_the_last_line_ended() {
     const ORG: u64 = (5 << 32) | 79;
     const TANK: u64 = (9 << 32) | 70;
     let run = |final_units: i32| {
+        let mut ended = credit_frame(124, true, &[(2, TANK, ORG, 0)], &[(ORG, TANK, 10)]);
+        let TableView::Complete(TableRows::ProductionLineOutput(output)) =
+            &mut *ended.tables[TableId::ProductionLineOutput.index()]
+        else {
+            unreachable!()
+        };
+        output[0].ended = true;
+        *ended.tables[TableId::ProductionLines.index()] =
+            TableView::Complete(TableRows::ProductionLines(Vec::new()));
         let frames = vec![
             credit_frame(100, true, &[(2, TANK, ORG, 0)], &[(ORG, TANK, 10)]),
             // Line 2's final publication: it ended having credited none.
-            credit_frame(124, true, &[(2, TANK, ORG, 0)], &[(ORG, TANK, 10)]),
+            ended,
             credit_frame(148, true, &[], &[(ORG, TANK, final_units)]),
         ];
         let compared = frames[2].clone();
@@ -1388,6 +1408,88 @@ fn efficiency_averages_the_saved_prefix_clamped_by_the_recorded_maximum() {
     actual.efficiency_raw = 0;
     compare_efficiency(&actual, &short, "line", &mut report);
     assert_eq!(report.differences.len(), 2);
+}
+
+#[test]
+fn modifier_oracle_compares_every_saved_factory_occurrence_and_keeps_runtime_operands_as_limitations()
+ {
+    use replay::rows::ProductionLineModifiersRow;
+    let saved = production::parse(
+        &parser::parse(
+            br#"countries={MAK={production={military_lines={
+        id={id=1 type=56} cost=0 priority=0 amount=1 active_factories=1
+        equipment_variant_index={id=9 type=70} requested_factories=1
+        industrial_manufacturer={id=7 type=127}
+        factory_efficiencies={53.00000 -1.00000 10.00000 10.00000}
+    }}}}"#,
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let producer = CountryRow {
+        id: 5,
+        tag: b"MAK".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(5001, &producer)]);
+    let row = ProductionLineModifiersRow {
+        line: (1 << 32) | 56,
+        country: 5001,
+        variant: (9 << 32) | 70,
+        organisation: (7 << 32) | 127,
+        active_factories: 1,
+        factory_efficiencies: vec![53 << 15, -(1 << 15), 10 << 15, 10 << 15],
+        organisation_dirty: true,
+        bonuses: [i64::MIN; 7],
+        resource_penalty_raw: i64::MAX,
+        ..Default::default()
+    };
+    let check = |rows| {
+        let mut frame = credit_frame(124, true, &[], &[]);
+        *frame.tables[TableId::ProductionLineModifiers.index()] =
+            TableView::Complete(TableRows::ProductionLineModifiers(rows));
+        let mut report = Report::default();
+        compare_modifiers(&frame, &saved, &links, &mut report).unwrap();
+        report
+    };
+    let report = check(vec![row.clone()]);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["ProductionLineModifiers"], 1);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("MIO cache/dirty state"))
+    );
+    // Inactive entries, repeats and native order are compared, not the average.
+    for factories in [
+        vec![53 << 15],
+        vec![53 << 15, 10 << 15, -(1 << 15), 10 << 15],
+    ] {
+        let report = check(vec![ProductionLineModifiersRow {
+            factory_efficiencies: factories,
+            ..row.clone()
+        }]);
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        assert!(report.differences[0].contains("factory_efficiencies"));
+    }
+    let report = check(vec![ProductionLineModifiersRow {
+        variant: (8 << 32) | 70,
+        ..row.clone()
+    }]);
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("variant"));
+    let report = check(vec![ProductionLineModifiersRow {
+        active_factories: 2,
+        ..row.clone()
+    }]);
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("active_factories"));
+    let mut extra = row.clone();
+    extra.line = (2 << 32) | 56;
+    assert_eq!(check(vec![row, extra]).differences.len(), 1);
+    assert_eq!(check(vec![]).differences.len(), 1);
 }
 
 #[test]

@@ -6,6 +6,11 @@
 //! its key.
 
 pub mod agency_comparison;
+pub mod air_aces;
+pub mod air_force;
+pub mod air_superiority;
+pub(crate) mod air_wings;
+pub mod army_size;
 pub mod artwork;
 pub mod autonomy;
 pub mod character_portraits;
@@ -18,30 +23,50 @@ pub mod country_fuel;
 pub mod country_groups;
 pub(crate) mod country_history;
 pub mod country_measure;
+mod country_name_cache;
 pub mod country_nukes;
 pub mod country_stability;
 pub mod country_styles;
 pub mod decryption;
+pub mod division_log;
 pub mod equipment;
 pub mod equipment_icon;
 pub mod equipment_losses;
 pub mod equipment_produced;
 pub mod equipment_stockpile;
 pub mod espionage_log;
+pub mod event_feed;
+pub mod faction_totals;
+pub(crate) mod fixed5_runs;
+pub mod focus_artwork;
+pub mod game_score;
 pub mod idea_format;
 pub mod idea_history;
 pub mod identity;
+pub mod intelligence_capture;
 pub mod intelligence_content;
+pub mod military_air_ledger;
+pub mod operation_description;
+pub mod operative_content;
+pub mod operative_placements;
+pub(crate) mod operative_rows;
+pub mod operatives_roster;
 pub use identity::civil_war;
 pub mod battles;
+mod force_census;
 pub mod land_battles;
 pub mod land_owners;
 pub mod national_focus;
+pub mod naval_battles;
+pub mod naval_losses;
+pub mod navy;
 pub mod occupation_trend;
 pub mod occupied_states;
 pub mod party_history;
+pub mod peace_deals;
 pub mod place_names;
 pub mod politics_content;
+pub mod politics_ledger;
 pub mod production_lines;
 pub mod production_spending;
 pub mod raids;
@@ -49,11 +74,18 @@ pub mod research;
 pub mod resource_balance;
 pub mod resources;
 pub mod scoreboard;
+pub mod ships_sunk;
+pub mod sinkings;
 pub mod special_projects;
 pub mod stability_parts;
 pub mod subjects;
+pub mod supply_health;
+pub mod territory;
+pub mod territory_breakdown;
 pub mod trade_flows;
+pub mod unit_leaders;
 pub mod war_casualties;
+pub mod wars;
 pub mod world_tension;
 
 use std::{io, sync::atomic::AtomicBool};
@@ -67,6 +99,16 @@ use crate::{Source, transport::bounded_json};
 /// Leave room for the lease envelope and escaped product JSON inside the
 /// transport's complete-response bound. History products share this reserve.
 pub const MAX_PRODUCT_REPLY_BYTES: usize = 24 * 1024 * 1024;
+
+/// Refuse a complete reply instead of dropping recorded entries to fit it.
+pub(crate) fn check_reply_budget<T: Serialize>(reply: &T) -> io::Result<()> {
+    if crate::transport::json_len(reply, MAX_PRODUCT_REPLY_BYTES).is_none() {
+        return Err(io::Error::other(format!(
+            "This product reply exceeds the transport reply budget of {MAX_PRODUCT_REPLY_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
 
 /// Native fixed64 finite domain, GetNukes@1410828A0: excludes the three
 /// infinity/undefined sentinels while preserving every signed finite value.
@@ -111,6 +153,12 @@ macro_rules! reply_warnings {
 
 reply_warnings!(
     agency_comparison::AgencyComparisonReply,
+    air_aces::AirAcePortraitReply,
+    army_size::ArmySizeReply,
+    supply_health::SupplyHealthReply,
+    unit_leaders::UnitLeadersResponse,
+    unit_leaders::portraits::UnitLeaderPortraitsReply,
+    air_force::AirForceReply,
     autonomy::AutonomyReply,
     construction_log::ConstructionLogReply,
     construction_spending::ConstructionSpendingReply,
@@ -118,6 +166,12 @@ reply_warnings!(
     country_factories::CountryFactoriesReply,
     country_flags::CountryFlagReply,
     country_fuel::FuelReply,
+    country_fuel::FuelAwardsReply,
+    country_fuel::FuelAwardHistoryReply,
+    country_fuel::FuelConsumptionReply,
+    country_fuel::FuelDemandReply,
+    country_fuel::FuelDemandHistoryReply,
+    country_fuel::FuelDemandStackReply,
     country_groups::CountryGroupReply,
     country_measure::MeasureReply,
     country_nukes::CountryNukesReply,
@@ -125,28 +179,48 @@ reply_warnings!(
     country_styles::CountryStyleReply,
     decryption::DecryptionReply,
     equipment_losses::LossesReply,
+    military_air_ledger::MilitaryAirReply,
     equipment_produced::EquipmentProducedReply,
     equipment_stockpile::EquipmentStockpileReply,
+    equipment_stockpile::artwork::StockpileArtworkReply,
     espionage_log::EspionageLogReply,
+    operation_description::OperationDescriptionReply,
+    operative_placements::OperativePlacementReply,
+    operatives_roster::OperativeRosterReply,
+    faction_totals::FactionTotalsReply,
+    game_score::GameScoreReply,
+    event_feed::EventFeedReply,
+    focus_artwork::FocusArtworkReply,
     idea_history::IdeaHistoryReply,
     crate::LandOwners,
     national_focus::FocusReply,
+    navy::NavyReply,
+    naval_losses::NavalLossesReply,
     occupation_trend::OccupationTrendReply,
     occupied_states::OccupiedStatesReply,
     party_history::PartyHistoryReply,
+    politics_ledger::PoliticsLedgerReply,
+    peace_deals::PeaceDealsReply,
     place_names::PlaceNamesReply,
     production_lines::ProductionLinesReply,
     production_lines::ProductionLineDetailReply,
+    production_lines::ProductionLineBreakdownReply,
     production_spending::ProductionSpendingReply,
     raids::RaidsReply,
     research::ResearchReply,
     resource_balance::ResourceBalanceReply,
     scoreboard::ScoreboardReply,
+    ships_sunk::ShipsSunkReply,
     special_projects::SpecialProjectsReply,
     stability_parts::StabilityPartsReply,
     subjects::SubjectReply,
+    territory::TerritoryReply,
+    territory_breakdown::TerritoryBreakdownReply,
     trade_flows::TradeFlowsReply,
     war_casualties::CasualtyReply,
+    wars::WarsReply,
+    war_casualties::pairs::CasualtyPairsReply,
+    war_casualties::breakdown::CasualtyBreakdownReply,
     world_tension::TensionReply,
 );
 
@@ -240,6 +314,18 @@ pub fn validate_tag(tag: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// A census API has no warnings field, so an unrepresentable key refuses its map.
+fn require_displayable_tags(
+    refused: &std::collections::BTreeMap<Vec<u8>, usize>,
+) -> io::Result<()> {
+    if refused.is_empty() {
+        return Ok(());
+    }
+    Err(crate::invalid(format!(
+        "Country tags are not UTF-8 (bytes: observation count): {refused:?}; the census cannot be represented"
+    )))
+}
+
 /// The rows a table holds this hour, complete or truncated; an unavailable table
 /// holds none. For products that use whatever rows were recorded.
 pub(crate) fn recorded_rows<T: replay::rows::TableSchema>(
@@ -257,6 +343,36 @@ pub(crate) fn recorded_rows<T: replay::rows::TableSchema>(
             })
         }
         TableView::Unavailable { .. } => Ok(&[]),
+    }
+}
+
+/// A table-state reason that can be shared across dated history runs. Read
+/// dates and changing truncation counts belong to coverage, not reason text.
+pub(crate) fn table_missing_reason(
+    frame: &replay::frame::DecodedFrame,
+    table: replay::rows::TableId,
+) -> Option<String> {
+    use replay::frame::TableView;
+    match &*frame.tables[table.index()] {
+        TableView::Complete(rows) if rows.table() == table => None,
+        TableView::Complete(_) => Some(format!("{table:?} contains another table's rows")),
+        TableView::Truncated { .. } => Some(format!("{table:?} is truncated")),
+        TableView::Unavailable { reason } => {
+            if reason.starts_with("missing table baseline") {
+                return Some(format!("{table:?} baseline missing"));
+            }
+            // FrameEncoder withholds partial rows at keyframes, retaining the
+            // truncation count in its named unavailable marker.
+            let truncated = reason
+                .strip_prefix("truncated at keyframe: ")
+                .and_then(|count| count.strip_suffix(" rows not read"))
+                .is_some_and(|count| count.parse::<u32>().is_ok_and(|count| count != 0));
+            Some(if truncated {
+                format!("{table:?} is truncated")
+            } else {
+                reason.clone()
+            })
+        }
     }
 }
 
@@ -321,8 +437,16 @@ fn types<P: Product>() -> Vec<String> {
 /// widget registry; nothing else needs to change.
 pub static PRODUCTS: &[Registered] = &[
     register::<national_focus::NationalFocus>(),
+    register::<focus_artwork::FocusArtwork>(),
     register::<research::Research>(),
     register::<country_flags::CountryFlags>(),
+    register::<army_size::ArmySize>(),
+    register::<supply_health::SupplyHealth>(),
+    register::<division_log::DivisionLog>(),
+    register::<division_log::DivisionLogManifest>(),
+    register::<division_log::DivisionLogTotals>(),
+    register::<unit_leaders::UnitLeaders>(),
+    register::<unit_leaders::portraits::UnitLeaderPortraits>(),
     register::<land_owners::LandOwnersProduct>(),
     register::<land_battles::LandBattles>(),
     register::<land_battles::LandBattlesManifest>(),
@@ -330,36 +454,70 @@ pub static PRODUCTS: &[Registered] = &[
     register::<place_names::PlaceNames>(),
     register::<country_styles::CountryStyles>(),
     register::<country_groups::CountryGroups>(),
+    register::<wars::Wars>(),
     register::<country_stability::CountryStability>(),
     register::<stability_parts::StabilityParts>(),
     register::<country_measure::CountryMeasure>(),
     register::<country_fuel::CountryFuel>(),
+    register::<country_fuel::CountryFuelAwards>(),
+    register::<country_fuel::CountryFuelAwardHistory>(),
+    register::<country_fuel::CountryFuelConsumption>(),
+    register::<country_fuel::CountryFuelDemand>(),
+    register::<country_fuel::CountryFuelDemandHistory>(),
+    register::<country_fuel::CountryFuelDemandStack>(),
     register::<war_casualties::WarCasualties>(),
+    register::<war_casualties::pairs::CasualtyPairs>(),
+    register::<war_casualties::breakdown::CasualtyBreakdown>(),
     register::<country_factories::CountryFactories>(),
+    register::<territory::Territory>(),
+    register::<territory_breakdown::TerritoryBreakdown>(),
+    register::<faction_totals::FactionTotals>(),
+    register::<air_aces::AirAces>(),
+    register::<air_aces::AirAcePortraits>(),
+    register::<air_force::AirForceSize>(),
+    register::<navy::NavySize>(),
+    register::<game_score::GameScore>(),
     register::<scoreboard::Scoreboard>(),
     register::<country_nukes::CountryNukes>(),
+    register::<air_superiority::AirSuperiority>(),
     register::<raids::Raids>(),
     register::<occupied_states::OccupiedStates>(),
     register::<occupation_trend::OccupationTrend>(),
     register::<country_experience::CountryExperience>(),
     register::<idea_history::IdeaHistory>(),
     register::<party_history::PartyHistory>(),
+    register::<politics_ledger::PoliticsLedger>(),
+    register::<peace_deals::PeaceDeals>(),
     register::<resource_balance::ResourceBalance>(),
     register::<decryption::Decryption>(),
     register::<production_lines::ProductionLines>(),
     register::<production_lines::ProductionLineDetail>(),
+    register::<production_lines::ProductionLineBreakdown>(),
     register::<equipment_stockpile::EquipmentStockpile>(),
+    register::<equipment_stockpile::artwork::StockpileArtwork>(),
     register::<equipment_produced::EquipmentProduced>(),
     register::<production_spending::ProductionSpending>(),
     register::<trade_flows::TradeFlows>(),
     register::<special_projects::SpecialProjects>(),
     register::<subjects::Subjects>(),
+    register::<event_feed::EventFeed>(),
     register::<world_tension::WorldTension>(),
     register::<autonomy::Autonomy>(),
     register::<construction_log::ConstructionLog>(),
     register::<equipment_losses::EquipmentLosses>(),
+    register::<military_air_ledger::MilitaryAirLedger>(),
+    register::<ships_sunk::ShipsSunk>(),
+    register::<ships_sunk::ShipsSunkBattleTitles>(),
+    register::<naval_battles::NavalBattles>(),
+    register::<naval_battles::NavalBattlesManifest>(),
+    register::<naval_battles::NavalBattlesRanking>(),
+    register::<naval_battles::NavalBattleDetails>(),
+    register::<naval_losses::NavalLosses>(),
     register::<construction_spending::ConstructionSpending>(),
     register::<espionage_log::EspionageLog>(),
+    register::<operation_description::OperationDescription>(),
+    register::<operative_placements::OperativePlacements>(),
+    register::<operatives_roster::OperativesRoster>(),
     register::<agency_comparison::AgencyComparison>(),
 ];
 
@@ -372,8 +530,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exported_product_type_names_do_not_hide_different_shapes() {
+        let mut declarations = std::collections::BTreeMap::new();
+        for product in PRODUCTS {
+            for declaration in (product.types)() {
+                let name = declaration
+                    .strip_prefix("type ")
+                    .unwrap()
+                    .split_whitespace()
+                    .next()
+                    .unwrap()
+                    .to_owned();
+                if let Some(previous) = declarations.insert(name.clone(), declaration.clone()) {
+                    assert_eq!(
+                        previous, declaration,
+                        "different exported types named {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tag_validation_preserves_long_recorded_lookup_keys() {
-        for tag in ["x".repeat(129), "国".repeat(129)] {
+        for tag in ["x".repeat(129), "å›½".repeat(129)] {
             assert_eq!(validate_tag(&tag), Ok(()));
             assert_eq!(
                 CountryParams {
@@ -391,12 +571,16 @@ mod tests {
 
     #[test]
     fn recording_only_products_do_not_depend_on_content() {
-        for key in [
-            country_fuel::CountryFuel::KEY,
-            country_measure::CountryMeasure::KEY,
-        ] {
-            assert!(!find(key).unwrap().content_dependent);
-        }
+        assert!(
+            !find(country_measure::CountryMeasure::KEY)
+                .unwrap()
+                .content_dependent
+        );
+        assert!(
+            find(country_fuel::CountryFuel::KEY)
+                .unwrap()
+                .content_dependent
+        );
         // This product's values are recorded, but its building names/definitions
         // also belong to the reply and must recover when content becomes available.
         assert!(
@@ -441,9 +625,23 @@ mod tests {
             "MeasureReply",
             "FuelReply",
             "CountryFactoriesReply",
+            "CasualtyPairsParams",
+            "CasualtyPairRun",
+            "CasualtyPairSeries",
+            "CasualtyPairsReply",
+            "CasualtyBreakdownParams",
+            "CasualtyBreakdownRun",
+            "CasualtyBreakdownSeries",
+            "CasualtyBreakdownCountryRun",
+            "CasualtyWarNameRun",
+            "CasualtyBreakdownWar",
+            "CasualtyBreakdownReply",
+            "AirForceReply",
+            "NavyReply",
             "ExperienceReply",
             "IdeaHistoryReply",
             "PartyHistoryReply",
+            "PeaceDealsReply",
             "ResourceBalanceReply",
             "ProductionLinesReply",
             "ProductionLineDetailReply",

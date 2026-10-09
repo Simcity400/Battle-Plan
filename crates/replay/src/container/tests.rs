@@ -166,6 +166,27 @@ fn source(branch: u64, hour: i32) -> DecodedFrame {
         ]));
     tables[TableId::ReservedCountryNaming.index()] =
         TableView::Complete(TableRows::ReservedCountryNaming(vec![Default::default()]));
+    tables[TableId::GameScoreMultipliers.index()] =
+        TableView::Complete(TableRows::GameScoreMultipliers(vec![
+            crate::rows::GameScoreMultiplierRow {
+                total_raw: Some(0),
+                army_raw: Some(0),
+                navy_raw: Some(0),
+                air_raw: Some(0),
+                industry_raw: Some(0),
+                land_raw: Some(0),
+                ..Default::default()
+            },
+        ]));
+    tables[TableId::EventFeedHistory.index()] =
+        TableView::Complete(TableRows::EventFeedHistory(vec![
+            crate::rows::EventFeedHistoryRow {
+                read_hour: hour,
+                coverage: crate::event_feed_rows::EventFeedCoverage::Complete,
+                counts: Some(Default::default()),
+                ..Default::default()
+            },
+        ]));
     DecodedFrame {
         branch,
         hour,
@@ -175,57 +196,140 @@ fn source(branch: u64, hour: i32) -> DecodedFrame {
 }
 
 #[test]
-fn destruction_hours_roundtrip_positive_empty_unavailable_and_selected() {
-    use crate::rows::{EquipmentDestructionCause, EquipmentDestructionRow};
+fn destruction_hours_roundtrip_signed_empty_unavailable_and_selected() {
+    use crate::rows::{
+        DivisionDeletionDisposition, DivisionEquipmentDeletionRow, EquipmentDestructionCause,
+        EquipmentDestructionCoverage, EquipmentDestructionRow,
+    };
     let event = EquipmentDestructionRow {
         country: 4999,
-        cause: EquipmentDestructionCause::Attrition,
+        cause: EquipmentDestructionCause::DivisionDestroyed,
         variant: 0xf00100000046,
         amount_raw: 900001,
+        ..Default::default()
+    };
+    let deletion = DivisionEquipmentDeletionRow {
+        division_handle: (781_u64 << 32) | 0x1234,
+        country: event.country,
+        disposition: DivisionDeletionDisposition::Loss,
+        cause: Some(event.cause),
+        ..Default::default()
     };
     let views = [
-        TableView::Unavailable {
-            reason: "first interval partial".into(),
-        },
-        TableView::Complete(TableRows::EquipmentDestruction(vec![event.clone()])),
-        TableView::Complete(TableRows::EquipmentDestruction(vec![])),
-        TableView::Complete(TableRows::EquipmentDestruction(vec![event])),
-        TableView::Unavailable {
-            reason: "event log overflow".into(),
-        },
+        (
+            TableView::Unavailable {
+                reason: "first interval partial".into(),
+            },
+            TableView::Unavailable {
+                reason: "first interval partial".into(),
+            },
+        ),
+        (
+            TableView::Complete(TableRows::EquipmentDestruction(vec![event.clone()])),
+            TableView::Complete(TableRows::DivisionEquipmentDeletions(vec![
+                deletion.clone(),
+            ])),
+        ),
+        (
+            TableView::Complete(TableRows::EquipmentDestruction(vec![
+                EquipmentDestructionRow {
+                    cause: EquipmentDestructionCause::LandCombat,
+                    amount_raw: -30_000,
+                    ..event.clone()
+                },
+            ])),
+            TableView::Complete(TableRows::DivisionEquipmentDeletions(vec![])),
+        ),
+        (
+            TableView::Complete(TableRows::EquipmentDestruction(vec![])),
+            TableView::Complete(TableRows::DivisionEquipmentDeletions(vec![
+                deletion.clone(),
+            ])),
+        ),
+        (
+            TableView::Complete(TableRows::EquipmentDestruction(vec![])),
+            TableView::Complete(TableRows::DivisionEquipmentDeletions(vec![])),
+        ),
+        (
+            TableView::Complete(TableRows::EquipmentDestruction(vec![event])),
+            TableView::Complete(TableRows::DivisionEquipmentDeletions(vec![deletion])),
+        ),
+        (
+            TableView::Complete(TableRows::EquipmentDestruction(vec![
+                EquipmentDestructionRow {
+                    coverage: EquipmentDestructionCoverage::SupplementalUnavailable.into(),
+                    unavailable_reason: "delete hook sentinel differs".to_owned().into(),
+                    ..Default::default()
+                },
+            ])),
+            TableView::Unavailable {
+                reason: "delete hook sentinel differs".into(),
+            },
+        ),
+        (
+            TableView::Unavailable {
+                reason: "event log overflow".into(),
+            },
+            TableView::Unavailable {
+                reason: "event log overflow".into(),
+            },
+        ),
     ];
     let mut encoder = FrameEncoder::new();
     let mut input = vec![
         Record::SessionStart(session(1)),
         Record::BranchStart(branch(1, 1)),
     ];
-    for (i, view) in views.iter().enumerate() {
+    for (i, (amounts, deletions)) in views.iter().enumerate() {
         let mut frame = source(1, i as i32 + 1);
-        *frame.tables[TableId::EquipmentDestruction.index()] = view.clone();
+        *frame.tables[TableId::EquipmentDestruction.index()] = amounts.clone();
+        *frame.tables[TableId::DivisionEquipmentDeletions.index()] = deletions.clone();
         frame.metrics.table_ns[TableId::EquipmentDestruction.index()] = 1;
+        frame.metrics.table_ns[TableId::DivisionEquipmentDeletions.index()] = 1;
         input.push(Record::Frame(encoder.encode(frame, false).unwrap()));
     }
     let replay = Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
-    for (i, view) in views.iter().enumerate() {
+    for (i, (amounts, deletions)) in views.iter().enumerate() {
         let SeekResult::Frame(frame) = replay.seek(1, i as i32 + 1).unwrap() else {
             panic!("missing hour");
         };
-        assert_eq!(&*frame.tables[TableId::EquipmentDestruction.index()], view);
+        assert_eq!(
+            &*frame.tables[TableId::EquipmentDestruction.index()],
+            amounts
+        );
+        assert_eq!(
+            &*frame.tables[TableId::DivisionEquipmentDeletions.index()],
+            deletions
+        );
     }
     for block in &replay.index {
         let full = replay.read_block(block).unwrap();
         let selected = replay
-            .read_block_selected(block, &[TableId::EquipmentDestruction])
+            .read_block_selected(
+                block,
+                &[
+                    TableId::EquipmentDestruction,
+                    TableId::DivisionEquipmentDeletions,
+                ],
+            )
             .unwrap();
         for (a, b) in full.iter().zip(&selected) {
             assert_eq!(
                 a.tables[TableId::EquipmentDestruction.index()],
                 b.tables[TableId::EquipmentDestruction.index()]
             );
+            assert_eq!(
+                a.tables[TableId::DivisionEquipmentDeletions.index()],
+                b.tables[TableId::DivisionEquipmentDeletions.index()]
+            );
         }
     }
     assert_eq!(
         crate::cadence::cadence(TableId::EquipmentDestruction),
+        crate::cadence::Cadence::Hourly
+    );
+    assert_eq!(
+        crate::cadence::cadence(TableId::DivisionEquipmentDeletions),
         crate::cadence::Cadence::Hourly
     );
 }

@@ -10,6 +10,8 @@ export const OPTIONS: readonly OptionField[] = [
     choices: [{ value: 'shown', label: 'Shown' }, { value: 'hidden', label: 'Hidden' }] },
   { key: 'names', section: 'options', label: 'Level names in bars', hint: 'Where they fit', kind: 'toggle', default: true },
   { key: 'legend', section: 'options', label: 'Level colours above the timeline', kind: 'toggle', default: true },
+  { key: 'grow', section: 'axes', label: 'Grow with playback', kind: 'toggle', default: false,
+    hint: 'With Live on, grow the time axis as the campaign plays.' },
 ];
 
 export const definition = {
@@ -17,6 +19,6 @@ export const definition = {
   description: 'Every overlord and its subjects over time, coloured by subject level.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 5 }, defaultSize: { w: 8, h: 10 },
-  countries: { max: 64, all: true },
+  countries: { max: Number.MAX_SAFE_INTEGER, all: true },
   options: OPTIONS,
 } as const satisfies WidgetMeta;

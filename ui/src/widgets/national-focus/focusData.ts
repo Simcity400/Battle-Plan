@@ -1,6 +1,6 @@
-import type { CountryParams, FocusHistory, FocusOrder, FocusProgress, FocusReply } from '../../generated/dashboard';
+import type { CountryParams, FocusHistory, FocusOrder, FocusSegment, FocusProgress, FocusReply, FocusArtworkParams, FocusArtworkReply } from '../../generated/dashboard';
 import type { ProductRequest } from '../../dashboard/client';
-import { artworkEntry, keepDrawableIcons } from '../../dashboard/artwork.ts';
+import { artworkEntry, drawableIcon, keepDrawableIcons } from '../../dashboard/artwork.ts';
 
 export const PRODUCT = 'national-focus';
 const FIXED = 100_000n;
@@ -21,9 +21,13 @@ function spanAt<T extends { firstHour: number; lastHour: number }>(spans: readon
 }
 
 /** Exact lookup over disjoint recorded segments; never carry a value over a gap. */
-export function focusAt(history: FocusHistory, hour: number): FocusOrder | null {
+export function focusSegmentAt(history: FocusHistory, hour: number): FocusSegment | null {
   const index = spanAt(history.segments, hour);
-  return index < 0 ? null : history.segments[index].order;
+  return index < 0 ? null : history.segments[index];
+}
+
+export function focusAt(history: FocusHistory, hour: number): FocusOrder | null {
+  return focusSegmentAt(history, hour)?.order ?? null;
 }
 
 export interface FocusProgressState {
@@ -91,10 +95,29 @@ export function validateFocusReply(input: unknown): FocusReply {
       lastProgress = run.lastHour;
       return ok;
     })
-    // The product answers at most 2048 artwork tokens per request (`products/artwork.rs`).
-    // Each entry must have the product's shape; only an icon it cannot draw becomes missing art.
-    && reply.artwork.length <= 2048 && reply.artwork.every(artworkEntry);
+    // Authored duration metadata has no token count cap.
+    && reply.artwork.every(artworkEntry);
   if (!valid) throw new Error('Focus history does not match this country and recording.');
   keepDrawableIcons(reply.artwork);
+  return reply;
+}
+
+/** Authenticate the supplying read and preserve native per-item refusals. */
+export function validateFocusArtworkReply(value: unknown, params: FocusArtworkParams): FocusArtworkReply {
+  const reply = value as FocusArtworkReply;
+  if (!reply || reply.branchId !== params.branchId || reply.hour !== params.hour || reply.tag !== params.tag
+    || !Array.isArray(reply.items) || !Array.isArray(reply.warnings) || !reply.warnings.every(warning => typeof warning === 'string')) {
+    throw new Error('Focus artwork does not match this country and hour.');
+  }
+  const wanted = new Set(params.tokens), found = new Set<string>();
+  for (const item of reply.items) {
+    if (!item || !artworkEntry(item.artwork) || (item.reason !== null && typeof item.reason !== 'string')
+      || !wanted.has(item.artwork.token) || found.has(item.artwork.token)) throw new Error('Invalid dated focus artwork.');
+    found.add(item.artwork.token);
+    const icon = drawableIcon(item.artwork.icon);
+    if (item.artwork.icon !== null && icon === null) item.reason ??= 'The returned icon could not be displayed.';
+    item.artwork.icon = icon;
+  }
+  if (found.size !== wanted.size) throw new Error('Dated focus artwork omitted requested tokens.');
   return reply;
 }

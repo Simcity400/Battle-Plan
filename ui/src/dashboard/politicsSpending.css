@@ -1,0 +1,6 @@
+.politics-spending-log { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.politics-spending-totals { display: flex; flex-wrap: wrap; gap: var(--space-4); padding: var(--space-1) var(--space-4) var(--space-3); color: var(--muted); font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.politics-spending-totals b { color: var(--text); font-weight: 600; }
+.politics-spending-category { margin-left: var(--space-2); }
+.politics-spending-muted, .politics-spending-gap { color: var(--muted); }
+.politics-spending-note { margin: 0; padding: 0 var(--space-4) var(--space-3); color: var(--muted); font-size: var(--type-xs); }

@@ -1,10 +1,19 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import { AFTER_PLAYHEAD_OPTION } from '../../dashboard/options.ts';
 import type { OptionField, OptionValue } from '../../dashboard/options';
+import { breakdownOption, DRILL_OPTION } from '../../charts/drill/drillState.ts';
+
+export const BREAKDOWN = { id: 'resource', label: 'Resource breakdown' };
 
 const overTime = (options: Readonly<Record<string, OptionValue>>) => options.view === 'time';
 
 export const OPTIONS: readonly OptionField[] = [
+  breakdownOption([BREAKDOWN], 'Resources'), DRILL_OPTION,
+  { key: 'resourceCountry', section: 'options', label: 'Breakdown country', kind: 'content-choice', default: '',
+    automatic: 'Choose a country and date', visibleWhen: () => false },
+  { key: 'partResource', section: 'options', label: 'Breakdown resource', kind: 'content-choice', default: '',
+    automatic: 'Automatic: the first resource in game order',
+    visibleWhen: options => options.show === 'resource' },
   { key: 'view', section: 'options', label: 'View', kind: 'choice', default: 'bars',
     choices: [{ value: 'bars', label: 'Balance bars' }, { value: 'time', label: 'Over time' }] },
   { key: 'resources', section: 'options', label: 'Resources over time', hint: 'From the campaign’s own content', kind: 'content-set',
@@ -31,5 +40,5 @@ export const definition = {
   description: 'Where a country’s resources come from and where they go, per day, with its trade partners.',
   timeModes: ['campaign', 'follow', 'pin', 'range'], defaultTime: 'campaign', scope: 'history', data: true, history: true,
   minSize: { w: 4, h: 6 }, defaultSize: { w: 6, h: 13 },
-  options: OPTIONS,
+  countries: { max: Number.MAX_SAFE_INTEGER }, options: OPTIONS,
 } as const satisfies WidgetMeta;

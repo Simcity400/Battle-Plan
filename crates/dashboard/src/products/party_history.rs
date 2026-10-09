@@ -21,7 +21,7 @@
 //!
 //! The ruling party's name is the game's (`GetName@14118F860`): its stored key
 //! (`PoliticalParties.name`) when `set_party_name` cleared the default flag,
-//! then with the country's original tag (`CountryAppearance.name_tag`), then the
+//! then with the party tag's positive original reference (1406DF830), then the
 //! ideology group's own name. [`party_key`] follows it.
 
 use super::{
@@ -31,10 +31,14 @@ use super::{
 use crate::{
     Source,
     catalogue::View,
-    metadata::{link_slot, tagged_country, validate_campaign},
+    metadata::{link_slot, tagged_countries, tagged_country, validate_campaign},
     products::country_groups::{HourSpan, mark_unobserved},
 };
-use replay::{container::Replay, frame::FrameDecoder, rows::tables};
+use replay::{
+    container::Replay,
+    frame::{FrameDecoder, ViewIdentity},
+    rows::{TableId, tables},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -50,7 +54,7 @@ pub struct PartyHistory;
 
 /// Decimal places of recorded popularity (a percentage).
 pub const POPULARITY_DECIMALS: u8 = 5;
-const MAX_RUNS: usize = 400_000;
+const CACHED_BRANCHES: usize = 2;
 const CACHED_COUNTRIES: usize = 8;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -256,7 +260,7 @@ pub struct PartyHistoryReply {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScannedParties {
     pub parties: BTreeMap<String, PartySeries>,
     pub ruling: Vec<RulingRun>,
@@ -264,8 +268,139 @@ pub struct ScannedParties {
     pub people: Vec<ScannedLeader>,
     pub party_name_runs: Vec<PartyNameRun>,
     pub namings: Vec<PartyNaming>,
+    selected_tags: Vec<Result<String, String>>,
     pub elections: Vec<i32>,
     pub unobserved: Vec<HourSpan>,
+    pub warnings: Vec<String>,
+}
+
+/// Widget naming uses exact recorded bytes; the public legacy wrapper keeps
+/// its historical empty-original normalization. Missing operands are reached
+/// only after the custom key and authored own-tag key fail (14118EAD0).
+pub(crate) fn recorded_party_key(
+    scanned: &ScannedParties,
+    index: usize,
+    defines: impl Fn(&str) -> bool,
+) -> Result<(String, Option<String>), String> {
+    let naming = scanned
+        .namings
+        .get(index)
+        .ok_or("party naming index is absent")?;
+    let selected = scanned
+        .selected_tags
+        .get(index)
+        .ok_or("party tag operands are absent")?;
+    party_key_for_tag_checked(naming, selected.as_ref().ok().map(String::as_str), defines)
+        .ok_or_else(|| {
+            selected
+                .as_ref()
+                .err()
+                .cloned()
+                .unwrap_or_else(|| "party own tag is unavailable (14118EAD0)".into())
+        })
+}
+
+fn party_naming_rows<'a>(
+    decoded: &'a replay::frame::DecodedFrame,
+    countries: &'a [replay::rows::CountryRow],
+) -> BTreeMap<
+    u32,
+    (
+        &'a replay::rows::CountryRow,
+        Option<&'a replay::rows::CountryAppearanceRow>,
+    ),
+> {
+    let appearances: BTreeMap<_, _> = decoded
+        .complete::<tables::CountryAppearance>()
+        .ok()
+        .into_iter()
+        .flatten()
+        .map(|row| (row.country, row))
+        .collect();
+    countries
+        .iter()
+        .map(|country| {
+            (
+                country.canonical_slot,
+                (country, appearances.get(&country.id).copied()),
+            )
+        })
+        .collect()
+}
+
+fn recorded_party_tags(
+    decoded: &replay::frame::DecodedFrame,
+    raw: u32,
+    rows: Option<
+        &BTreeMap<
+            u32,
+            (
+                &replay::rows::CountryRow,
+                Option<&replay::rows::CountryAppearanceRow>,
+            ),
+        >,
+    >,
+    current: (
+        &replay::rows::CountryRow,
+        u32,
+        Option<&replay::rows::CountryAppearanceRow>,
+    ),
+) -> (Option<String>, Result<String, String>) {
+    // ResolveCountryReference@140BA56A0 maps raw zero to the reserved singleton.
+    if raw == 0 {
+        return (
+            installed_content::country_names::reserved_zero_tag(decoded)
+                .ok()
+                .map(str::to_owned),
+            installed_content::country_names::original_or_own_tag(decoded, 0).map(str::to_owned),
+        );
+    }
+    let resolved = (|| {
+        let links = decoded
+            .complete::<tables::CountryLinks>()
+            .map_err(|why| format!("CountryLinks is unavailable: {why}"))?;
+        let slot =
+            link_slot(links, raw).ok_or_else(|| format!("party tag link {raw} is unresolved"))?;
+        if slot == 0 {
+            return Ok((
+                installed_content::country_names::reserved_zero_tag(decoded)?,
+                installed_content::country_names::original_or_own_tag(decoded, 0).map(str::to_owned),
+            ));
+        }
+        // Selected-country scans already hold their owner/appearance. Only a
+        // reached foreign party tag needs another lookup; never build a census
+        // index for one holder on every hour.
+        let (country, appearance) = if slot == current.1 {
+            (current.0, current.2)
+        } else if let Some(rows) = rows {
+            rows.get(&slot)
+                .copied()
+                .ok_or_else(|| format!("party tag slot {slot} has no Countries row"))?
+        } else {
+            let country = decoded
+                .complete::<tables::Countries>()
+                .map_err(|why| format!("Countries is unavailable: {why}"))?
+                .iter()
+                .rev()
+                .find(|country| country.canonical_slot == slot)
+                .ok_or_else(|| format!("party tag slot {slot} has no Countries row"))?;
+            let appearance = decoded
+                .complete::<tables::CountryAppearance>()
+                .ok()
+                .and_then(|rows| rows.iter().rev().find(|row| row.country == country.id));
+            (country, appearance)
+        };
+        let tag = std::str::from_utf8(&country.tag).map_err(|_| "party tag is not UTF-8")?;
+        let selected = appearance
+            .ok_or_else(|| format!("party tag slot {slot} has no complete CountryAppearance row"))
+            .and_then(|appearance| installed_content::country_names::original_tag(country, appearance))
+            .map(str::to_owned);
+        Ok::<_, String>((tag, selected))
+    })();
+    match resolved {
+        Ok((tag, selected)) => (Some(tag.to_owned()), selected),
+        Err(reason) => (None, Err(reason)),
+    }
 }
 
 /// Content ideology names and colours, preserving the native coverage warning.
@@ -322,95 +457,136 @@ fn leader_portrait(
     )
 }
 
-/// Scans one branch for one country's parties.
-pub fn scan(
-    replay: &Replay,
-    branch: u64,
-    tag: &str,
-    cancelled: &AtomicBool,
-) -> io::Result<ScannedParties> {
-    use replay::rows::TableId;
-    let selected = [
-        TableId::Campaign,
-        TableId::Countries,
-        TableId::CountryLinks,
-        TableId::Politics,
-        TableId::PoliticalParties,
-        TableId::CountryAppearance,
-        TableId::Characters,
-        TableId::CharacterPortraits,
-        TableId::LexicalTokens,
-    ];
-    let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Party request cancelled");
-    let mut result = ScannedParties::default();
-    let mut last: Option<((u32, u32), i32)> = None;
-    let mut last_election: Option<i32> = None;
-    let mut runs = 0_usize;
-    let mut people: BTreeMap<(u32, String, String, RecordedPortrait), u32> = BTreeMap::new();
-    let mut namings: BTreeMap<PartyNaming, u32> = BTreeMap::new();
-    for block in replay.index.iter().filter(|block| block.branch == branch) {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(cancel());
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
+/// The feed's ruling and name runs. Popularity, leaders and elections are only
+/// retained by the selected-country topic scan, using the same observer.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ScannedPartyBranch {
+    pub countries: BTreeMap<String, ScannedParties>,
+    pub observed: bool,
+    pub refusals: Vec<(String, usize)>,
+    absent: ScannedParties,
+}
+
+impl ScannedPartyBranch {
+    #[cfg(test)]
+    pub fn country(&self, tag: &str) -> &ScannedParties {
+        self.countries.get(tag).unwrap_or(&self.absent)
+    }
+}
+
+#[derive(Default)]
+struct CountryScan {
+    result: ScannedParties,
+    last: Option<((u32, u32), i32)>,
+    last_election: Option<i32>,
+    people: BTreeMap<(u32, String, String, RecordedPortrait), u32>,
+    namings: BTreeMap<(PartyNaming, Result<String, String>), u32>,
+    refused_gaps: usize,
+    unresolved: usize,
+    unresolved_now: bool,
+    invalid_ruling: usize,
+    invalid_tokens: BTreeSet<Vec<u8>>,
+}
+
+struct CountryRead<'a> {
+    country: &'a replay::rows::CountryRow,
+    slot: u32,
+    parties: Option<(&'a [replay::rows::PoliticalPartyRow], &'a [usize])>,
+    appearance: Option<&'a replay::rows::CountryAppearanceRow>,
+    politics: Option<&'a replay::rows::PoliticsRow>,
+}
+
+impl CountryScan {
+    fn extend(&mut self, hour: i32) {
+        let Some((_, previous)) = self.last.as_mut() else {
+            return;
         };
-        for frame in frames {
-            if cancelled.load(Ordering::Acquire) {
-                return Err(cancel());
-            }
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            let hour = frame.hour;
-            // Parties, elections (Politics) and the leader (CountryAppearance) may each be
-            // missing on their own; each run breaks only where its own table is.
-            let (Ok(countries), Ok(links)) = (
-                decoded.complete::<tables::Countries>(),
-                decoded.complete::<tables::CountryLinks>(),
-            ) else {
-                mark_unobserved(&mut result.unobserved, hour, hour);
-                continue;
-            };
-            let parties = decoded.complete::<tables::PoliticalParties>().ok();
-            if parties.is_none() {
-                mark_unobserved(&mut result.unobserved, hour, hour);
-            }
-            let Some((country, slot)) = tagged_country(countries, links, tag).found() else {
-                continue;
-            };
-            let identity = (slot, country.id);
-            // Only a change of country identity starts politics over; a gap in the same
-            // country still dates an election, to the hour it is first seen.
-            let same_identity = last.is_some_and(|(seen, _)| seen == identity);
-            let continues =
-                last.is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
-            if let Some((_, at)) = last
-                && at.checked_add(1).is_some_and(|next| next < hour)
-            {
-                mark_unobserved(&mut result.unobserved, at + 1, hour - 1);
-            }
-            last = Some((identity, hour));
-            let owner = |raw: u32| link_slot(links, raw) == Some(slot);
-            let appearance = decoded
-                .complete::<tables::CountryAppearance>()
-                .ok()
-                .and_then(|rows| rows.iter().find(|row| row.country == country.id));
-            for party in parties
-                .into_iter()
-                .flatten()
-                .filter(|party| owner(party.country))
-            {
-                let Ok(token) = std::str::from_utf8(&party.token) else {
-                    continue;
-                };
-                if token.is_empty() {
-                    continue;
+        if previous.checked_add(1) != Some(hour) {
+            return;
+        }
+        if let Some(run) = self.result.ruling.last_mut()
+            && run.last_hour == *previous
+        {
+            run.last_hour = hour;
+        }
+        if let Some(run) = self.result.party_name_runs.last_mut()
+            && run.last_hour == *previous
+        {
+            run.last_hour = hour;
+        }
+        *previous = hour;
+    }
+
+    fn observe(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        read: CountryRead<'_>,
+        naming_rows: Option<
+            &BTreeMap<
+                u32,
+                (
+                    &replay::rows::CountryRow,
+                    Option<&replay::rows::CountryAppearanceRow>,
+                ),
+            >,
+        >,
+        topic: bool,
+    ) {
+        let Self {
+            result,
+            last,
+            last_election,
+            people,
+            namings,
+            refused_gaps,
+            invalid_ruling,
+            invalid_tokens,
+            ..
+        } = self;
+        let CountryRead {
+            country,
+            slot,
+            parties,
+            appearance,
+            politics,
+        } = read;
+        let hour = decoded.hour;
+        let identity = (slot, country.id);
+        // Only a change of country identity starts politics over; a gap in the same
+        // country still dates an election, to the hour it is first seen.
+        let same_identity = last.as_ref().is_some_and(|(seen, _)| *seen == identity);
+        let continues = last
+            .as_ref()
+            .is_some_and(|(seen, at)| *seen == identity && at.checked_add(1) == Some(hour));
+        if let Some((_, at)) = *last
+            && at.checked_add(1).is_some_and(|next| next < hour)
+        {
+            mark_unobserved(&mut result.unobserved, at + 1, hour - 1);
+        }
+        *last = Some((identity, hour));
+        for party in parties
+            .into_iter()
+            .flat_map(|(rows, indices)| indices.iter().map(move |&index| &rows[index]))
+        {
+            let Ok(token) = std::str::from_utf8(&party.token) else {
+                if topic {
+                    invalid_tokens.insert(party.token.clone());
                 }
+                if !topic && party.is_ruling != 0 {
+                    *invalid_ruling += 1;
+                }
+                continue;
+            };
+            if token.is_empty() {
+                if topic {
+                    invalid_tokens.insert(party.token.clone());
+                }
+                if !topic && party.is_ruling != 0 {
+                    *invalid_ruling += 1;
+                }
+                continue;
+            }
+            if topic {
                 let series =
                     result
                         .parties
@@ -431,12 +607,6 @@ pub fn scan(
                         let starts_segment = !(continues
                             && previous
                                 .is_some_and(|run| run.last_hour.checked_add(1) == Some(hour)));
-                        runs += 1;
-                        if runs > MAX_RUNS {
-                            return Err(io::Error::other(
-                                "Party history exceeds its memory budget",
-                            ));
-                        }
                         series.runs.push(FixedRun {
                             first_hour: hour,
                             last_hour: hour,
@@ -445,163 +615,465 @@ pub fn scan(
                         });
                     }
                 }
-                if party.is_ruling != 0 {
-                    // The tag index is a link id, as `Countries.id` is.
-                    let tag = if party.tag == country.id {
-                        Some(&country.tag)
-                    } else {
-                        countries
-                            .iter()
-                            .find(|other| other.id == party.tag)
-                            .map(|other| &other.tag)
-                    };
-                    let naming = PartyNaming {
-                        token: token.to_owned(),
-                        tag: tag.map(|tag| String::from_utf8_lossy(tag).into_owned()),
-                        original_tag: appearance
-                            .map(|row| String::from_utf8_lossy(&row.name_tag).into_owned()),
-                        key: (party.name_default == 0)
-                            .then(|| String::from_utf8_lossy(&party.name).into_owned()),
-                    };
-                    let next = u32::try_from(result.namings.len()).unwrap_or(u32::MAX);
-                    let name = *namings.entry(naming.clone()).or_insert_with(|| {
+            }
+            if party.is_ruling != 0 {
+                // 14118EAD0 resolves the party's tag, not its current owner.
+                let (tag, selected_tag) = recorded_party_tags(
+                    decoded,
+                    party.tag,
+                    naming_rows,
+                    (country, slot, appearance),
+                );
+                let naming = PartyNaming {
+                    token: token.to_owned(),
+                    tag,
+                    original_tag: selected_tag.as_ref().ok().cloned(),
+                    key: (party.name_default == 0)
+                        .then(|| String::from_utf8_lossy(&party.name).into_owned()),
+                };
+                let next = u32::try_from(result.namings.len()).unwrap_or(u32::MAX);
+                let name = *namings
+                    .entry((naming.clone(), selected_tag.clone()))
+                    .or_insert_with(|| {
                         result.namings.push(naming);
+                        result.selected_tags.push(selected_tag);
                         next
                     });
-                    match result.party_name_runs.last_mut() {
-                        Some(run)
-                            if continues
-                                && run.name == name
-                                && run.last_hour.checked_add(1) == Some(hour) =>
-                        {
-                            run.last_hour = hour
-                        }
-                        _ => {
-                            runs += 1;
-                            if runs > MAX_RUNS {
-                                return Err(io::Error::other(
-                                    "Party history exceeds its memory budget",
-                                ));
-                            }
-                            result.party_name_runs.push(PartyNameRun {
-                                name,
-                                first_hour: hour,
-                                last_hour: hour,
-                            });
-                        }
-                    }
-                    match result.ruling.last_mut() {
-                        Some(run)
-                            if continues
-                                && run.token == token
-                                && run.last_hour.checked_add(1) == Some(hour) =>
-                        {
-                            run.last_hour = hour
-                        }
-                        previous => {
-                            let starts_segment = !(continues
-                                && previous
-                                    .is_some_and(|run| run.last_hour.checked_add(1) == Some(hour)));
-                            result.ruling.push(RulingRun {
-                                token: token.to_owned(),
-                                first_hour: hour,
-                                last_hour: hour,
-                                starts_segment,
-                            })
-                        }
-                    }
-                }
-            }
-            // The leader, when this hour's appearance row is recorded; the character is
-            // named as an advisor is, and stays unnamed rather than misnamed.
-            if let Some(row) = appearance {
-                let characters = decoded.complete::<tables::Characters>().ok();
-                let lexical = decoded.complete::<tables::LexicalTokens>().ok();
-                let portraits = decoded.complete::<tables::CharacterPortraits>().ok();
-                let person = row.leader_character.map(|id| {
-                    let found = characters.and_then(|rows| {
-                        rows.binary_search_by_key(&id, |character| character.id)
-                            .ok()
-                            .map(|index| &rows[index])
-                    });
-                    let character = IdeaCharacter {
-                        id,
-                        token: found
-                            .zip(lexical)
-                            .and_then(|(found, lexical)| {
-                                identity::character_script_token(found, lexical)
-                            })
-                            .unwrap_or_default()
-                            .to_owned(),
-                        name: found
-                            .and_then(|found| std::str::from_utf8(&found.token).ok())
-                            .unwrap_or_default()
-                            .to_owned(),
-                    };
-                    let portrait = leader_portrait(portraits, id);
-                    let next = u32::try_from(result.people.len()).unwrap_or(u32::MAX);
-                    *people
-                        .entry((
-                            id,
-                            character.token.clone(),
-                            character.name.clone(),
-                            portrait.clone(),
-                        ))
-                        .or_insert_with(|| {
-                            result.people.push(ScannedLeader {
-                                character,
-                                portrait,
-                            });
-                            next
-                        })
-                });
-                let ideology = String::from_utf8_lossy(&row.leader_ideology).into_owned();
-                match result.leaders.last_mut() {
+                match result.party_name_runs.last_mut() {
                     Some(run)
                         if continues
-                            && run.last_hour.checked_add(1) == Some(hour)
-                            && run.ideology == ideology
-                            && run.person == person =>
+                            && run.name == name
+                            && run.last_hour.checked_add(1) == Some(hour) =>
+                    {
+                        run.last_hour = hour
+                    }
+                    _ => {
+                        result.party_name_runs.push(PartyNameRun {
+                            name,
+                            first_hour: hour,
+                            last_hour: hour,
+                        });
+                    }
+                }
+                match result.ruling.last_mut() {
+                    Some(run)
+                        if continues
+                            && run.token == token
+                            && run.last_hour.checked_add(1) == Some(hour) =>
                     {
                         run.last_hour = hour
                     }
                     previous => {
+                        if !topic
+                            && same_identity
+                            && previous.as_ref().is_some_and(|run| {
+                                run.token != token && run.last_hour.checked_add(1) != Some(hour)
+                            })
+                        {
+                            *refused_gaps += 1;
+                        }
                         let starts_segment = !(continues
                             && previous
                                 .is_some_and(|run| run.last_hour.checked_add(1) == Some(hour)));
-                        runs += 1;
-                        if runs > MAX_RUNS {
-                            return Err(io::Error::other(
-                                "Party history exceeds its memory budget",
-                            ));
-                        }
-                        result.leaders.push(LeaderRun {
-                            ideology,
-                            person,
+                        result.ruling.push(RulingRun {
+                            token: token.to_owned(),
                             first_hour: hour,
                             last_hour: hour,
                             starts_segment,
-                        });
+                        })
                     }
                 }
             }
-            if !same_identity {
-                last_election = None;
-            }
-            // When Politics is unrecorded this hour, the next recorded date still shows
-            // any election since.
-            if let Ok(politics) = decoded.complete::<tables::Politics>()
-                && let Some(row) = politics.iter().find(|row| owner(row.country))
-            {
-                // The first date seen is when the recording started, not an election.
-                if last_election.is_some_and(|previous| previous != row.last_election) {
-                    result.elections.push(hour);
+        }
+        if !topic {
+            return;
+        }
+        // The leader, when this hour's appearance row is recorded; the character is
+        // named as an advisor is, and stays unnamed rather than misnamed.
+        if let Some(row) = appearance {
+            let characters = decoded.complete::<tables::Characters>().ok();
+            let lexical = decoded.complete::<tables::LexicalTokens>().ok();
+            let portraits = decoded.complete::<tables::CharacterPortraits>().ok();
+            let person = row.leader_character.map(|id| {
+                let found = characters.and_then(|rows| {
+                    rows.binary_search_by_key(&id, |character| character.id)
+                        .ok()
+                        .map(|index| &rows[index])
+                });
+                let character = IdeaCharacter {
+                    id,
+                    token: found
+                        .zip(lexical)
+                        .and_then(|(found, lexical)| {
+                            identity::character_script_token(found, lexical)
+                        })
+                        .unwrap_or_default()
+                        .to_owned(),
+                    name: found
+                        .and_then(|found| std::str::from_utf8(&found.token).ok())
+                        .unwrap_or_default()
+                        .to_owned(),
+                };
+                let portrait = leader_portrait(portraits, id);
+                let next = u32::try_from(result.people.len()).unwrap_or(u32::MAX);
+                *people
+                    .entry((
+                        id,
+                        character.token.clone(),
+                        character.name.clone(),
+                        portrait.clone(),
+                    ))
+                    .or_insert_with(|| {
+                        result.people.push(ScannedLeader {
+                            character,
+                            portrait,
+                        });
+                        next
+                    })
+            });
+            let ideology = String::from_utf8_lossy(&row.leader_ideology).into_owned();
+            match result.leaders.last_mut() {
+                Some(run)
+                    if continues
+                        && run.last_hour.checked_add(1) == Some(hour)
+                        && run.ideology == ideology
+                        && run.person == person =>
+                {
+                    run.last_hour = hour
                 }
-                last_election = Some(row.last_election);
+                previous => {
+                    let starts_segment = !(continues
+                        && previous.is_some_and(|run| run.last_hour.checked_add(1) == Some(hour)));
+                    result.leaders.push(LeaderRun {
+                        ideology,
+                        person,
+                        first_hour: hour,
+                        last_hour: hour,
+                        starts_segment,
+                    });
+                }
+            }
+        }
+        if !same_identity {
+            *last_election = None;
+        }
+        // When Politics is unrecorded this hour, the next recorded date still shows
+        // any election since.
+        if let Some(row) = politics {
+            // The first date seen is when the recording started, not an election.
+            if last_election
+                .as_ref()
+                .is_some_and(|previous| *previous != row.last_election)
+            {
+                result.elections.push(hour);
+            }
+            *last_election = Some(row.last_election);
+        }
+    }
+}
+
+/// Scans and retains only the requested country's topic history.
+pub fn scan(
+    replay: &Replay,
+    branch: u64,
+    tag: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<ScannedParties> {
+    let mut scanned = scan_selected(replay, branch, Some(tag), cancelled)?;
+    Ok(scanned.countries.remove(tag).unwrap_or(scanned.absent))
+}
+
+pub(crate) fn scan_all(
+    replay: &Replay,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<ScannedPartyBranch> {
+    scan_selected(replay, branch, None, cancelled)
+}
+
+fn scan_selected(
+    replay: &Replay,
+    branch: u64,
+    requested: Option<&str>,
+    cancelled: &AtomicBool,
+) -> io::Result<ScannedPartyBranch> {
+    let mut selected = vec![
+        TableId::Campaign,
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::PoliticalParties,
+        TableId::CountryAppearance,
+        TableId::ReservedCountryNaming,
+    ];
+    if requested.is_some() {
+        selected.extend([
+            TableId::Politics,
+            TableId::Characters,
+            TableId::CharacterPortraits,
+            TableId::LexicalTokens,
+        ]);
+    }
+    let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Party request cancelled");
+    let mut states: BTreeMap<String, CountryScan> = BTreeMap::new();
+    let mut unobserved = Vec::new();
+    let mut observed = false;
+    const FEED_VIEWS: [TableId; 5] = [
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::PoliticalParties,
+        TableId::CountryAppearance,
+        TableId::ReservedCountryNaming,
+    ];
+    let mut previous_frame: Option<(i32, [ViewIdentity; 5])> = None;
+    let mut party_views: Option<[ViewIdentity; 2]> = None;
+    let mut parties_by_slot: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for block in replay.index.iter().filter(|block| block.branch == branch) {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(cancel());
+        }
+        let mut decoder = FrameDecoder::for_tables(&selected);
+        let Ok(frames) = replay.read_block_selected(block, &selected) else {
+            continue;
+        };
+        for frame in frames {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(cancel());
+            }
+            let Ok(decoded) = decoder.advance(&frame) else {
+                break;
+            };
+            if validate_campaign(decoded, replay).is_err() {
+                break;
+            }
+            let hour = frame.hour;
+            let (Ok(countries), Ok(links)) = (
+                decoded.complete::<tables::Countries>(),
+                decoded.complete::<tables::CountryLinks>(),
+            ) else {
+                mark_unobserved(&mut unobserved, hour, hour);
+                continue;
+            };
+            let parties = decoded.complete::<tables::PoliticalParties>().ok();
+            observed |= parties.is_some();
+            if parties.is_none() {
+                mark_unobserved(&mut unobserved, hour, hour);
+            }
+            if let Some(tag) = requested {
+                let Some((country, slot)) = tagged_country(countries, links, tag).found() else {
+                    continue;
+                };
+                let owned: Vec<_> = parties
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    .filter(|(_, party)| link_slot(links, party.country) == Some(slot))
+                    .map(|(index, _)| index)
+                    .collect();
+                let appearance = decoded
+                    .complete::<tables::CountryAppearance>()
+                    .ok()
+                    .and_then(|rows| rows.iter().rev().find(|row| row.country == country.id));
+                let politics = decoded
+                    .complete::<tables::Politics>()
+                    .ok()
+                    .and_then(|rows| {
+                        rows.iter()
+                            .find(|row| link_slot(links, row.country) == Some(slot))
+                    });
+                if !states.contains_key(tag) {
+                    states.insert(tag.to_owned(), CountryScan::default());
+                }
+                states
+                    .get_mut(tag)
+                    .expect("selected country inserted")
+                    .observe(
+                        decoded,
+                        CountryRead {
+                            country,
+                            slot,
+                            parties: parties.map(|rows| (rows, owned.as_slice())),
+                            appearance,
+                            politics,
+                        },
+                        None,
+                        true,
+                    );
+                continue;
+            }
+            if parties.is_some()
+                && previous_frame.as_ref().is_some_and(|(previous, views)| {
+                    previous.checked_add(1) == Some(hour)
+                        && views
+                            .iter()
+                            .zip(FEED_VIEWS)
+                            .all(|(view, table)| view.is(&decoded.tables[table.index()]))
+                })
+            {
+                for state in states.values_mut() {
+                    if state.unresolved_now {
+                        state.unresolved += 1;
+                    } else {
+                        state.extend(hour);
+                    }
+                }
+                previous_frame.as_mut().expect("unchanged frame exists").0 = hour;
+                continue;
+            }
+            previous_frame = parties.is_some().then(|| {
+                (
+                    hour,
+                    FEED_VIEWS.map(|table| decoded.tables[table.index()].identity()),
+                )
+            });
+            let found = tagged_countries(countries, links);
+            const PARTY_VIEWS: [TableId; 2] = [TableId::CountryLinks, TableId::PoliticalParties];
+            // Row indexes remain valid while both the inventory and its owner links stand.
+            if party_views.as_ref().is_none_or(|views| {
+                views
+                    .iter()
+                    .zip(PARTY_VIEWS)
+                    .any(|(view, table)| !view.is(&decoded.tables[table.index()]))
+            }) {
+                parties_by_slot.clear();
+                for (index, party) in parties.into_iter().flatten().enumerate() {
+                    if party.is_ruling != 0
+                        && let Some(slot) = link_slot(links, party.country)
+                    {
+                        parties_by_slot.entry(slot).or_default().push(index);
+                    }
+                }
+                party_views =
+                    Some(PARTY_VIEWS.map(|table| decoded.tables[table.index()].identity()));
+            }
+            let appearances: BTreeMap<_, _> = decoded
+                .complete::<tables::CountryAppearance>()
+                .ok()
+                .into_iter()
+                .flatten()
+                .map(|row| (row.country, row))
+                .collect();
+            let naming_rows = party_naming_rows(decoded, countries);
+            for state in states.values_mut() {
+                state.unresolved_now = false;
+            }
+            for (tag, found) in found {
+                let Ok(tag) = std::str::from_utf8(tag) else {
+                    continue;
+                };
+                if !states.contains_key(tag) {
+                    states.insert(tag.to_owned(), CountryScan::default());
+                }
+                let state = states.get_mut(tag).expect("feed country inserted");
+                let Some((country, slot)) = found.found() else {
+                    if matches!(found, crate::metadata::TaggedCountry::Unresolved) {
+                        state.unresolved_now = true;
+                        state.unresolved += 1;
+                    }
+                    continue;
+                };
+                state.observe(
+                    decoded,
+                    CountryRead {
+                        country,
+                        slot,
+                        parties: parties.and_then(|rows| {
+                            parties_by_slot
+                                .get(&slot)
+                                .map(|indices| (rows, indices.as_slice()))
+                        }),
+                        appearance: appearances.get(&country.id).copied(),
+                        politics: None,
+                    },
+                    Some(&naming_rows),
+                    false,
+                );
             }
         }
     }
+    let mut result = ScannedPartyBranch {
+        observed,
+        absent: ScannedParties {
+            unobserved: unobserved.clone(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut refusals: BTreeMap<&str, usize> = BTreeMap::new();
+    for (tag, mut state) in states {
+        if !state.invalid_tokens.is_empty() {
+            state.result.warnings.push(format!(
+                "PoliticalParties ideology tokens are empty or not UTF-8; their popularity and names cannot be identified (count: {}).",
+                state.invalid_tokens.len()
+            ));
+        }
+        let mut spans = std::mem::take(&mut state.result.unobserved);
+        spans.extend(unobserved.iter().cloned());
+        spans.sort_by_key(|span| span.first_hour);
+        for span in spans {
+            mark_unobserved(
+                &mut state.result.unobserved,
+                span.first_hour,
+                span.last_hour,
+            );
+        }
+        for (count, reason) in [
+            (
+                state.refused_gaps,
+                "a different ruling party was first seen after unobserved hours; a change of government cannot be proven across the gap",
+            ),
+            (
+                state.unresolved,
+                "CountryLinks did not resolve the recorded country identity; ruling-party observations cannot be attributed",
+            ),
+            (
+                state.invalid_ruling,
+                "PoliticalParties ruling rows had an empty or non-UTF-8 ideology token; their names cannot be resolved",
+            ),
+        ] {
+            if count > 0 {
+                let total = refusals.entry(reason).or_default();
+                *total = total.checked_add(count).ok_or_else(|| {
+                    io::Error::other("Party unavailable observation count exceeds usize")
+                })?;
+            }
+        }
+        result.countries.insert(tag, state.result);
+    }
+    result.refusals = refusals
+        .into_iter()
+        .map(|(reason, count)| (format!("{reason}."), count))
+        .collect();
     Ok(result)
+}
+
+#[derive(Default)]
+struct BranchCache {
+    entries: VecDeque<(u64, Arc<ScannedPartyBranch>)>,
+}
+
+pub(crate) fn scanned_branch(
+    source: &Source,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Arc<ScannedPartyBranch>> {
+    let state = source.state::<BranchCache>();
+    {
+        let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(index) = cache.entries.iter().position(|(key, _)| *key == branch) {
+            let entry = cache.entries.remove(index).expect("cached branch exists");
+            let scanned = Arc::clone(&entry.1);
+            cache.entries.push_back(entry);
+            return Ok(scanned);
+        }
+    }
+    let scanned = Arc::new(scan_all(&source.replay(), branch, cancelled)?);
+    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+    cache.entries.retain(|(key, _)| *key != branch);
+    cache.entries.push_back((branch, Arc::clone(&scanned)));
+    while cache.entries.len() > CACHED_BRANCHES {
+        cache.entries.pop_front();
+    }
+    Ok(scanned)
 }
 
 #[derive(Default)]
@@ -641,12 +1113,17 @@ impl Product for PartyHistory {
         let key = (params.branch(), params.tag.clone());
         let state = source.state::<Cache>();
         let cached = {
-            let cache = state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
             cache
                 .entries
                 .iter()
-                .find(|(cached, _)| *cached == key)
-                .map(|(_, scanned)| Arc::clone(scanned))
+                .position(|(cached, _)| *cached == key)
+                .map(|index| {
+                    let entry = cache.entries.remove(index).expect("cached country exists");
+                    let scanned = Arc::clone(&entry.1);
+                    cache.entries.push_back(entry);
+                    scanned
+                })
         };
         let scanned = match cached {
             Some(scanned) => scanned,
@@ -666,7 +1143,7 @@ impl Product for PartyHistory {
                 scanned
             }
         };
-        let mut warnings = Vec::new();
+        let mut warnings = scanned.warnings.clone();
         // Without the game folders the chart still draws, in palette colours and with tokens for names.
         let politics = match context
             .content()
@@ -727,9 +1204,20 @@ impl Product for PartyHistory {
         let party_names = scanned
             .namings
             .iter()
-            .map(|naming| {
+            .enumerate()
+            .map(|(index, _)| {
                 politics.as_ref().and_then(|politics| {
-                    let (key, _) = party_key_checked(naming, |key| politics.defines(key))?;
+                    let (key, fallback) =
+                        match recorded_party_key(&scanned, index, |key| politics.defines(key)) {
+                            Ok(value) => value,
+                            Err(reason) => {
+                                warnings.push(format!("party name: {reason}"));
+                                return None;
+                            }
+                        };
+                    if let Some(reason) = fallback {
+                        warnings.push(reason);
+                    }
                     // Party names are plain (14118F860).
                     politics.localised(&key, View::Plain)
                 })

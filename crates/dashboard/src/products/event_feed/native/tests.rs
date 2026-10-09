@@ -1,0 +1,478 @@
+use super::*;
+use replay::{
+    event_feed_rows::{EventFeedCounts, EventFeedEvent},
+    frame::{Metrics, TableView},
+    rows::{CountryLinkRow, TableRows},
+};
+
+fn identity(index: u32) -> EventFeedCountry {
+    EventFeedCountry {
+        reference: 100_000 + index,
+        id: 100_000 + index,
+        instance: 7 + index,
+    }
+}
+fn frame(hour: i32, count: u32) -> DecodedFrame {
+    let mut frame = DecodedFrame {
+        branch: 1,
+        hour,
+        tables: std::array::from_fn(|_| {
+            TableView::Unavailable {
+                reason: "synthetic unused table".into(),
+            }
+            .into()
+        }),
+        metrics: Metrics::default(),
+    };
+    for rows in [
+        TableRows::Countries(
+            (0..count)
+                .map(|index| CountryRow {
+                    id: identity(index).id,
+                    canonical_slot: index + 1,
+                    tag: format!("synthetic / country {index}").into_bytes(),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+        TableRows::CountryLinks(
+            (0..count)
+                .map(|index| CountryLinkRow {
+                    id: identity(index).id,
+                    canonical_slot: index + 1,
+                })
+                .collect(),
+        ),
+        TableRows::CountryExperienceGains(
+            (0..count)
+                .map(|index| CountryExperienceGainRow {
+                    country: identity(index).id,
+                    instance: identity(index).instance,
+                    complete: 0,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    ] {
+        let id = rows.table();
+        *frame.tables[id.index()] = TableView::Complete(rows);
+        frame.metrics.table_ns[id.index()] = 1;
+    }
+    frame
+}
+fn event(sequence: u64, source: EventFeedSource, hour: i32) -> EventFeedEvent {
+    EventFeedEvent {
+        sequence,
+        generation: 9,
+        hour,
+        source,
+        actor: identity(0),
+        target: identity(1),
+    }
+}
+fn pack(events: Vec<EventFeedEvent>) -> EventFeedHistoryRow {
+    let settled = events.len() as u64;
+    EventFeedHistoryRow {
+        generation: 9,
+        read_hour: 120,
+        coverage: EventFeedCoverage::Complete,
+        counts: Some(EventFeedCounts {
+            acquired: settled,
+            settled,
+            ..Default::default()
+        }),
+        outstanding: 0,
+        failure: None,
+        events,
+    }
+}
+fn append(
+    builder: &mut Builder,
+    pack: &EventFeedHistoryRow,
+    frames: &BTreeMap<i32, DecodedFrame>,
+) -> io::Result<()> {
+    Projection::default().append(
+        builder,
+        pack,
+        1,
+        |hour| frames.get(&hour),
+        &AtomicBool::new(false),
+    )
+}
+
+#[test]
+fn native_causes_keep_actor_order_aliases_and_each_distinct_occurrence() {
+    let mut sample = frame(105, 2);
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *sample.tables[TableId::CountryLinks.index()]
+    {
+        rows.insert(
+            0,
+            CountryLinkRow {
+                id: 77,
+                canonical_slot: 2,
+            },
+        );
+    }
+    let mut events: Vec<_> = [
+        EventFeedSource::Declaration,
+        EventFeedSource::Join,
+        EventFeedSource::CivilWarWarTransfer,
+        EventFeedSource::Annex,
+        EventFeedSource::Declaration,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, source)| event(index as u64 + 1, source, 105))
+    .collect();
+    for event in &mut events {
+        event.target.reference = 77
+    }
+    let mut builder = Builder::new(100, 130);
+    builder.row(
+        EventFeedKind::WarStarted,
+        super::super::RowDate {
+            hour: 105,
+            read_hour: 120,
+            name_hour: 105,
+            exact: true,
+        },
+        vec![
+            "synthetic / country 0".into(),
+            "synthetic / country 1".into(),
+        ],
+        None,
+        None,
+    );
+    append(
+        &mut builder,
+        &pack(events),
+        &BTreeMap::from([(105, sample)]),
+    )
+    .unwrap();
+    assert_eq!(
+        builder
+            .feed
+            .rows
+            .iter()
+            .map(|row| row.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            EventFeedKind::WarStarted,
+            EventFeedKind::WarDeclared,
+            EventFeedKind::WarJoined,
+            EventFeedKind::CivilWarWarTransferred,
+            EventFeedKind::Annexed,
+            EventFeedKind::WarDeclared,
+        ]
+    );
+    assert_eq!(builder.feed.rows.len(), 6);
+    for (index, row) in builder.feed.rows[1..].iter().enumerate() {
+        assert_eq!(row.id, format!("native:9:{}", index + 1));
+        assert_eq!(row.tags, ["synthetic / country 0", "synthetic / country 1"]);
+        assert_eq!(
+            row.participants,
+            Some([Some(row.tags[0].clone()), Some(row.tags[1].clone())])
+        );
+        assert_eq!(
+            (row.hour, row.read_hour, row.name_hour, row.exact),
+            (105, 120, 105, true)
+        );
+    }
+    assert!(builder.feed.unavailable.is_empty());
+}
+
+#[test]
+fn full_instance_read_and_branch_guards_never_use_later_or_reused_aliases() {
+    for mode in 0..6 {
+        let mut sample = frame(105, 2);
+        match mode {
+            0 => {
+                if let TableView::Complete(TableRows::CountryExperienceGains(rows)) =
+                    &mut *sample.tables[TableId::CountryExperienceGains.index()]
+                {
+                    rows[0].instance += 1
+                }
+            }
+            1 => sample.hour = 106,
+            2 => sample.branch = 2,
+            3 => sample.metrics.table_ns[TableId::CountryExperienceGains.index()] = 0,
+            4 => {
+                *sample.tables[TableId::CountryExperienceGains.index()] = TableView::Unavailable {
+                    reason: "census refused".into(),
+                }
+            }
+            _ => {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *sample.tables[TableId::Countries.index()]
+                {
+                    rows[0].id += 5
+                }
+            }
+        }
+        let mut builder = Builder::new(100, 130);
+        append(
+            &mut builder,
+            &pack(vec![event(1, EventFeedSource::Annex, 105)]),
+            &BTreeMap::from([(105, sample), (106, frame(106, 2))]),
+        )
+        .unwrap();
+        assert_eq!(
+            builder.feed.rows[0].participants.as_ref().unwrap()[0],
+            None,
+            "mode {mode}"
+        );
+        assert_eq!(builder.feed.rows[0].kind, EventFeedKind::Annexed);
+        assert!(
+            builder
+                .feed
+                .unavailable
+                .iter()
+                .any(|item| item.kind == "nativeEventCountry")
+        );
+    }
+}
+
+#[test]
+fn ambiguous_tag_census_alias_or_reserved_zero_preserves_unidentified_roles() {
+    for mode in 0..4 {
+        let mut sample = frame(105, 2);
+        let mut at = event(1, EventFeedSource::Declaration, 105);
+        match mode {
+            0 => {
+                if let TableView::Complete(TableRows::Countries(rows)) =
+                    &mut *sample.tables[TableId::Countries.index()]
+                {
+                    rows[1].tag = rows[0].tag.clone()
+                }
+            }
+            1 => {
+                if let TableView::Complete(TableRows::CountryExperienceGains(rows)) =
+                    &mut *sample.tables[TableId::CountryExperienceGains.index()]
+                {
+                    rows.push(rows[0].clone())
+                }
+            }
+            2 => {
+                if let TableView::Complete(TableRows::CountryLinks(rows)) =
+                    &mut *sample.tables[TableId::CountryLinks.index()]
+                {
+                    rows.insert(
+                        0,
+                        CountryLinkRow {
+                            id: at.actor.reference,
+                            canonical_slot: 2,
+                        },
+                    )
+                }
+            }
+            _ => {
+                at.actor = EventFeedCountry {
+                    reference: 0,
+                    id: 0,
+                    instance: 7,
+                }
+            }
+        }
+        let mut builder = Builder::new(100, 130);
+        append(
+            &mut builder,
+            &pack(vec![at]),
+            &BTreeMap::from([(105, sample)]),
+        )
+        .unwrap();
+        assert_eq!(builder.feed.rows.len(), 1);
+        assert_eq!(
+            builder.feed.rows[0].participants.as_ref().unwrap()[0],
+            None,
+            "mode {mode}"
+        );
+        assert!(
+            !builder.feed.rows[0]
+                .tags
+                .contains(&"synthetic / country 0".into())
+        );
+    }
+}
+
+#[test]
+fn incomplete_coverage_keeps_known_actions_and_counts_read_intervals_without_guessing_events() {
+    for coverage in [EventFeedCoverage::Partial, EventFeedCoverage::Unavailable] {
+        let mut observed = pack(vec![event(1, EventFeedSource::Join, 105)]);
+        observed.coverage = coverage;
+        observed.failure = Some(b"native writer observation refused".to_vec());
+        let mut builder = Builder::new(100, 130);
+        append(&mut builder, &observed, &BTreeMap::new()).unwrap();
+        assert_eq!(builder.feed.rows.len(), 1);
+        assert_eq!(builder.feed.rows[0].participants, Some([None, None]));
+        assert_eq!(builder.feed.rows[0].tags, Vec::<String>::new());
+        let unavailable = builder
+            .feed
+            .unavailable
+            .iter()
+            .find(|item| item.kind == "nativeEventCoverage")
+            .unwrap();
+        assert_eq!(unavailable.count, Some(1));
+        assert!(
+            unavailable
+                .reason
+                .contains("Missing rows do not prove no event occurred")
+        );
+        assert_eq!(
+            builder
+                .feed
+                .unavailable
+                .iter()
+                .find(|item| item.kind == "nativeEventCountry")
+                .unwrap()
+                .count,
+            Some(2)
+        );
+    }
+}
+
+#[test]
+fn occurrence_range_and_sequence_validation_are_independent_of_read_visibility() {
+    let mut builder = Builder::new(106, 130);
+    append(
+        &mut builder,
+        &pack(vec![event(1, EventFeedSource::Declaration, 105)]),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(builder.feed.rows.is_empty());
+    let mut projection = Projection::default();
+    let first = pack(vec![event(5, EventFeedSource::Declaration, 105)]);
+    let mut builder = Builder::new(100, 130);
+    projection
+        .append(&mut builder, &first, 1, |_| None, &AtomicBool::new(false))
+        .unwrap();
+    assert!(
+        projection
+            .append(&mut builder, &first, 1, |_| None, &AtomicBool::new(false))
+            .is_err()
+    );
+    assert_eq!(builder.feed.rows.len(), 1);
+    assert!(
+        append(
+            &mut builder,
+            &pack(vec![event(6, EventFeedSource::Join, 121)]),
+            &BTreeMap::new()
+        )
+        .is_err()
+    );
+    assert_eq!(builder.feed.rows.len(), 1);
+}
+
+#[test]
+fn five_thousand_holder_events_share_occurrence_witnesses_and_existing_reply_windows() {
+    let sample = frame(105, 5000);
+    let observed = pack(
+        (0..5000)
+            .map(|index| EventFeedEvent {
+                actor: identity(index),
+                target: identity((index + 1) % 5000),
+                ..event(u64::from(index) + 1, EventFeedSource::Declaration, 105)
+            })
+            .collect(),
+    );
+    let mut builder = Builder::new(100, 130);
+    let mut frame_reads = 0;
+    Projection::default()
+        .append(
+            &mut builder,
+            &observed,
+            1,
+            |_| {
+                frame_reads += 1;
+                Some(&sample)
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(frame_reads, 1);
+    assert_eq!(builder.feed.rows.len(), 5000);
+    assert_eq!(builder.feed.rows[4999].tags[0], "synthetic / country 4999");
+    let feed = builder.finish().unwrap();
+    assert_eq!(
+        feed.windows.iter().map(|window| window.count).sum::<u32>(),
+        5000
+    );
+    assert!(super::super::window_fits(
+        &feed,
+        "1",
+        105,
+        105,
+        super::super::MAX_PRODUCT_REPLY_BYTES
+    ));
+}
+
+#[test]
+fn complete_empty_history_is_distinct_from_an_unobserved_empty_interval() {
+    for coverage in [
+        EventFeedCoverage::Complete,
+        EventFeedCoverage::Partial,
+        EventFeedCoverage::Unavailable,
+    ] {
+        let mut observed = pack(Vec::new());
+        observed.coverage = coverage;
+        if coverage == EventFeedCoverage::Unavailable {
+            observed.failure = Some(b"producer unavailable".to_vec())
+        }
+        let mut builder = Builder::new(100, 130);
+        append(&mut builder, &observed, &BTreeMap::new()).unwrap();
+        assert!(builder.feed.rows.is_empty());
+        assert_eq!(
+            builder
+                .feed
+                .unavailable
+                .iter()
+                .any(|item| item.kind == "nativeEventCoverage"),
+            coverage != EventFeedCoverage::Complete
+        );
+    }
+}
+
+#[test]
+fn registered_history_loads_later_publication_without_using_the_later_country_instance() {
+    use crate::test_fixtures::{CAMPAIGN, records};
+    use replay::{container::Replay, rows::CampaignRow};
+    let mut frames = Vec::new();
+    for hour in 105..=120 {
+        let mut sample = frame(hour, 2);
+        *sample.tables[TableId::Campaign.index()] =
+            TableView::Complete(TableRows::Campaign(vec![CampaignRow {
+                id: CAMPAIGN.into(),
+            }]));
+        let observed = if hour == 120 {
+            pack(vec![event(4, EventFeedSource::Annex, 105)])
+        } else {
+            EventFeedHistoryRow {
+                read_hour: hour,
+                ..pack(Vec::new())
+            }
+        };
+        *sample.tables[TableId::EventFeedHistory.index()] =
+            TableView::Complete(TableRows::EventFeedHistory(vec![observed]));
+        if hour > 105
+            && let TableView::Complete(TableRows::CountryExperienceGains(rows)) =
+                &mut *sample.tables[TableId::CountryExperienceGains.index()]
+        {
+            rows[0].instance = 99;
+        }
+        frames.push(sample);
+    }
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let mut builder = Builder::new(105, 120);
+    scan(&replay, 1, &mut builder, &AtomicBool::new(false)).unwrap();
+    assert_eq!(builder.feed.rows.len(), 1);
+    let row = &builder.feed.rows[0];
+    assert_eq!((row.hour, row.read_hour), (105, 120));
+    assert_eq!(
+        row.participants,
+        Some([
+            Some("synthetic / country 0".into()),
+            Some("synthetic / country 1".into())
+        ])
+    );
+}

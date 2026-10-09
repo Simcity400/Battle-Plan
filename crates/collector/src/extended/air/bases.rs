@@ -813,6 +813,7 @@ fn copy_air_aces_country(
     memory: &impl engine::Memory,
     base: usize,
     pointer: usize,
+    slot: u32,
 ) -> bool {
     let header = match bspan(
         log,
@@ -831,7 +832,7 @@ fn copy_air_aces_country(
         None => return false,
     };
     for ordinal in 0..roster.count {
-        if !copy_air_ace(log, memory, base, pointer, &roster, ordinal) {
+        if !copy_air_ace(log, memory, base, pointer, slot, &roster, ordinal) {
             return false;
         }
         if log.overflowed {
@@ -850,6 +851,7 @@ fn copy_air_ace(
     memory: &impl engine::Memory,
     base: usize,
     country_pointer: usize,
+    slot: u32,
     roster: &Array,
     ordinal: u32,
 ) -> bool {
@@ -948,7 +950,84 @@ fn copy_air_ace(
             return false;
         }
     }
-    true
+    // Independent appended presentation; failure keeps the established prefix.
+    let portrait = bspan(
+        log,
+        memory,
+        pointer.checked_add(cace::PORTRAIT_GENDER),
+        8,
+        AIR_ACES_MASK,
+    );
+    if let Some(selected) = bspan(
+        log,
+        memory,
+        pointer.checked_add(cace::TYPE_DEFINITION),
+        8,
+        AIR_ACES_MASK,
+    ) {
+        let definition = bases_pool_u64(log, selected) as usize;
+        if definition != 0
+            && let Some(head) = bspan(
+                log,
+                memory,
+                definition.checked_add(cace::TYPE_NAME),
+                32,
+                AIR_ACES_MASK,
+            )
+        {
+            copy_ace_name(log, memory, head);
+        }
+    }
+    if let Some(portrait) = portrait {
+        let gender = log.bytes[portrait];
+        let index = i32::from_le_bytes(log.bytes[portrait + 4..portrait + 8].try_into().unwrap());
+        let staged = AcePresentationMemory {
+            memory,
+            log: std::cell::RefCell::new(log),
+        };
+        if let Ok(names) = cace::portrait_sources(
+            &staged,
+            base,
+            ccountry::Country {
+                pointer: country_pointer,
+                canonical_slot: slot,
+                id: slot,
+            },
+            gender,
+            index,
+        ) {
+            for name in names.into_iter().flatten() {
+                if let Some((address, len)) = name.heap_payload() {
+                    let mut log = staged.log.borrow_mut();
+                    bspan(&mut log, memory, Some(address), len, AIR_ACES_MASK);
+                }
+            }
+        }
+    }
+    !log.overflowed
+}
+
+// Stages exactly the shared portrait reader's dependent descriptors. Owned
+// decode uses the same reader, so stale pools and failures remain native.
+struct AcePresentationMemory<'a, M> {
+    memory: &'a M,
+    log: std::cell::RefCell<&'a mut RawLog<AIR_BASES_N>>,
+}
+impl<M: Memory> Memory for AcePresentationMemory<'_, M> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        let mut log = self.log.borrow_mut();
+        let Some(start) = bspan(
+            &mut log,
+            self.memory,
+            Some(address),
+            destination.len(),
+            AIR_ACES_MASK,
+        ) else {
+            return false;
+        };
+        destination.copy_from_slice(&log.bytes[start..start + destination.len()]);
+        true
+    }
 }
 
 /// Mirror of one ace name string: header validation is a local parse, heap
@@ -1312,9 +1391,9 @@ pub(super) fn copy_air_bases_pass(
     let aces_started = qpc();
     let mut ace_index = 0;
     while ace_index < job.census.len() {
-        let (pointer, _) = job.census[ace_index];
+        let (pointer, slot) = job.census[ace_index];
         ace_index += 1;
-        if !copy_air_aces_country(&mut job.log, memory, base, pointer) {
+        if !copy_air_aces_country(&mut job.log, memory, base, pointer, slot) {
             break;
         }
         if job.log.overflowed {

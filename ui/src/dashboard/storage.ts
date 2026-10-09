@@ -16,6 +16,7 @@ type LayoutStorage = Pick<Storage, 'getItem' | 'setItem'>;
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null && !Array.isArray(value);
 const integer = (value: unknown, min = -4_294_967_296, max = 4_294_967_296): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= min && value <= max;
 const text = (value: unknown, max = 160): value is string => typeof value === 'string' && value.length > 0 && value.length <= max;
+const widgetTitle = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 const id = (value: unknown): value is string => text(value, 80) && /^[a-zA-Z0-9_-]+$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
 /** Request tags are opaque nonempty strings without NUL; content decides which
  * tags exist. */
@@ -50,6 +51,8 @@ function countryGroup(value: unknown): CountryGroup | null {
 function selection(value: unknown, dropped?: (count: number) => void): CountrySelection | null {
   if (!object(value)) return null;
   if (value.kind === 'selected' || value.kind === 'all') return { kind: value.kind };
+  if (value.kind === 'factions') return integer(value.count, 1, Number.MAX_SAFE_INTEGER) && (value.membership === 'hour' || value.membership === 'end' || value.membership === 'ever')
+    ? { kind: 'factions', count: value.count, membership: value.membership } : null;
   if (value.kind === 'group') {
     const group = countryGroup(value.group);
     return group && (value.membership === 'hour' || value.membership === 'end' || value.membership === 'ever') && typeof value.aggregate === 'boolean'
@@ -68,7 +71,7 @@ function safeMigrate(widget: WidgetSpec, trackIds: Set<string>): WidgetSpec {
   let migrated: WidgetSpec;
   try { migrated = migrateWidget(widget); } catch { return widget; }
   if (migrated === widget) return widget;
-  const valid = text(migrated.title) && migrated.trackIds.length > 0 && migrated.trackIds.every(value => trackIds.has(value))
+  const valid = widgetTitle(migrated.title) && migrated.trackIds.length > 0 && migrated.trackIds.every(value => trackIds.has(value))
     && selection(migrated.countries) && timeMode(migrated.time, trackIds)
     && (migrated.options === undefined || parseStoredOptions(migrated.options))
     && (migrated.contentScale === undefined || WIDGET_CONTENT_SCALES.some(scale => scale === migrated.contentScale));
@@ -105,7 +108,7 @@ export function parseTemplateWithNotes(input: unknown): { template: DashboardTem
   const widgets: WidgetSpec[] = [];
   for (const widget of input.widgets) {
     if (object(widget) && widget.campaign !== undefined && widget.campaign !== 'default' && widget.campaign !== 'tracks') return null;
-    if (!object(widget) || !id(widget.id) || !text(widget.title) || !id(widget.kind)
+    if (!object(widget) || !id(widget.id) || !widgetTitle(widget.title) || !id(widget.kind)
       || !(widget.configVersion === undefined || integer(widget.configVersion, 1, 65535))
       || !(widget.contentScale === undefined || WIDGET_CONTENT_SCALES.some(scale => scale === widget.contentScale))
       || !Array.isArray(widget.trackIds) || !widget.trackIds.length || !widget.trackIds.every((value) => typeof value === 'string' && trackIds.has(value))

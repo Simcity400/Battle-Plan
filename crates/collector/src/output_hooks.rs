@@ -1,5 +1,8 @@
 //! Installation and state changes common to the output observers.
-use crate::{hook::Hook, output_log::Log};
+use crate::{
+    hook::{Hook, TapSafety},
+    output_log::Log,
+};
 use engine::Memory;
 use std::{
     ops::Range,
@@ -67,8 +70,7 @@ pub struct Hooks<const N: usize> {
     domain: Domain<N>,
 }
 impl<const N: usize> Hooks<N> {
-    /// All sentinels precede creation. Site order is enable order; disable and
-    /// rollback run in reverse, so a paired observer never loses its context.
+    /// Verify every sentinel and store every trampoline before publication.
     pub unsafe fn new(
         memory: &impl Memory,
         base: usize,
@@ -77,14 +79,53 @@ impl<const N: usize> Hooks<N> {
         domain: Domain<N>,
         ready: Result<(), &'static str>,
     ) -> Self {
+        unsafe { Self::construct(memory, base, sites, callbacks, domain, ready, None) }
+    }
+
+    /// Bind the native flight counter and callback ranges before publication.
+    pub unsafe fn new_with_safety(
+        memory: &impl Memory,
+        base: usize,
+        sites: [Site; N],
+        callbacks: [usize; N],
+        domain: Domain<N>,
+        ready: Result<(), &'static str>,
+        safety: [TapSafety; N],
+    ) -> Self {
+        unsafe { Self::construct(memory, base, sites, callbacks, domain, ready, Some(safety)) }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn construct(
+        memory: &impl Memory,
+        base: usize,
+        sites: [Site; N],
+        callbacks: [usize; N],
+        domain: Domain<N>,
+        ready: Result<(), &'static str>,
+        safety: Option<[TapSafety; N]>,
+    ) -> Self {
         let install = || -> Result<Vec<Hook>, &'static str> {
             validate_sentinels(memory, base, &sites, domain.sentinel_error)?;
             ready?;
             domain.base.store(base, Ordering::Relaxed);
-            let mut hooks = Vec::new();
+            let mut hooks =
+                engine::allocation::vec(N).map_err(|_| "output hook allocation failed")?;
+            let mut safety = safety.map(IntoIterator::into_iter);
             for (index, site) in sites.iter().enumerate() {
-                let hook = unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
-                    .map_err(|_| "native hook construction failed")?;
+                let hook = if let Some(safety) = safety.as_mut() {
+                    unsafe {
+                        Hook::new_with_safety(
+                            base + site.rva,
+                            callbacks[index],
+                            site.sentinel,
+                            safety.next().unwrap(),
+                        )
+                    }
+                } else {
+                    unsafe { Hook::new(base + site.rva, callbacks[index], site.sentinel) }
+                }
+                .map_err(|_| "native hook construction failed")?;
                 domain.originals[index].store(hook.trampoline(), Ordering::Release);
                 hooks.push(hook);
             }
@@ -113,50 +154,25 @@ impl<const N: usize> Hooks<N> {
         {
             return Ok(true);
         }
-        let mut failure = None;
-        for step in 0..self.hooks.len() {
-            let index = if enabled {
-                step
-            } else {
-                self.hooks.len() - step - 1
-            };
-            let hook = &mut self.hooks[index];
-            match hook
-                .set_enabled(enabled)
-                .map_err(|_| "native hook state change failed")
-            {
-                Ok(true) => {}
-                Ok(false) => return Ok(false),
-                Err(reason) => match domain.failure {
-                    Failure::Propagate => return Err(reason),
-                    Failure::Unavailable if enabled => {
-                        failure = Some(reason);
-                        break;
-                    }
-                    Failure::Unavailable => {
-                        return Err(reason);
-                    }
-                },
-            }
-        }
-        if let Some(reason) = failure {
-            domain.observation.enabled.store(false, Ordering::SeqCst);
-            let _ = domain.unhooked.set(reason);
-            // Continue attaching only after all partial patches are restored.
-            for hook in self.hooks.iter_mut().rev() {
-                if !hook
-                    .set_enabled(false)
-                    .map_err(|_| "native hook state change failed")?
+        match Hook::set_family_enabled(&mut self.hooks, enabled) {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(_) if enabled && matches!(domain.failure, Failure::Unavailable) => {
+                domain.observation.enabled.store(false, Ordering::SeqCst);
+                let _ = domain.unhooked.set("native hook state change failed");
+                if !Hook::set_family_enabled(&mut self.hooks, false)
+                    .map_err(|_| "native hook rollback failed")?
                 {
                     return Err("output hook rollback is still in use");
                 }
-            }
-            if let Some(installed) = domain.installed {
-                for value in installed {
-                    value.store(false, Ordering::Relaxed);
+                if let Some(installed) = domain.installed {
+                    for value in installed {
+                        value.store(false, Ordering::Relaxed);
+                    }
                 }
+                return Ok(true);
             }
-            return Ok(true);
+            Err(_) => return Err("native hook state change failed"),
         }
         domain
             .observation

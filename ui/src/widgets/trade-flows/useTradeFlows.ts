@@ -7,7 +7,7 @@ import type { WidgetSpec } from '../../dashboard/model';
 import { useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import type { TradeFlowsReply } from '../../generated/dashboard';
-import { resourceName, validateTradeFlowsReply } from './tradeData';
+import { decodeTrade, resourceName, tradeScope, validateTradeFlowsReply } from './tradeData';
 
 /** The widget's countries (all countries, chosen ones or a group's members) and
  * the trade flows reply for them. Chosen countries narrow the product's scan to
@@ -24,7 +24,10 @@ export function useTradeFlows(widget: WidgetSpec, runtime: WidgetRuntime, active
   const tags = useMemo(() => resolved ? [...resolved.tags].sort() : null, [resolved]);
   const ready = track && (all || (tags && tags.length > 0));
   const request = ready ? { sourceId: track.source.id, revision: track.source.revision, product: 'trade-flows', params: { branchId: track.branch.id, tags } } : null;
-  return { track, all, resolved, groups, ...useProduct<TradeFlowsReply>(runtime.client, request, active, validateTradeFlowsReply) };
+  const product = useProduct<TradeFlowsReply>(runtime.client, request, active, validateTradeFlowsReply);
+  const scope = useMemo(() => product.data ? tradeScope(decodeTrade(product.data), widget.countries, resolved, groups.data, lastHour,
+    widget.options?.between === 'between') : null, [product.data, widget.countries, widget.options?.between, resolved, groups.data, lastHour]);
+  return { track, all, resolved, groups, scope, ...product };
 }
 
 /** The Resources setting's choices: the campaign's own resources, named and pictured

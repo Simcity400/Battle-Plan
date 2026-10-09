@@ -25,17 +25,18 @@ export type OptionField = FieldBase & (
   /** A null default means "automatic" until the user sets a number. */
   | { kind: 'number'; min: number; max: number; step: number; unit?: string; default: number | null }
   /** A choice among things only the recording's content knows (such as its idea
-   * categories): the widget lists them at run time (`useOptionChoices`). Any
-   * token is kept, so a choice survives a campaign that lacks it. The empty
-   * default lets the widget pick, shown as `automatic`. */
-  | { kind: 'content-choice'; automatic: string; default: '' }
+   * categories): the widget lists them at run time (`useOptionChoices`). The raw
+   * scalar string is kept, so a choice survives a campaign that lacks it. The empty
+   * default lets the widget pick, shown as `automatic`. `titleChoice: false`
+   * keeps the widget title when this choice changes. */
+  | { kind: 'content-choice'; automatic: string; default: ''; titleChoice?: false }
   /** Several things only the recording's content knows (such as its resources),
-   * listed like a content choice and shown as chips. Stored as their tokens
+   * shown as chips, or a searchable virtual list with `catalogue`. Stored as their tokens
    * separated by spaces; the empty default lets the widget pick, shown as `automatic`. */
-  | { kind: 'content-set'; automatic: string; default: '' }
+  | { kind: 'content-set'; automatic: string; default: ''; catalogue?: boolean }
 );
 
-/** The characters a stored content token may hold. A script token holds no
+/** The characters a stored content-set token may hold. A script token holds no
  * whitespace but may hold other characters, non-ASCII included (a mod's own
  * names), so only whitespace, control characters and commas are refused: spaces
  * separate a content set's tokens, and a comma-joined list is never one token. */
@@ -112,7 +113,7 @@ export function validOption(field: OptionField, value: unknown): value is Option
   switch (field.kind) {
     case 'toggle': return typeof value === 'boolean';
     case 'choice': return typeof value === 'string' && field.choices.some(choice => choice.value === value);
-    case 'content-choice': return typeof value === 'string' && contentToken(value) && validEscapes(value);
+    case 'content-choice': return typeof value === 'string';
     case 'content-set': {
       if (typeof value !== 'string') return false;
       const tokens = contentSet(value);

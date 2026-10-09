@@ -58,16 +58,31 @@ export function validateOccupiedStatesReply(data: unknown): OccupiedStatesReply 
 }
 
 export interface OccupiedRow { key: string; state: number; hour: number; value: OccupiedValues }
-export function occupiedAt(reply: OccupiedStatesReply, hour: number, countries: ReadonlySet<string> | null, role: 'occupier' | 'occupied'): { observation: OccupiedObservation | null; rows: OccupiedRow[] } {
+export const stateName = (row: OccupiedRow) => row.value.name ?? `State ${row.state}`;
+/** Owner follows hourly States; occupation endpoints belong to the daily read. */
+export const countryHour = (row: OccupiedRow, role: 'owner' | 'occupier' | 'occupied', shownHour: number) => role === 'owner' ? shownHour : row.hour;
+export function occupiedAt(reply: OccupiedStatesReply, hour: number, matches: ((tag: string, readHour: number) => boolean) | null, role: 'occupier' | 'occupied',
+  identityKnown?: (tag: string, readHour: number) => boolean): { observation: OccupiedObservation | null; rows: OccupiedRow[]; selectionUnknown: boolean } {
   const observation = runAt(reply.observed, hour);
-  if (!observation) return { observation: null, rows: [] };
+  if (!observation) return { observation: null, rows: [], selectionUnknown: false };
   const rows: OccupiedRow[] = [];
+  let selectionUnknown = false;
   for (const series of reply.states) {
     const run = runAt(series.runs, hour);
-    if (!run || (countries && (run.value[role] == null || !countries.has(run.value[role]!)))) continue;
+    if (!run) continue;
+    if (matches) {
+      const tag = run.value[role];
+      if (tag === null || identityKnown && !identityKnown(tag, observation.readHour)) { selectionUnknown = true; continue; }
+      if (!matches(tag, observation.readHour)) continue;
+    }
     rows.push({ key: String(series.state), state: series.state, hour: observation.readHour, value: run.value });
   }
-  return { observation, rows };
+  return { observation, rows, selectionUnknown };
+}
+
+/** Strength is a fixed5 fraction; resistance/compliance are percentage units. */
+export function strengthPercent(raw: string): string {
+  return `${formatAmount((BigInt(raw) * 100n).toString(), 5, 5)}%`;
 }
 
 export function percent(raw: string): string {
@@ -82,25 +97,33 @@ export function percentCell(raw: string): string {
   const clamped = rounded < 0n ? 0n : rounded > 100n ? 100n : rounded;
   return `${formatNativeFixed5(clamped * 100000n, 0)}%`;
 }
+/** 14155CF70 wraps strength*100, 1424D8760 rounds half away from zero,
+ * then 14155CF85 passes its signed i32 percentage to the bar. Tooltip values
+ * retain the exact fraction; bar geometry follows the native integer percent. */
+export function strengthBar(raw: string): bigint {
+  const percent = BigInt.asIntN(64, BigInt(raw) * 100n);
+  const biased = BigInt.asIntN(64, percent + (percent < 0n ? -50000n : 50000n));
+  return BigInt.asIntN(32, biased / 100000n) * 1000n;
+}
 /** P: 14155CC50 formats +0xF8 with Fixed5ToString@1424B6200(...,2);
  * only the bar displays strength. */
 export function garrisonCell(value: OccupiedValues, cellBars: boolean): { text: string; bar: bigint | null; red: boolean } {
   if (value.garrisonRequiredRaw === null || BigInt(value.garrisonRequiredRaw) === 0n) return { text: '-', bar: null, red: false };
-  if (value.garrisonAlert) return { text: '!', bar: cellBars ? 0n : null, red: true };
+  if (BigInt(value.garrisonRequiredRaw) < 0n) return { text: '!', bar: cellBars ? 0n : null, red: true };
   return { text: formatNativeFixed5(value.garrisonRequiredRaw, 2),
-    bar: cellBars && value.garrisonStrengthRaw !== null ? BigInt(value.garrisonStrengthRaw) : null, red: value.garrisonRed === true };
+    bar: cellBars && value.garrisonStrengthRaw !== null ? strengthBar(value.garrisonStrengthRaw) : null, red: value.garrisonRed === true };
 }
 export function occupationTooltip(reply: OccupiedStatesReply, row: OccupiedRow, shownHour: number, countryName: (tag: string) => string): TooltipContent {
   const v = row.value;
-  return { title: v.name || `State ${row.state}`, rows: [
+  return { title: stateName(row), rows: [
     { label: 'Resistance', value: percent(v.resistanceRaw) }, { label: 'Resistance speed', value: `${formatSigned(v.resistanceSpeedRaw, 5, 5)} pp/day` },
     { label: 'Compliance', value: percent(v.complianceRaw) }, { label: 'Compliance speed', value: `${formatSigned(v.complianceSpeedRaw, 5, 5)} pp/day` },
     { label: 'Required manpower', value: v.requiredManpower === null ? '—' : formatFixed(BigInt(v.requiredManpower), 0, 0) },
     { label: 'Assigned manpower', value: v.assignedManpower === null ? '—' : formatFixed(BigInt(v.assignedManpower), 0, 0) },
     { label: 'Required garrison amount', value: v.garrisonRequiredRaw === null ? '—' : formatAmount(v.garrisonRequiredRaw, 5, 5) },
-    { label: 'Garrison strength', value: v.garrisonStrengthRaw === null ? 'Not in this recording' : percent(v.garrisonStrengthRaw) },
+    { label: 'Garrison strength', value: v.garrisonStrengthRaw === null ? 'Not in this recording' : strengthPercent(v.garrisonStrengthRaw) },
     { label: 'Occupied country', value: v.occupied === null ? 'Unknown' : countryName(v.occupied) },
-    ...(v.garrisonAlert ? [{ label: 'The recorded requirement failure flag is set; the game shows a red ! and zero strength.', tone: 'negative' as const }] : []),
+    ...(v.garrisonAlert ? [{ label: 'The recorded requirement failure flag is set; the native strength getter returns zero.', tone: 'negative' as const }] : []),
     ...(v.nameMissing ? [{ label: v.nameMissing, tone: 'muted' as const }] : []),
     ...(v.garrisonMissing ? [{ label: v.garrisonMissing, tone: 'muted' as const }] : []),
     ...(v.lawMissing ? [{ label: v.lawMissing, tone: 'muted' as const }] : []),

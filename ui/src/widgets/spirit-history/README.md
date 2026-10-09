@@ -1,5 +1,26 @@
 # National spirits history
 
-Every national spirit the country had, on the lane timeline ([charts/timeline](../../charts/timeline/)): one lane per spirit, its icon and name on the left with "Active since", "Held before" (already held when recording began or after an unrecorded stretch, so the day it was gained is unknown) "Ended", "Ended by" (it ended during an unrecorded stretch; the day shown is the first recorded one without it) or "Last recorded" (the hours after it are not recorded, so it may still be held), and a bar from when it was gained to when it ended. Ongoing spirits run to the playhead in the accent colour. Hovering shows the game's own idea tooltip, as in [National spirits](../national-spirits/README.md); for keyboard and screen-reader users the timeline describes the spirits held at the moment shown, with their effects. Right-click jumps to that moment.
+## What it shows
 
-**Settings:** sort by date gained (default), date ended or name; ended spirits shown (default) or hidden. Data as [National spirits](../national-spirits/README.md).
+One timeline lane per national spirit, showing observed holdings and whether their start/end is exact or bounded.
+
+## Products it reads
+
+[`idea-history`](../../../../crates/dashboard/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts), sharing [spiritsData.ts](../national-spirits/spiritsData.ts) with National spirits.
+
+## Settings
+
+Country, campaign/follow/pin/range; sort by gained/ended/name, show ended spirits, and Grow with playback. Follow is the default.
+
+## Notable behaviour
+
+- All content categories of type national_spirit count. Names, icons and effects use the recorded stack.
+- Held before, Ended by and Last recorded preserve uncertain boundary meanings; gaps never imply an exact acquisition or removal. Continuing holdings can join across gaps without filling unread hours.
+- Grow changes the axis while preserving zoom and recorded spans; Campaign/Range retain full extent. The shared lane timeline owns navigation, tooltips and dated Jump.
+
+## Files
+
+| File | Responsibility |
+|---|---|
+| [SpiritHistoryWidget.tsx](SpiritHistoryWidget.tsx) | Spirit lanes and game-style tooltips. |
+| [definition.ts](definition.ts), [index.ts](index.ts), [spiritHistory.css](spiritHistory.css) | Settings, registration and layout. |

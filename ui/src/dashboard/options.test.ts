@@ -33,6 +33,17 @@ test('illegal or missing values fall back to the field default', () => {
     { ticks: true, order: 'game', window: 365, yMax: 50 });
 });
 
+test('scalar content choices round-trip opaque keys without the content-set delimiter rules', () => {
+  const fields: readonly OptionField[] = [{ key: 'category', section: 'options', label: 'Category', kind: 'content-choice', automatic: 'First', default: '' }];
+  const key = 'mod council,elite:20:seat';
+  const selected = setOption(fields, undefined, 'category', key);
+  assert.deepEqual(selected, { category: key });
+  assert.deepEqual(resolveOptions(fields, parseStoredOptions(JSON.parse(JSON.stringify(selected)))!), { category: key });
+  assert.deepEqual(setOption(fields, selected!, 'category', ''), {}, 'empty still means automatic');
+  assert.equal(setOption(fields, undefined, 'category', 3), null);
+  assert.equal(storableToken(key), false, 'content sets keep their distinct token rules');
+});
+
 test('setting an option keeps unknown keys, drops defaults and refuses illegal values', () => {
   const stored = setOption(FIELDS, { other: 'kept' }, 'order', 'size');
   assert.deepEqual(stored, { other: 'kept', order: 'size' });
@@ -105,6 +116,8 @@ test('settings sections keep one fixed order and appear only when they apply', (
   assert.deepEqual(all, SETTINGS_SECTIONS.filter(section => all.includes(section)));
   const plain = settingsSections({ ...META, data: false, history: false, options: undefined }, {}, false);
   assert.deepEqual(plain, ['size']);
+  const world = settingsSections({ ...META, countrySelection: false }, resolveOptions(FIELDS), true);
+  assert.deepEqual(world, ['campaign', 'time', 'size', 'options', 'axes', 'reset']);
 });
 
 function spec(extra: Partial<WidgetSpec> = {}): WidgetSpec {
@@ -140,7 +153,7 @@ test('any content key round-trips through a storable token, plain keys unchanged
   assert.equal(setToken('?mod_gun'), ':3f:mod_gun');
 });
 
-test('stored content escapes accept only Unicode scalar values and invalid choices default safely', () => {
+test('content-set escapes require Unicode scalars while scalar choices preserve raw text', () => {
   const fields: readonly OptionField[] = [
     { key: 'included', section: 'options', label: 'Included', kind: 'content-set', automatic: 'All', default: '' },
     { key: 'picked', section: 'options', label: 'Picked', kind: 'content-choice', automatic: 'Automatic', default: '' },
@@ -148,10 +161,13 @@ test('stored content escapes accept only Unicode scalar values and invalid choic
   for (const token of [':ffffff:', ':110000:', ':d800:', ':dfff:', 'valid:41::dabc:']) {
     const stored = parseStoredOptions({ included: token, picked: token, unrelated: 'kept' });
     assert.ok(stored);
-    assert.deepEqual(resolveOptions(fields, stored), { included: '', picked: '' }, token);
+    assert.deepEqual(resolveOptions(fields, stored), { included: '', picked: token }, token);
     assert.equal(storableToken(token), false, token);
     assert.equal(setOption(fields, undefined, 'included', token), null);
-    assert.equal(setOption(fields, undefined, 'picked', token), null);
+    assert.deepEqual(setOption(fields, undefined, 'picked', token), { picked: token });
+    const roundtrip = parseStoredOptions(JSON.parse(JSON.stringify({ picked: token })));
+    assert.ok(roundtrip);
+    assert.equal(resolveOptions(fields, roundtrip).picked, token);
     assert.doesNotThrow(() => contentKey(token));
   }
   for (const point of [0, 0xd7ff, 0xe000, 0xffff, 0x10000, 0x10ffff]) {

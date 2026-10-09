@@ -4,13 +4,15 @@ import type { ConstructionLogReply, ConstructionProject } from '../../generated/
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { resolveCountries } from '../../dashboard/groups.ts';
 import { definition } from './definition.ts';
-import { buildingChoices, builtLabel, describeRow, factoriesShown, jumpHours, kindLabel, levelsLabel, logRows, placeLabel, projectAt, projectTooltip, statusLabel, validateConstructionLogReply, valuesRead } from './constructionData.ts';
-import type { LogFilter } from './constructionData';
+import { buildingChoices, builtLabel, describeRow as datedDescribeRow, factoriesShown, jumpHours, kindLabel, levelsLabel, logRows, placeLabel as datedPlaceLabel, projectAt, projectTooltip as datedProjectTooltip, statusLabel, validateConstructionLogReply, valuesRead } from './constructionData.ts';
+import type { LogFilter, ProjectAt } from './constructionData';
+import type { LogRow } from '../../charts/log/logData';
+import type { StateNameAt } from '../../dashboard/construction';
 
 const project = (patch: Partial<ConstructionProject>): ConstructionProject => ({
   id: '1', kind: 'building', tag: 'GER', building: 0, repair: false, state: 5, toState: null, province: null, routeProvinces: null, baseLevel: null,
   targetLevel: null, costRaw: '1080000000', createdHour: 90, firstRead: 100, runs: [{ firstHour: 100, lastHour: 147, factories: 10, remaining: 1, repairLevels: 0 }],
-  earlierUnknown: false, built: [], unaccounted: [], possible: [], added: [], end: null, ...patch,
+  earlierUnknown: false, output: [], built: [], unaccounted: [], possible: [], added: [], end: null, ...patch,
 });
 
 const REPLY: ConstructionLogReply = {
@@ -35,6 +37,30 @@ const REPLY: ConstructionLogReply = {
 };
 
 const every: LogFilter = { types: [], projects: 'all', country: () => true, from: null };
+const fixtureNames: StateNameAt = (_hour, state) => ({ state, name: REPLY.states.find(name => name.id === state)?.name ?? null, missing: null });
+const placeLabel = (_reply: ConstructionLogReply, item: ConstructionProject) => datedPlaceLabel(item, 148, fixtureNames);
+const describeRow = (reply: ConstructionLogReply, row: LogRow<ProjectAt>, country: string) => datedDescribeRow(reply, row, country, 148, fixtureNames);
+const projectTooltip = (reply: ConstructionLogReply, at: ProjectAt, hour: number, country: string) => datedProjectTooltip(reply, at, hour, country, fixtureNames);
+
+test('log state labels follow shown-hour renames, stored owners and named refusals without authored backfill', () => {
+  const data = { ...REPLY, projects: [REPLY.projects[0]], states: [{ id: 5, name: 'Future or authored name' }] };
+  const calls: number[] = [];
+  const names: StateNameAt = (hour, state) => {
+    calls.push(hour);
+    return { state, name: hour === 100 ? 'Stored owner name' : hour === 124 ? 'Renamed state' : null,
+      missing: hour === 130 ? 'States read failed' : hour === 148 ? 'Stored state name language differs from recorded language' : null };
+  };
+  const [row] = logRows(data, 124, every, 'change');
+  assert.equal(datedPlaceLabel(row.item.project, 100, names), 'Stored owner name');
+  assert.match(datedDescribeRow(data, row, 'Country', 124, names), /in Renamed state,/);
+  for (const [hour, refusal] of [[130, 'States read failed'], [148, 'language differs']] as const) {
+    const tip = datedProjectTooltip(data, row.item, hour, 'Country', names)[0];
+    assert.match(tip.subtitle ?? '', /State 5/);
+    assert.doesNotMatch(tip.subtitle ?? '', /Future or authored name/);
+    assert.match(tip.note ?? '', new RegExp(refusal));
+  }
+  assert.deepEqual(calls, [100, 124, 130, 148]);
+});
 
 test('construction selection accepts every recorded country', () => {
   assert.equal(definition.countries.max, Number.MAX_SAFE_INTEGER);
@@ -398,4 +424,19 @@ test('what a line does is classified per stretch: a repair, then new levels', ()
   const inBetween = (hour: number) => projectAt(between, hour)!;
   assert.deepEqual([inBetween(110).kind, inBetween(130).kind, builtLabel(inBetween(130))], ['new', 'repairThenNew', '1 of 2']);
   assert.deepEqual(logRows({ ...REPLY, projects: [between] }, 130, { ...every, projects: 'repair' }, 'start').map(row => row.id), ['17']);
+});
+
+
+test('the log keeps exact signed output and distinguishes natural repair from factory IC', () => {
+  const p = project({ output: [
+    { knownAt: 100, sinceHour: 90, constructionRaw: '9007199254741499', repairRaw: '-1', reason: null, observedSinceCreation: false, repairTicks: 1 },
+  ] });
+  const reply = { ...REPLY, projects: [p] };
+  assert.equal(validateConstructionLogReply(reply), reply);
+  const at = projectAt(p, 100)!;
+  assert.equal(at.kind, 'repairThenNew');
+  const tip = projectTooltip(reply, at, 100, 'Synthetic country')[0];
+  assert.equal(tip.rows?.find(row => row.label === 'New-building factory IC')?.value, '90,071,992,547.41499');
+  assert.equal(tip.rows?.find(row => row.label === 'Repair factory IC')?.value, '−0.00001');
+  assert.match(tip.note ?? '', /before observation began/);
 });

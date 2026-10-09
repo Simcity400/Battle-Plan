@@ -428,6 +428,7 @@ fn character_cache(
 }
 
 struct Campaign<B: SegmentBackend = FileBackend> {
+    world_generation: Option<u64>,
     directory: PathBuf,
     session: SessionStart,
     tracker: BranchTracker,
@@ -445,8 +446,11 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     sliced_branch: Option<BranchId>,
     /// Each production line's output on the current branch.
     line_output: crate::extended::line_output::Totals,
+    operation_outcomes: crate::extended::operation_outcomes::Ledger,
+    politics: crate::extended::politics::Ledger,
     /// Each construction line's output on the current branch.
     construction_ic: crate::extended::construction_ic::Totals,
+    fuel_awards: crate::extended::fuel_awards::Windows,
     variables_scratch: ScriptVariableComparison,
     character_shadow: CharacterShadow,
     intel_shadow: IntelShadow,
@@ -483,6 +487,7 @@ impl Campaign {
             spool.set_commit_hook(committed_spool_record);
             spool.set_write_start_hook(crate::allocation::record_start);
         }
+        let world_generation = history.campaign_world_generation(id);
         let (tracker, history_file) = history.take(id, session)?;
         Ok(Self {
             directory,
@@ -491,6 +496,7 @@ impl Campaign {
             encoder: FrameEncoder::new(),
             spool,
             disk_branch: None,
+            world_generation,
             last_written: None,
             pending: Vec::new(),
             staggered_cache: TableCache::new(),
@@ -499,7 +505,10 @@ impl Campaign {
             sliced_reads: ReadHours::new(),
             sliced_branch: None,
             line_output: Default::default(),
+            operation_outcomes: Default::default(),
+            politics: Default::default(),
             construction_ic: Default::default(),
+            fuel_awards: Default::default(),
             variables_scratch: ScriptVariableComparison::default(),
             character_shadow: CharacterShadow::default(),
             intel_shadow: IntelShadow::default(),
@@ -1514,6 +1523,7 @@ fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
 }
 
 struct Statistics {
+    game_score: crate::extended::game_score::Work,
     country_rosters: crate::extended::country_counters::RosterWork,
     division_naming: crate::extended::division_presentation::NamingWork,
     counter_tooltip_inputs: crate::extended::division_presentation::CounterWork,
@@ -1572,6 +1582,7 @@ impl Default for Statistics {
             supply_vehicles: crate::extended::supply_trains::VehicleWork::default(),
             variable_seeds: crate::extended::intel::SeedWork::default(),
             naval_breakdowns: crate::extended::naval_details::BreakdownWork::default(),
+            game_score: Default::default(),
             order_counters: OrderCounterWitness::default(),
             war_snapshots: WarSnapshotWork::default(),
             hours: 0,
@@ -1649,6 +1660,8 @@ pub(crate) struct PreparedFrame {
     pack_ticks: [Option<i64>; crate::extended::PACK_NAMES.len()],
     sampled: CapturedStatistics,
     witness: PreparedOrderWitness,
+    operation_publication: Option<crate::extended::operation_outcomes::Publication>,
+    event_feed_publication: Option<crate::event_feed_history::Prepared>,
 }
 
 impl PreparedFrame {
@@ -1805,6 +1818,12 @@ pub struct Processor {
 }
 
 impl Processor {
+    pub(crate) fn observe_game_score_sizing(
+        &mut self,
+        sizing: &engine::game_score_inputs::ArenaSizing,
+    ) -> io::Result<()> {
+        self.stats.game_score.observe_sizing(sizing)
+    }
     pub fn new(root: &Path, history: PreparedCampaigns, session: SessionStart) -> io::Result<Self> {
         session.validate()?;
         fs::create_dir_all(root).map_err(engine::allocation::allocation_error)?;
@@ -1841,6 +1860,8 @@ impl Processor {
         self.stats.last_error = Some(error_reason(error));
     }
 
+    /// A failed or racing off-thread sizing hint loses no captured data; it is
+    /// counted here and never becomes the session warning.
     pub(crate) fn observe_input_demand_error(&mut self, reason: &'static str) {
         self.stats.input_demand_errors = self.stats.input_demand_errors.saturating_add(1);
         self.stats.input_demand_last_error = Some(reason);
@@ -1963,6 +1984,9 @@ impl Processor {
             crate::allocation::set_context(Default::default());
         }
         if captured.clock.is_some() {
+            self.stats
+                .game_score
+                .observe(captured.extended.game_score_status())?;
             captured
                 .extended
                 .observe_country_rosters(&mut self.stats.country_rosters)?;
@@ -2043,6 +2067,14 @@ impl Processor {
         } else {
             Some(clock.hour)
         };
+        // Native invalidation can leave every stored clock operand unchanged.
+        if campaign
+            .world_generation
+            .is_some_and(|previous| previous != captured.world_generation)
+        {
+            campaign.tracker.world_changed();
+        }
+        campaign.world_generation = Some(captured.world_generation);
         let branch = campaign.observe(origin, clock.hour, Some(clock.play_session_started_at))?;
         crate::allocation::set_context(crate::allocation::Context {
             campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
@@ -2104,7 +2136,35 @@ impl Processor {
             },
         )?;
         campaign.assemble_line_output(&mut source, captured);
+        let event_feed_publication = captured.extended.event_feed().prepare_pack()?;
+        if let Some(publication) = &event_feed_publication {
+            let mut rows = engine::allocation::vec(1)?;
+            rows.push(replay::rows::RowCodec::try_clone(publication.row())?);
+            source.tables[TableId::EventFeedHistory.index()] = TableInput::Sampled(
+                TableView::Complete(replay::rows::TableRows::EventFeedHistory(rows)),
+            );
+        }
+        let operation_publication = campaign
+            .operation_outcomes
+            .assemble_owned(captured.extended.operation_outcomes(), &mut source.tables);
+        if crate::allocation::failed() {
+            return Err(crate::allocation::oom());
+        }
+        campaign.politics.assemble_owned(
+            source.branch,
+            source.hour,
+            captured.extended.politics(),
+            &captured.countries,
+            captured.countries_result,
+            &mut source.tables,
+        )?;
         campaign.assemble_construction_ic(&mut source, captured);
+        campaign.fuel_awards.assemble(
+            source.branch,
+            source.hour,
+            captured.extended.fuel_awards(),
+            &mut source.tables,
+        )?;
         let retry_full = needs_retry(&source.tables) || sliced_retry;
         let skipped = campaign.try_apply_staggered_inputs(&mut source)?;
         if let Some(layout) = &captured.fixed_layout {
@@ -2132,12 +2192,17 @@ impl Processor {
             pack_ticks,
             sampled,
             witness,
+            operation_publication,
+            event_feed_publication,
         })
     }
 
     pub(crate) fn write_prepared(&mut self, prepared: PreparedFrame) -> io::Result<()> {
         let _phase = crate::allocation::enter(crate::allocation::Phase::Spool);
         if crate::allocation::failed() {
+            if let Some(publication) = &prepared.event_feed_publication {
+                crate::event_feed_observer::discarded(publication.publication());
+            }
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         let PreparedFrame {
@@ -2153,6 +2218,8 @@ impl Processor {
             pack_ticks,
             sampled,
             witness,
+            operation_publication,
+            event_feed_publication,
         } = prepared;
         self.unpublished_families |= unpublished_families;
         let branch = source.branch;
@@ -2205,6 +2272,12 @@ impl Processor {
             self.stats.record_writes.record_ticks(ticks, frequency);
         }
         result?;
+        if let Some(publication) = event_feed_publication {
+            crate::event_feed_observer::accepted(&publication)?;
+        }
+        if let Some(publication) = operation_publication {
+            publication.commit();
+        }
         self.retry_full |= retry_full;
         self.unknown_pending = 0;
         self.suppress_origin = false;
@@ -2593,6 +2666,7 @@ impl Processor {
             "spool_work": spool_work,
             "war_owned_snapshots": stats.war_snapshots.status(),
             "naval_modifier_breakdowns": stats.naval_breakdowns.status(),
+            "game_score": stats.game_score.status(),
             "division_naming": stats.division_naming.status(),
             "counter_tooltip_inputs": stats.counter_tooltip_inputs.status(),
             "country_rosters": stats.country_rosters.status(),
@@ -2780,6 +2854,7 @@ fn state_table(
             owner: state.owner,
             controller: state.controller,
             movement_infrastructure: state.movement_infrastructure,
+            continent: replay::rows::Recorded::Value(state.continent),
             manpower_available: state.manpower_available,
             custom_name: engine::allocation::owned_vec(engine::allocation::copy_vec(
                 text(state.custom_name).unwrap_or_default(),
@@ -3832,6 +3907,8 @@ mod tests {
             pack_ticks: [None; crate::extended::PACK_NAMES.len()],
             sampled: CapturedStatistics::capture(captured).unwrap(),
             witness: PreparedOrderWitness::capture(captured, Some(branch)),
+            operation_publication: None,
+            event_feed_publication: None,
         }
     }
 
@@ -4175,6 +4252,7 @@ mod tests {
     fn conversion_keeps_native_values_aliases_and_raw_text() {
         let mut captured = captured(10);
         captured.countries[0] = engine::ccountry::Row {
+            politics_witness: None,
             id: 7,
             canonical_slot: 1,
             tag: text(b"GER"),
@@ -4296,6 +4374,7 @@ mod tests {
                 owner: 7,
                 controller: u32::MAX,
                 movement_infrastructure: 0,
+                continent: replay::rows::Recorded::Value(None),
                 ..Default::default()
             }]))
         );
@@ -4756,6 +4835,7 @@ mod tests {
         tracker.begin_session(session.id).unwrap();
         (
             Campaign {
+                world_generation: None,
                 directory: PathBuf::new(),
                 session,
                 tracker,
@@ -4770,7 +4850,10 @@ mod tests {
                 sliced_reads: ReadHours::new(),
                 sliced_branch: None,
                 line_output: Default::default(),
+                operation_outcomes: Default::default(),
+                politics: Default::default(),
                 construction_ic: Default::default(),
+                fuel_awards: Default::default(),
                 variables_scratch: ScriptVariableComparison::default(),
                 character_shadow: CharacterShadow::default(),
                 intel_shadow: IntelShadow::default(),
@@ -5757,6 +5840,12 @@ mod tests {
             TableView::Complete(TableRows::ReservedCountryNaming(vec![
                 replay::rows::ReservedCountryNamingRow::default(),
             ]));
+        tables[TableId::GameScoreMultipliers.index()] = TableView::Unavailable {
+            reason: "score multipliers outside staggered fixture".into(),
+        };
+        tables[TableId::EventFeedHistory.index()] = TableView::Unavailable {
+            reason: "Event feed outside staggered fixture".into(),
+        };
         if skip {
             for table in TableId::ALL {
                 if replay::cadence::is_staggered(table) {
@@ -5846,8 +5935,10 @@ mod tests {
                     country: 5001,
                     variant: VARIANT,
                     mio: 0,
+                    kind: crate::line_output::OutputKind::Equipment,
                     units: 2,
                     credit: 2,
+                    spending: None,
                     exact: true,
                 };
                 ticks
@@ -6004,8 +6095,10 @@ mod tests {
                     country: 5001,
                     variant: VARIANT,
                     mio: 0,
+                    kind: crate::line_output::OutputKind::Equipment,
                     units: 1,
                     credit: 1,
+                    spending: None,
                     exact: true,
                 };
                 ticks

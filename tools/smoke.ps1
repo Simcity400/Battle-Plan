@@ -2,8 +2,10 @@
 .SYNOPSIS
 Full live recording/save/oracle/render smoke and guarded game-driving actions.
 .DESCRIPTION
-Smoke runs the complete local test with an explicit save, calibrated UiConfig, and
-a new Out directory. It preserves the input save and restores the isolated user
+Smoke uses receipt-verified final binaries with an explicit save, calibrated UiConfig,
+and a new Out directory. A coordinator-called Checkpoint requires inherited GATE=1
+and runs the workspace gate once before building the three release artifacts.
+It preserves the input save and restores the isolated user
 profile selection/settings after normal exit. Explicit actions remain available. Baseline verifies the pinned game build,
 then reads only its clock; it sends no input and does not inject.
 The script does not modify settings or certify that a save finished loading.
@@ -41,8 +43,19 @@ sets hook_mask (bit per hook, 0x7f enables all) to bisect what the click path de
 Live advance in game hours. The smoke requests a full refresh (recorder refresh) for the last
 hour's sample before comparing it with the save.
 1440 reaches the reference hour 60835691 from the record23 save.
+.PARAMETER BuildReceipt
+Private JSON with the current source_commit and exactly three binaries entries
+(name, sha256, bytes) for recorder.exe, collector.dll and viewer.exe. A checkpoint
+writes build-receipt.json in Out; existing smoke-result.json has the same fields.
+.PARAMETER BinaryDirectory
+Directory of those binaries; defaults to this checkout's .cargo-target/release.
+All source and copied hashes and the clean current HEAD are verified before launch.
+.PARAMETER Checkpoint
+Use only at an explicitly called workspace checkpoint, with GATE=1 inherited from
+the coordinator. Mutually exclusive with BuildReceipt/BinaryDirectory. Subsequent
+smokes use the receipt and do not repeat the gate. The script never sets GATE.
 .EXAMPLE
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/smoke.ps1 -Action Smoke -ExpectedSave save.hoi4 -UiConfig captures\smoke_config\ui.json -Out captures\smoke_new -WaitForUiReview
+powershell -NoProfile -File tools/smoke.ps1 -Action Smoke -BuildReceipt captures\checkpoint\build-receipt.json -BinaryDirectory captures\checkpoint\bin -ExpectedSave save.hoi4 -UiConfig captures\smoke_config\ui.json -Out captures\smoke_new -WaitForUiReview
 .EXAMPLE
 powershell -File tools/smoke.ps1 -Action Launch -ContinueLastSave
 .EXAMPLE
@@ -83,6 +96,9 @@ param(
     [ValidateRange(-50, 50)][int]$Delta = 0,
     [ValidateLength(1, 512)][string]$Text,
     [string]$UiConfig,
+    [string]$BuildReceipt,
+    [string]$BinaryDirectory,
+    [switch]$Checkpoint,
     [switch]$WaitForUiReview,
     [string]$Perspective = 'recorded',
     [ValidateRange(120, 10000)][int]$RecordHours = 120,
@@ -93,6 +109,7 @@ param(
     # game is never brought to the foreground. -Foreground restores the legacy behaviour
     # (foreground SendInput and screen capture) for cases where posted input is not enough.
     [switch]$Foreground,
+    [switch]$KeepForeground,   # leave the game focused after a -Foreground action, for menu sequences
     [switch]$Posted,   # experimental: post mouse messages instead of borrowing the foreground
     # Directory holding inputshim.dll and inputshim-inject.exe. Launch attaches the shim in
     # background mode, and background clicks then need no foreground borrow at all.
@@ -288,6 +305,12 @@ public sealed class Hoi4ClockBaseline : IDisposable {
 }
 
 function Invoke-FullSmoke {
+    if ($Checkpoint) {
+        if ($BuildReceipt -or $BinaryDirectory) { throw 'Checkpoint cannot reuse a BuildReceipt or BinaryDirectory.' }
+        if ($env:GATE -cne '1') { throw 'Checkpoint requires coordinator-provided GATE=1; the script will not set it.' }
+    } elseif (-not $BuildReceipt) {
+        throw 'Smoke requires -BuildReceipt, or an explicitly called -Checkpoint with inherited GATE=1.'
+    }
     if (-not $UiConfig -or -not $ExpectedSave -or -not $Out) {
         throw 'Smoke requires -UiConfig (calibrated screenshot pixels), -ExpectedSave and a new -Out directory.'
     }
@@ -359,8 +382,46 @@ function Invoke-FullSmoke {
     function Run-Tool([string]$exe,[string[]]$arguments,[string]$name,[int]$seconds=240) {
         Finish-Tool (Launch-Tool $exe $arguments $name) $seconds
     }
-    function Drive([string]$action,[hashtable]$extra=@{}) { & $driver -Action $action -GameId $game.Id -GameExe $gamePath -UserDirectory $userPath -Foreground:$Foreground @extra }
-    function Click-Point([string]$name) { $point=$ui.$name; $null=Drive 'Click' @{X=[int]$point[0];Y=[int]$point[1]} }
+    function Confirm-Source([string]$name,[string]$expected='') {
+        $head=(Run-Tool $git @('rev-parse','HEAD') ($name+'-commit') 30).Trim()
+        $dirty=Run-Tool $git @('status','--porcelain','--untracked-files=no') ($name+'-status') 30
+        if ($head -notmatch '^[0-9a-f]{40}$' -or -not [string]::IsNullOrWhiteSpace($dirty)) {
+            throw 'Smoke requires an exact clean committed source HEAD.'
+        }
+        if ($expected -and $head -cne $expected) { throw 'Source HEAD changed during artifact preparation.' }
+        $head
+    }
+    function Read-Binaries([string]$directory,[object[]]$expected=@()) {
+        $binaries=@()
+        foreach ($name in @('recorder.exe','collector.dll','viewer.exe')) {
+            $path=Join-Path $directory $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing smoke binary: $name" }
+            $item=Get-Item -LiteralPath $path
+            $hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            if ($expected.Count) {
+                $entries=@($expected | Where-Object { $_.PSObject.Properties['name'] -and $_.name -is [string] -and $_.name -ceq $name })
+                if ($entries.Count -ne 1) { throw "Receipt must identify $name exactly once." }
+                $entry=$entries[0]
+                if (-not $entry.PSObject.Properties['sha256'] -or $entry.sha256 -isnot [string] -or
+                    $entry.sha256 -notmatch '^[0-9a-fA-F]{64}$' -or -not $entry.PSObject.Properties['bytes'] -or
+                    ($entry.bytes -isnot [int] -and $entry.bytes -isnot [long]) -or
+                    $entry.bytes -ne $item.Length -or $entry.sha256 -ine $hash) {
+                    throw "Receipt does not match the actual smoke binary: $name"
+                }
+            }
+            if ($item.Length -le 0) { throw "Empty smoke binary: $name" }
+            $binaries += [pscustomobject]@{name=$name;sha256=$hash;bytes=$item.Length}
+        }
+        $binaries
+    }
+    # Forced menu input keeps the game focused between clicks: refocusing loses the next click.
+    function Drive([string]$action,[hashtable]$extra=@{},[bool]$foregroundInput=$Foreground) { & $driver -Action $action -GameId $game.Id -GameExe $gamePath -UserDirectory $userPath -Foreground:$foregroundInput -KeepForeground:($foregroundInput -and -not $Foreground) @extra }
+    function Click-Point([string]$name) {
+        $point=$ui.$name
+        # Menu widgets require foreground input even when map input uses the shim.
+        $foregroundInput=$Foreground -or $name -in @('menu','save_menu','save_name','save_confirm','exit_game','exit_confirm')
+        $null=Drive 'Click' @{X=[int]$point[0];Y=[int]$point[1]} $foregroundInput
+    }
     function Clock {
         $limit=[DateTime]::UtcNow.AddSeconds(10)
         do {
@@ -445,15 +506,9 @@ function Invoke-FullSmoke {
         if (-not $game.WaitForExit(60000)) { throw 'The game did not exit through its confirmation dialog.' }
     }
     try {
-        [IO.File]::WriteAllBytes((Join-Path $output 'continue-before.json'),$selection)
-        [IO.File]::WriteAllBytes((Join-Path $output 'settings-before.txt'),$settingsBytes)
-        Copy-Item -LiteralPath $UiConfig -Destination (Join-Path $output 'ui.json')
-        Copy-Item -LiteralPath $driver -Destination (Join-Path $output 'smoke-driver.ps1')
         Stage 'static-checks'
         $git=(Get-Command git -ErrorAction Stop).Source
-        $report.source_commit=(Run-Tool $git @('rev-parse','HEAD') 'source-commit' 30).Trim()
-        $dirty=Run-Tool $git @('status','--porcelain','--untracked-files=no') 'source-status' 30
-        if (-not [string]::IsNullOrWhiteSpace($dirty)) { throw 'Commit the smoke candidate before running the full check.' }
+        $report.source_commit=Confirm-Source 'source'
         $report.source_clean=$true
         $formatMatch=[regex]::Match([IO.File]::ReadAllText((Join-Path $repo 'crates\replay\src\lib.rs')),'FORMAT_VERSION: u16 = (?:(\d+)|rows::compatibility::(\w+));')
         $formatText=$formatMatch.Groups[1].Value
@@ -464,18 +519,45 @@ function Invoke-FullSmoke {
         }
         $format=[int]$formatText
         if ($format -lt 1) { throw 'FORMAT_VERSION not found in crates/replay/src/lib.rs.' }
-        $null=Get-Command cargo -ErrorAction Stop
-        $powershell=(Get-Command powershell -ErrorAction Stop).Source
-        $buildArgs=@('-NoProfile','-ExecutionPolicy','Bypass','-File','tools\build-slot.ps1','-Owner','smoke','-Command')
-        $null=Run-Tool $powershell ($buildArgs + 'cargo build --workspace') 'build' 600
-        $tests=Run-Tool $powershell ($buildArgs + 'cargo test --workspace') 'test' 600
-        $report.tests_passed=([regex]::Matches($tests,'test result: ok\. (\d+) passed') | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
-        $null=Run-Tool $powershell ($buildArgs + 'cargo clippy --workspace --all-targets -- -D warnings') 'clippy' 600
-        $null=Run-Tool $powershell ($buildArgs + 'cargo fmt --all -- --check') 'fmt' 120
-        $null=Run-Tool $powershell ($buildArgs + 'cargo build --workspace --release') 'release' 600
-        foreach ($file in @('recorder.exe','collector.dll','viewer.exe')) { Copy-Item (Join-Path (Join-Path $repo '.cargo-target\release') $file) (Join-Path $bin $file) }
+        $binarySource=Join-Path $repo '.cargo-target\release'
+        $expectedBinaries=@()
+        if ($Checkpoint) {
+            Stage 'checkpoint'
+            if ($env:CARGO_BUILD_TARGET) { throw 'CARGO_BUILD_TARGET would change the checkpoint release path; use the native target.' }
+            $bash=(Get-Command 'C:\Program Files\Git\bin\bash.exe' -ErrorAction Stop).Source
+            $buildArgs=@('tools/build-slot.sh','smoke')
+            $gate='cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace --no-fail-fast && cargo run -q --profile test -p dashboard --bin export-types -- --check'
+            $tests=Run-Tool $bash ($buildArgs + $gate) 'checkpoint' 2400
+            $report.tests_passed=([regex]::Matches($tests,'test result: ok\. (\d+) passed') | ForEach-Object { [int]$_.Groups[1].Value } | Measure-Object -Sum).Sum
+            $null=Run-Tool $bash ($buildArgs + 'cargo build -p recorder -p collector -p viewer --release --target-dir .cargo-target') 'release' 600
+        } else {
+            $receiptPath=(Resolve-Path -LiteralPath $BuildReceipt -ErrorAction Stop).ProviderPath
+            if (-not $receiptPath.StartsWith($captureRoot,[StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'BuildReceipt must be a private file under captures.' }
+            $receipt=[IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
+            if (-not $receipt.PSObject.Properties['source_commit'] -or $receipt.source_commit -isnot [string] -or
+                $receipt.source_commit -cne $report.source_commit) {
+                throw 'BuildReceipt source_commit does not match the exact current HEAD.'
+            }
+            if (-not $receipt.PSObject.Properties['binaries'] -or @($receipt.binaries).Count -ne 3) {
+                throw 'BuildReceipt must contain exactly the three smoke binaries.'
+            }
+            $expectedBinaries=@($receipt.binaries)
+            if ($BinaryDirectory) { $binarySource=(Resolve-Path -LiteralPath $BinaryDirectory -ErrorAction Stop).ProviderPath }
+            $report.build_receipt=$receiptPath
+        }
+        $null=Confirm-Source 'pre-copy' $report.source_commit
+        $sourceBinaries=@(Read-Binaries $binarySource $expectedBinaries)
+        foreach ($file in $sourceBinaries) { Copy-Item -LiteralPath (Join-Path $binarySource $file.name) -Destination (Join-Path $bin $file.name) }
+        $report.binaries=@(Read-Binaries $bin $sourceBinaries)
+        [IO.File]::WriteAllBytes((Join-Path $output 'continue-before.json'),$selection)
+        [IO.File]::WriteAllBytes((Join-Path $output 'settings-before.txt'),$settingsBytes)
+        Copy-Item -LiteralPath $UiConfig -Destination (Join-Path $output 'ui.json')
+        Copy-Item -LiteralPath $driver -Destination (Join-Path $output 'smoke-driver.ps1')
+        $null=Confirm-Source 'pre-launch' $report.source_commit
+        [IO.File]::WriteAllText((Join-Path $output 'build-receipt.json'),
+            (@{source_commit=$report.source_commit;binaries=$report.binaries} | ConvertTo-Json -Depth 8),$utf8)
         $report.map_mode='controller'; $report.perspective=$Perspective
-        $report.binaries=@(Get-ChildItem $bin -File | ForEach-Object { @{name=$_.Name;sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash;bytes=$_.Length} })
         $recorder=Join-Path $bin 'recorder.exe'; $viewer=Join-Path $bin 'viewer.exe'
         Stage 'launch-and-attach'
         $script:smokeStatusPath=$null
@@ -506,20 +588,19 @@ function Invoke-FullSmoke {
         $clock=Clock; $report.initial_clock=$clock; $report.game_pid=$game.Id
         $first=[int]$clock.hour; $target=$first + $RecordHours
         $load=$clock.play_session_started_at; $seed=$clock.seed
-        $live=[Diagnostics.Stopwatch]::StartNew(); $progressAt=0.0; $slow=$false
+        $live=[Diagnostics.Stopwatch]::StartNew(); $progressAt=0.0
         Stage 'recording'
         Speed-Game 4; Pause-Game $false
         while ($true) {
             $clock=Clock
             if ($clock.play_session_started_at -ne $load -or $clock.seed -ne $seed -or $clock.hour -lt $first) { throw 'Unexpected load or campaign change.' }
             if ($live.Elapsed.TotalSeconds -gt $TimeoutSeconds) { throw 'Live recording timed out.' }
+            # Top speed past the minimum hour; the refresh below makes any saved hour a full read.
             if ($clock.hour -ge $target) {
-                Pause-Game $true; $clock=Clock
-                if ($clock.hour -ne $target) { throw "Missed exact full-refresh save hour: target=$target actual=$($clock.hour)" }
+                Pause-Game $true; $target=[int](Clock).hour
                 break
             }
-            # Near the target the loop only watches the clock.
-            $status=if ($clock.hour -lt $target-5) { Status } else { $null }
+            $status=Status
             if ($status) {
                 if ($status.sample_boundary -ne 'end_of_hour') { throw 'Unexpected sample boundary.' }
                 if ($status.hours -gt 0 -and $status.last_hour-$status.hours+1 -ne $first) { throw 'Unexpected first recorded hour or discontinuity.' }
@@ -530,11 +611,6 @@ function Invoke-FullSmoke {
                     $report.live_progress=@{hour=$clock.hour;target=$target;samples=$status.hours}; Write-Report
                 }
             }
-            # Each speed click starts a driver process (about a second), and the
-            # game can advance 20+ hours a second at speed 4: stepping down four
-            # speeds takes several seconds. Start ten seconds of play early.
-            $rate=($clock.hour-$first)/[Math]::Max(1.0,$live.Elapsed.TotalSeconds)
-            if (-not $slow -and $clock.hour -ge $target-[Math]::Max(40,[int][Math]::Ceiling($rate*10))) { Speed-Game 0; $slow=$true }
             Start-Sleep -Milliseconds 20
         }
         $live.Stop(); $report.advance_seconds=$live.Elapsed.TotalSeconds; $report.save_hour=$target
@@ -563,7 +639,7 @@ function Invoke-FullSmoke {
         $save=Join-Path (Join-Path $userPath 'save games') ($saveName+'.hoi4')
         if (Test-Path -LiteralPath $save) { throw 'Smoke save already exists; refusing to overwrite.' }
         Click-Point 'menu'; Click-Point 'save_menu'; Click-Point 'save_name'
-        $null=Drive 'Key' @{Key='CtrlA'}; $null=Drive 'Text' @{Text=$saveName}; Click-Point 'save_confirm'
+        $null=Drive 'Key' @{Key='CtrlA'} $true; $null=Drive 'Text' @{Text=$saveName} $true; Click-Point 'save_confirm'
         $limit=[DateTime]::UtcNow.AddSeconds(120); $saved=$false
         do {
             if (Test-Path -LiteralPath $save) {
@@ -652,6 +728,11 @@ function Invoke-FullSmoke {
             $reference.viewer_image=$image; $reference.scores=[IO.File]::ReadAllText($score) | ConvertFrom-Json
             if ($reference.index -eq 0) {
                 $windowImage=Join-Path $output 'window-parity.png'
+                # Foreground menu clicks leave the real cursor on screen; a viewer window
+                # opened under it would render a hover tooltip the headless dump lacks.
+                Add-Type -AssemblyName System.Windows.Forms
+                $screen=[Windows.Forms.SystemInformation]::VirtualScreen
+                [Windows.Forms.Cursor]::Position=New-Object Drawing.Point ($screen.Right-1),($screen.Bottom-1)
                 $null=Run-Tool $viewer (@('--window-dump')+$common+@('--out',$windowImage)) 'window-render' 240
                 $headlessHash=(Get-FileHash $image -Algorithm SHA256).Hash
                 $windowHash=(Get-FileHash $windowImage -Algorithm SHA256).Hash
@@ -664,7 +745,7 @@ function Invoke-FullSmoke {
         $finalStatus=Status
         [IO.File]::WriteAllText((Join-Path $output 'final-status.json'),($finalStatus | ConvertTo-Json -Depth 30),$utf8)
         if ($finalStatus.hours -lt $RecordHours -or $finalStatus.dropped_frames -ne 0 -or $finalStatus.write_errors -ne 0) { throw 'Final transport counters failed.' }
-        $report.performance=@{recorded_hours=$finalStatus.hours;advancing_game_hours=$target-$first;advance_seconds=$live.Elapsed.TotalSeconds;advancing_hours_per_second=($target-$first)/$live.Elapsed.TotalSeconds;callback_p50_ms=$finalStatus.callback_work.p50_ns/1e6;callback_p95_ms=$finalStatus.callback_work.p95_ns/1e6;callback_max_ms=$finalStatus.callback_work.max_ns/1e6;pool_bytes=$finalStatus.pool_bytes;spool_bytes=$finalStatus.spool_bytes;scope='One live smoke including the slow boundary approach. Not a paired baseline or performance acceptance.'}
+        $report.performance=@{recorded_hours=$finalStatus.hours;advancing_game_hours=$target-$first;advance_seconds=$live.Elapsed.TotalSeconds;advancing_hours_per_second=($target-$first)/$live.Elapsed.TotalSeconds;callback_p50_ms=$finalStatus.callback_work.p50_ns/1e6;callback_p95_ms=$finalStatus.callback_work.p95_ns/1e6;callback_max_ms=$finalStatus.callback_work.max_ns/1e6;pool_bytes=$finalStatus.pool_bytes;spool_bytes=$finalStatus.spool_bytes;scope='One live smoke at top speed. Not a paired baseline or performance acceptance.'}
         if ((Get-FileHash $sourceSave -Algorithm SHA256).Hash -cne $report.source_save_sha256) { throw 'Original input save changed.' }
         $report.source_save_unchanged=$true
         $report.passed=$true; Stage 'validations-passed'
@@ -1350,5 +1431,5 @@ try {
     }
     }
 } finally {
-    if ($previousForeground -ne [IntPtr]::Zero) { [Hoi4ProbeInput]::RestoreForeground($previousForeground, $window) }
+    if ($previousForeground -ne [IntPtr]::Zero -and -not $KeepForeground) { [Hoi4ProbeInput]::RestoreForeground($previousForeground, $window) }
 }

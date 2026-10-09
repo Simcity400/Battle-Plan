@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn game_score_saved_rosters_keep_writer_order_and_empty_countries() {
+    let saved = parse(br#"HOI4txt
+date=1930.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
+countries={AAA={units={
+division={id={id=9 type=5} logical_country=AAA strength=0 organisation=0}
+division={id={id=2 type=5} logical_country=AAA strength=0 organisation=0}
+fleet={id={id=8 type=7}
+task_force={id={id=9 type=6} logical_country=AAA mission={mission=0}}
+task_force={id={id=2 type=6} logical_country=AAA mission={mission=0}}}
+fleet={id={id=1 type=7}}}} BBB={}}
+states={} provinces={}
+"#).unwrap();
+    let handle = |id: u64, kind| (id << 32) | kind;
+    assert_eq!(
+        saved.counter_inputs.division_orders[b"AAA".as_slice()],
+        [handle(9, 5), handle(2, 5)]
+    );
+    assert_eq!(
+        saved.counter_inputs.fleet_orders[b"AAA".as_slice()],
+        [handle(8, 7), handle(1, 7)]
+    );
+    assert_eq!(
+        saved.counter_inputs.fleets[&handle(8, 7)].task_forces,
+        [handle(9, 6), handle(2, 6)]
+    );
+    assert!(
+        saved.counter_inputs.fleets[&handle(1, 7)]
+            .task_forces
+            .is_empty()
+    );
+    assert!(saved.counter_inputs.division_orders[b"BBB".as_slice()].is_empty());
+    assert!(saved.counter_inputs.fleet_orders[b"BBB".as_slice()].is_empty());
+    assert_eq!(saved.divisions.len(), 2);
+    assert_eq!(saved.task_forces.len(), 2);
+}
+
+#[test]
 fn state_border_flag_preserves_absence_and_strict_boolean_witness() {
     let header = "HOI4txt\ndate=1936.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13 countries={} provinces={} ";
     for (token, expected) in [("yes", Some(true)), ("no", Some(false))] {
@@ -72,6 +109,8 @@ fn civil_war_targets_are_every_written_tag_in_order() {
 #[test]
 fn country_cores_are_the_saved_state_ids_in_order() {
     let country = crate::parser::parse(b"major=yes cores={ 5 42 50 978 } num_ships=66").unwrap();
+    assert!(parse_country(b"GER", &country.items).unwrap().major);
+    assert!(!parse_country(b"GER", &[]).unwrap().major);
     assert_eq!(
         parse_country(b"GER", &country.items).unwrap().cores,
         [5, 42, 50, 978]

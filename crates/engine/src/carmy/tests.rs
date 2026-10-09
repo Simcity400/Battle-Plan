@@ -5999,7 +5999,7 @@ fn movement_rejects_a_null_next_province() {
 #[test]
 fn division_seed_descriptors_preserve_original_prefix_and_append_names_and_grace() {
     use super::*;
-    assert_eq!(DIVISION_SEED_STRIDE, 312);
+    assert_eq!(DIVISION_SEED_STRIDE, 336);
     assert_eq!(
         DIVISION_SEED_FIELDS.map(|field| (
             field.source_offset,
@@ -6042,6 +6042,7 @@ fn division_seed_descriptors_preserve_original_prefix_and_append_names_and_grace
             (crate::carmy_combat_inputs::NAME_GROUP_MEMBER, 288, 8),
             (MAXIMUM_SUPPLY_GRACE, 296, 8),
             (REMAINING_SUPPLY_GRACE, 304, 8),
+            (MANPOWER_VALUES, 312, 24),
         ]
     );
 }

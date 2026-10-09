@@ -746,7 +746,7 @@ impl Drop for PayloadPools {
     }
 }
 
-pub fn prepare_payload_pools() -> PayloadPools {
+pub fn prepare_payload_pools(game_score: bool) -> PayloadPools {
     prepare_retirement();
     for _ in 0..JOB_POOL_KEEP + 1 {
         if crate::allocation::failed() {
@@ -760,7 +760,7 @@ pub fn prepare_payload_pools() -> PayloadPools {
         release_lexical_job(LexicalJob::new());
         release_divisions_job(DivisionsJob::new());
         release_focus_job(FocusJob::new());
-        release_air_wing_job(AirWingJob::new());
+        release_air_wing_job(AirWingJob::with_game_score(game_score));
         release_air_stats_job(AirStatsJob::new());
         release_naval_job(NavalJob::new());
         release_players_job(PlayersJob::new());
@@ -850,6 +850,10 @@ pub fn enqueue(shared: &Shared, job: DecodeJob) -> Option<DecodeJob> {
         }
         Err(job) => {
             crate::equipment_destruction::lost_drain();
+            crate::naval_result_sources::lost_drain();
+            crate::air_losses::lost_drain();
+            crate::building_bombing::lost_drain();
+            crate::land_events::fail();
             DROPS.fetch_add(1, Ordering::Relaxed);
             Some(job)
         }
@@ -1104,6 +1108,10 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
     if job.air_wing_refresh && job.air_wing_payload.is_none() {
         frame
             .extended
+            .game_score_pilot()
+            .fail_air(MISSING_PAYLOAD_REASON);
+        frame
+            .extended
             .air_wing_pilot()
             .fail_air_wing_capture(MISSING_PAYLOAD_REASON);
     }
@@ -1331,7 +1339,7 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     }
 
     if job.air_wing_refresh
-        && let Some(payload) = job.air_wing_payload.as_ref()
+        && let Some(payload) = job.air_wing_payload.as_mut()
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 2];
@@ -1340,6 +1348,11 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
             payload,
             &mut decode_ticks,
         );
+        frame
+            .extended
+            .game_score_pilot()
+            .install_air(&mut payload.game_score);
+        payload.update_capacity_charge();
         for (total, ticks) in AIR_WING_DECODE_NS.iter().zip(decode_ticks) {
             if ticks != 0 {
                 total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
@@ -1656,6 +1669,10 @@ pub fn detach_drain() -> Result<(), &'static str> {
         && handle.join().is_err()
     {
         crate::equipment_destruction::lost_drain();
+        crate::naval_result_sources::lost_drain();
+        crate::air_losses::lost_drain();
+        crate::building_bombing::lost_drain();
+        crate::land_events::fail();
         error = Some("decode worker panicked; its in-flight frame may be incomplete");
     }
     WORKER_ID.store(0, Ordering::Release);
@@ -1676,6 +1693,10 @@ pub fn detach_drain() -> Result<(), &'static str> {
     .is_err()
     {
         crate::equipment_destruction::lost_drain();
+        crate::naval_result_sources::lost_drain();
+        crate::air_losses::lost_drain();
+        crate::building_bombing::lost_drain();
+        crate::land_events::fail();
         error = Some("decode detach drain panicked; queued frames remain incomplete");
     }
     STOP.store(false, Ordering::Release);
@@ -2121,7 +2142,7 @@ pub(crate) fn reset_calibration_for_test() {
     reclaim_payloads();
     // Production prepares bounded payload storage before installing the hook.
     // Tests exercise that lifecycle rather than relying on cold tick allocation.
-    std::mem::forget(prepare_payload_pools());
+    std::mem::forget(prepare_payload_pools(false));
     for cell in RELATIONS_COPY_NS
         .iter()
         .chain(RELATIONS_DECODE_NS.iter())

@@ -10,10 +10,12 @@
 //! only confirms whether a deal needs convoys at all (the fresh-save oracle's
 //! `convoys_required_nonzero`), not the counts.
 //!
-//! A flow is one (seller, buyer, resource): several deals between the same two
-//! countries for the same resource are summed, and `deals` says how many there
-//! were. Countries are named by their tag at the read, as Resource balance names
-//! trade partners; the widget names and flags them as the recording showed them.
+//! A flow is one (native seller holder, native buyer holder, resource): several
+//! deals between the same two countries for the same resource are summed, and `deals` says how many there
+//! were. Native holders use (canonical slot, country id); tag renames keep one
+//! numeric history, while replacements start another. Per-run aliases and the
+//! shared country census date names and flags to the supplying read, including
+//! peace. Chosen tags expand to their recorded native holders before filtering.
 //!
 //! The deal table is read every hour (`replay::cadence`). Deals are known only
 //! where the table and country catalogue are recorded: `known` lists those hours,
@@ -36,13 +38,14 @@
 
 use super::{
     LoadContext, Product,
+    country_history::{self, CountryIdentityRun, Identity, RecordedHistories},
     resource_balance::mark,
     resources::{Learned, RESOURCE_DECIMALS, resource_infos},
     validate_tag,
 };
 use crate::{
     Source,
-    metadata::{link_slot, mapped_slot, validate_campaign},
+    metadata::{link_slot, tagged_countries, validate_campaign},
     products::country_groups::HourSpan,
 };
 use replay::{
@@ -100,6 +103,12 @@ pub struct TradeFlow {
     pub seller: u32,
     /// The buyer's index in `countries`.
     pub buyer: u32,
+    /// Exact native holder keys, independent of their dated tag aliases.
+    pub seller_identity: String,
+    pub buyer_identity: String,
+    /// Per-run indexes into `countries`, never a future alias for an older read.
+    pub seller_tags: Vec<u32>,
+    pub buyer_tags: Vec<u32>,
     /// The resource's native index.
     pub resource: u32,
     pub first_hours: Vec<i32>,
@@ -117,6 +126,13 @@ pub struct TradeFlow {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct TradeCountryIdentity {
+    pub tag: String,
+    pub runs: Vec<CountryIdentityRun>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct TradeFlowsReply {
     pub branch_id: String,
     pub decimals: u8,
@@ -124,6 +140,9 @@ pub struct TradeFlowsReply {
     pub resources: Vec<super::resources::ResourceInfo>,
     /// The tags flows name, sorted.
     pub countries: Vec<String>,
+    /// The full dated native holder census, independent of the chosen deals,
+    /// including peace and times after their trades stopped.
+    pub country_identities: Vec<TradeCountryIdentity>,
     /// Hours the deal table and country catalogue were recorded, ascending.
     pub reads: Vec<i32>,
     /// Hours whose deals are known, as ascending spans. Outside them the deals
@@ -149,18 +168,18 @@ pub struct PartialSpan {
 }
 
 /// Each canonical slot's country this hour: its tag and native id, from the first
-/// row whose identity the links resolve (`mapped_slot`), as every per-country
-/// product reads a country. A slot whose rows the links do not resolve is absent.
+/// resolved tagged row, using the same policy as the shared country census.
+/// A slot whose rows the links do not resolve is absent.
 fn identities<'a>(
     countries: &'a [replay::rows::CountryRow],
     links: &[replay::rows::CountryLinkRow],
 ) -> HashMap<u32, (&'a str, u32)> {
     let mut ids = HashMap::with_capacity(countries.len());
-    for country in countries {
-        let (Ok(slot), Ok(tag)) = (
-            mapped_slot(country, links),
-            std::str::from_utf8(&country.tag),
-        ) else {
+    for (_, lookup) in tagged_countries(countries, links) {
+        let Some((country, slot)) = lookup.found() else {
+            continue;
+        };
+        let Ok(tag) = std::str::from_utf8(&country.tag) else {
             continue;
         };
         ids.entry(slot).or_insert((tag, country.id));
@@ -211,12 +230,20 @@ struct Run {
     first_hour: i32,
     last_hour: i32,
     terms: Terms,
+    seller_tag: String,
+    buyer_tag: String,
+}
+
+fn identity((slot, id): Identity) -> String {
+    format!("[{slot},{id}]")
 }
 
 #[derive(Clone, Debug)]
 struct Flow {
     seller: String,
     buyer: String,
+    seller_identity: Identity,
+    buyer_identity: Identity,
     resource: u32,
     runs: Vec<Run>,
 }
@@ -229,6 +256,7 @@ pub struct ScannedFlows {
     pub known: Vec<HourSpan>,
     pub partial: Vec<PartialSpan>,
     flows: Vec<Flow>,
+    pub country_identities: Vec<TradeCountryIdentity>,
     /// Deal rows naming a resource the recorded definitions or tokens do not name.
     pub unnamed: usize,
     /// Deal rows whose seller or buyer the recorded links do not resolve.
@@ -241,7 +269,11 @@ impl ScannedFlows {
         let countries: Vec<String> = self
             .flows
             .iter()
-            .flat_map(|flow| [flow.seller.clone(), flow.buyer.clone()])
+            .flat_map(|flow| {
+                flow.runs
+                    .iter()
+                    .flat_map(|run| [run.seller_tag.clone(), run.buyer_tag.clone()])
+            })
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -256,6 +288,10 @@ impl ScannedFlows {
             .map(|flow| TradeFlow {
                 seller: index(&flow.seller),
                 buyer: index(&flow.buyer),
+                seller_identity: identity(flow.seller_identity),
+                buyer_identity: identity(flow.buyer_identity),
+                seller_tags: flow.runs.iter().map(|run| index(&run.seller_tag)).collect(),
+                buyer_tags: flow.runs.iter().map(|run| index(&run.buyer_tag)).collect(),
                 resource: flow.resource,
                 first_hours: flow.runs.iter().map(|run| run.first_hour).collect(),
                 last_hours: flow.runs.iter().map(|run| run.last_hour).collect(),
@@ -270,7 +306,22 @@ impl ScannedFlows {
                 deals: flow.runs.iter().map(|run| run.terms.deals).collect(),
             })
             .collect();
-        flows.sort_by_key(|flow| (flow.seller, flow.buyer, flow.resource));
+        flows.sort_by(|a, b| {
+            (
+                a.seller,
+                a.buyer,
+                a.resource,
+                &a.seller_identity,
+                &a.buyer_identity,
+            )
+                .cmp(&(
+                    b.seller,
+                    b.buyer,
+                    b.resource,
+                    &b.seller_identity,
+                    &b.buyer_identity,
+                ))
+        });
         (countries, flows)
     }
 }
@@ -282,6 +333,16 @@ pub fn scan(
     tags: Option<&[String]>,
     cancelled: &AtomicBool,
 ) -> io::Result<ScannedFlows> {
+    let history = country_history::scan_histories(replay, branch, false, &[], cancelled)?;
+    scan_with_history(replay, branch, tags, &history, cancelled)
+}
+fn scan_with_history(
+    replay: &Replay,
+    branch: u64,
+    tags: Option<&[String]>,
+    history: &RecordedHistories,
+    cancelled: &AtomicBool,
+) -> io::Result<ScannedFlows> {
     let selected = [
         TableId::Campaign,
         TableId::Countries,
@@ -291,12 +352,15 @@ pub fn scan(
         TableId::ResourceExchanges,
     ];
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Trade request cancelled");
-    let wanted = |tag: &str| {
-        tags.is_none_or(|tags| tags.binary_search_by(|item| item.as_str().cmp(tag)).is_ok())
+    let selected_identities = tags.map(|tags| country_history::selected_identities(history, tags));
+    let wanted = |identity: Identity| {
+        selected_identities
+            .as_ref()
+            .is_none_or(|selected| selected.contains(&identity))
     };
     let mut result = ScannedFlows::default();
     let mut learned = Learned::default();
-    let mut index: HashMap<(String, String, u32), usize> = HashMap::new();
+    let mut index: HashMap<(Identity, Identity, u32), usize> = HashMap::new();
     let mut known = false;
     // The countries the previous hour's flows name: slot, tag and country id.
     let mut carried: Vec<(u32, String, u32)> = Vec::new();
@@ -344,7 +408,8 @@ pub fn scan(
             let same = carried
                 .iter()
                 .all(|(slot, tag, id)| ids.get(slot) == Some(&(tag.as_str(), *id)));
-            let mut read: BTreeMap<(&str, &str, u32), Terms> = BTreeMap::new();
+            let mut read: BTreeMap<(Identity, Identity, u32), (&str, &str, Terms)> =
+                BTreeMap::new();
             // The slots this read's flows name, with the country each held.
             let mut named: BTreeSet<u32> = BTreeSet::new();
             // Deals this read lists but cannot attribute: the hour is known only in part.
@@ -352,9 +417,9 @@ pub fn scan(
             for exchange in exchanges {
                 let side = |raw| {
                     link_slot(links, raw)
-                        .and_then(|slot| ids.get(&slot).map(|(tag, _)| (slot, *tag)))
+                        .and_then(|slot| ids.get(&slot).map(|(tag, id)| (slot, *tag, *id)))
                 };
-                let (Some((seller_slot, seller)), Some((buyer_slot, buyer))) =
+                let (Some((seller_slot, seller, seller_id)), Some((buyer_slot, buyer, buyer_id))) =
                     (side(exchange.exporter), side(exchange.importer))
                 else {
                     // Whoever it names could be one of the countries asked about.
@@ -362,7 +427,7 @@ pub fn scan(
                     skipped = skipped.saturating_add(1);
                     continue;
                 };
-                if !(wanted(seller) || wanted(buyer)) {
+                if !(wanted((seller_slot, seller_id)) || wanted((buyer_slot, buyer_id))) {
                     continue;
                 }
                 if !learned.contains(exchange.resource) {
@@ -372,8 +437,15 @@ pub fn scan(
                 }
                 named.insert(seller_slot);
                 named.insert(buyer_slot);
-                let terms = read.entry((seller, buyer, exchange.resource)).or_default();
-                *terms = terms
+                let terms = read
+                    .entry((
+                        (seller_slot, seller_id),
+                        (buyer_slot, buyer_id),
+                        exchange.resource,
+                    ))
+                    .or_insert((seller, buyer, Terms::default()));
+                terms.2 = terms
+                    .2
                     .add(exchange)
                     .ok_or_else(|| crate::invalid("recorded trade terms overflow their sum"))?;
             }
@@ -391,12 +463,14 @@ pub fn scan(
                     (*slot, tag.to_owned(), id)
                 })
                 .collect();
-            for ((seller, buyer, resource), terms) in read {
-                let key = (seller.to_owned(), buyer.to_owned(), resource);
+            for ((seller_identity, buyer_identity, resource), (seller, buyer, terms)) in read {
+                let key = (seller_identity, buyer_identity, resource);
                 let flow = *index.entry(key).or_insert_with(|| {
                     result.flows.push(Flow {
                         seller: seller.to_owned(),
                         buyer: buyer.to_owned(),
+                        seller_identity,
+                        buyer_identity,
                         resource,
                         runs: Vec::new(),
                     });
@@ -407,7 +481,9 @@ pub fn scan(
                     Some(run)
                         if was_known
                             && run.last_hour.checked_add(1) == Some(hour)
-                            && run.terms == terms =>
+                            && run.terms == terms
+                            && run.seller_tag == seller
+                            && run.buyer_tag == buyer =>
                     {
                         run.last_hour = hour
                     }
@@ -416,6 +492,8 @@ pub fn scan(
                             first_hour: hour,
                             last_hour: hour,
                             terms,
+                            seller_tag: seller.to_owned(),
+                            buyer_tag: buyer.to_owned(),
                         });
                     }
                 }
@@ -423,6 +501,15 @@ pub fn scan(
         }
     }
     result.resources = learned.list();
+    result.country_identities = history
+        .countries
+        .iter()
+        .filter(|(_, country)| !country.identities.is_empty())
+        .map(|(tag, country)| TradeCountryIdentity {
+            tag: tag.clone(),
+            runs: country.identities.as_ref().clone(),
+        })
+        .collect();
     Ok(result)
 }
 
@@ -444,6 +531,8 @@ impl Product for TradeFlows {
         vec![
             TradeFlowParams::decl(),
             TradeFlow::decl(),
+            TradeCountryIdentity::decl(),
+            CountryIdentityRun::decl(),
             PartialSpan::decl(),
             TradeFlowsReply::decl(),
         ]
@@ -480,10 +569,18 @@ impl Product for TradeFlows {
         let scanned = match cached {
             Some(scanned) => scanned,
             None => {
-                let scanned = Arc::new(scan(
+                let history = country_history::branch_histories(
+                    source,
+                    params.branch(),
+                    false,
+                    &[],
+                    cancelled,
+                )?;
+                let scanned = Arc::new(scan_with_history(
                     &source.replay(),
                     params.branch(),
                     key.1.as_deref(),
+                    &history,
                     cancelled,
                 )?);
                 let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
@@ -519,6 +616,7 @@ impl Product for TradeFlows {
             decimals: RESOURCE_DECIMALS,
             resources,
             countries,
+            country_identities: scanned.country_identities.clone(),
             reads: scanned.reads.clone(),
             known: scanned.known.clone(),
             partial: scanned.partial.clone(),

@@ -1,4 +1,7 @@
-use crate::test_fixtures::{CAMPAIGN, ownership_frame, records};
+use crate::{
+    products::Product,
+    test_fixtures::{CAMPAIGN, continuation_records, ownership_frame, records},
+};
 use replay::{
     container::Replay,
     frame::{DecodedFrame, TableView},
@@ -59,10 +62,17 @@ fn country_groups_keep_every_event_and_run_then_refuse_oversized_replies() {
                 .any(|warning| warning.contains("exceed"))
         );
         source
-            .state::<Vec<(u64, Arc<super::Scan>)>>()
+            .append_state::<super::GroupCache>()
             .lock()
             .unwrap()
-            .push((1, scan));
+            .entries
+            .push((
+                1,
+                Arc::new(super::GroupBranch {
+                    gate: std::sync::Mutex::new(()),
+                    scan: std::sync::Mutex::new(Some(scan)),
+                }),
+            ));
         let reply = CountryGroups::load(
             &source,
             &CountryGroupParams {
@@ -75,6 +85,7 @@ fn country_groups_keep_every_event_and_run_then_refuse_oversized_replies() {
             let reply = reply.unwrap();
             assert_eq!(reply.wars.len(), entries);
             assert_eq!(reply.war_starts.len(), entries);
+            assert_eq!(reply.country_identities.len(), countries as usize);
         } else {
             assert_eq!(
                 reply.unwrap_err().to_string(),
@@ -85,8 +96,57 @@ fn country_groups_keep_every_event_and_run_then_refuse_oversized_replies() {
 }
 
 #[test]
+fn country_groups_native_identity_metadata_alone_can_refuse_the_reply() {
+    use super::{CountryGroupParams, CountryGroups, GroupBranch, GroupCache, RunHistory};
+    use crate::products::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product};
+
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![group_frame(100, &[], &[], &[])])],
+    )
+    .unwrap();
+    let cancelled = AtomicBool::new(false);
+    let mut scan = super::scan_branch(&replay, 1, &cancelled).unwrap();
+    scan.identities.insert(
+        "x".repeat(MAX_PRODUCT_REPLY_BYTES),
+        RunHistory::from([super::CountryIdentityRun {
+            first_hour: 100,
+            last_hour: 100,
+            slot: 7,
+            country_id: 9001,
+        }]),
+    );
+    let source = group_source(replay);
+    source
+        .append_state::<GroupCache>()
+        .lock()
+        .unwrap()
+        .entries
+        .push((
+            1,
+            Arc::new(GroupBranch {
+                gate: std::sync::Mutex::new(()),
+                scan: std::sync::Mutex::new(Some(Arc::new(scan))),
+            }),
+        ));
+    assert_eq!(
+        CountryGroups::load(
+            &source,
+            &CountryGroupParams {
+                branch_id: "1".into(),
+            },
+            &LoadContext { content: None },
+            &cancelled,
+        )
+        .unwrap_err()
+        .to_string(),
+        "The complete country group reply is too large; nothing was omitted"
+    );
+}
+
+#[test]
 fn country_groups_rescan_evicted_branches_without_losing_reply_data() {
-    use super::{CACHED_BRANCHES, CountryGroupParams, CountryGroups, Scan};
+    use super::{CACHED_BRANCHES, CountryGroupParams, CountryGroups, GroupCache};
     use crate::products::{LoadContext, Product};
     let branches = (1..=CACHED_BRANCHES as u64 + 1)
         .map(|branch| {
@@ -108,20 +168,100 @@ fn country_groups_rescan_evicted_branches_without_losing_reply_data() {
         .unwrap()
     };
     let first = serde_json::to_value(load(1)).unwrap();
-    let cache = source.state::<Vec<(u64, Arc<Scan>)>>();
-    let original = Arc::clone(&cache.lock().unwrap()[0].1);
+    let cache = source.append_state::<GroupCache>();
+    let original = cache.lock().unwrap().entries[0]
+        .1
+        .scan
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
     for branch in 2..=CACHED_BRANCHES as u64 + 1 {
         load(branch);
     }
     {
         let cached = cache.lock().unwrap();
-        assert_eq!(cached.len(), CACHED_BRANCHES);
-        assert!(cached.iter().all(|(branch, _)| *branch != 1));
+        assert_eq!(cached.entries.len(), CACHED_BRANCHES);
+        assert!(cached.entries.iter().all(|(branch, _)| *branch != 1));
     }
     assert_eq!(serde_json::to_value(load(1)).unwrap(), first);
     let cached = cache.lock().unwrap();
-    let rescanned = &cached.iter().find(|(branch, _)| *branch == 1).unwrap().1;
-    assert!(!Arc::ptr_eq(&original, rescanned));
+    let rescanned = cached
+        .entries
+        .iter()
+        .find(|(branch, _)| *branch == 1)
+        .unwrap()
+        .1
+        .scan
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
+    assert!(!Arc::ptr_eq(&original, &rescanned));
+}
+
+#[test]
+fn country_groups_append_shares_closed_run_chunks_and_preserves_prior_reads() {
+    use super::{scan_branch, scan_from};
+    use std::sync::Arc;
+    let cancelled = AtomicBool::new(false);
+    let first = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![group_frame(100, &[9001], &[], &[])])],
+    )
+    .unwrap();
+    let second = first
+        .append(&[continuation_records(
+            &first,
+            1,
+            vec![group_frame(101, &[44], &[], &[])],
+        )])
+        .unwrap();
+    let prior = scan_branch(&second, 1, &cancelled).unwrap();
+    let next = second
+        .append(&[continuation_records(
+            &second,
+            1,
+            vec![group_frame(102, &[44], &[], &[])],
+        )])
+        .unwrap();
+    let extended = scan_from(&next, 1, &cancelled, Some(&prior)).unwrap();
+    assert!(Arc::ptr_eq(
+        &prior.humans.segments[&0],
+        &extended.humans.segments[&0]
+    ));
+    assert_eq!(prior.humans()[1].last_hour, 101);
+    assert_eq!(extended.humans()[1].last_hour, 102);
+    assert_eq!(
+        extended.humans(),
+        scan_branch(&next, 1, &cancelled).unwrap().humans()
+    );
+}
+
+#[test]
+fn country_groups_faction_name_runs_append_without_changing_prior_names() {
+    use super::{scan_branch, scan_from};
+    let cancelled = AtomicBool::new(false);
+    let first = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![group_frame(100, &[], &[(7, "First", &[9001])], &[])],
+        )],
+    )
+    .unwrap();
+    let prior = scan_branch(&first, 1, &cancelled).unwrap();
+    let next = first
+        .append(&[continuation_records(
+            &first,
+            1,
+            vec![group_frame(101, &[], &[(7, "Renamed", &[9001])], &[])],
+        )])
+        .unwrap();
+    let extended = scan_from(&next, 1, &cancelled, Some(&prior)).unwrap();
+    assert_eq!(prior.faction_name_at(7, 100).as_deref(), Some("First"));
+    assert_eq!(extended.faction_name_at(7, 100).as_deref(), Some("First"));
+    assert_eq!(extended.faction_name_at(7, 101).as_deref(), Some("Renamed"));
 }
 
 /// Countries GER (link 9001), FRA (44), CTL (55) and MOD (66), with the given
@@ -388,6 +528,9 @@ fn named_factions(
         "english",
         &mut crate::catalogue::Refusals::default(),
     )
+    .into_iter()
+    .map(super::FactionGroupView::into_owned)
+    .collect()
 }
 
 #[test]
@@ -804,8 +947,385 @@ fn country_groups_follow_each_faction_s_leader_at_order_zero() {
 }
 
 #[test]
+fn appended_group_scan_matches_a_full_scan_without_changing_the_prior_revision() {
+    use super::{cached_scan, scan_branch};
+    use std::sync::Arc;
+    let cancelled = AtomicBool::new(false);
+    let first = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                group_frame(100, &[9001], &[(7, "First Pact", &[9001, 44])], &[(44, 66)]),
+                group_frame(101, &[9001], &[(7, "First Pact", &[9001, 44])], &[(44, 66)]),
+            ],
+        )],
+    )
+    .unwrap();
+    let added = continuation_records(
+        &first,
+        1,
+        vec![
+            group_frame(
+                102,
+                &[9001, 44],
+                &[(7, "Renamed Pact", &[44, 9001, 55])],
+                &[(44, 66)],
+            ),
+            // Equal membership across the gap must still make separate runs.
+            group_frame(
+                104,
+                &[9001, 44],
+                &[(7, "Renamed Pact", &[44, 9001, 55])],
+                &[(44, 66)],
+            ),
+        ],
+    );
+    let next = first.append(&[added]).unwrap();
+    assert_eq!(&next.index[..first.index.len()], &first.index);
+    let make = |revision: &str, replay| {
+        crate::Source::from_replay(
+            crate::SourceKey {
+                source_id: "groups".into(),
+                revision: revision.into(),
+            },
+            "memory.battleplan".into(),
+            Arc::new(replay),
+            &cancelled,
+        )
+        .unwrap()
+    };
+    let first_source = make("1", first);
+    let first_scan = cached_scan(&first_source, 1, &cancelled).unwrap();
+    let first_history = first_scan.faction_history(&cancelled).unwrap();
+    let next_source = make("2", next);
+    next_source.inherit_append_states(&first_source);
+    let extended = cached_scan(&next_source, 1, &cancelled).unwrap();
+    let full = scan_branch(next_source.replay_ref(), 1, &cancelled).unwrap();
+    assert_eq!(extended.humans(), full.humans());
+    assert_eq!(extended.faction(7), full.faction(7));
+    assert_eq!(extended.faction_leaders(7), full.faction_leaders(7));
+    assert_eq!(extended.wars(), full.wars());
+    assert_eq!(extended.war_starts(), full.war_starts());
+    assert_eq!(extended.war_start_reads, full.war_start_reads);
+    assert_eq!(extended.capitulation_reads, full.capitulation_reads);
+    assert_eq!(extended.capitulations_observed, full.capitulations_observed);
+    assert_eq!(
+        extended.unattributed_war_starts,
+        full.unattributed_war_starts
+    );
+    assert_eq!(
+        extended.unattributed_capitulations,
+        full.unattributed_capitulations
+    );
+    assert_eq!(
+        extended.capitulation_unread_hours,
+        full.capitulation_unread_hours
+    );
+    assert!(first_scan.capitulations_observed);
+    assert!(first_scan.capitulation_reads.is_empty());
+    assert_eq!(extended.identity_changes(), full.identity_changes());
+    assert_eq!(extended.unobserved(), full.unobserved());
+    assert_eq!(extended.warnings(), full.warnings());
+    let history = extended.faction_history(&cancelled).unwrap();
+    assert!(!Arc::ptr_eq(&first_history, &history));
+    assert!(Arc::ptr_eq(
+        &first_history,
+        &first_scan.faction_history(&cancelled).unwrap()
+    ));
+    let full_history = full.faction_history(&cancelled).unwrap();
+    assert_eq!(history.factions, full_history.factions);
+    assert_eq!(history.country_reads, full_history.country_reads);
+    assert_eq!(history.country_presence, full_history.country_presence);
+    assert_eq!(history.faction_reads, full_history.faction_reads);
+    assert_eq!(history.unobserved, full_history.unobserved);
+    assert_eq!(history.incomplete, full_history.incomplete);
+    assert_eq!(history.end_recorded, full_history.end_recorded);
+    assert_eq!(
+        first_scan
+            .faction_history(&cancelled)
+            .unwrap()
+            .faction_reads[0]
+            .last_hour,
+        101
+    );
+    assert!(Arc::ptr_eq(
+        &first_scan.rosters.factions["7"].segments[&0],
+        &extended.rosters.factions["7"].segments[&0]
+    ));
+    assert_eq!(
+        extended.faction_name_at(7, 100).as_deref(),
+        Some("First Pact")
+    );
+    assert_eq!(
+        extended.faction_name_at(7, 102).as_deref(),
+        Some("Renamed Pact")
+    );
+    assert_eq!(extended.faction_name_at(7, 103), None);
+    assert_eq!(first_scan.faction(7).unwrap().2, 101);
+    assert_eq!(first_scan.faction_name_at(7, 102), None);
+    assert!(Arc::ptr_eq(
+        &first_scan,
+        &cached_scan(&first_source, 1, &cancelled).unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        &extended,
+        &cached_scan(&next_source, 1, &cancelled).unwrap()
+    ));
+}
+
+#[test]
+fn inherited_group_cache_recomputes_trailing_coverage_when_only_bounds_change() {
+    use super::{HourSpan, cached_scan};
+    use std::sync::Arc;
+    let cancelled = AtomicBool::new(false);
+    let first = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(1, vec![group_frame(100, &[], &[], &[])])],
+    )
+    .unwrap();
+    let mut next = first.append(&[]).unwrap();
+    next.gaps.push(replay::branches::Gap {
+        branch: 1,
+        first_hour: 101,
+        last_hour: 105,
+        reason: "fixture".into(),
+    });
+    let make = |revision: &str, replay| {
+        crate::Source::from_replay(
+            crate::SourceKey {
+                source_id: "groups".into(),
+                revision: revision.into(),
+            },
+            "memory.battleplan".into(),
+            Arc::new(replay),
+            &cancelled,
+        )
+        .unwrap()
+    };
+    let first_source = make("1", first);
+    let first_scan = cached_scan(&first_source, 1, &cancelled).unwrap();
+    let first_history = first_scan.faction_history(&cancelled).unwrap();
+    let next_source = make("2", next);
+    next_source.inherit_append_states(&first_source);
+    let extended = cached_scan(&next_source, 1, &cancelled).unwrap();
+    assert_eq!(
+        extended.unobserved().factions,
+        [HourSpan {
+            first_hour: 101,
+            last_hour: 105
+        }]
+    );
+    assert!(first_scan.unobserved().factions.is_empty());
+    let history = extended.faction_history(&cancelled).unwrap();
+    assert!(!Arc::ptr_eq(&first_history, &history));
+    assert!(Arc::ptr_eq(
+        &first_history,
+        &first_scan.faction_history(&cancelled).unwrap()
+    ));
+    assert_eq!(history.unobserved, extended.unobserved().factions);
+    assert!(!history.end_recorded);
+    assert!(first_scan.faction_history(&cancelled).unwrap().end_recorded);
+}
+
+#[test]
+fn country_groups_identity_bounds_split_replaced_tags_renames_and_gaps() {
+    let holder = |hour, id, slot, tag: &[u8]| {
+        let mut frame = group_frame(hour, &[], &[], &[]);
+        if let TableView::Complete(TableRows::Countries(rows)) =
+            &mut *frame.tables[TableId::Countries.index()]
+        {
+            let row = rows.iter_mut().find(|row| row.id == 9001).unwrap();
+            row.id = id;
+            row.canonical_slot = slot;
+            row.tag = tag.to_vec();
+            rows.sort_by_key(|row| row.id);
+        }
+        if let TableView::Complete(TableRows::CountryLinks(rows)) =
+            &mut *frame.tables[TableId::CountryLinks.index()]
+        {
+            let row = rows.iter_mut().find(|row| row.id == 9001).unwrap();
+            row.id = id;
+            row.canonical_slot = slot;
+            rows.sort_by_key(|row| row.id);
+        }
+        frame
+    };
+    let first = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                holder(100, 9001, 7, b"GER"),
+                holder(101, 9001, 7, b"GER"),
+                holder(102, 9002, 11, b"GER"),
+                holder(103, 9002, 11, b"Renamed"),
+            ],
+        )],
+    )
+    .unwrap();
+    let prior = super::scan_branch(&first, 1, &AtomicBool::new(false)).unwrap();
+    let next = first
+        .append(&[continuation_records(
+            &first,
+            1,
+            vec![
+                holder(104, 9002, 11, b"Renamed"),
+                holder(106, 9002, 11, b"Renamed"),
+            ],
+        )])
+        .unwrap();
+    let extended = super::scan_from(&next, 1, &AtomicBool::new(false), Some(&prior)).unwrap();
+    let full = super::scan_branch(&next, 1, &AtomicBool::new(false)).unwrap();
+    let runs = |scan: &super::Scan, tag: &str| {
+        scan.identities[tag]
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour, run.slot, run.country_id))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        runs(&extended, "GER"),
+        [(100, 101, 7, 9001), (102, 102, 11, 9002)]
+    );
+    assert_eq!(
+        runs(&extended, "Renamed"),
+        [(103, 104, 11, 9002), (106, 106, 11, 9002)]
+    );
+    assert_eq!(runs(&prior, "Renamed"), [(103, 103, 11, 9002)]);
+    for tag in extended.identities.keys() {
+        assert_eq!(runs(&extended, tag), runs(&full, tag));
+    }
+    let source = group_source(next);
+    let cached = super::cached_scan(&source, 1, &AtomicBool::new(false)).unwrap();
+    let reply = super::CountryGroups::load(
+        &source,
+        &super::CountryGroupParams {
+            branch_id: "1".into(),
+        },
+        &crate::products::LoadContext { content: None },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let catalogue = serde_json::to_value(&reply.country_identities).unwrap();
+    assert_eq!(
+        catalogue,
+        serde_json::to_value(super::IdentityCatalogue(&cached.identities)).unwrap()
+    );
+    assert_eq!(
+        reply
+            .country_identities
+            .iter()
+            .find(|history| history.tag == "GER")
+            .unwrap()
+            .identities
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour, run.slot, run.country_id))
+            .collect::<Vec<_>>(),
+        [(100, 101, 7, 9001), (102, 102, 11, 9002)]
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &cached,
+        &super::cached_scan(&source, 1, &AtomicBool::new(false)).unwrap()
+    ));
+}
+
+#[test]
+fn cached_group_scan_honours_cancellation_and_stops_members_of_unlisted_factions() {
+    use super::{cached_scan, scan_branch};
+    use std::sync::Arc;
+    let mut dissolved = group_frame(101, &[], &[], &[]);
+    // Daily member rows can remain held after their faction disappears.
+    *dissolved.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(vec![
+            replay::rows::FactionMemberRow {
+                country: 9001,
+                faction: 7,
+                ordinal: 0,
+            },
+        ]));
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                group_frame(100, &[], &[(7, "Pact", &[9001])], &[]),
+                dissolved,
+            ],
+        )],
+    )
+    .unwrap();
+    let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(scan.faction(7).unwrap().3[0].last_hour, 100);
+    assert_eq!(scan.faction_leaders(7).unwrap()[0].last_hour, 100);
+    assert!(scan.faction_history(&AtomicBool::new(true)).is_err());
+    assert!(scan.history.lock().unwrap().is_none());
+    let history = scan.faction_history(&AtomicBool::new(false)).unwrap();
+    assert_eq!(history.factions["7"][0].last_hour, 100);
+    assert!(scan.faction_history(&AtomicBool::new(true)).is_err());
+    let source = crate::Source::from_replay(
+        crate::SourceKey {
+            source_id: "groups".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        Arc::new(replay),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    cached_scan(&source, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        cached_scan(&source, 1, &AtomicBool::new(true))
+            .err()
+            .unwrap()
+            .kind(),
+        std::io::ErrorKind::Interrupted
+    );
+}
+
+#[test]
+fn country_groups_non_utf8_name_operands_preserve_bytes_and_refuse_display() {
+    use super::scan_branch;
+    let mut frame = group_frame(100, &[], &[(7, "Pact", &[9001])], &[]);
+    if let TableView::Complete(TableRows::Factions(rows)) =
+        &mut *frame.tables[TableId::Factions.index()]
+    {
+        rows[0].name = vec![0xff];
+    }
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+    let scan = scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(scan.faction_name_operands(7, 100).unwrap().literal, [0xff]);
+    let mut localisation = installed_content::localisation::Localisation::default();
+    localisation.language = "english".into();
+    assert!(
+        scan.resolved_faction_name_at(
+            7,
+            100,
+            Err("no template content".into()),
+            &localisation,
+            "english"
+        )
+        .is_err()
+    );
+    assert_eq!(scan.faction(7).unwrap().3[0].tag, "GER");
+    assert_eq!(
+        scan.faction_history(&AtomicBool::new(false))
+            .unwrap()
+            .factions["7"][0]
+            .name,
+        None
+    );
+    assert!(
+        scan.warnings()
+            .iter()
+            .any(|warning| warning.starts_with("1 faction names were not valid text"))
+    );
+}
+
+#[test]
 fn country_groups_faction_names_keep_all_changes_or_refuse_the_complete_reply() {
-    use super::{CountryGroupParams, CountryGroups, NameOperands, Scan};
+    use super::{
+        CountryGroupParams, CountryGroups, GroupBranch, GroupCache, NameOperands, RunHistory,
+    };
     use crate::products::{LoadContext, MAX_PRODUCT_REPLY_BYTES, Product};
     use std::sync::Arc;
 
@@ -822,10 +1342,11 @@ fn country_groups_faction_names_keep_all_changes_or_refuse_the_complete_reply() 
         let cancelled = AtomicBool::new(false);
         let mut scan = super::scan_branch(&replay, 1, &cancelled).unwrap();
         let faction = scan.factions.get_mut(&1).unwrap();
-        // Exercise the reply's new name history without growing capped membership histories.
+        // Exercise the complete name history without changing membership histories.
         let tokens = Arc::clone(&faction.names[0].tokens);
-        faction.names = (0..count)
-            .map(|hour| NameOperands {
+        faction.names = RunHistory::default();
+        for hour in 0..count {
+            faction.names.push(NameOperands {
                 first_hour: hour as i32,
                 last_hour: hour as i32,
                 literal: format!("{hour}:{tail}").into_bytes(),
@@ -833,8 +1354,8 @@ fn country_groups_faction_names_keep_all_changes_or_refuse_the_complete_reply() 
                 lexical_read: 0,
                 tokens: Arc::clone(&tokens),
                 template: Err("Faction template not recorded".into()),
-            })
-            .collect();
+            });
+        }
         let source = crate::Source::from_replay(
             crate::SourceKey {
                 source_id: "faction-name-budget".into(),
@@ -846,10 +1367,17 @@ fn country_groups_faction_names_keep_all_changes_or_refuse_the_complete_reply() 
         )
         .unwrap();
         source
-            .state::<Vec<(u64, Arc<Scan>)>>()
+            .append_state::<GroupCache>()
             .lock()
             .unwrap()
-            .push((1, Arc::new(scan)));
+            .entries
+            .push((
+                1,
+                Arc::new(GroupBranch {
+                    gate: std::sync::Mutex::new(()),
+                    scan: std::sync::Mutex::new(Some(Arc::new(scan))),
+                }),
+            ));
         let result = CountryGroups::load(
             &source,
             &CountryGroupParams {
@@ -1237,5 +1765,356 @@ fn country_groups_faction_names_bound_tokens_follow_each_dictionary_read() {
             .as_ref()
             .unwrap()
             .contains("token 17 is absent from LexicalTokens")
+    );
+}
+
+#[test]
+fn the_cached_group_scan_supplies_dated_names_rosters_and_country_read_spans_together() {
+    use super::{CountryGroupParams, CountryGroups, cached_scan};
+    use crate::{
+        Source, SourceKey,
+        products::{LoadContext, Product},
+    };
+    let mut missing = group_frame(101, &[], &[(77, "New name", &[9001, 999999])], &[]);
+    *missing.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "missing countries".into(),
+    };
+    let replay = Arc::new(
+        Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(
+                1,
+                vec![
+                    group_frame(100, &[], &[(77, "Original", &[9001])], &[]),
+                    missing,
+                    group_frame(102, &[], &[(77, "New name", &[9001])], &[]),
+                ],
+            )],
+        )
+        .unwrap(),
+    );
+    let cancelled = AtomicBool::new(false);
+    let source = Source::from_replay(
+        SourceKey {
+            source_id: "cached-groups".into(),
+            revision: "1".into(),
+        },
+        "memory.battleplan".into(),
+        replay,
+        &cancelled,
+    )
+    .unwrap();
+    let cached = cached_scan(&source, 1, &cancelled).unwrap();
+    CountryGroups::load(
+        &source,
+        &CountryGroupParams {
+            branch_id: "1".into(),
+        },
+        &LoadContext { content: None },
+        &cancelled,
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(
+        &cached,
+        &cached_scan(&source, 1, &cancelled).unwrap()
+    ));
+    let history = cached.faction_history(&cancelled).unwrap();
+    assert_eq!(
+        history.factions["77"]
+            .iter()
+            .map(|run| (
+                run.first_hour,
+                run.last_hour,
+                run.name.as_deref(),
+                run.complete
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (100, 100, Some("Original"), true),
+            (101, 101, Some("New name"), false),
+            (102, 102, Some("New name"), true)
+        ]
+    );
+    assert_eq!(
+        history
+            .country_reads
+            .iter()
+            .map(|span| (span.first_hour, span.last_hour))
+            .collect::<Vec<_>>(),
+        [(100, 100), (102, 102)]
+    );
+    assert_eq!(cached.faction_leaders(77).unwrap().len(), 2);
+}
+
+fn five_thousand_country_frame(members: bool) -> DecodedFrame {
+    use replay::rows::{CountryLinkRow, CountryRow};
+    let ids: Vec<_> = (1..=5000).collect();
+    let factions = [(77, "Recorded pact", ids.as_slice())];
+    let mut frame = group_frame(100, &[], if members { &factions } else { &[] }, &[]);
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        ids.iter()
+            .map(|&id| CountryRow {
+                id,
+                canonical_slot: id,
+                tag: format!("Tag-{id}").into_bytes(),
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        ids.iter()
+            .map(|&id| CountryLinkRow {
+                id,
+                canonical_slot: id,
+            })
+            .collect(),
+    ));
+    frame
+}
+
+#[test]
+fn faction_roster_history_keeps_more_than_two_million_recorded_members() {
+    let template = five_thousand_country_frame(true);
+    let frames = (0..401)
+        .map(|index| {
+            let mut frame = template.clone();
+            frame.hour = 100 + index;
+            *frame.tables[TableId::Factions.index()] =
+                TableView::Complete(TableRows::Factions(vec![replay::rows::FactionRow {
+                    id: 77,
+                    name: format!("Recorded name {index}").into_bytes(),
+                    ..Default::default()
+                }]));
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let history = scan.faction_history(&AtomicBool::new(false)).unwrap();
+    let rosters = &history.factions["77"];
+    assert_eq!(rosters.len(), 401);
+    assert_eq!(
+        rosters
+            .iter()
+            .map(|roster| roster.members.len())
+            .sum::<usize>(),
+        2_005_000
+    );
+    assert!(
+        rosters
+            .iter()
+            .all(|roster| roster.complete && roster.members.len() == 5000)
+    );
+    assert_eq!(rosters.last().unwrap().last_hour, 500);
+    assert_eq!(scan.faction(77).unwrap().3.len(), 5000);
+    assert!(Arc::ptr_eq(
+        &history,
+        &scan.faction_history(&AtomicBool::new(false)).unwrap()
+    ));
+}
+
+#[test]
+fn faction_history_keeps_all_country_read_evidence() {
+    let template = five_thousand_country_frame(false);
+    let frames = (0..101)
+        .map(|index| {
+            let mut frame = template.clone();
+            frame.hour = 100 + index * 2;
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let history = scan.faction_history(&AtomicBool::new(false)).unwrap();
+    assert_eq!(history.country_presence.len(), 5000);
+    assert_eq!(
+        history
+            .country_presence
+            .values()
+            .map(Vec::len)
+            .sum::<usize>(),
+        505_000
+    );
+    assert_eq!(history.country_reads.len(), 101);
+    assert!(scan.humans().is_empty());
+    assert!(scan.wars().is_empty());
+}
+
+#[test]
+fn country_groups_unread_countries_do_not_attribute_events_changes_or_unmapped_ids() {
+    let first = group_frame(100, &[9001], &[(77, "Original", &[9001])], &[]);
+    let mut unread = group_frame(101, &[999999], &[(77, "Renamed", &[999999])], &[(44, 9001)]);
+    *unread.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "fixture".into(),
+    };
+    let mut next = group_frame(102, &[9001], &[(77, "Renamed", &[9001])], &[(44, 9001)]);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *next.tables[TableId::Countries.index()]
+    {
+        for row in rows.iter_mut().filter(|row| row.tag == b"GER") {
+            row.tag = b"After gap".to_vec();
+        }
+    }
+    for frame in [&mut unread, &mut next] {
+        if let TableView::Complete(TableRows::WarRelations(rows)) =
+            &mut *frame.tables[TableId::WarRelations.index()]
+        {
+            rows[0].start_hour = 101;
+        }
+        *frame.tables[TableId::Capitulation.index()] =
+            TableView::Complete(TableRows::Capitulation(vec![
+                replay::rows::CapitulationRow {
+                    country: 9001,
+                    capitulated: 1,
+                    capitulated_hour: 101,
+                    ..Default::default()
+                },
+            ]));
+    }
+    let replay =
+        Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, unread, next])]).unwrap();
+    let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let history = scan.faction_history(&AtomicBool::new(false)).unwrap();
+    assert!(scan.identity_changes().is_empty());
+    assert!(scan.war_starts.is_empty());
+    assert!(scan.capitulations.is_empty());
+    assert!(
+        !scan
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("recorded country references")),
+        "{:?}",
+        scan.warnings
+    );
+    let rosters = &history.factions["77"];
+    assert_eq!(rosters[1].name.as_deref(), Some("Renamed"));
+    assert!(!rosters[1].complete);
+    assert!(rosters[1].members.is_empty());
+    assert_eq!(rosters[2].members, ["After gap"]);
+}
+
+#[test]
+fn faction_rosters_follow_a_changed_raw_country_id_with_unchanged_tags_and_links() {
+    let first = group_frame(100, &[], &[(77, "Pact", &[44])], &[]);
+    // FRA keeps its tag and slot, but its row id moves to 45: link 44 no longer names a
+    // country, so the member read through link 44 is unmapped this hour.
+    let mut moved = group_frame(101, &[], &[(77, "Pact", &[44])], &[]);
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *moved.tables[TableId::Countries.index()]
+    {
+        rows.iter_mut().find(|row| row.id == 44).unwrap().id = 45;
+        rows.sort_by_key(|row| row.id);
+    }
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![first, moved])]).unwrap();
+    let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let history = scan.faction_history(&AtomicBool::new(false)).unwrap();
+    let rosters = &history.factions["77"];
+    assert_eq!(rosters[0].members, ["FRA"]);
+    assert!(rosters[0].complete);
+    assert!(
+        !rosters[1].complete,
+        "a stale id lookup would still map link 44 to FRA"
+    );
+    assert!(rosters[1].members.is_empty());
+}
+
+#[test]
+fn faction_names_and_rosters_share_catalogue_reads_without_inventing_lifetimes() {
+    use crate::products::country_groups::HourSpan;
+    let mut unread = group_frame(
+        100,
+        &[],
+        &[(77, "First name", &[44]), (88, "Empty pact", &[])],
+        &[],
+    );
+    *unread.tables[TableId::Countries.index()] = TableView::Unavailable {
+        reason: "country read failed".into(),
+    };
+    let mut last = group_frame(
+        102,
+        &[],
+        &[(77, "Last name", &[44]), (88, "Empty pact", &[])],
+        &[],
+    );
+    *last.tables[TableId::FactionMembers.index()] = TableView::Unavailable {
+        reason: "member read failed".into(),
+    };
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                unread,
+                group_frame(
+                    101,
+                    &[],
+                    &[(77, "Middle name", &[44]), (88, "Empty pact", &[])],
+                    &[],
+                ),
+                last,
+            ],
+        )],
+    )
+    .unwrap();
+    let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let history = scan.faction_history(&AtomicBool::new(false)).unwrap();
+    let mut localisation = installed_content::localisation::Localisation::default();
+    localisation.language = "english".into();
+    let factions = scan.faction_groups(
+        Ok(&installed_content::faction_templates::Catalog::default()),
+        &localisation,
+        "english",
+        &mut crate::catalogue::Refusals::default(),
+    );
+    let faction = factions.iter().find(|faction| faction.id == "77").unwrap();
+    // The name read is independent of main's roster-known lifetime.
+    assert_eq!((faction.first_hour, faction.last_hour), (101, 101));
+    assert_eq!(faction.name.as_deref(), Some("Last name"));
+    assert_eq!(
+        faction
+            .names
+            .iter()
+            .map(|run| (run.first_hour, run.name.as_deref()))
+            .collect::<Vec<_>>(),
+        [
+            (100, Some("First name")),
+            (101, Some("Middle name")),
+            (102, Some("Last name"))
+        ]
+    );
+    assert_eq!(
+        history.faction_reads,
+        [HourSpan {
+            first_hour: 100,
+            last_hour: 102
+        }]
+    );
+    assert_eq!(
+        history.country_reads,
+        [HourSpan {
+            first_hour: 101,
+            last_hour: 102
+        }]
+    );
+    let rosters = &history.factions["77"];
+    assert!(!rosters[0].complete);
+    assert!(rosters[1].complete);
+    assert!(!rosters[2].complete);
+    assert_eq!(rosters[1].members, ["FRA"]);
+    assert!(
+        history.factions["88"][0].complete,
+        "an empty roster needs no country identity"
+    );
+    let history_names = super::name_runs(
+        77,
+        &history.names[&77],
+        Ok(&installed_content::faction_templates::Catalog::default()),
+        &localisation,
+        "english",
+        &mut crate::catalogue::Refusals::default(),
+    );
+    assert_eq!(
+        history_names, faction.names,
+        "totals and group labels use the same hourly evidence"
     );
 }

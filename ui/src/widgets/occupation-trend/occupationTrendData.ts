@@ -2,14 +2,15 @@ import { SECONDARY_DASH } from '../../charts/palette.ts';
 import type { CountryRaceEntry, CountryRaceLine } from '../../charts/race/countryRace';
 import type { LabelAt } from '../../charts/race/lines';
 import { shownRuns } from '../../charts/race/lines.ts';
-import { isOrderedSpans, runAt, runIndexAt, spansCovered, stretchStarts } from '../../charts/series.ts';
+import { clipToSpans, isOrderedSpans, runAt, runIndexAt, spansCovered, stretchStarts } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
 import { fixedNumber, formatAmount } from '../../charts/valueAxis.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
+import { countryDrillSpans, countryDrillTagAt, countryIdentityIndex, validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import { int, object, opaqueTag as tag, signed64 as raw } from '../../dashboard/validation.ts';
-import type { OccupationTrendParams, OccupationTrendReply, OccupationTrendRun } from '../../generated/dashboard';
+import { int, object, opaqueTag as tag, signed32, signed64 as raw, unsigned32 } from '../../dashboard/validation.ts';
+import type { OccupationCollaboration, OccupationCollaborationActor, OccupationTrendParams, OccupationTrendReply, OccupationTrendRun } from '../../generated/dashboard';
 
 export type OccupationMeasure = 'resistance' | 'compliance';
 export type ShownMeasure = OccupationMeasure | 'both';
@@ -20,15 +21,18 @@ export function validateOccupationTrendReply(data: unknown): OccupationTrendRepl
   if (!object(data) || typeof data.branchId !== 'string' || !/^\d+$/.test(data.branchId) || data.decimals !== 5
     || !Array.isArray(data.series) || !Array.isArray(data.warnings) || !data.warnings.every(warning => typeof warning === 'string')
     || !data.series.every(series => object(series) && tag(series.tag) && isOrderedSpans(series.runs) && isOrderedSpans(series.segments)
-      && (series.membership === null || isOrderedSpans(series.membership)) && spansCovered(series.runs, series.segments)
+      && (series.membership === null || isOrderedSpans(series.membership)) && validCountryIdentityRuns(series.identities) && spansCovered(series.runs, series.segments)
       && series.runs.every((run, index, runs) => int(run.readHour) && run.readHour <= run.firstHour && typeof run.startsSegment === 'boolean'
         && raw(run.resistanceRaw) && raw(run.complianceRaw) && int(run.states) && run.states > 0
         && int(run.heldStates) && run.heldStates >= run.states && typeof run.heldComplete === 'boolean'
         && (index === 0 || Number(runs[index - 1].readHour) <= run.readHour)
-        && Array.isArray(run.collaboration) && run.collaboration.every(item => object(item) && tag(item.tag)
+        && Array.isArray(run.collaboration) && run.collaboration.every(item => object(item) && (item.tag === null || tag(item.tag))
           && (item.raw === null || raw(item.raw)) && (item.readHour === null || (int(item.readHour) && item.readHour <= run.firstHour))
+          && (item.actor === undefined || object(item.actor) && unsigned32(item.actor.slot) && unsigned32(item.actor.countryId)
+            && (item.actor.nameHour === null || signed32(item.actor.nameHour) && item.actor.nameHour <= run.firstHour))
+          && (item.tag !== null || item.actor !== undefined && item.actor.nameHour === null)
           && (item.raw === null) === (item.readHour === null))
-        && new Set(run.collaboration.map(item => item.tag)).size === run.collaboration.length))
+        && new Set(run.collaboration.map(item => JSON.stringify(item.actor ? ['native', item.actor.slot, item.actor.countryId] : ['tag', item.tag]))).size === run.collaboration.length))
     || new Set(data.series.map(series => series.tag)).size !== data.series.length) {
     throw new Error('The occupation trend reply is malformed.');
   }
@@ -39,12 +43,15 @@ export function occupationRequest(branchId: string, tags: readonly string[], top
   return { branchId, tags: top == null ? [...tags] : [], top: top == null ? null : { count: top, measure }, collaboration };
 }
 export function occupationModel(reply: OccupationTrendReply) {
-  return { reply, tags: reply.series.map(series => series.tag), series: new Map(reply.series.map(series => [series.tag,
+  return { reply, identities: reply.series.every(series => series.identities !== undefined)
+    ? countryIdentityIndex(reply.series.map(series => ({ tag: series.tag, identities: series.identities! }))) : null,
+    tags: reply.series.map(series => series.tag), series: new Map(reply.series.map(series => [series.tag,
     { ...series, starts: stretchStarts(series.runs) }])) };
 }
 export type OccupationModel = ReturnType<typeof occupationModel>;
 export function occupationSegmentAt(model: OccupationModel | null, tag: string, hour: number): number | null {
-  return runAt(model?.series.get(tag)?.segments ?? [], Math.floor(hour))?.firstHour ?? null;
+  const series = model?.series.get(tag);
+  return runAt(series?.identities ?? series?.segments ?? [], Math.floor(hour))?.firstHour ?? null;
 }
 export function occupationAt(model: OccupationModel, tag: string, hour: number): { run: OccupationTrendRun; stretch: number } | null {
   const series = model.series.get(tag);
@@ -72,8 +79,12 @@ export function occupationLines(model: OccupationModel, tags: readonly string[],
   const measures: OccupationMeasure[] = measure === 'both' ? ['resistance', 'compliance'] : [measure];
   return tags.flatMap(tag => measures.flatMap(key => {
     const series = model.series.get(tag);
-    const runs = shownRuns(series?.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour,
-      value: fixedNumber(measureRaw(run, key), 5), ...(run.startsSegment ? { breakBefore: true } : {}) })) ?? [], membership?.get(tag) ?? series?.membership ?? null, range);
+    const measured = series?.runs.map(run => ({ firstHour: run.firstHour, lastHour: run.lastHour,
+      value: fixedNumber(measureRaw(run, key), 5), ...(run.startsSegment ? { breakBefore: true } : {}) })) ?? [];
+    const spans = series?.identities ?? series?.segments ?? [];
+    const starts = new Set(spans.map(span => span.firstHour));
+    const identityRuns = clipToSpans(measured, spans).map(run => ({ ...run, breakBefore: run.breakBefore || starts.has(run.firstHour) }));
+    const runs = shownRuns(identityRuns, membership ? membership.get(tag) ?? [] : series?.membership ?? null, range);
     return runs.length ? [{ tag, id: JSON.stringify([tag, key]), runs, ...(measure === 'both' && key === 'compliance' ? { dash: SECONDARY_DASH } : {}),
       endLabel: (hour: number, name: string) => {
         const at = occupationAt(model, tag, hour);
@@ -83,18 +94,33 @@ export function occupationLines(model: OccupationModel, tags: readonly string[],
     }] : [];
   }));
 }
+export function occupationHolderMix(model: OccupationModel, tag: string, originHour: number, hour: number,
+  measure: ShownMeasure, range: Span, membership: ReadonlyMap<string, readonly Span[]> | null, digits = 2) {
+  const holder = countryDrillSpans(model.reply.series, tag, originHour);
+  const counted = membership ? new Map([...holder].map(([alias, spans]) => [alias, clipToSpans(spans, membership.get(alias) ?? [])])) : holder;
+  const alias = countryDrillTagAt(counted, hour);
+  return { tag: alias ?? tag, available: alias !== null, membership: counted,
+    lines: occupationLines(model, [...holder.keys()], measure, range, counted, digits) };
+}
+
 export function heldCoverage(run: OccupationTrendRun): string {
   return run.heldComplete ? `${run.states} of ${run.heldStates} held states` : `${run.states} states; total held not recorded (${run.heldStates} known)`;
 }
+const collaborationNamed = (item: OccupationCollaboration): item is OccupationCollaboration & { tag: string; actor: OccupationCollaborationActor & { nameHour: number } } =>
+  item.tag !== null && item.actor !== undefined && item.actor.nameHour !== null;
 export function occupationTooltipTags(model: OccupationModel, hour: number, tags: readonly string[], collaboration: boolean): string[] {
-  return collaboration ? [...new Set(tags.flatMap(tag => occupationAt(model, tag, hour)?.run.collaboration.map(item => item.tag) ?? []))] : [];
+  return collaboration ? [...new Set(tags.flatMap(tag => occupationAt(model, tag, hour)?.run.collaboration.filter(collaborationNamed).map(item => item.tag) ?? []))] : [];
 }
 function collaborationRows(run: OccupationTrendRun, hour: number, labelAt: LabelAt): TooltipRow[] {
   return run.collaboration.flatMap(item => {
-    const label = labelAt(hour)(item.tag);
-    return [{ label: `Country collaboration: ${label.name}`, ...(label.flag ? { icon: label.flag } : {}),
+    const named = collaborationNamed(item);
+    const reason = item.actor === undefined ? 'Country identity was not recorded for this collaboration.'
+      : 'The occupied country identity has no recorded name at this hour.';
+    const label = named ? labelAt(hour)(item.tag) : { name: item.tag ?? 'Unidentified country', flagReason: reason, flagPending: false };
+    return [{ label: `Country collaboration: ${label.name}`, countryFlag: label,
       value: item.raw === null ? 'Not recorded' : `${formatAmount(BigInt(item.raw) * 100n, 5, 5)}%` },
     { label: 'Collaboration read', value: item.readHour === null ? 'Not recorded' : formatDateTime(item.readHour) },
+    ...(!named ? [{ label: 'Country identity', value: reason, tone: 'muted' as const }] : []),
     ...(item.raw === null ? [{ label: 'Missing collaboration', value: 'No readable CountryCollaboration pair supplied this value.' }] : [])];
   });
 }
@@ -116,7 +142,7 @@ export function occupationLineTooltip(model: OccupationModel, hour: number, tags
   const rows = ranked.flatMap(entry => {
     const label = labelAt(hour)(entry.tag);
     const at = occupationAt(model, entry.tag, hour)!;
-    return [{ label: label.name, value: entry.label, swatch: colour(entry.tag), strong: true, ...(label.flag ? { icon: label.flag } : {}) },
+    return [{ label: label.name, value: entry.label, swatch: colour(entry.tag), strong: true, countryFlag: label },
       ...(shown === 'both' ? [{ label: `Average ${measureName(rank === 'resistance' ? 'compliance' : 'resistance').toLowerCase()}`,
         value: occupationPercent(measureRaw(at.run, rank === 'resistance' ? 'compliance' : 'resistance')) }] : []),
       { label: 'Coverage', value: heldCoverage(at.run) }, { label: 'Read', value: `Read ${formatDateTime(at.run.readHour)}` },

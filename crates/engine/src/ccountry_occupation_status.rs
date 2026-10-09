@@ -55,21 +55,27 @@ pub struct ReserveManpowerRow {
 pub struct Buffers<'a> {
     pub settings: &'a mut [Row],
     pub laws: &'a mut [LawRow],
+    pub group_laws: &'a mut [ccountry_occupation_data::GroupLawRow],
     pub garrisons: &'a mut [cstate_garrison_data::Row],
     pub manpower: &'a mut [ManpowerRow],
     pub reserve_manpower: &'a mut [ReserveManpowerRow],
     pub names: &'a mut [u8],
+    pub equipment: &'a mut [cstate_garrison_data::equipment::Row],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub settings: Outcome,
     pub laws: Outcome,
+    pub group_laws: Outcome,
     pub garrisons: Outcome,
     pub manpower: Outcome,
     pub reserve_manpower: Outcome,
     pub bytes_len: usize,
     pub required_bytes: usize,
+    pub equipment_len: usize,
+    pub required_equipment: usize,
+    pub fallback_law: Option<(usize, usize)>,
     pub occupied_len: usize,
     pub required_occupied: usize,
 }
@@ -339,10 +345,21 @@ fn walk_inner(
 ) -> Walk {
     let mut setting_rows = Rows::new(buffers.settings);
     let mut law_rows = Rows::new(buffers.laws);
+    let mut group_rows = Rows::new(buffers.group_laws);
     let mut garrison_rows = Rows::new(buffers.garrisons);
     let mut manpower_rows = Rows::new(buffers.manpower);
     let mut reserve_rows = Rows::new(buffers.reserve_manpower);
     let mut names = coccupation_law::Names::new(buffers.names);
+    let mut equipment = cstate_garrison_data::equipment::Arena::new(buffers.equipment);
+    let fallback_law = coccupation_law::fallback(memory, base)
+        .ok()
+        .and_then(|token| {
+            names
+                .copy(memory, token, true)
+                .ok()
+                .flatten()
+                .map(|start| (start, token.len))
+        });
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let states = ccountry_occupation_data::state_array(memory, game_state);
@@ -355,6 +372,7 @@ fn walk_inner(
                 Err(reason) => {
                     setting_rows.fail(reason);
                     law_rows.fail(reason);
+                    group_rows.fail(reason);
                     garrison_rows.fail(reason);
                     manpower_rows.fail(reason);
                     reserve_rows.fail(reason);
@@ -417,6 +435,15 @@ fn walk_inner(
                             occupied,
                             pointer: entry.value,
                         };
+                        if let Err(reason) = ccountry_occupation_data::group_law(
+                            memory,
+                            base,
+                            &scope,
+                            &mut group_rows,
+                            &mut names,
+                        ) {
+                            group_rows.fail(reason);
+                        }
                         if let Err(reason) = ccountry_occupation_data::laws(
                             memory,
                             base,
@@ -434,6 +461,7 @@ fn walk_inner(
                                 &scope,
                                 &mut garrison_rows,
                                 &mut manpower_rows,
+                                &mut equipment,
                             )
                         }) {
                             garrison_rows.fail(reason);
@@ -444,6 +472,7 @@ fn walk_inner(
                 });
             if let Err(reason) = graph {
                 law_rows.fail(reason);
+                group_rows.fail(reason);
                 garrison_rows.fail(reason);
                 manpower_rows.fail(reason);
             }
@@ -453,9 +482,16 @@ fn walk_inner(
     if let Err(reason) = result {
         setting_rows.fail(reason);
         law_rows.fail(reason);
+        group_rows.fail(reason);
         garrison_rows.fail(reason);
         manpower_rows.fail(reason);
         reserve_rows.fail(reason);
+    }
+    group_rows.data[..group_rows.len].sort_unstable_by_key(|row| (row.controller, row.occupied));
+    if group_rows.data[..group_rows.len].windows(2).any(|rows| {
+        (rows[0].controller, rows[0].occupied) == (rows[1].controller, rows[1].occupied)
+    }) {
+        group_rows.fail("duplicate occupied-country law");
     }
     law_rows.data[..law_rows.len]
         .sort_unstable_by_key(|row| (row.controller, row.occupied, row.state));
@@ -482,6 +518,7 @@ fn walk_inner(
     Walk {
         settings: setting_rows.outcome(),
         laws: law_rows.outcome(),
+        group_laws: group_rows.outcome(),
         garrisons: garrison_rows.outcome(),
         manpower: manpower_rows.outcome(),
         reserve_manpower: reserve_rows.outcome(),
@@ -489,6 +526,9 @@ fn walk_inner(
         required_bytes: names.required,
         occupied_len: occupied.as_ref().map_or(0, |arena| arena.len),
         required_occupied: occupied.as_ref().map_or(0, |arena| arena.required),
+        equipment_len: equipment.len,
+        required_equipment: equipment.required,
+        fallback_law,
     }
 }
 
@@ -528,10 +568,12 @@ mod tests {
                 Buffers {
                     settings: &mut settings,
                     laws: &mut laws,
+                    group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
                     garrisons: &mut garrisons,
                     manpower: &mut manpower,
                     reserve_manpower: &mut reserve,
                     names: &mut names,
+                    equipment: &mut [],
                 },
                 &mut occupied[..capacity],
             );
@@ -724,10 +766,12 @@ mod tests {
             Buffers {
                 settings: &mut settings,
                 laws: &mut laws,
+                group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
                 garrisons: &mut garrisons,
                 manpower: &mut manpower,
                 reserve_manpower: &mut reserve,
                 names: &mut names,
+                equipment: &mut [],
             },
         );
         assert_eq!(
@@ -735,6 +779,7 @@ mod tests {
             Walk {
                 settings: Outcome::Rows { len: 2 },
                 laws: Outcome::Rows { len: 1 },
+                group_laws: Outcome::Rows { len: 1 },
                 garrisons: Outcome::Rows { len: 1 },
                 manpower: Outcome::Rows { len: 2 },
                 reserve_manpower: Outcome::Rows { len: 1 },
@@ -742,6 +787,9 @@ mod tests {
                 required_bytes: 16,
                 occupied_len: 0,
                 required_occupied: 0,
+                equipment_len: 0,
+                required_equipment: 0,
+                fallback_law: None,
             }
         );
         assert_eq!(names, *b"civiliancivilian");
@@ -753,6 +801,11 @@ mod tests {
             (Some((7_u64 << 32) | 52), 0)
         );
         assert_eq!((laws[0].occupied, garrisons[0].occupied), (99, 99));
+        assert_eq!(garrisons[0].equipment, None);
+        assert_eq!(
+            garrisons[0].equipment_failure,
+            Some("garrison required equipment pool vtable mismatch")
+        );
         assert_eq!(
             (garrisons[0].strength_ratio, garrisons[0].garrison_required),
             (i64::MAX, i64::MIN)
@@ -792,10 +845,12 @@ mod tests {
             Buffers {
                 settings: &mut settings,
                 laws: &mut laws,
+                group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
                 garrisons: &mut [],
                 manpower: &mut manpower,
                 reserve_manpower: &mut [],
                 names: &mut names,
+                equipment: &mut [],
             },
         );
         assert_eq!(
@@ -856,10 +911,12 @@ mod tests {
             Buffers {
                 settings: &mut settings,
                 laws: &mut laws,
+                group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
                 garrisons: &mut garrisons,
                 manpower: &mut manpower,
                 reserve_manpower: &mut reserve,
                 names: &mut names,
+                equipment: &mut [],
             },
         );
         assert_eq!(result.laws, Outcome::Rows { len: 1 });
@@ -875,10 +932,12 @@ mod tests {
             Buffers {
                 settings: &mut settings,
                 laws: &mut laws,
+                group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
                 garrisons: &mut garrisons,
                 manpower: &mut manpower,
                 reserve_manpower: &mut reserve,
                 names: &mut names,
+                equipment: &mut [],
             },
         );
         assert!(matches!(result.settings, Outcome::Unavailable { .. }));
@@ -935,10 +994,12 @@ mod tests {
             Buffers {
                 settings: &mut settings,
                 laws: &mut laws,
+                group_laws: &mut [ccountry_occupation_data::GroupLawRow::default(); 2],
                 garrisons: &mut garrisons,
                 manpower: &mut manpower,
                 reserve_manpower: &mut reserve,
                 names: &mut names,
+                equipment: &mut [],
             },
         );
         assert_eq!(result.laws, Outcome::Rows { len: 2 });

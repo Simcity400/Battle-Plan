@@ -54,20 +54,20 @@ pub struct OccupiedValues {
     pub compliance_raw: String,
     pub resistance_speed_raw: String,
     pub compliance_speed_raw: String,
-    /// Native displayed strength in fixed5 percentage units, when established.
+    /// Native displayed strength fraction, signed fixed5 (100000 is full).
     pub garrison_strength_raw: Option<String>,
     // P: required manpower at +0x88, requirement writer 140FE78B0.
     pub required_manpower: Option<i32>,
     // P: 140FE78B0 writes the required template amount at +0xF8.
     /// Recorded required template amount, not garrison strength.
     pub garrison_required_raw: Option<String>,
-    /// +0x60: native requirement failure, displayed as a red exclamation mark.
+    /// +0x60: native requirement failure; its strength getter returns zero.
     pub garrison_alert: bool,
     /// Below the content threshold, only when displayed strength is established.
     pub garrison_red: Option<bool>,
     pub assigned_manpower: Option<i32>,
     pub garrison_missing: Option<String>,
-    /// Known explicit per-state override only. See `law_for`.
+    /// Effective native law, using override/group/default/fallback precedence.
     pub law: Option<String>,
     pub law_missing: Option<String>,
 }
@@ -124,8 +124,8 @@ pub struct OccupiedStatesReply {
 // its fraction to the strength bar's percent. It combines assigned manpower (+0x68), required manpower
 // (+0x88), local/required equipment (+0x90/+0xD0), +0x60, and content's
 // GARRISON_STR_POW_{MANPOWER,EQUIPMENT}. StateGarrisons +0xF0 is NOT read
-// by this function. The four requested tables lack those equipment inputs.
-const STRENGTH_MISSING: &str = "The game's garrison strength needs unrecorded equipment allocation and requirements (+0x90/+0xD0, 140B8A4E0). Assigned manpower and the content strength factors are available; the stored garrison ratio cannot replace the equipment input.";
+// by this function. StateGarrisons records the equipment getter's operands.
+const STRENGTH_MISSING: &str = "Garrison strength needs complete equipment operands, assigned manpower and the recorded content strength factors. The row names any missing input.";
 const GROUP_LAW_MISSING: &str = "The law set for this occupied country is not recorded. It takes precedence over the occupier's default, so the state's law cannot be established.";
 
 use scripted_text::StateNames;
@@ -145,42 +145,99 @@ fn name_of(
     )
 }
 
-/// P: GetOccupationLaw 140F84BB0 -> 140FE2FE0: state override (+0xB0,
-/// key CState+0x58), else group law (+0xA0), else occupier default (+0x118),
-/// else database fallback (+0x48). Only the default branch validates scope
-/// (140A665A0). Explicit overrides bypass it. A raw key 0 is a state key,
-/// NOT the unrecorded +0xA0 pointer (engine::ccountry_occupation_data).
-fn law_for(
-    override_name: Option<&[u8]>,
+/// 140F84BB0 / 140FE2FE0: no group means database fallback, without validation;
+/// otherwise state and group overrides bypass validation. Only the default path
+/// checks IsValidForScope@140A665A0 before choosing the database fallback.
+enum GroupLaw<'a> {
+    Missing,
+    Law(Option<&'a [u8]>),
+    Unknown(String),
+}
+
+struct LawInputs<'a> {
+    state: Option<&'a [u8]>,
     key_resolved: bool,
-    complete: bool,
-    default: Option<(bool, &[u8])>,
+    overrides_complete: bool,
+    group: GroupLaw<'a>,
+    default: Option<(bool, &'a [u8])>,
+    fallback: Result<&'a [u8], String>,
+}
+
+fn law_for(
+    input: LawInputs<'_>,
+    valid: impl FnOnce(&str) -> Result<bool, String>,
 ) -> (Option<String>, Option<String>) {
-    if let Some(bytes) = override_name {
-        return match std::str::from_utf8(bytes) {
-            Ok(token) => (Some(token.into()), None),
-            Err(_) => (
-                None,
-                Some("The recorded state override's law key is not UTF-8".into()),
-            ),
+    let resolve = || -> Result<String, String> {
+        let token = |bytes: &[u8]| {
+            std::str::from_utf8(bytes)
+                .map(str::to_owned)
+                .map_err(|_| "The recorded occupation-law key is not UTF-8".to_owned())
         };
-    }
-    let reason = if !key_resolved {
-        "The read's controller or occupied-country link is unresolved; the state's occupation-law key cannot be established".to_owned()
-    } else if !complete {
-        "The occupation-law overrides are incomplete; this state's override may not have been recorded".to_owned()
-    } else {
-        format!(
-            "{GROUP_LAW_MISSING} {}",
-            match default {
-                None => "The occupier's default law is also missing.",
-                Some((false, _)) => "The occupier's recorded default law was absent.",
-                Some((true, _)) =>
-                    "The recorded occupier default is known but has lower precedence.",
-            }
-        )
+        if !input.key_resolved {
+            return Err("The read's controller or occupied-country link is unresolved; the state's occupation-law key cannot be established".into());
+        }
+        if matches!(input.group, GroupLaw::Missing) {
+            return token(input.fallback?);
+        }
+        if let Some(bytes) = input.state {
+            return token(bytes);
+        }
+        if !input.overrides_complete {
+            return Err("The occupation-law overrides are incomplete; this state's override may not have been recorded".into());
+        }
+        match input.group {
+            GroupLaw::Law(Some(bytes)) => return token(bytes),
+            GroupLaw::Unknown(reason) => return Err(reason),
+            GroupLaw::Law(None) => {}
+            GroupLaw::Missing => unreachable!(),
+        }
+        let candidate = match input.default {
+            Some((true, bytes)) => token(bytes)?,
+            Some((false, _)) => token(input.fallback.clone()?)?,
+            None => return Err("The occupier's default law is missing".into()),
+        };
+        if valid(&candidate)? {
+            Ok(candidate)
+        } else {
+            token(input.fallback?)
+        }
     };
-    (None, Some(reason))
+    match resolve() {
+        Ok(law) => (Some(law), None),
+        Err(reason) => (None, Some(reason)),
+    }
+}
+
+fn occupation_law_valid(
+    world: &crate::triggers::World<'_>,
+    law: &installed_content::occupation_laws::Law,
+    controller: u32,
+    occupied: u32,
+) -> Result<bool, String> {
+    use scripted_text::{EventObject, EventScope, EventScopes, Link};
+    // 140FE2FE0 sets occupier FROM to occupied and occupied ROOT to occupier.
+    // Each fresh scope otherwise keeps ROOT/FROM/PREV pointing to itself.
+    let mut occupier_scope = EventScope::of(EventObject::Country(controller));
+    occupier_scope.from = Link::Scope(1);
+    let mut occupied_scope = EventScope::of(EventObject::Country(occupied));
+    occupied_scope.root = Link::Scope(0);
+    let graph = std::rc::Rc::new(std::cell::RefCell::new(EventScopes::new(vec![
+        occupier_scope,
+        occupied_scope,
+    ])));
+    let evaluator = crate::triggers::Evaluator::new(world, None).with_event_scopes(graph);
+    let scope = evaluator.event_scopes(0)?;
+    let valid = evaluator.evaluate(&law.visible, scope);
+    // 140A665A0 skips available when raw/canonical country identities match.
+    valid
+        .and(|| {
+            if controller == occupied {
+                crate::triggers::Eval::True
+            } else {
+                evaluator.evaluate(&law.available, scope)
+            }
+        })
+        .decided()
 }
 
 fn occupied(row: &StateResistanceRow) -> bool {
@@ -389,3 +446,5 @@ impl Product for OccupiedStates {
 
 #[cfg(test)]
 mod tests;
+
+mod strength;

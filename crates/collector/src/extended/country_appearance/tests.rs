@@ -461,3 +461,21 @@ fn subject_arena_presizes_from_live_country_slots_without_a_cap() {
     assert_eq!(capture.subjects.len, 5_000);
     assert!(capacity.subjects >= crate::country_scale::rows(slots, 1));
 }
+
+#[test]
+fn deferred_reserved_table_retains_the_already_guarded_signed_boundary() {
+    let mut captured = Captured::vacant();
+    captured.reserved.outcome = Outcome::Rows { len: 1 };
+    for boundary in [i32::MIN, -1, 0, i32::MAX] {
+        captured.reserved.row.dynamic_tag_boundary = boundary;
+        let TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)) =
+            captured.reserved_table()
+        else {
+            panic!("reserved singleton must remain complete");
+        };
+        assert_eq!(
+            rows[0].dynamic_tag_boundary,
+            replay::rows::Recorded::Value(Some(boundary))
+        );
+    }
+}

@@ -4,7 +4,11 @@ use crate::{
     Artwork, FocusEntry, FocusHistory, FocusOrder, FocusProgress, FocusSegment, Source,
     metadata::validate_campaign,
 };
-use replay::{container::Replay, frame::FrameDecoder, rows::tables};
+use replay::{
+    container::Replay,
+    frame::{DecodedFrame, FrameDecoder, ViewIdentity},
+    rows::{TableId, tables},
+};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -359,7 +363,7 @@ pub(crate) fn focus_branch_within(
     Ok(result)
 }
 
-fn date_completions(order: &mut FocusOrder, previous: &FocusOrder, hour: i32) {
+pub(crate) fn date_completions(order: &mut FocusOrder, previous: &FocusOrder, hour: i32) {
     // Only an unchanged prefix establishes the identity of existing ordinals.
     // A reset/reorder starts another undated list rather than reusing old dates.
     if order.completed.len() < previous.completed.len()
@@ -376,6 +380,200 @@ fn date_completions(order: &mut FocusOrder, previous: &FocusOrder, hour: i32) {
             .completed
             .get(index)
             .map_or(Some(hour), |old| old.completed_by_hour);
+    }
+}
+
+/// Only these tables are needed to date focus completions. A consumer can union
+/// this selection with its presentation dependencies in one forward block pass.
+pub(crate) const FOCUS_COMPLETION_TABLES: &[TableId] = &[
+    TableId::Campaign,
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::Focus,
+    TableId::CompletedFocuses,
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FocusCompletion {
+    pub tag: String,
+    pub token: String,
+    pub hour: i32,
+}
+
+/// One latest ordered completion list per recorded identity; no historical full
+/// lists, progress, active focus or UI segments are retained. AddCompletedFocus
+/// (1402CD170) appends only ordinal/token, so emitted hours are observation bounds.
+#[derive(Default)]
+pub(crate) struct FocusCompletionProjection {
+    previous: BTreeMap<(u32, u32), FocusOrder>,
+    views: Option<[ViewIdentity; 4]>,
+    #[cfg(test)]
+    changed_frames: usize,
+    pub observed: bool,
+    pub unavailable: BTreeMap<String, usize>,
+}
+
+impl FocusCompletionProjection {
+    fn refuse(&mut self, reason: impl Into<String>, count: usize) {
+        *self.unavailable.entry(reason.into()).or_default() += count;
+    }
+
+    pub(crate) fn observe(&mut self, frame: &DecodedFrame) -> Vec<FocusCompletion> {
+        use crate::metadata::{TaggedCountry, link_slot, tagged_countries};
+        const VIEWS: [TableId; 4] = [
+            TableId::Focus,
+            TableId::CompletedFocuses,
+            TableId::Countries,
+            TableId::CountryLinks,
+        ];
+        if self.views.as_ref().is_some_and(|views| {
+            views
+                .iter()
+                .zip(VIEWS)
+                .all(|(view, table)| view.is(&frame.tables[table.index()]))
+        }) {
+            return Vec::new();
+        }
+        self.views = Some(VIEWS.map(|table| frame.tables[table.index()].identity()));
+        #[cfg(test)]
+        {
+            self.changed_frames += 1;
+        }
+        let (Ok(countries), Ok(links), Ok(focuses), Ok(completed)) = (
+            frame.complete::<tables::Countries>(),
+            frame.complete::<tables::CountryLinks>(),
+            frame.complete::<tables::Focus>(),
+            frame.complete::<tables::CompletedFocuses>(),
+        ) else {
+            self.refuse(
+                "Focus completion observation: required tables incomplete",
+                1,
+            );
+            return Vec::new();
+        };
+        let identities = tagged_countries(countries, links);
+        let present: BTreeSet<_> = identities
+            .values()
+            .filter_map(|lookup| lookup.found().map(|(country, slot)| (slot, country.id)))
+            .collect();
+        self.previous
+            .retain(|identity, _| present.contains(identity));
+        let mut by_slot = BTreeMap::<u32, &replay::rows::FocusRow>::new();
+        let mut duplicate_slots = BTreeSet::new();
+        for focus in focuses {
+            let Some(slot) = link_slot(links, focus.country) else {
+                self.refuse("Focus completion observation: unresolved country link", 1);
+                continue;
+            };
+            if by_slot.insert(slot, focus).is_some() {
+                duplicate_slots.insert(slot);
+                self.refuse(
+                    "Focus completion observation: duplicate linked focus row",
+                    1,
+                );
+            }
+        }
+        let mut by_owner = BTreeMap::<u32, Vec<&replay::rows::CompletedFocusRow>>::new();
+        for row in completed {
+            by_owner.entry(row.country).or_default().push(row);
+        }
+        for rows in by_owner.values_mut() {
+            rows.sort_by_key(|row| row.ordinal);
+        }
+        let mut events = Vec::new();
+        for (tag, lookup) in identities {
+            let TaggedCountry::Found(country, slot) = lookup else {
+                self.refuse(
+                    "Focus completion observation: unresolved country identity",
+                    1,
+                );
+                continue;
+            };
+            if duplicate_slots.contains(&slot) {
+                continue;
+            }
+            let Some(focus) = by_slot.get(&slot) else {
+                self.refuse("Focus completion observation: country focus row missing", 1);
+                continue;
+            };
+            let rows = by_owner.get(&focus.country).map_or(&[][..], Vec::as_slice);
+            if !valid_order(rows, focus.completed_count) {
+                self.refuse(
+                    "Focus completion observation: completed order incomplete",
+                    1,
+                );
+                continue;
+            }
+            let Ok(tag) = std::str::from_utf8(tag) else {
+                self.refuse("Focus completion observation: non-UTF-8 country tag", 1);
+                continue;
+            };
+            if rows
+                .iter()
+                .any(|row| std::str::from_utf8(&row.token).is_err())
+            {
+                self.refuse("Focus completion observation: non-UTF-8 focus token", 1);
+                continue;
+            }
+            self.observed = true;
+            let identity = (slot, country.id);
+            // Unchanged lists allocate no tokens and no historical copies.
+            if self.previous.get(&identity).is_some_and(|old| {
+                old.completed.len() == rows.len()
+                    && old
+                        .completed
+                        .iter()
+                        .zip(rows)
+                        .all(|(entry, row)| entry.token.as_bytes() == row.token)
+            }) {
+                continue;
+            }
+            let mut current = FocusOrder {
+                completed: rows
+                    .iter()
+                    .map(|row| FocusEntry {
+                        ordinal: row.ordinal,
+                        token: std::str::from_utf8(&row.token)
+                            .expect("validated UTF-8 token")
+                            .to_owned(),
+                        completed_by_hour: None,
+                    })
+                    .collect(),
+                current: None,
+                continuous: None,
+                paused: false,
+            };
+            if let Some(previous) = self.previous.get(&identity) {
+                date_completions(&mut current, previous, frame.hour);
+                events.extend(
+                    current
+                        .completed
+                        .iter()
+                        .filter(|entry| entry.completed_by_hour == Some(frame.hour))
+                        .map(|entry| FocusCompletion {
+                            tag: tag.to_owned(),
+                            token: entry.token.clone(),
+                            hour: frame.hour,
+                        }),
+                );
+                if current.completed.len() < previous.completed.len()
+                    || !current
+                        .completed
+                        .iter()
+                        .zip(&previous.completed)
+                        .all(|(a, b)| a.token == b.token)
+                {
+                    self.refuse(
+                        "Focus completion observation: reset or reordered completion list has no event dates",
+                        1,
+                    );
+                }
+            }
+            // Comparing an intact prefix across a gap can date only an upper
+            // bound, exactly as Focus does; the missing hours remain missing.
+            self.previous.insert(identity, current);
+        }
+        events
     }
 }
 
@@ -468,18 +666,19 @@ impl Product for NationalFocus {
                     .chain(segment.order.continuous.as_deref())
             })
             .collect();
-        let (artwork, mut warnings) = art.catalogue(tokens, cancelled)?;
+        let (artwork, mut warnings) = art.focus_metadata(tokens, cancelled)?;
         if let Some(hour) = progress_stopped {
             warnings.push(format!(
                 "Focus progress is too large to keep in full; it is unavailable from hour {hour}."
             ));
         }
-        // Names left out for a localisation refusal, by reason and key.
-        warnings.extend(art.refusal_lines());
-        Ok(FocusReply {
+        // Dated artwork requests report their own selector/localisation refusals.
+        let reply = FocusReply {
             history,
             artwork,
             warnings,
-        })
+        };
+        super::check_reply_budget(&reply)?;
+        Ok(reply)
     }
 }

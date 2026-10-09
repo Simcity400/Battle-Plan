@@ -183,6 +183,9 @@ fn expected(country: (usize, u32, usize), archetype: u32) -> Row {
         token: token(archetype),
         balance_raw: value(country.0, BALANCE_SERIES, archetype),
         stock_raw: value(country.0, STOCK_SERIES, archetype),
+        balance_history: Fixture::history(country.2, BALANCE_SERIES),
+        balance_values: Fixture::history(country.2, BALANCE_SERIES) + 0x800,
+        available_raw: None,
     }
 }
 
@@ -487,4 +490,184 @@ fn a_slot_past_the_controller_counts_follows_the_live_players() {
     let (outcome, rows) = capture(&f, 8);
     assert_eq!(outcome, Outcome::Rows { len: 6 });
     assert_eq!(rows[3], expected(AI, 0));
+}
+
+#[test]
+fn actual_balance_write_reads_only_the_native_available_slot_and_exact_store() {
+    let mut f = Fixture::new(3);
+    let history = Fixture::history(HUMAN.2, BALANCE_SERIES);
+    let record = history + 0x400;
+    let stack = 0xa000_0000;
+    for (_, _, offset) in BALANCE_CALLS {
+        f.i64(stack + offset, 7_000_001);
+        let observed = balance_write(
+            &f,
+            record,
+            value(HUMAN.0, BALANCE_SERIES, 1),
+            1,
+            stack,
+            offset,
+        )
+        .unwrap();
+        assert_eq!(observed.history, history);
+        assert_eq!(observed.values, history + 0x800);
+        assert_eq!(observed.available_raw, 7_000_001);
+        assert!(balance_write(&f, record, 0, 1, stack, offset).is_err());
+        f.forget(stack + offset, 8);
+        assert!(
+            balance_write(
+                &f,
+                record,
+                value(HUMAN.0, BALANCE_SERIES, 1),
+                1,
+                stack,
+                offset
+            )
+            .is_err()
+        );
+    }
+    assert!(balance_identity(&f, record, u32::MAX).is_err());
+    assert!(balance_identity(&f, record, 3).is_err());
+    f.forget(record + record_fields::HISTORY, 8);
+    assert!(balance_identity(&f, record, 0).is_err());
+}
+
+// Virtual native objects reuse one small fixture's bytes. This exercises the
+// real country/control/status/history/value readers at 5,000 countries without
+// allocating 5,000 sparse maps or duplicating native object padding.
+struct Scaled {
+    fixture: Fixture,
+    count: usize,
+}
+const S_COUNTRIES: usize = 0x3000_0000;
+const S_LINKS: usize = 0x4000_0000;
+const S_COUNTS: usize = 0x5000_0000;
+const S_FLAGS: usize = 0x6000_0000;
+const S_OBJECTS: usize = 0x10_0000_0000;
+const S_REGIONS: usize = 0x20_0000_0000;
+impl Scaled {
+    fn new(count: usize) -> Self {
+        let mut fixture = Fixture::new(3);
+        for (offset, pointer) in [
+            (cgame_state::COUNTRIES, S_COUNTRIES),
+            (cgame_state::COUNTRY_LINKS, S_LINKS),
+            (cgame_state::HUMAN_STATUS, S_COUNTS),
+            (cgame_state::AUTONOMOUS_STATUS, S_FLAGS),
+        ] {
+            fixture.array(GAME + offset, pointer, count as u32 + 1);
+        }
+        Self { fixture, count }
+    }
+    fn byte(&self, address: usize) -> Option<u8> {
+        let size = self.count + 1;
+        if (S_COUNTRIES..S_COUNTRIES + size * 8).contains(&address) {
+            let offset = address - S_COUNTRIES;
+            let slot = offset / 8;
+            let pointer = if slot == 0 {
+                0
+            } else {
+                S_OBJECTS + (slot - 1) * 0x2000
+            };
+            return Some((pointer as u64).to_le_bytes()[offset % 8]);
+        }
+        if (S_LINKS..S_LINKS + size * 4).contains(&address) {
+            let offset = address - S_LINKS;
+            return Some((offset as u32 / 4).to_le_bytes()[offset % 4]);
+        }
+        for start in [S_COUNTS, S_FLAGS] {
+            if (start..start + size).contains(&address) {
+                return Some(u8::from(address != start));
+            }
+        }
+        if (S_OBJECTS..S_OBJECTS + self.count * 0x2000).contains(&address) {
+            let offset = (address - S_OBJECTS) % 0x2000;
+            let slot = (address - S_OBJECTS) / 0x2000;
+            if (ccountry::ID..ccountry::ID + 4).contains(&offset) {
+                return Some((slot as u32 + 1).to_le_bytes()[offset - ccountry::ID]);
+            }
+            if (ccountry::LOGISTICS_STATUS..ccountry::LOGISTICS_STATUS + 8).contains(&offset) {
+                return Some(
+                    ((S_REGIONS + slot * 0x4000) as u64).to_le_bytes()
+                        [offset - ccountry::LOGISTICS_STATUS],
+                );
+            }
+            return self.fixture.0.get(&(HUMAN.0 + offset)).copied();
+        }
+        if (S_REGIONS..S_REGIONS + self.count * 0x4000).contains(&address) {
+            let offset = (address - S_REGIONS) % 0x4000;
+            let slot = (address - S_REGIONS) / 0x4000;
+            let original = HUMAN.2 + offset;
+            let aligned = original & !7;
+            let mut bytes = [0; 8];
+            let readable = (0..8).all(|index| match self.fixture.0.get(&(aligned + index)) {
+                Some(value) => {
+                    bytes[index] = *value;
+                    true
+                }
+                None => false,
+            });
+            if readable {
+                let pointer = u64::from_le_bytes(bytes) as usize;
+                let replacement = if pointer == HUMAN.0 {
+                    Some(S_OBJECTS + slot * 0x2000)
+                } else if (HUMAN.2..HUMAN.2 + 0x4000).contains(&pointer) {
+                    Some(S_REGIONS + slot * 0x4000 + pointer - HUMAN.2)
+                } else {
+                    None
+                };
+                if let Some(pointer) = replacement {
+                    return Some((pointer as u64).to_le_bytes()[original % 8]);
+                }
+            }
+            return self.fixture.0.get(&original).copied();
+        }
+        self.fixture.0.get(&address).copied()
+    }
+}
+impl Memory for Scaled {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        for (offset, byte) in destination.iter_mut().enumerate() {
+            let Some(value) = self.byte(address + offset) else {
+                return false;
+            };
+            *byte = value;
+        }
+        true
+    }
+}
+
+#[test]
+fn native_acquisition_sizes_owners_and_rows_from_five_thousand_countries() {
+    let fixture = Scaled::new(5000);
+    assert_eq!(owner_capacity(&fixture, BASE, GAME), Ok(5001));
+    let mut owners = vec![BalanceOwner::default(); 5000];
+    assert_eq!(
+        walk_balance_owners(&fixture, BASE, GAME, &mut owners),
+        Outcome::Rows { len: 5000 }
+    );
+    assert_eq!(owners.last().unwrap().country, 5000);
+    assert_eq!(
+        walk_balance_owners(&fixture, BASE, GAME, &mut owners[..4999]),
+        Outcome::Truncated {
+            len: 4999,
+            unread_rows: 1
+        }
+    );
+    let mut rows = vec![Row::default(); 15000];
+    assert_eq!(
+        walk(&fixture, BASE, GAME, &mut rows),
+        Outcome::Rows { len: 15000 }
+    );
+    assert_eq!(rows[14999].country, 5000);
+    assert_eq!(rows[14999].token, token(2));
+    assert_eq!(rows[14999].balance_history, owners[4999].history);
+    assert_eq!(
+        walk(&fixture, BASE, GAME, &mut rows[..14999]),
+        Outcome::Truncated {
+            len: 14997,
+            unread_rows: 3
+        }
+    );
+    let empty = Fixture::new(0);
+    assert_eq!(walk(&empty, BASE, GAME, &mut []), Outcome::Rows { len: 0 });
 }

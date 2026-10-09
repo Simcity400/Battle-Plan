@@ -1,6 +1,7 @@
 //! Offline scan timing; corpus files are read-only and timing excludes setup.
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, records, source};
+use replay::container::Replay;
 use replay::rows::{CountryLinkRow, CountryRow, LexicalTokenRow, ProjectProgramRow, TableRows};
 use std::time::Instant;
 
@@ -54,7 +55,8 @@ fn offline_scan_timings() {
                 tag: std::env::var("BATTLE_PLAN_SP_TAG").or_else(|_| std::env::var("HOI4_SP_TAG")).expect("BATTLE_PLAN_SP_TAG"),
             };
             let started = Instant::now();
-            let reply = scan(&replay, &params, None, &cancelled).unwrap();
+            let scan = history::BranchScan::scan(&replay, params.branch(), &cancelled).unwrap();
+            let reply = project(&scan, &params, None, None, &cancelled).unwrap().0;
             println!(
                 "part-Q scan: {:?}; {} episodes",
                 started.elapsed(),
@@ -98,6 +100,8 @@ fn offline_scan_timings() {
         politics: Arc::new(PoliticsContent::load(Arc::clone(&catalogue)).unwrap()),
         catalogue,
         icons: BTreeMap::new(),
+        scoped: Vec::new(),
+        refusals: Mutex::default(),
     };
     let countries = 1500_u32;
     let hours = 10 * 365 * 24;
@@ -180,7 +184,10 @@ fn offline_scan_timings() {
     };
     for repetition in 1..=3 {
         let started = Instant::now();
-        let reply = scan(&replay, &params, Some(&mut content), &cancelled).unwrap();
+        let scan = history::BranchScan::scan(&replay, params.branch(), &cancelled).unwrap();
+        let reply = project(&scan, &params, None, Some(&mut content), &cancelled)
+            .unwrap()
+            .0;
         let elapsed = started.elapsed();
         assert_eq!(reply.projects.len(), 1);
         assert_eq!(reply.projects[0].runs.len(), 3650);

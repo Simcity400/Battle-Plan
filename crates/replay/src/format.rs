@@ -9,6 +9,9 @@ use crate::{
 };
 use std::io;
 
+/// Preserved when the score family is disabled for a recording session.
+pub const GAME_SCORE_DISABLED_REASON: &str = "game score capture disabled at attachment";
+
 /// A recording version inside the proven compatibility horizon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FormatVersion(u16);
@@ -124,6 +127,37 @@ mod tests {
     }
 
     #[test]
+    fn politics_additions_leave_the_published_table_contracts_readable() {
+        let previous =
+            FormatVersion::read(crate::rows::compatibility::WIDGET_CAPTURE_FORMAT - 1).unwrap();
+        for table in [
+            TableId::Countries,
+            TableId::DivisionStatus,
+            TableId::Characters,
+            TableId::OperativeMemberships,
+            TableId::CountryAppearance,
+            TableId::AttritionModifierBreakdowns,
+        ] {
+            assert!(previous.table_refusal(table).is_none(), "{table:?}");
+        }
+        for table in [
+            TableId::CountryPowerDaily,
+            TableId::CountryPowerChanges,
+            TableId::CountryPowerDailyCosts,
+            TableId::GovernmentChanges,
+            TableId::PoliticsCaptureCoverage,
+        ] {
+            assert!(
+                previous
+                    .table_refusal(table)
+                    .unwrap()
+                    .contains("not recorded")
+            );
+            assert!(FormatVersion::CURRENT.table_refusal(table).is_none());
+        }
+    }
+
+    #[test]
     fn compatibility_meaning_change_refuses_same_layout() {
         let format = FormatVersion::read(93).unwrap();
         let table = TableId::RaidTooltipOperands;
@@ -150,5 +184,35 @@ mod tests {
             error.to_string(),
             "Partial layout changed at format 92; this recording is format 91"
         );
+    }
+
+    #[test]
+    fn game_score_catalog_introductions_keep_previous_tables_readable() {
+        for version in [
+            crate::rows::compatibility::RECORDER_INPUTS_FORMAT - 1,
+            FORMAT_VERSION - 1,
+        ] {
+            let previous = FormatVersion::read(version).unwrap();
+            assert!(
+                previous
+                    .table_refusal(TableId::NavalModifierBreakdowns)
+                    .is_none()
+            );
+            for table in [
+                TableId::CountryGameScoreInputs,
+                TableId::AirWingGameScoreStats,
+                TableId::GameScoreMultipliers,
+            ] {
+                assert!(!table.last_change().present(version));
+                assert_eq!(
+                    previous.table_refusal(table).unwrap(),
+                    format!(
+                        "{table:?} not recorded at format {version} (introduced at format {FORMAT_VERSION})"
+                    ),
+                );
+                assert!(FormatVersion::CURRENT.table_refusal(table).is_none());
+                assert!(table.last_change().present(FORMAT_VERSION));
+            }
+        }
     }
 }

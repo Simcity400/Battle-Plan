@@ -15,6 +15,9 @@ pub struct Law {
     pub token: String,
     pub sprite: String,
     pub frame: i32,
+    /// 140A66620 reads visible into +0x80 and available into +0xD8.
+    pub visible: Vec<crate::parser::Item>,
+    pub available: Vec<crate::parser::Item>,
 }
 
 /// COccupationLaw ctor 140A63E00 (+0x50/+0x78), literal at 142928260.
@@ -80,8 +83,20 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Vec<Law>> {
             token,
             sprite: DEFAULT_SPRITE.into(),
             frame: 1,
+            visible: Vec::new(),
+            available: Vec::new(),
         };
         for field in item.value.items().unwrap_or_default() {
+            if field.keyword_is("visible") {
+                law.visible
+                    .extend_from_slice(field.value.items().unwrap_or_default());
+                continue;
+            }
+            if field.keyword_is("available") {
+                law.available
+                    .extend_from_slice(field.value.items().unwrap_or_default());
+                continue;
+            }
             if !field.keyword_is("icon") {
                 continue;
             }
@@ -163,6 +178,20 @@ mod tests {
         assert_eq!(numeric[2].sprite, "-1");
         assert_eq!(numeric[3].frame, 0);
     }
+    #[test]
+    fn native_eligibility_trigger_bodies_are_preserved() {
+        let laws = parse(
+            b"custom={visible={always=yes} visible={has_dlc=Example} available={FROM={tag=MOD}}}",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        assert_eq!(laws[0].visible.len(), 2);
+        assert!(laws[0].visible[0].keyword_is("always"));
+        assert!(laws[0].visible[1].keyword_is("has_dlc"));
+        assert_eq!(laws[0].available.len(), 1);
+        assert!(laws[0].available[0].keyword_is("FROM"));
+    }
+
     #[test]
     fn unsettled_modifier_is_named_not_assumed() {
         let error = parse(

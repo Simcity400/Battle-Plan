@@ -301,7 +301,7 @@ pub struct MapDetails {
 }
 
 /// The largest integer a JavaScript number holds exactly.
-const MAX_EXACT_JS_INTEGER: u64 = 9_007_199_254_740_991;
+pub(crate) const MAX_EXACT_JS_INTEGER: u64 = 9_007_199_254_740_991;
 
 /// A full-map clock update. Without this, `Seek` is an explicit seek.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]

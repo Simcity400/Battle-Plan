@@ -1,6 +1,9 @@
 import { useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { CountryFlagUrl } from '../components/CountryFlag';
+import { countryFlagUnavailable } from '../components/countryFlagPresentation.ts';
 import { placeTooltip } from './tooltipPlacement';
 import { tooltipStore } from './tooltip';
+import { ScrollableTooltipRows, TooltipRowView } from './TooltipRows';
 import './charts.css';
 
 /** Renders chart tooltips in the top layer, so no widget edge can clip them. As a
@@ -18,18 +21,20 @@ export default function TooltipLayer() {
       { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight });
     element.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
   }, [state]);
-  return <div ref={ref} popover="manual" role="tooltip" className="chart-tooltip" aria-live="off">
+  return <div ref={ref} popover="manual" role="tooltip" className={`chart-tooltip${state?.content.scrollable ? ' is-scrollable' : ''}`} aria-live="off">
     {state && <>
-      {state.content.icon || state.content.subtitle
+      {state.content.icon || state.content.countryFlag || state.content.subtitle
         ? <div className="chart-tooltip-head">
-          {state.content.icon && <img src={state.content.icon} alt="" />}
-          <div><strong>{state.content.title}</strong>{state.content.subtitle && <small>{state.content.subtitle}</small>}</div>
+          {state.content.countryFlag ? <CountryFlagUrl className="chart-tooltip-flag" url={state.content.countryFlag.flag}
+            reason={state.content.countryFlag.flagReason} pending={state.content.countryFlag.flagPending} />
+            : state.content.icon && <img src={state.content.icon} alt="" />}
+          <div><strong>{state.content.title}</strong>{state.content.subtitle && <small>{state.content.subtitle}</small>}
+            {state.content.countryFlag && !state.content.countryFlag.flag && <small>
+              {countryFlagUnavailable(state.content.countryFlag.flagReason, state.content.countryFlag.flagPending).text}</small>}</div>
         </div>
         : <strong>{state.content.title}</strong>}
-      {state.content.rows.map((row, index) => <div key={index} className={`chart-tooltip-row${row.divider ? ' has-divider' : ''}${row.strong ? ' is-strong' : ''}${row.short ? ' is-short' : ''}${row.indent ? ' is-indented' : ''}`}>
-        <span>{row.swatch && <i style={{ background: row.swatch }} aria-hidden="true" />}{row.icon && <img src={row.icon} alt="" />}{row.label}</span>
-        {row.value != null && <b className={row.tone ? `is-${row.tone}` : undefined}>{row.value}</b>}
-      </div>)}
+      {state.content.scrollable ? <ScrollableTooltipRows content={state.content} owner={state.owner} top={state.scrollTop ?? 0} />
+        : state.content.rows.map((row, index) => <TooltipRowView key={index} row={row} />)}
       {state.content.description && <p className="chart-tooltip-description">{state.content.description}</p>}
       {state.content.note && <small>{state.content.note}</small>}
     </>}

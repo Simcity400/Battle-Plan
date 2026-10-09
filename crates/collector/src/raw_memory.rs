@@ -1,4 +1,4 @@
-//! Lifetime-owned raw payload and index capacity accounting.
+//! Lifetime-owned raw payload, observer store and index capacity accounting.
 //!
 //! Charges move with their allocations, so idle, callback-owned, queued,
 //! decoding and retired storage is counted once without ownership-event or
@@ -151,7 +151,7 @@ pub(crate) fn diagnostics() -> impl serde::Serialize {
     let snapshot = TRACKER.snapshot();
     let current = snapshot.current;
     crate::status::status!({
-        "scope": "owned raw payload and decode-index capacities across idle, in-flight and retired objects; not process memory or an allocator-level bound",
+        "scope": "owned raw payload, tracked observer stores and decode-index capacities across idle, in-flight and retired objects; not process memory or an allocator-level bound",
         "current": {
             "payload_vector_capacity_bytes": current.payload_vectors,
             "auxiliary_vector_capacity_bytes": current.auxiliary_vectors,

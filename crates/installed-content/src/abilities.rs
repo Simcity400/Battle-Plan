@@ -56,6 +56,16 @@ impl AbilitySprites {
         self.by_token.get(token).map(String::as_str)
     }
 
+    /// Static +288 sprite before Finalize@140FF5B20 appends `_animated`.
+    pub fn static_sprite(&self, token: &[u8]) -> Option<&str> {
+        self.sprite(token)?.strip_suffix("_animated")
+    }
+
+    /// CAbility +248: constructor token, replaced by `name` (140FF44E0/140FF5EC0).
+    pub fn name_key(&self, token: &[u8]) -> Option<&str> {
+        std::str::from_utf8(&self.definition(token)?.name).ok()
+    }
+
     pub fn definition(&self, token: &[u8]) -> Option<&Definition> {
         self.definitions.get(token)
     }

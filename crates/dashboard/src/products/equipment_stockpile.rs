@@ -39,17 +39,12 @@
 //! calls not AI-controlled, so a complete table without rows for the country means
 //! it was AI-controlled at that read (`ai_hours`), not that it holds nothing.
 //!
-//! **What is needed** is derived from the same record: for an archetype that is not
-//! a convoy type, not a `supply_truck` and not a train type, `Avail` is exactly
-//! `max(0, stock)`, so `max(0, stock) − balance` is exactly `clamp(Demand +
-//! PoolDifference)`: what divisions, training, garrisons, air wings and operations
-//! need plus net outgoing lend-lease. For the other archetypes `Avail` holds terms
-//! the recording does not establish at the daily calculation (the live convoy
-//! pool and supply adjustments), so their need is not derived
-//! ([`StockType::need_note`]). Hourly TrainInventory records allocated trucks and
-//! required trains; it does not bind them to the daily balance, nor record the
-//! truck subtractor at supply+0xc8 (14135DBC0). A value at the saturation bound
-//! is not a real sum.
+//! **What is needed** is `available - balance`, using the actual available
+//! operand observed at the same native series-16 write. This includes the
+//! native convoy cache and truck/train adjustments, never a current-hour
+//! substitution. In an older prefix, ordinary archetypes still derive it as
+//! `max(0, stock) - balance`; convoy, truck and train rows require the appended
+//! operand. A value at the native saturation bound is not an exact sum.
 //!
 //! Stockpiles and production lines are read in one daily slot and carried in
 //! between (`metadata::slot_read`); both come from the same read, so their values
@@ -66,15 +61,15 @@
 //! archetype for another). Types are listed in the equipment database's order.
 //! A variant's type never changes, so any read of the variant table names it.
 //!
-//! **Artwork is not shown yet.** The Logistics screen draws an archetype's row with
+//! **Artwork** uses the transient [`artwork`] product. The Logistics screen draws an archetype's row with
 //! the country's best variant for it (`CProductionStatus::FindBestVariantForArchetype
 //! @140e54540`, which scans the best-variant candidates at `CProductionStatus+0xB8`),
 //! drawn with that variant's icon (`BindEquipmentVariantIcon@140b371f0`, starting
 //! from its icon entry at `CEquipmentVariant+0x450`). The recording holds both:
 //! the candidates are `AvailableEquipmentVariants` roster kind 2 and each
-//! variant's icon entry is in `VariantDefinitions`. What is missing is the product
-//! code: the shared equipment icon rule and the best-variant ranking still need
-//! to be wired in.
+//! variant's icon entry is in `VariantDefinitions`. Missing candidates or ranking
+//! operands refuse the picture instead of guessing a design. Variant rows use
+//! their own icon; domain aggregates have no single best archetype variant.
 
 use super::{
     CountryParams, LoadContext, Product,
@@ -104,6 +99,8 @@ use std::{
 use ts_rs::TS;
 
 pub struct EquipmentStockpile;
+
+pub mod artwork;
 
 const CACHED_COUNTRIES: usize = 8;
 
@@ -136,8 +133,8 @@ pub struct StockType {
     /// The localised key; null when content does not name it.
     pub name: Option<String>,
     pub domain: Domain,
-    /// Why its need cannot be derived from the logistics record; null when
-    /// `max(0, stock) − balance` is exactly what it needs.
+    /// Why older or missing observations cannot derive this type's need.
+    /// A recorded native available operand takes precedence over this note.
     pub need_note: Option<String>,
 }
 
@@ -154,6 +151,9 @@ pub struct TypeLogistics {
     pub key: String,
     pub balance: Vec<AmountRun>,
     pub stock: Vec<AmountRun>,
+    /// Actual native availability at the balance write; null runs are refused
+    /// or unrecorded observations. It is independent of the stock series.
+    pub available: Vec<AmountRun>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -208,9 +208,11 @@ pub struct ScannedStockpile {
     /// Naval, refit and railway-gun line reads of the country, whose weekly
     /// output is unknown.
     pub other_kinds: usize,
-    /// Logistics balance and stock by archetype token.
+    /// Logistics balance, stock and same-write availability by archetype token.
     pub balance: ReadRuns<u32>,
     pub logistics_stock: ReadRuns<u32>,
+    pub available: ReadRuns<u32>,
+    pub missing_available: usize,
     /// Spans the country was AI-controlled (a key-less run set).
     pub ai: ReadRuns<u32>,
     pub logistics_reads: Vec<i32>,
@@ -251,6 +253,8 @@ pub fn scan(
         other_kinds: 0,
         balance: ReadRuns::new(),
         logistics_stock: ReadRuns::new(),
+        available: ReadRuns::new(),
+        missing_available: 0,
         ai: ReadRuns::new(),
         logistics_reads: Vec::new(),
         line_reads: Vec::new(),
@@ -304,6 +308,7 @@ pub fn scan(
             if !continues || logistics.is_none() {
                 result.balance.close();
                 result.logistics_stock.close();
+                result.available.close();
                 result.ai.close();
             }
             let (Some((slot, _)), Some((_, links))) = (identity, tables) else {
@@ -322,6 +327,7 @@ pub fn scan(
                         result.ai.read(hour, []);
                         result.balance.close();
                         result.logistics_stock.close();
+                        result.available.close();
                     } else {
                         result.logistics_reads.push(hour);
                         if let Ok(lexical) = decoded.complete::<tables::LexicalTokens>() {
@@ -343,12 +349,29 @@ pub fn scan(
                         result
                             .logistics_stock
                             .read(hour, own.iter().map(|row| (row.token, Some(row.stock_raw))));
+                        result.missing_available += own
+                            .iter()
+                            .filter(|row| {
+                                !matches!(row.available_raw, replay::rows::Recorded::Value(Some(_)))
+                            })
+                            .count();
+                        result.available.read(
+                            hour,
+                            own.iter().map(|row| {
+                                let value = match row.available_raw {
+                                    replay::rows::Recorded::Value(value) => value,
+                                    replay::rows::Recorded::NotRecorded => None,
+                                };
+                                (row.token, value)
+                            }),
+                        );
                         result.ai.close();
                     }
                 }
                 _ => {
                     result.balance.carry(hour);
                     result.logistics_stock.carry(hour);
+                    result.available.carry(hour);
                     result.ai.carry(hour);
                 }
             }
@@ -415,11 +438,11 @@ fn need_note(types: &Database, archetype: &str) -> Result<Option<String>, String
         .ok_or_else(|| format!("{archetype} is not authored equipment"))?;
     let category = types.category(kind);
     Ok(if category & 1 != 0 {
-        Some("The game counts its live convoy pool here, not the recorded stock, so what is needed cannot be derived.".to_owned())
+        Some("This convoy archetype needs the native available-stock operand at the same balance write; it is unknown when that observation is missing.".to_owned())
     } else if kind.supply_truck {
-        Some("The game's daily balance uses truck adjustments that the recording does not establish at that update, so what is needed cannot be derived.".to_owned())
+        Some("This supply-truck archetype needs the native available-stock operand at the same balance write; it is unknown when that observation is missing.".to_owned())
     } else if category & (1 << 31) != 0 {
-        Some("The hourly train requirement does not establish the trains used by the game's daily balance update, so what is needed cannot be derived.".to_owned())
+        Some("This train archetype needs the native available-stock operand at the same balance write; hourly train inventory cannot replace a missing observation.".to_owned())
     } else {
         None
     })
@@ -494,7 +517,7 @@ impl Product for EquipmentStockpile {
                 scanned
             }
         };
-        let mut warnings = Vec::new();
+        let mut warnings = scanned.variants.warnings();
         // Without the game folders the stock still shows, by variant and unnamed types.
         let content = match context
             .content()
@@ -602,6 +625,12 @@ impl Product for EquipmentStockpile {
                     .get(&token)
                     .cloned()
                     .unwrap_or_default(),
+                available: scanned
+                    .available
+                    .runs
+                    .get(&token)
+                    .cloned()
+                    .unwrap_or_default(),
                 stock: scanned
                     .logistics_stock
                     .runs
@@ -662,11 +691,14 @@ impl Product for EquipmentStockpile {
         if scanned.logistics_reads.is_empty() && scanned.ai.spans.is_empty() {
             warnings.push("The surplus or shortage is not in this recording: it has no logistics record (LogisticsEquipment).".to_owned());
         }
-        warnings.push("Equipment art is not shown in this widget yet.".to_owned());
+        if scanned.missing_available > 0 {
+            warnings.push(format!("{} logistics archetype reads have no matching recorded available-stock operand; convoy, truck and train need remains unknown at those reads.", scanned.missing_available));
+        }
         let overflowed = scanned.stock.overflowed
             + scanned.weekly.overflowed
             + scanned.balance.overflowed
-            + scanned.logistics_stock.overflowed;
+            + scanned.logistics_stock.overflowed
+            + scanned.available.overflowed;
         if overflowed > 0 {
             warnings.push(format!(
                 "{overflowed} recorded totals do not fit a 64-bit amount; they are shown as unknown, never clamped."

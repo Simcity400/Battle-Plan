@@ -303,6 +303,18 @@ fn compare_aces(
         ] {
             check(report, &format!("{label}.{name}"), actual, expected);
         }
+        match &actual.presentation {
+            replay::rows::Recorded::Value(Some(fields)) => {
+                check(report, &format!("{label}.modifier"), &fields.definition, &expected.modifier);
+                check(report, &format!("{label}.is_female"), fields.gender != 0, expected.female);
+                check(report, &format!("{label}.portrait"), fields.pool_index, expected.portrait);
+            }
+            replay::rows::Recorded::Value(None) => report.difference(
+                format!("{label}.presentation"), "capture failed", "saved modifier / portrait operands"),
+            replay::rows::Recorded::NotRecorded => report.limitation(
+                "ace presentation operands not recorded; the established roster fields still compare",
+                format!("{label}.presentation")),
+        }
         match (&actual.death, expected.alive) {
             (Some(death), false) => {
                 check(
@@ -349,6 +361,7 @@ fn compare_aces(
     extra(report, "air ace", &actual);
     report.compared("AirAces", matched);
     report.limitation("CAce aircraft-type mask is not compared: the saved modifier definition-to-mask mapping is not implemented/proven", "AirAces.aircraft_type_mask");
+    report.limitation("the raw nonzero gender byte and CGameGui retained portrait pools/culture are not serialized; is_female compares their boolean meaning only, and artwork needs a matched-hour native portrait", "AirAces.presentation.portrait");
     report.limitation(
         "saved country tags cannot certify raw country-link alias bits",
         "extended air country references",
@@ -832,5 +845,58 @@ mod tests {
         assert!(report.compared_tables.contains_key("AirStatistics"));
         assert_eq!(report.differences.len(), 1);
         assert!(report.differences[0].contains("air statistics GER:23.channel[0]"));
+    }
+    #[test]
+    fn ace_oracle_checks_selected_definition_and_saved_portrait_operands() {
+        use replay::rows::{AirAcePresentation, AirAceRow, Recorded};
+        let save = parsed(br#"countries={MOD={ace={id={id=1 type=4} name="N" surname="S" modifier="authored_type" is_female=yes portrait=-7}}}"#);
+        let country = CountryRow {
+            id: 9,
+            tag: b"MOD".to_vec(),
+            ..Default::default()
+        };
+        let links = BTreeMap::from([(9, &country)]);
+        let row = AirAceRow {
+            id: (1_u64 << 32) | 4,
+            country: 9,
+            alive: 1,
+            name: b"N".to_vec(),
+            surname: b"S".to_vec(),
+            presentation: Recorded::Value(Some(AirAcePresentation {
+                gender: 7,
+                pool_index: -7,
+                definition: Some(b"authored_type".to_vec()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let sample = frame([TableRows::AirAces(vec![row.clone()])]);
+        let mut report = Report::default();
+        compare_aces(&sample, &save, &links, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        let mut changed = row;
+        changed.presentation = Recorded::Value(Some(AirAcePresentation::default()));
+        let sample = frame([TableRows::AirAces(vec![changed])]);
+        let mut report = Report::default();
+        compare_aces(&sample, &save, &links, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 3);
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|value| value.contains(".modifier"))
+        );
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|value| value.contains(".is_female"))
+        );
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|value| value.contains(".portrait"))
+        );
     }
 }

@@ -50,8 +50,8 @@ function SettingsBody({ widget, template, runtime, onChange, onReset, choices }:
     // A title that still names the previous content choice follows the new one.
     const label = (choice: OptionValue) => choices?.[key]?.find(item => item.value === choice)?.label;
     const field = definition?.options?.find(item => item.key === key);
-    const named = field?.kind === 'content-choice' && [definition?.title, label(values[key])].includes(widget.title);
-    const title = named ? label(value) ?? definition?.title ?? widget.title : widget.title;
+    const named = field?.kind === 'content-choice' && field.titleChoice !== false && [definition?.title, label(values[key])].includes(widget.title);
+    const title = named ? label(value) || definition?.title || widget.title : widget.title;
     save({ ...widget, options, title });
   };
   const fields = (section: OptionSection) => <OptionFields fields={sectionFields(definition?.options, section, values, widget.countries)} values={values}
@@ -61,7 +61,7 @@ function SettingsBody({ widget, template, runtime, onChange, onReset, choices }:
       case 'campaign': return <CampaignPicker widget={widget} template={template} runtime={runtime} />;
       case 'countries': return <><CountriesSection widget={widget} reference={reference} runtime={runtime} limits={definition?.countries ?? { max: 1 }}
         onChange={countries => save({ ...widget, countries })} />{fields('countries')}</>;
-      case 'time': return <>{definition?.history && <TimeSection widget={widget} effective={effective} reference={reference} runtime={runtime}
+      case 'time': return <>{definition?.data && <TimeSection widget={widget} effective={effective} reference={reference} runtime={runtime}
         modes={definition.timeModes} onChange={time => save({ ...widget, time })} />}{fields('time')}</>;
       case 'size': return <SizeStepper widget={widget} onChange={save} />;
       case 'options': case 'axes': case 'interaction': return fields(section);
@@ -86,7 +86,7 @@ function TitleField({ widget, onChange }: { widget: WidgetSpec; onChange: (widge
     const value = title.trim();
     if (value && value !== widget.title) onChange({ ...widget, title: value }); else setTitle(widget.title);
   };
-  return <label className="field"><span>Title</span><input value={title} maxLength={160} onChange={event => setTitle(event.currentTarget.value)}
+  return <label className="field"><span>Title</span><input value={title} onChange={event => setTitle(event.currentTarget.value)}
     onBlur={commit} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>;
 }
 

@@ -34,7 +34,7 @@ fn unknown_gui_decode_reaches_idea_and_portrait_problems() {
     );
     for (kind, name) in [(0, "GFX_idea_mod_picture"), (1, "gfx/mod/icon.png")] {
         let why = content
-            .load_recorded_portrait(kind, name.as_bytes())
+            .recorded_portrait(kind, name.as_bytes())
             .unwrap_err();
         assert!(why.contains(reason), "{why}");
     }

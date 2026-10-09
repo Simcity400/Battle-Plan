@@ -14,6 +14,8 @@
 //! display name, without prefixing a province id or appending another name.
 //! Provinces without a state use their strategic-region name (battle name ladder
 //! 0x140E69320, CProvince+0xC8); region membership/names use installed_content::regions.
+//! Land requests use the approved primary name -> state -> unnamed ladder:
+//! empty primary names try the state, and state-less provinces stay unnamed.
 //! A known primary name needs no state-name lookup. Unresolved names remain null;
 //! the caller shows Unnamed province and keeps the id only in its tooltip.
 //! Provinces, States, Countries, CountryLinks and CountryAppearance are hourly;
@@ -59,6 +61,9 @@ const STATE_TABLES: [TableId; 2] = [TableId::Campaign, TableId::States];
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlaceNamesParams {
     pub branch_id: String,
+    /// Land's presentation ladder; other callers retain the native resolver.
+    #[serde(default)]
+    pub land: bool,
     pub places: Vec<PlaceNameRequest>,
     #[serde(default)]
     pub states: Vec<StateNameRequest>,
@@ -163,6 +168,7 @@ fn name_at(
     cat: &Catalogue,
     names: Result<&StateNames, &str>,
     regions: Result<&BTreeMap<u32, Result<String, String>>, &str>,
+    land: bool,
 ) -> (Option<String>, Option<String>) {
     let province = match recorded_rows::<tables::Provinces>(frame)
         .ok()
@@ -181,7 +187,9 @@ fn name_at(
     let province_name = text
         .province_display_name_primary(province_id)
         .and_then(|name| name.map(|name| catalogue::plain_text(&name)).transpose());
-    if let Ok(Some(name)) = &province_name {
+    if let Ok(Some(name)) = &province_name
+        && (!land || !name.is_empty())
+    {
         return if name.is_empty() {
             (
                 None,
@@ -194,6 +202,16 @@ fn name_at(
         };
     }
     if province.state == 0 {
+        if land {
+            let missing = format!("province {province_id}: no state name available");
+            return (
+                None,
+                Some(match province_name {
+                    Err(reason) => format!("{reason}; {missing}"),
+                    Ok(_) => missing,
+                }),
+            );
+        }
         let region = regions
             .map_err(str::to_owned)
             .and_then(|regions| {
@@ -450,6 +468,7 @@ fn read_names(
                                     cat,
                                     names,
                                     regions,
+                                    params.land,
                                 ),
                             );
                         }
@@ -519,7 +538,7 @@ impl Product for PlaceNames {
             Ok(cat) => {
                 warnings.extend(cat.verification.iter().chain(&cat.warnings).cloned());
                 let names = cat.cached_states().map(|states| &states.names);
-                let regions = if params.places.is_empty() {
+                let regions = if params.places.is_empty() || params.land {
                     Ok(Arc::new(RegionNames {
                         provinces: BTreeMap::new(),
                         warnings: Vec::new(),

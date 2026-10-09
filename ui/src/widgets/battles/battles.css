@@ -3,6 +3,12 @@
 .battle-place { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .battle-log-primary { display: flex; align-items: center; gap: var(--space-4); min-width: 0; }
 .battle-log-primary > .log-text { flex: 1; }
+.battle-log-primary > .battle-row-place { flex: 1; }
+.battle-row-place { display: flex; flex-direction: column; min-width: 0; }
+.battle-row-description { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--type-xs); }
+.log.is-compact .battle-row-place { flex-direction: row; align-items: baseline; gap: var(--space-2); }
+.log.is-compact .battle-row-place > .log-text { flex: 1; min-width: 0; }
+.log.is-compact .battle-row-description { max-width: 60%; }
 .battle-log-primary > .battle-sides-summary { width: 50%; max-width: calc(var(--space-6) * 11); }
 .battle-sides-summary { position: relative; display: flex; align-items: center; gap: var(--space-3); width: 100%; min-width: 0; overflow: hidden; white-space: nowrap; font-size: var(--type-xs); }
 .battle-sides-summary > .battle-count { flex: none; }
@@ -24,3 +30,9 @@
 .battle-table-date { display: inline-flex; align-items: center; gap: var(--space-2); }
 .battle-muted { color: var(--muted); font-size: var(--type-xs); }
 .battle-result > span { overflow: hidden; text-overflow: ellipsis; }
+.log.is-compact .battle-result-with-measure { flex-direction: row; align-items: center; max-width: none; min-width: 0; }
+
+.battle-widget { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.battle-note { margin: var(--space-2) var(--space-4); color: var(--muted); font-size: var(--type-xs); }
+.battle-navigation { display: flex; gap: var(--space-2); margin: var(--space-2) var(--space-4); }
+.battle-navigation:empty { display: none; }

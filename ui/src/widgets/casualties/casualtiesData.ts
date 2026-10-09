@@ -22,13 +22,19 @@ function preceding<T>(values: readonly T[], at: number, start: (value: T) => num
   return lo - 1;
 }
 function values(column: CasualtyValues, count: number): bigint[] {
-  if (!Array.isArray(column) || column.length !== 2 || !raw(column[0]) || !Array.isArray(column[1]) || column[1].length !== Math.max(0, count - 1)
-    || !column[1].every(delta => typeof delta === 'string' ? raw(delta) : Number.isSafeInteger(delta))) throw new Error('The casualty values are malformed.');
+  if (!Array.isArray(column) || column.length !== 2 || !raw(column[0]) || !Array.isArray(column[1])) throw new Error('The casualty values are malformed.');
   let value = BigInt(column[0]); const result = count ? [value] : [];
-  for (const delta of column[1]) { value += BigInt(delta); result.push(value); }
+  for (const entry of column[1]) {
+    const repeated = Array.isArray(entry), delta = repeated ? entry[1] : entry, repeats = repeated ? entry[0] : 1;
+    if (repeated && (entry.length !== 2 || !raw(delta)) || !Number.isSafeInteger(repeats) || repeats <= 0 || repeats > count - result.length
+      || !(typeof delta === 'string' ? raw(delta) : Number.isSafeInteger(delta))) throw new Error('The casualty values are malformed.');
+    const step = BigInt(delta);
+    for (let i = 0; i < repeats; i++) { value += step; result.push(value); }
+  }
+  if (result.length !== count) throw new Error('The casualty values are malformed.');
   return result;
 }
-interface Point { firstHour: number; lastHour: number; read: number; endRead: number | null; dealt: bigint; taken: bigint; unknown: bigint | null; id: string; segment: string }
+interface Point { firstHour: number; lastHour: number; endRead: number | null; dealt: bigint; taken: bigint; unknown: bigint | null; id: string; segment: string }
 function points(series: CasualtySeries, observed: HourSpan[]): Point[] {
   if (!Array.isArray(series.reads) || !series.reads.every((read, i) => i === 0 ? hour(read) : Number.isSafeInteger(read) && read > 0 && read <= 4294967295)
     || !Array.isArray(series.ends) || !series.ends.every((end, i) => Array.isArray(end) && end.length === 3 && Number.isInteger(end[0]) && end[0] >= 0 && end[0] < series.reads.length && hour(end[1]) && (end[2] === null || hour(end[2])) && (i === 0 || series.ends[i - 1][0] < end[0]))
@@ -58,7 +64,7 @@ function points(series: CasualtySeries, observed: HourSpan[]): Point[] {
       const observedSpan = runAt(observed, firstHour);
       if (!observedSpan || observedSpan.lastHour < lastHour) throw new Error('The casualty spans are malformed.');
       if (id !== lastId || firstHour !== lastEnd + 1) lastSegment = JSON.stringify([id, firstHour]);
-      result.push({ firstHour, lastHour, read: reads[i], endRead, dealt: dealt[i], taken: taken[i], unknown: unknown[i] ?? null, id, segment: lastSegment });
+      result.push({ firstHour, lastHour, endRead, dealt: dealt[i], taken: taken[i], unknown: unknown[i] ?? null, id, segment: lastSegment });
       lastId = id; lastEnd = lastHour;
     }
   }
@@ -98,11 +104,18 @@ export function validateCasualtyReply(value: unknown): CasualtyReply {
 }
 interface IndexedSeries { series: CasualtySeries; points: Point[] }
 type Membership = HourSpan & { entry: IndexedSeries };
-export interface CasualtyIndex { observed: HourSpan[]; chosen: IndexedSeries[]; membership: IntervalIndex<Membership> }
+export interface CasualtyIndex { observed: HourSpan[]; chosen: IndexedSeries[]; gap: IndexedSeries[]; membership: IntervalIndex<Membership> }
 export function casualtyIndex(reply: CasualtyReply): CasualtyIndex {
   const all = decoded.get(reply) ?? reply.series.map(series => points(series, reply.observed));
   const entries = reply.series.map((series, i) => ({ series, points: all[i] }));
-  return { observed: reply.observed, chosen: entries.filter(entry => entry.series.membership === null),
+  const chosen = entries.filter(entry => entry.series.membership === null);
+  const holders = new Set(chosen.flatMap(entry => entry.points.map(point => point.id)));
+  // A clipped alias can still be the selected holder's last sampled name in a gap.
+  const gap = entries.flatMap(({ series, points }) => {
+    const selected = points.filter(point => holders.has(point.id));
+    return selected.length ? [{ series, points: selected }] : [];
+  });
+  return { observed: reply.observed, chosen, gap,
     membership: new IntervalIndex(entries.flatMap(entry => (entry.series.membership ?? []).map(span => ({ ...span, entry })))) };
 }
 
@@ -127,6 +140,7 @@ export function casualtyLookSegments(reply: CasualtyReply): (tag: string, hour: 
   };
 }
 
+/** Legacy atLeast marks incomplete signed history, not a numeric lower bound. */
 export interface CountryCasualties {
   id: string; tag: string; hour: number; segment: string; readHour: number | null; atLeast: boolean;
   dealt: bigint | null; taken: bigint | null; knownTaken: bigint | null; unknown: bigint | null;
@@ -136,22 +150,28 @@ export interface CountryCasualties {
 export function casualtiesAt(index: CasualtyIndex, hour: number, includeUnknown: boolean): CountryCasualties[] {
   const observed = runAt(index.observed, hour);
   const members = index.membership.at(hour).map(member => member.entry);
-  return [...index.chosen, ...members].flatMap(({ series, points }) => {
+  const gapRows = observed ? null : new Map<string, { firstHour: number; row: CountryCasualties }>();
+  const rows = (observed ? [...index.chosen, ...members] : index.gap).flatMap(({ series, points }) => {
     const position = preceding(points, hour, point => point.firstHour);
     if (position < 0) return [];
     const point = points[position], readable = observed && hour <= point.lastHour;
     if (observed && !readable) return [];
     const dealt = readable ? point.dealt : null, knownTaken = readable ? point.taken : null, unknown = readable ? point.unknown : null;
-    // Every day-end inside an equal-value run confirmed the value. Exceptional
-    // endpoints also confirmed it, but membership clipping did not read anything.
-    const confirmedUntil = Math.min(hour, point.endRead ?? hour);
-    const dayEnd = confirmedUntil - ((confirmedUntil % 24 + 24) % 24) - 1;
-    const dailyRead = (confirmedUntil % 24 + 24) % 24 === 23 ? confirmedUntil : dayEnd;
-    const readHour = readable ? Math.max(point.read, dailyRead, point.endRead !== null && hour >= point.endRead ? point.endRead : point.read) : null;
-    return [{ id: point.id, tag: series.tag, hour, segment: readable ? point.segment : JSON.stringify([point.id, 'gap']),
+    // Equal consecutive hourly reads confirm at this hour; held tails retain
+    // their supplying date. Membership clipping never creates a read.
+    const readHour = readable ? Math.min(hour, point.endRead ?? hour) : null;
+    const row: CountryCasualties = { id: point.id, tag: series.tag, hour, segment: readable ? point.segment : JSON.stringify([point.id, 'gap']),
       readHour, atLeast: !!readable && series.atLeastFrom !== null && hour >= series.atLeastFrom, dealt, knownTaken, unknown,
-      taken: includeUnknown ? knownTaken == null || unknown == null ? null : knownTaken + unknown : knownTaken }];
+      taken: includeUnknown ? knownTaken == null || unknown == null ? null : knownTaken + unknown : knownTaken };
+    if (gapRows) {
+      // A holder's earlier tags are aliases, not additional unknown countries.
+      const previous = gapRows.get(point.id);
+      if (!previous || previous.firstHour < point.firstHour) gapRows.set(point.id, { firstHour: point.firstHour, row });
+      return [];
+    }
+    return [row];
   });
+  return gapRows ? [...gapRows.values()].map(value => value.row) : rows;
 }
 
 /** Unknown losses are display-only, so changing that option needs no new reply. */
@@ -164,12 +184,12 @@ export function casualtyRequest(branchId: string, selection: CountrySelection, f
   return { params, reason: resolved.reason };
 }
 
-/** Smart-group membership, then dealt + known taken, tied by opaque UTF-8 tags. */
+/** Manual picks are projected by native holder in the reply. Smart groups still
+ * apply their recorded tag membership locally, then rank by dealt + known taken. */
 export function selectCasualties(rows: readonly CountryCasualties[], selection: CountrySelection, groups: CountryGroupReply | undefined,
   hour: number, lastHour: number): CountryCasualties[] {
   let tags: Set<string> | null = null, limit = Infinity;
-  if (selection.kind === 'tags') tags = new Set(selection.tags);
-  else if (selection.kind === 'group') {
+  if (selection.kind === 'group') {
     if (selection.group.type === 'top') limit = selection.group.count;
     else {
       if (!groups) return [];
@@ -186,21 +206,29 @@ export function selectCasualties(rows: readonly CountryCasualties[], selection: 
   }).slice(0, limit);
 }
 
-export const formatCasualties = (value: bigint | null, atLeast = false) => value == null ? '—' : `${atLeast ? '≥ ' : ''}${formatFixed(value, 0, 0)}`;
-export const casualtyRatio = (row: CountryCasualties) => row.atLeast ? '—' : formatRatio(row.dealt, row.taken);
+export const formatCasualties = (value: bigint | null, incomplete = false) => value == null ? '—' : `${incomplete ? '† ' : ''}${formatFixed(value, 0, 0)}`;
+const signedCorrection = (row: CountryCasualties) => row.dealt !== null && row.dealt < 0n || row.taken !== null && row.taken < 0n;
+export const casualtyRatio = (row: CountryCasualties) => row.atLeast || signedCorrection(row) ? '—' : formatRatio(row.dealt, row.taken);
+/** Exact signed labels and ranking stay separate from positive-only bar geometry. */
+export const casualtyBarValue = (value: bigint | null) => value === null ? null : Number(value > 0n ? value : 0n);
+/** A nonpositive read clears old positive geometry immediately, without changing native identity. */
+export const casualtyBarStretch = (row: CountryCasualties) => JSON.stringify([row.segment,
+  row.taken !== null && row.taken > 0n, row.dealt !== null && row.dealt > 0n]);
 
 /** The selected countries race by known taken; unknown is display-only. */
 export function casualtyRaceEntries(rows: readonly CountryCasualties[]): CountryRaceEntry[] {
   return rows.filter(row => row.taken !== null && row.knownTaken !== null).sort((a, b) => {
     const x = a.knownTaken!, y = b.knownTaken!;
     return x === y ? compareTags(a.tag, b.tag) : x > y ? -1 : 1;
-  }).map(row => ({ tag: row.tag, value: Number(row.taken), label: formatCasualties(row.taken, row.atLeast), stretch: row.segment }));
+  }).map(row => ({ tag: row.tag, value: casualtyBarValue(row.taken)!, label: formatCasualties(row.taken, row.atLeast), stretch: casualtyBarStretch(row) }));
 }
+
+export const SUBTOTAL_NOTE = 'Recorded subtotal (†): missing history may omit positive losses or negative corrections, so the full total and ratio are not known.';
 
 export const GAP_NOTE = "Wars fought entirely while the recording was not running are not counted.";
 
 export function casualtyTooltip(row: CountryCasualties, name: string, includeUnknown: boolean, unknownLabel: string, hasGap = false): TooltipContent {
-  const dated = row.readHour == null ? 'No sample at this hour.' : `As of ${formatDateTime(row.readHour)}; casualties are sampled once a day.`;
+  const dated = row.readHour == null ? 'No reading at this hour.' : `As of ${formatDateTime(row.readHour)}; casualties update at each hourly reading.`;
   return { title: name, subtitle: formatDateTime(row.hour), rows: [
     { label: 'Dealt', value: formatCasualties(row.dealt, row.atLeast) },
     { label: 'Taken (recorded attacker)', value: formatCasualties(row.knownTaken, row.atLeast) },
@@ -209,6 +237,6 @@ export function casualtyTooltip(row: CountryCasualties, name: string, includeUnk
     { label: 'Taken', value: formatCasualties(row.taken, row.atLeast), strong: true },
     { label: 'Ratio', value: casualtyRatio(row), strong: true },
   ], note: `${dated} The game’s casualty totals across land, sea and air. ${hasGap ? GAP_NOTE + ' ' : ''}${row.atLeast
-    ? 'At least: a war ended while the recording was not running, so its last losses are missing. ' : ''}${row.unknown == null
+    ? SUBTOTAL_NOTE + ' ' : ''}${signedCorrection(row) ? 'Signed corrections remain exact; only positive amounts draw bars. A loss ratio is not shown for signed corrections. ' : ''}${row.unknown == null
     ? 'Losses without a recorded attacker cannot be recovered exactly because earlier readings are missing or disagree.' : 'Losses with no recorded attacker add only to taken.'}` };
 }

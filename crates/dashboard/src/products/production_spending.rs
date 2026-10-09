@@ -1,17 +1,9 @@
-//! Delivered IC at read cost: each new whole unit in ProductionLineOutput is
-//! weighted by the matching ProductionLines cost at that read (fixed5).
-//!
-//! Speed is not exact factory output: ProduceEquipment@140F596C0 and naval
-//! ProduceEquipment@140F59ED0 replace it on the instant-production paths.
-//! Cost is not a delivery-tick price: SetEquipmentVariant@141926570 can replace
-//! variant and cost between passes; RefreshProductionState@141926DB0 writes the
-//! MIO-adjusted cost. Ordinary delivery divides by cost at 141921B80/141921C10.
-//! This product therefore names its read-cost valuation explicitly. It never
-//! reprices earlier deliveries or counts progress still in flight.
-//!
-//! A new delivery without its matching producer/design/MIO census cost is
-//! unknown, including an ended refit removed by 140F5CA10. A final publication
-//! with no new units needs no price and keeps its earlier exact value.
+//! Exact signed equipment-line factory IC from CREDIT's applied progress input
+//! (141920AF0), independently of delivery or the later census cost. Instant
+//! progress is recorded separately and excluded. See engine::line_output_sites
+//! for all four callers and their instant predicates. Deleted lines retain their
+//! last publication through the shared Equipment produced branch scan.
+//! Rocket sites use their independent retained country/design observation.
 
 pub use super::equipment::production::ProductionSpendingUnknown;
 use super::{
@@ -27,7 +19,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, Write},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use ts_rs::TS;
 
@@ -59,8 +54,20 @@ pub struct ProductionSpendingLeaf {
     pub type_key: String,
     pub name: Option<String>,
     pub domain: Option<Domain>,
+    pub rocket: bool,
     pub names: Vec<StockVariantName>,
     pub runs: Vec<ProductionSpendingRun>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionPresenceRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    /// Any owned line or observed Rocket event; null cannot certify emptiness.
+    pub present: Option<bool>,
+    /// Supplying equipment census/output read, with independent Rocket absence.
+    pub empty_census_hour: Option<i32>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -71,10 +78,18 @@ pub struct ProductionSpendingReply {
     pub decimals: u8,
     pub reads: Vec<i32>,
     pub observations: Vec<i32>,
-    /// Domain → content archetype → variant is built from these exact leaves.
+    pub equipment_observations: Vec<i32>,
+    pub rocket_observations: Vec<i32>,
+    pub equipment_reads: Vec<i32>,
+    pub rocket_reads: Vec<i32>,
+    pub rocket_key: Option<String>,
+    pub rocket_name: Option<String>,
+    /// Production source → content archetype → variant uses these exact leaves.
     pub leaves: Vec<ProductionSpendingLeaf>,
     /// The country's total is independent of unresolved type/domain membership.
     pub total: Vec<ProductionSpendingRun>,
+    pub rocket_total: Vec<ProductionSpendingRun>,
+    pub production: Vec<ProductionPresenceRun>,
     pub warnings: Vec<String>,
 }
 
@@ -105,10 +120,10 @@ fn append(runs: &mut Vec<ProductionSpendingRun>, run: ProductionSpendingRun) {
     }
 }
 
-/// Delivered IC at each read that changed it.
+/// Applied equipment-line IC at each read that changed it.
 type CostSeries = Vec<(u32, CostTotal)>;
 
-/// Groups sparse entry changes; reads with no delivery still carry exact zero.
+/// Groups sparse entry changes; reads with no applied input carry exact zero.
 fn histories(
     track: &TagHistory,
     refits: bool,
@@ -138,7 +153,7 @@ fn histories(
                     .checked_sub(before.raw)
                     .and_then(|sum| sum.checked_add(total.raw))
                     .ok_or_else(|| {
-                        io::Error::other("Delivered IC exceeds its exact integer range")
+                        io::Error::other("Applied IC exceeds its exact integer range")
                     })?;
                 value.reason = value.reason.or(total.reason);
             }
@@ -198,6 +213,231 @@ fn coverage(scanned: &ScannedProduced, track: &TagHistory) -> Vec<Coverage> {
         }
     }
     spans
+}
+
+fn rocket_coverage(scanned: &ScannedProduced, track: &TagHistory) -> Vec<Coverage> {
+    let first = track.identities.first();
+    let restart = scanned.rocket.observations.get(1).copied();
+    track
+        .hours
+        .iter()
+        .enumerate()
+        .map(|(sample, &hour)| Coverage {
+            first: hour,
+            last: track.last_hours[sample],
+            reason: if restart.is_some_and(|from| hour >= from) {
+                Some(ProductionSpendingUnknown::ObservationRestarted)
+            } else if first.is_some_and(|first| {
+                (first.0, first.1) != (track.identities[sample].0, track.identities[sample].1)
+            }) {
+                Some(ProductionSpendingUnknown::CountryChanged)
+            } else {
+                None
+            },
+        })
+        .collect()
+}
+
+/// Both independent sources must cover a combined total.
+fn combined(
+    equipment: &[ProductionSpendingRun],
+    rocket: &[ProductionSpendingRun],
+    equipment_observations: &[i32],
+    rocket_observations: &[i32],
+) -> io::Result<Vec<ProductionSpendingRun>> {
+    let boundaries: BTreeSet<i64> = equipment
+        .iter()
+        .chain(rocket)
+        .flat_map(|run| [i64::from(run.first_hour), i64::from(run.last_hour) + 1])
+        .collect();
+    let boundaries: Vec<_> = boundaries.into_iter().collect();
+    let mut result = Vec::new();
+    let (mut eq, mut ro) = (0, 0);
+    for pair in boundaries.windows(2) {
+        let first = pair[0] as i32;
+        while equipment.get(eq).is_some_and(|run| run.last_hour < first) {
+            eq += 1;
+        }
+        while rocket.get(ro).is_some_and(|run| run.last_hour < first) {
+            ro += 1;
+        }
+        let e = equipment.get(eq).filter(|run| run.first_hour <= first);
+        let r = rocket.get(ro).filter(|run| run.first_hour <= first);
+        if e.is_none() && r.is_none() {
+            continue;
+        }
+        let mut reason = e
+            .map_or(Some(ProductionSpendingUnknown::NotRecorded), |run| {
+                run.reason
+            })
+            .or_else(|| {
+                r.map_or(
+                    Some(ProductionSpendingUnknown::RocketTableUnavailable),
+                    |run| run.reason,
+                )
+            });
+        let origin = |observations: &[i32]| {
+            observations
+                .partition_point(|since| *since <= first)
+                .checked_sub(1)
+                .map(|index| observations[index])
+        };
+        if let (Some(equipment), Some(rocket)) =
+            (origin(equipment_observations), origin(rocket_observations))
+            && equipment != rocket
+        {
+            reason = reason.or(Some(ProductionSpendingUnknown::ObservationMismatch));
+        }
+        let total_raw = if reason.is_none() {
+            let e: i128 = e
+                .and_then(|run| run.total_raw.as_ref())
+                .expect("known equipment amount")
+                .parse()
+                .map_err(|_| io::Error::other("Equipment IC amount is malformed"))?;
+            let r: i128 = r
+                .and_then(|run| run.total_raw.as_ref())
+                .expect("known Rocket amount")
+                .parse()
+                .map_err(|_| io::Error::other("Rocket IC amount is malformed"))?;
+            Some(
+                e.checked_add(r)
+                    .ok_or_else(|| {
+                        io::Error::other("Combined production IC exceeds its exact integer range")
+                    })?
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        append(
+            &mut result,
+            ProductionSpendingRun {
+                first_hour: first,
+                last_hour: (pair[1] - 1) as i32,
+                total_raw,
+                reason,
+            },
+        );
+    }
+    Ok(result)
+}
+
+fn rocket_name(
+    buildings: &installed_content::buildings::Buildings,
+    texts: Option<&dyn Texts>,
+) -> Result<(String, Option<String>), String> {
+    let keys: Vec<_> = buildings
+        .declaration_order
+        .iter()
+        .filter(|key| {
+            buildings
+                .factory_flags
+                .get(*key)
+                .is_some_and(|flags| flags.rocket())
+                || buildings.ambiguous_factory_types.contains(*key)
+        })
+        .collect();
+    let [key] = keys.as_slice() else {
+        return Err(format!(
+            "{} content building definitions can classify Rocket production; the source name is not known",
+            keys.len()
+        ));
+    };
+    if buildings.ambiguous_factory_types.contains(*key)
+        || buildings.repeated_types.contains_key(*key)
+    {
+        return Err(format!(
+            "{key}: repeated Rocket building definition is ambiguous"
+        ));
+    }
+    Ok(((*key).clone(), texts.and_then(|texts| texts.text(key))))
+}
+
+type RocketName = Result<(String, Option<String>), String>;
+#[derive(Default)]
+struct RocketNameCache {
+    content: Option<(Arc<crate::catalogue::Catalogue>, RocketName)>,
+}
+
+fn cached_rocket_name(source: &Source, catalogue: &Arc<crate::catalogue::Catalogue>) -> RocketName {
+    let state = source.state::<RocketNameCache>();
+    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+    if !cache
+        .content
+        .as_ref()
+        .is_some_and(|(cached, _)| Arc::ptr_eq(cached, catalogue))
+    {
+        let name = installed_content::buildings::read(&catalogue.content.layers)
+            .map_err(|error| error.to_string())
+            .and_then(|buildings| rocket_name(&buildings, Some(&**catalogue)));
+        cache.content = Some((Arc::clone(catalogue), name));
+    }
+    cache
+        .content
+        .as_ref()
+        .expect("Rocket source name cached")
+        .1
+        .clone()
+}
+
+fn production_presence(
+    equipment: Option<&TagHistory>,
+    rocket: Option<&TagHistory>,
+) -> Vec<ProductionPresenceRun> {
+    let boundaries: Vec<_> = equipment
+        .into_iter()
+        .chain(rocket)
+        .flat_map(|track| {
+            track
+                .hours
+                .iter()
+                .zip(&track.last_hours)
+                .flat_map(|(first, last)| [i64::from(*first), i64::from(*last) + 1])
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    fn at(track: Option<&TagHistory>, hour: i32) -> Option<(&TagHistory, usize)> {
+        let track = track?;
+        let index = track
+            .hours
+            .partition_point(|read| *read <= hour)
+            .checked_sub(1)?;
+        (track.last_hours[index] >= hour).then_some((track, index))
+    }
+    let mut result: Vec<ProductionPresenceRun> = Vec::new();
+    for pair in boundaries.windows(2) {
+        let hour = pair[0] as i32;
+        let equipment_at = at(equipment, hour);
+        let presence = |sample: Option<(&TagHistory, usize)>| {
+            sample.and_then(|(track, index)| track.presence.get(index).copied().flatten())
+        };
+        let present = match (presence(equipment_at), presence(at(rocket, hour))) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        };
+        let empty_census_hour = equipment_at.and_then(|(track, index)| {
+            // False presence already requires a complete equipment census/output read.
+            (present == Some(false)).then_some(track.hours[index])
+        });
+        let last = (pair[1] - 1) as i32;
+        if let Some(previous) = result.last_mut()
+            && previous.last_hour.checked_add(1) == Some(hour)
+            && previous.present == present
+            && previous.empty_census_hour == empty_census_hour
+        {
+            previous.last_hour = last;
+        } else {
+            result.push(ProductionPresenceRun {
+                first_hour: hour,
+                last_hour: last,
+                present,
+                empty_census_hour,
+            });
+        }
+    }
+    result
 }
 
 fn runs(
@@ -274,6 +514,7 @@ pub(crate) fn reply(
     mut warnings: Vec<String>,
     cancel: &AtomicBool,
 ) -> io::Result<ProductionSpendingReply> {
+    warnings.extend(scanned.variants.warnings());
     let track = scanned.tags.get(&params.tag);
     let variants: BTreeSet<u64> = track
         .into_iter()
@@ -306,14 +547,16 @@ pub(crate) fn reply(
         ));
     }
     if !scanned.spending_tainted.is_empty() {
-        warnings.push("A recording gap or missed output publication ends exact delivered IC; ended lines publish their final count only once.".into());
+        warnings.push("A recording gap, missing spending suffix or missed output publication ends exact equipment-line IC; ended lines publish their final totals only once.".into());
     }
     if scanned.observations.len() > 1 {
-        warnings.push("The output observation restarted; deliveries across the restart are not known, so the campaign total remains Not known.".into());
+        warnings.push("The output observation restarted; applied IC across the restart is not known, so the campaign total remains Not known.".into());
     }
     if scanned.unlisted > 0 {
-        warnings.push(format!("{} lines have no recorded census kind; as Equipment produced does, they count as new production. New deliveries without a matching read cost remain Not known.", scanned.unlisted));
+        warnings.push(format!("{} lines have no recorded census kind; as Equipment produced does, they count as new production.", scanned.unlisted));
     }
+    warnings
+        .push("Instant progress is recorded separately and excluded from factory spending.".into());
     let mut leaves = Vec::new();
     let mut total = Vec::new();
     let mut size = Counter { bytes: 0, cancel };
@@ -340,6 +583,7 @@ pub(crate) fn reply(
                 type_key: kind.key.clone(),
                 name: named.type_name(&kind.key),
                 domain: kind.domain,
+                rocket: false,
                 names: scanned.variants.names(variant, named.texts),
                 runs: runs(
                     track,
@@ -359,14 +603,95 @@ pub(crate) fn reply(
             params.tag
         ));
     }
+    let mut rocket_total = Vec::new();
+    if let Some(rocket) = scanned.rocket.tags.get(&params.tag) {
+        let coverage = rocket_coverage(scanned, rocket);
+        let (history, totals) = histories(rocket, true)?;
+        let variants: Vec<_> = history
+            .keys()
+            .copied()
+            .filter(|variant| *variant != 0)
+            .collect();
+        let (types, reasons, _) =
+            production::variant_types_for(&scanned.variants, variants.iter().copied(), named);
+        warnings.extend(
+            reasons
+                .into_iter()
+                .map(|reason| format!("A Rocket equipment type cannot be resolved: {reason}.")),
+        );
+        for variant in variants {
+            cancelled(cancel)?;
+            let kind = &types[&variant];
+            let leaf = ProductionSpendingLeaf {
+                variant: variant.to_string(),
+                type_key: kind.key.clone(),
+                name: named.type_name(&kind.key),
+                domain: kind.domain,
+                rocket: true,
+                names: scanned.variants.names(variant, named.texts),
+                runs: runs(rocket, &coverage, &history[&variant], cancel)?,
+            };
+            serde_json::to_writer(&mut size, &leaf)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            leaves.push(leaf);
+        }
+        rocket_total = runs(rocket, &coverage, &totals, cancel)?;
+    }
+    if scanned.rocket.reads.is_empty() {
+        warnings.push(
+            "Rocket production spending is not known: no independently readable Rocket coverage."
+                .into(),
+        );
+    } else if scanned.rocket.unread > 0 {
+        warnings.push(format!(
+            "{} Rocket publications have no independent coverage; those hours are not known.",
+            scanned.rocket.unread
+        ));
+    }
+    if scanned.rocket.unattributed > 0 {
+        warnings.push(format!("{} retained Rocket rows have no identified producing country; their amounts are not assigned to another country.", scanned.rocket.unattributed));
+    }
+    if scanned.rocket.inconsistent > 0 {
+        warnings.push(format!("{} retained Rocket rows regressed counters or changed amounts without new events; the affected scope's measure stays unknown.", scanned.rocket.inconsistent));
+    }
+    let total = combined(
+        &total,
+        &rocket_total,
+        &scanned.observations,
+        &scanned.rocket.observations,
+    )?;
+    let reads = scanned
+        .reads
+        .iter()
+        .chain(&scanned.rocket.reads)
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let observations = scanned
+        .observations
+        .iter()
+        .chain(&scanned.rocket.observations)
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let result = ProductionSpendingReply {
         branch_id: params.branch_id.clone(),
         tag: params.tag.clone(),
         decimals: EQUIPMENT_DECIMALS,
-        reads: scanned.reads.clone(),
-        observations: scanned.observations.clone(),
+        reads,
+        observations,
+        equipment_observations: scanned.observations.clone(),
+        rocket_observations: scanned.rocket.observations.clone(),
+        equipment_reads: scanned.reads.clone(),
+        rocket_reads: scanned.rocket.reads.clone(),
+        rocket_key: None,
+        rocket_name: None,
         leaves,
         total,
+        rocket_total,
+        production: production_presence(track, scanned.rocket.tags.get(&params.tag)),
         warnings,
     };
     serde_json::to_writer(Counter { bytes: 0, cancel }, &result)
@@ -386,6 +711,7 @@ impl Product for ProductionSpending {
             ProductionSpendingUnknown::decl(),
             ProductionSpendingRun::decl(),
             ProductionSpendingLeaf::decl(),
+            ProductionPresenceRun::decl(),
             ProductionSpendingReply::decl(),
         ]
     }
@@ -406,7 +732,7 @@ impl Product for ProductionSpending {
         let scanned = production::scanned(source, branch, cancel)?;
         let mut warnings = Vec::new();
         let (catalogue, units) = production::content(source, context, &mut warnings);
-        reply(
+        let mut reply = reply(
             &scanned,
             params,
             Named {
@@ -417,7 +743,24 @@ impl Product for ProductionSpending {
             },
             warnings,
             cancel,
-        )
+        )?;
+        if let Some(catalogue) = catalogue {
+            if reply.leaves.iter().any(|leaf| leaf.rocket) {
+                match cached_rocket_name(source, &catalogue) {
+                    Ok((key, name)) => {
+                        reply.rocket_key = Some(key);
+                        reply.rocket_name = name;
+                    }
+                    Err(reason) => reply.warnings.push(format!(
+                        "Rocket production source name is unavailable: {reason}."
+                    )),
+                }
+            }
+            reply.warnings.extend(catalogue.refusal_lines());
+        }
+        serde_json::to_writer(Counter { bytes: 0, cancel }, &reply)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(reply)
     }
 }
 

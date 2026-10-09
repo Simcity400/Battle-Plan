@@ -1,0 +1,916 @@
+use super::*;
+use engine::{cair_wing, memory::SliceMemory};
+use replay::rows::TableRows;
+
+fn put64(bytes: &mut [u8], at: usize, value: u64) {
+    bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+}
+fn put32(bytes: &mut [u8], at: usize, value: u32) {
+    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+}
+fn array(bytes: &mut [u8], at: usize, data: usize, count: u32) {
+    put64(bytes, at, data as u64);
+    put32(bytes, at + 8, count);
+    put32(bytes, at + 12, count);
+}
+
+#[test]
+fn game_score_projection_keeps_5000_countries_independent_values_and_ordered_witnesses() {
+    const COUNT: usize = 5000;
+    let mut capacity = Capacities::default();
+    capacity.raise_for_countries(COUNT + 1);
+    capacity.fleets = 3;
+    capacity.sites = 2;
+    let mut capture = Captured::with_capacities(&capacity);
+    for (index, row) in capture.countries.rows.iter_mut().take(COUNT).enumerate() {
+        *row = native::CountryRow {
+            country: 0x4000_0000 + index as u32,
+            canonical_slot: index as u32 + 1,
+            army_count: Ok(-(index as i32)),
+            navy_count: Ok(0),
+            land_count: Ok(index as i32),
+            fleet_start: 0,
+            fleet_len: 0,
+        };
+        capture.air.countries[index + 1].read = native::AirRead {
+            state: native::AirState::Absent,
+            error: "",
+            len: 0,
+            required: 0,
+        };
+    }
+    capture.countries.rows[0].army_count = Err("game score army roster count unreadable");
+    capture.countries.rows[0].fleet_len = 3;
+    capture.fleets.first.copy_from_slice(&[
+        native::FleetCount {
+            fleet: 61,
+            task_forces: Ok(i32::MAX),
+        },
+        native::FleetCount {
+            fleet: 62,
+            task_forces: Ok(2),
+        },
+        native::FleetCount {
+            fleet: 61,
+            task_forces: Ok(i32::MAX),
+        },
+    ]);
+    capture.fleets.len = 3;
+    capture.air.countries[1] = AirCountry {
+        start: 0,
+        read: native::AirRead {
+            state: native::AirState::Present,
+            error: "",
+            len: 2,
+            required: 2,
+        },
+    };
+    capture.air.sites.first.copy_from_slice(&[
+        native::AirSite {
+            base: 65,
+            access: Ok(true),
+        },
+        native::AirSite {
+            base: 65,
+            access: Err("game score air-site access unreadable"),
+        },
+    ]);
+    capture.air.sites.len = 2;
+    capture.countries.outcome = Outcome::Rows { len: COUNT };
+    capture.country_len = COUNT;
+    let [
+        TableView::Complete(TableRows::CountryGameScoreInputs(rows)),
+        _,
+        _,
+    ] = capture.tables()
+    else {
+        panic!("all recorded countries must be available");
+    };
+    assert_eq!(rows.len(), COUNT);
+    assert_eq!(
+        (rows[0].army_count, rows[0].navy_count, rows[0].land_count),
+        (None, Some(0), Some(0))
+    );
+    assert_eq!(
+        rows[0].army_error,
+        b"game score army roster count unreadable"
+    );
+    assert_eq!(
+        rows[0]
+            .fleets
+            .iter()
+            .map(|row| row.fleet)
+            .collect::<Vec<_>>(),
+        [61, 62, 61]
+    );
+    assert_eq!(
+        rows[0]
+            .first_sites
+            .iter()
+            .map(|row| row.base)
+            .collect::<Vec<_>>(),
+        [65, 65]
+    );
+    assert_eq!(
+        rows[0].first_sites[1].access,
+        rows::GameScoreAirSite::ACCESS_UNKNOWN
+    );
+    assert_eq!(rows[COUNT - 1].country, 0x4000_0000 + COUNT as u32 - 1);
+    assert_eq!(rows[COUNT - 1].army_count, Some(-4999));
+    let mut work = Work::default();
+    work.observe(&capture).unwrap();
+    let status = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(status["country_rows"], COUNT);
+    assert_eq!(
+        status["refusals"]["country_results"]["game score army roster count unreadable"],
+        1
+    );
+    assert_eq!(
+        status["refusals"]["operands"]["game score air-site access unreadable"],
+        1
+    );
+    capture.countries.outcome = Outcome::Truncated {
+        len: COUNT,
+        unread_rows: 3,
+    };
+    work.observe(&capture).unwrap();
+    let status = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(status["latest_arenas"]["countries"]["required"], COUNT + 3);
+}
+
+#[test]
+fn game_score_status_counts_current_read_prefix_errors_after_census_failure() {
+    use crate::extended::air::wing_test_kit as kit;
+    const COUNTRY: usize = 0x20000;
+    const FLEET: usize = 0x3e100;
+    let mut bytes = kit::fixture();
+    put64(&mut bytes, 0x11010, 0xdead0000);
+    array(&mut bytes, COUNTRY + engine::ccountry::FLEETS, 0x3e000, 2);
+    put64(&mut bytes, 0x3e000, FLEET as u64);
+    put64(&mut bytes, FLEET, engine::cfleet::VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET + engine::cfleet::HANDLE, 61);
+    bytes[kit::WING + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES] = 255;
+    struct Fault<'a>(&'a [u8]);
+    impl Memory for Fault<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            let failed = [
+                COUNTRY + engine::ccountry::DIVISIONS_COUNT,
+                FLEET + engine::cfleet::TASK_FORCE_COUNT,
+                kit::WING + cair_wing::DEFAULT_STATS + 0x33 * 8,
+            ];
+            !failed
+                .into_iter()
+                .any(|field| at <= field && field < at.saturating_add(out.len()))
+                && kit::memory(self.0).copy(at, out)
+        }
+    }
+    let memory = Fault(&bytes);
+    let mut capture = Captured::with_capacities(&Capacities {
+        countries: 3,
+        fleets: 2,
+        wings: 1,
+        ..Default::default()
+    });
+    capture.capture(&memory, kit::BASE, kit::GAME_STATE);
+    assert!(matches!(
+        capture.countries.outcome,
+        Outcome::Unavailable { .. }
+    ));
+    assert_eq!(capture.country_len, 1);
+    capture.begin_air();
+    capture.owner(&memory, kit::BASE, 1, None);
+    capture.wing(
+        &memory,
+        kit::WING,
+        &cair_wing::ScoreLeaf {
+            id: 65,
+            planes: Ok(10),
+        },
+    );
+    capture.finish_air(Outcome::Unavailable {
+        reason: "air wing pool vtable mismatch",
+    });
+    let mut work = Work::default();
+    for reset in [false, true] {
+        if reset {
+            capture.reset();
+        }
+        work.observe(&capture).unwrap();
+        let status = serde_json::to_value(work.status()).unwrap();
+        assert_eq!(
+            (
+                status["country_rows"].as_u64(),
+                status["wing_rows"].as_u64()
+            ),
+            (Some(1), Some(1))
+        );
+        let refusals = &status["refusals"];
+        assert_eq!(status["slot_zero_null"], 1);
+        assert!(refusals["country_results"]["game score country slot zero is null"].is_null());
+        assert_eq!(
+            refusals["country_results"]["game score army roster count unreadable"],
+            1
+        );
+        assert_eq!(
+            refusals["country_results"]["game score task force count unreadable"],
+            1
+        );
+        assert_eq!(
+            refusals["operands"]["game score task force count unreadable"],
+            1
+        );
+        assert_eq!(refusals["operands"]["game score fleet pointer is null"], 1);
+        assert_eq!(
+            refusals["operands"]["game score air superiority stat unreadable"],
+            1
+        );
+    }
+}
+
+#[test]
+fn game_score_air_census_is_unknown_until_finished_and_short_storage_is_named() {
+    let mut captured = Captured::with_capacities(&Capacities {
+        countries: 1,
+        ..Default::default()
+    });
+    captured.reset();
+    assert!(
+        matches!(captured.tables()[1], TableView::Unavailable { ref reason }
+        if reason == "game score air census not run")
+    );
+    captured.finish_air(Outcome::Rows { len: 0 });
+    assert!(
+        matches!(captured.tables()[1], TableView::Complete(TableRows::AirWingGameScoreStats(ref rows))
+        if rows.is_empty())
+    );
+    captured.begin_air();
+    assert!(
+        matches!(captured.tables()[1], TableView::Unavailable { ref reason }
+        if reason == "game score air census not run")
+    );
+    captured.countries.rows[0] = native::CountryRow {
+        country: 5,
+        canonical_slot: 2,
+        army_count: Ok(0),
+        navy_count: Ok(0),
+        land_count: Ok(0),
+        ..Default::default()
+    };
+    captured.countries.outcome = Outcome::Rows { len: 1 };
+    captured.country_len = 1;
+    let [
+        TableView::Complete(TableRows::CountryGameScoreInputs(rows)),
+        _,
+        _,
+    ] = captured.tables()
+    else {
+        panic!("independent country operands remain available");
+    };
+    assert_eq!(
+        rows[0].air_error,
+        b"game score air-country storage exhausted"
+    );
+    assert_eq!(
+        rows[0].air_state,
+        rows::CountryGameScoreInputRow::AIR_UNKNOWN
+    );
+    let mut work = Work::default();
+    work.observe(&captured).unwrap();
+    let status = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(
+        status["refusals"]["country_results"]["game score air-country storage exhausted"],
+        1
+    );
+    assert_eq!(status["latest_arenas"]["countries"]["required"], 3);
+    assert_eq!(status["latest_arenas"]["countries"]["capacity"], 1);
+    assert_eq!(
+        [
+            native::AirState::Unknown,
+            native::AirState::Absent,
+            native::AirState::Present
+        ]
+        .map(replay_air_state),
+        [
+            rows::CountryGameScoreInputRow::AIR_UNKNOWN,
+            rows::CountryGameScoreInputRow::AIR_ABSENT,
+            rows::CountryGameScoreInputRow::AIR_PRESENT
+        ]
+    );
+}
+
+#[test]
+fn game_score_sizing_status_retains_named_counts_without_capture_refusals() {
+    let mut work = Work::default();
+    let observed = native::ArenaSizing {
+        demand: native::ArenaDemand {
+            fleets: 7,
+            ..Default::default()
+        },
+        failures: vec![("game score sizing air-pool vtable mismatch", 2)],
+    };
+    work.observe_sizing(&observed).unwrap();
+    work.observe_sizing(&observed).unwrap();
+    let status = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(status["sizing_observations"], 2);
+    assert_eq!(
+        status["sizing_failures"]["game score sizing air-pool vtable mismatch"],
+        4
+    );
+    assert!(
+        status["refusals"]["operands"]
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
+    struct Unreadable;
+    impl Memory for Unreadable {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            false
+        }
+    }
+    let unavailable = crate::country_scale::observe_game_score(&Unreadable, 0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        unavailable.failures,
+        [("input demand game state unreadable or address overflow", 1)]
+    );
+    struct NullState;
+    impl Memory for NullState {
+        fn copy(&self, _: usize, output: &mut [u8]) -> bool {
+            output.fill(0);
+            true
+        }
+    }
+    assert!(
+        crate::country_scale::observe_game_score(&NullState, 0)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn game_score_test_hints_are_scoped_without_changing_process_hints() {
+    let before = [
+        SITES_HINT.load(Ordering::Relaxed),
+        WINGS_HINT.load(Ordering::Relaxed),
+    ];
+    {
+        let _hints = TestHints::new();
+        assert!(note_arena_hints(3, 7));
+        assert!(!note_arena_hints(2, 6));
+        assert_eq!(arena_hints(), [3, 7]);
+        {
+            let _nested = TestHints::new();
+            note_arena_hints(11, 13);
+            assert_eq!(arena_hints(), [11, 13]);
+        }
+        assert_eq!(arena_hints(), [3, 7]);
+        let joined = std::thread::spawn(arena_hints).join().unwrap();
+        assert_eq!(joined, before);
+    }
+    assert_eq!(
+        [
+            SITES_HINT.load(Ordering::Relaxed),
+            WINGS_HINT.load(Ordering::Relaxed)
+        ],
+        before
+    );
+}
+
+#[test]
+fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
+    use crate::extended::air::{self, AirWingCopyContext, AirWingJob, wing_test_kit as kit};
+    let _hint = crate::country_scale::hint_guard();
+    let _arenas = TestHints::new();
+    let mut bytes = kit::fixture();
+    const COUNTRY: usize = 0x20000;
+    const ENTRY: usize = 0x31000;
+    const FLEET: usize = 0x3e100;
+    const SITE: usize = 0x3f100;
+    array(&mut bytes, COUNTRY + engine::ccountry::FLEETS, 0x3e000, 3);
+    for index in 0..3 {
+        put64(&mut bytes, 0x3e000 + index * 8, FLEET as u64);
+    }
+    put64(&mut bytes, FLEET, engine::cfleet::VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET + engine::cfleet::HANDLE, 61);
+    put32(&mut bytes, FLEET + engine::cfleet::TASK_FORCE_COUNT, 7);
+    array(
+        &mut bytes,
+        ENTRY + engine::cstrategic_air::FIRST_AIR_SITES,
+        0x3f000,
+        1,
+    );
+    put64(&mut bytes, 0x3f000, SITE as u64);
+    put64(&mut bytes, SITE, engine::cair_base::VTABLE_RVA as u64);
+    put64(&mut bytes, SITE + 8, 65);
+    put32(
+        &mut bytes,
+        SITE + engine::cair_base::COUNTRY_CONTAINERS_COUNT,
+        1,
+    );
+    for wing in [kit::WING, 0x34000] {
+        bytes[wing + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES] = 255;
+    }
+    let memory = kit::memory(&bytes);
+    let observed = native::arena_demand(&memory, 0, kit::GAME_STATE).unwrap();
+    assert!(observed.failures.is_empty());
+    let demand = observed.demand;
+    assert_eq!(
+        demand,
+        native::ArenaDemand {
+            countries: 3,
+            fleets: 3,
+            sites: 1,
+            wings: 2
+        }
+    );
+    let mut capacity = Capacities::default();
+    capacity.raise(demand);
+    for _ in 0..crate::sampling::BUFFERS {
+        let mut capture = Captured::with_capacities(&capacity);
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            capture.capture(&memory, 0, kit::GAME_STATE);
+            capture.begin_air();
+            capture.owner(&memory, 0, 1, Some(ENTRY));
+            capture.finish_air(Outcome::Rows { len: 0 });
+        });
+        assert_eq!(capture.countries.rows[0].navy_count, Ok(21));
+        assert_eq!(
+            (
+                capture.air.countries[1].read.state,
+                capture.air.countries[1].read.len
+            ),
+            (native::AirState::Present, 1)
+        );
+    }
+    let context = AirWingCopyContext {
+        base: 0,
+        game_state: kit::GAME_STATE,
+        hour: 0,
+        force_full: true,
+        limits: [2, 3, 2],
+        naval_limit: 2,
+        game_score: true,
+    };
+    // Fresh jobs and replacements returned by frame loans both use the hints.
+    for _ in 0..3 {
+        let mut job = AirWingJob::with_game_score(true);
+        let report = crate::allocation_failure_tests::with_allocations_denied(|| {
+            air::copy_air_refresh(&memory, context, &mut job)
+        });
+        assert!(report.raw_ok);
+        assert_eq!(job.game_score.wings.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(
+            job.game_score.countries[1].read.state,
+            native::AirState::Present
+        );
+        assert_eq!(job.game_score.sites.len, 1);
+    }
+}
+
+#[test]
+fn game_score_disable_performs_no_operand_reads_and_survives_country_loan() {
+    struct NoRead;
+    impl Memory for NoRead {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            panic!("disabled score read");
+        }
+    }
+    let mut capacity = Capacities {
+        enabled: false,
+        ..Default::default()
+    };
+    capacity.raise_for_countries(5001);
+    let mut capture = Captured::with_capacities(&capacity);
+    assert_eq!(capture.allocated_bytes(), 0);
+    capture.grow(&mut capacity);
+    assert_eq!(capture.allocated_bytes(), 0);
+    assert_eq!(capture.capture(&NoRead, 0, 0), [0; N]);
+    capture.begin_air();
+    capture.owner(&NoRead, 0, 1, Some(0x1000));
+    capture.wing(
+        &NoRead,
+        0x2000,
+        &cair_wing::ScoreLeaf {
+            id: 0,
+            planes: Ok(0),
+        },
+    );
+    capture.finish_air(Outcome::Rows { len: 1 });
+    assert!(capture.tables().iter().all(|view| matches!(view, TableView::Unavailable { reason } if reason == GAME_SCORE_DISABLED_REASON)));
+    let mut enabled = Captured::with_capacities(&Capacities {
+        countries: 2,
+        ..Default::default()
+    });
+    let mut spare = Captured::vacant();
+    enabled.swap_country(&mut spare);
+    enabled.begin_air();
+    enabled.owner(&NoRead, 0, 1, None);
+    assert!(spare.enabled);
+    enabled.swap_country(&mut spare);
+    assert_eq!(
+        enabled.air.countries[1].read.state,
+        native::AirState::Absent
+    );
+}
+
+#[test]
+fn game_score_disabled_wing_buffers_ignore_live_hints() {
+    use crate::extended::air::AirWingJob;
+    let _hint = crate::country_scale::hint_guard();
+    let _arenas = TestHints::new();
+    crate::country_scale::note_slots(5001);
+    note_arena_hints(7, 11);
+    let mut job = AirWingJob::new();
+    assert_eq!(job.game_score.allocated_bytes(), 0);
+    job.presize_game_score();
+    job.grow();
+    assert_eq!(job.game_score.allocated_bytes(), 0);
+    let mut enabled = AirWingJob::with_game_score(true);
+    let before = enabled.game_score.allocated_bytes();
+    assert!(before > 0);
+    note_arena_hints(17, 19);
+    enabled.presize_game_score();
+    assert!(enabled.game_score.allocated_bytes() > before);
+}
+
+#[test]
+fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
+    use crate::extended::air::{self, AirWingCopyContext, AirWingJob, wing_test_kit as kit};
+    let mut bytes = kit::fixture();
+    const ENTRY: usize = 0x31000;
+    const BASE: usize = 0x3a000;
+    array(
+        &mut bytes,
+        ENTRY + engine::cstrategic_air::FIRST_AIR_SITES,
+        0x3b000,
+        2,
+    );
+    put64(&mut bytes, 0x3b000, BASE as u64);
+    put64(&mut bytes, 0x3b008, BASE as u64);
+    put64(&mut bytes, BASE, engine::cair_base::VTABLE_RVA as u64);
+    put64(&mut bytes, BASE + 8, 65);
+    put32(
+        &mut bytes,
+        BASE + engine::cair_base::COUNTRY_CONTAINERS_COUNT,
+        2,
+    );
+    put64(
+        &mut bytes,
+        BASE + engine::cair_base::COUNTRY_CONTAINERS,
+        0x3c000,
+    );
+    put64(&mut bytes, 0x3c008, 0x3d000);
+    for wing in [kit::WING, 0x34000] {
+        bytes[wing + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES] = 255;
+        put64(
+            &mut bytes,
+            wing + cair_wing::DEFAULT_STATS + 0x33 * 8,
+            (-73_i64) as u64,
+        );
+    }
+    let context = AirWingCopyContext {
+        base: kit::BASE,
+        game_state: kit::GAME_STATE,
+        hour: 0,
+        force_full: true,
+        limits: [1024, 8192, 4096],
+        naval_limit: 4096,
+        game_score: true,
+    };
+    let mut job = AirWingJob::new();
+    job.game_score = AirInputs::new(false, 3, 2, 2);
+    let report = crate::allocation_failure_tests::with_allocations_denied(|| {
+        air::copy_air_refresh(&kit::memory(&bytes), context, &mut job)
+    });
+    assert!(report.raw_ok);
+    assert_eq!(job.game_score.wings.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(job.game_score.wings.rows[0].stat_raw, Ok(-73));
+    assert_eq!(job.game_score.wings.rows[0].planes, Ok(10));
+    assert_eq!(
+        job.game_score.countries[1].read.state,
+        native::AirState::Present
+    );
+    assert_eq!(
+        job.game_score.sites.first[..2],
+        [native::AirSite {
+            base: 65,
+            access: Ok(true)
+        }; 2]
+    );
+    struct ScoreReads<'a> {
+        bytes: &'a [u8],
+        reads: std::cell::Cell<usize>,
+    }
+    impl Memory for ScoreReads<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            let watched = [
+                ENTRY + engine::cstrategic_air::FIRST_AIR_SITES,
+                kit::WING + cair_wing::DEFAULT_STATS + 0x33 * 8,
+                0x34000 + cair_wing::DEFAULT_STATS + 0x33 * 8,
+            ];
+            if watched
+                .into_iter()
+                .any(|value| at <= value && value < at.saturating_add(out.len()))
+            {
+                self.reads.set(self.reads.get() + 1);
+            }
+            kit::memory(self.bytes).copy(at, out)
+        }
+    }
+    let disabled = ScoreReads {
+        bytes: &bytes,
+        reads: Default::default(),
+    };
+    assert!(
+        air::copy_air_refresh(
+            &disabled,
+            AirWingCopyContext {
+                game_score: false,
+                ..context
+            },
+            &mut job
+        )
+        .raw_ok
+    );
+    assert_eq!(
+        disabled.reads.get(),
+        0,
+        "disabled extensions add no native operand reads"
+    );
+    struct Fault<'a> {
+        bytes: &'a [u8],
+        at: usize,
+    }
+    impl Memory for Fault<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            !(at <= self.at && self.at < at.saturating_add(out.len()))
+                && kit::memory(self.bytes).copy(at, out)
+        }
+    }
+    let memory = Fault {
+        bytes: &bytes,
+        at: kit::WING + cair_wing::DEFAULT_STATS + 0x33 * 8,
+    };
+    assert!(air::copy_air_refresh(&memory, context, &mut job).raw_ok);
+    assert!(matches!(job.source_outcome, Outcome::Rows { len: 2 }));
+    assert_eq!(
+        job.game_score.wings.rows[0].stat_raw,
+        Err("game score air superiority stat unreadable")
+    );
+    assert_eq!(job.game_score.wings.rows[1].stat_raw, Ok(-73));
+    let mut unrelated = bytes.clone();
+    put64(
+        &mut unrelated,
+        kit::WING + cair_wing::MISSION + engine::air_mission::REGION,
+        0xdead0000,
+    );
+    assert!(air::copy_air_refresh(&kit::memory(&unrelated), context, &mut job).raw_ok);
+    assert!(matches!(job.source_outcome, Outcome::Unavailable { .. }));
+    assert_eq!(job.game_score.wings.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(
+        (
+            job.game_score.wings.rows[0].planes,
+            job.game_score.wings.rows[0].stat_raw
+        ),
+        (Ok(10), Ok(-73))
+    );
+    let mut capture = Captured::with_capacities(&Capacities::default());
+    let original_wings = job.game_score.wings.rows.as_ptr();
+    capture.install_air(&mut job.game_score);
+    assert_eq!(
+        capture.air.wings.rows.as_ptr(),
+        original_wings,
+        "owned transfer must not clone rows"
+    );
+    assert!(job.game_score.grow_for_next());
+    job.game_score.grow_owned();
+    assert!(
+        job.game_score.countries.len() >= 2
+            && job.game_score.sites.first.len() >= 2
+            && job.game_score.wings.rows.len() >= 2
+    );
+}
+
+#[test]
+fn game_score_arena_pressure_keeps_other_operands_and_recovers_after_growth() {
+    use crate::extended::air::wing_test_kit as kit;
+    let mut bytes = kit::fixture();
+    const COUNTRY: usize = 0x20000;
+    const ENTRY: usize = 0x31000;
+    const FLEET: usize = 0x3e100;
+    put32(
+        &mut bytes,
+        COUNTRY + engine::ccountry::DIVISIONS_COUNT,
+        (-2_i32) as u32,
+    );
+    put32(
+        &mut bytes,
+        COUNTRY + engine::ccountry::CONTROLLED_PROVINCES_COUNT,
+        9,
+    );
+    array(&mut bytes, COUNTRY + engine::ccountry::FLEETS, 0x3e000, 1);
+    put64(&mut bytes, 0x3e000, FLEET as u64);
+    put64(&mut bytes, FLEET, engine::cfleet::VTABLE_RVA as u64);
+    put64(&mut bytes, FLEET + engine::cfleet::HANDLE, 61);
+    put32(&mut bytes, FLEET + engine::cfleet::TASK_FORCE_COUNT, 7);
+    array(
+        &mut bytes,
+        ENTRY + engine::cstrategic_air::FIRST_AIR_SITES,
+        0x3f000,
+        1,
+    );
+    put64(&mut bytes, 0x3f000, 0x3f100);
+    put64(&mut bytes, 0x3f100, engine::cair_base::VTABLE_RVA as u64);
+    put64(&mut bytes, 0x3f108, 65);
+    // No access: the native bounds test certifies false without a container.
+    put32(
+        &mut bytes,
+        0x3f100 + engine::cair_base::COUNTRY_CONTAINERS_COUNT,
+        1,
+    );
+    struct Globals<'a>(&'a [u8]);
+    impl Memory for Globals<'_> {
+        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
+            if (0x0331_ebf8..=0x0331_eef8).contains(&at) && out.len() == 8 {
+                out.copy_from_slice(&100_000_i64.to_le_bytes());
+                true
+            } else {
+                kit::memory(self.0).copy(at, out)
+            }
+        }
+    }
+    let memory = Globals(&bytes);
+    let mut capacity = Capacities {
+        countries: 3,
+        ..Default::default()
+    };
+    let mut capture = Captured::with_capacities(&capacity);
+    for hour in 0..2 {
+        capture.reset();
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            capture.capture(&memory, 0, kit::GAME_STATE);
+            capture.begin_air();
+            capture.owner(&memory, 0, 1, Some(ENTRY));
+            capture.finish_air(Outcome::Rows { len: 0 });
+        });
+        let [
+            TableView::Complete(TableRows::CountryGameScoreInputs(countries)),
+            _,
+            TableView::Complete(TableRows::GameScoreMultipliers(multipliers)),
+        ] = capture.tables()
+        else {
+            panic!("independent fields remain published");
+        };
+        assert_eq!(
+            (countries[0].army_count, countries[0].land_count),
+            (Some(-2), Some(9))
+        );
+        assert_eq!(
+            (multipliers[0].total_raw, multipliers[0].land_raw),
+            (Some(100_000), Some(100_000))
+        );
+        if hour == 0 {
+            assert_eq!(countries[0].navy_count, None);
+            assert_eq!(
+                countries[0].navy_error,
+                b"game score fleet witness arena exhausted"
+            );
+            assert_eq!(
+                countries[0].air_state,
+                rows::CountryGameScoreInputRow::AIR_UNKNOWN
+            );
+            assert_eq!(
+                countries[0].air_error,
+                b"game score first air-site arena exhausted"
+            );
+            assert!(countries[0].first_sites.is_empty());
+            capture.grow(&mut capacity);
+        } else {
+            assert_eq!(countries[0].navy_count, Some(7));
+            assert_eq!(countries[0].fleets[0].fleet, 61);
+            assert_eq!(
+                countries[0].air_state,
+                rows::CountryGameScoreInputRow::AIR_PRESENT
+            );
+            assert_eq!(
+                countries[0].first_sites[0].access,
+                rows::GameScoreAirSite::ACCESS_FALSE
+            );
+        }
+    }
+}
+
+#[test]
+fn game_score_air_short_storage_grows_from_full_demand_and_absence_is_not_failure() {
+    let mut bytes = vec![0; 0x500];
+    array(
+        &mut bytes,
+        0x100 + engine::cstrategic_air::FIRST_AIR_SITES,
+        0x300,
+        7,
+    );
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut air = AirInputs::new(true, 1, 0, 0);
+    air.begin(true);
+    air.owner(&memory, 0, 2, Some(0x100));
+    air.owner(&memory, 0, 3, None);
+    air.finish(Outcome::Truncated {
+        len: 0,
+        unread_rows: 9,
+    });
+    assert_eq!(
+        (
+            air.required_countries,
+            air.sites.required,
+            air.required_wings
+        ),
+        (4, 7, 9)
+    );
+    air.grow_owned();
+    assert!(air.countries.len() >= 4 && air.sites.first.len() >= 7 && air.wings.rows.len() >= 9);
+    air.begin(true);
+    air.owner(&memory, 0, 3, None);
+    array(
+        &mut bytes,
+        0x100 + engine::cstrategic_air::FIRST_AIR_SITES,
+        0,
+        0,
+    );
+    air.owner(
+        &SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        },
+        0,
+        2,
+        Some(0x100),
+    );
+    air.finish(Outcome::Unavailable {
+        reason: "later country wing census failed",
+    });
+    assert_eq!(air.countries[2].read.state, native::AirState::Present);
+    assert_eq!(air.countries[2].read.len, 0);
+    assert_eq!(air.countries[3].read.state, native::AirState::Absent);
+    assert_eq!(
+        air.countries[1].read.error,
+        "later country wing census failed"
+    );
+}
+
+#[test]
+fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
+    use crate::extended::air::wing_test_kit as kit;
+    use crate::{
+        extended,
+        map_capture::{MapCapacities, MapCaptured},
+    };
+    let mut bytes = kit::fixture();
+    for wing in [kit::WING, 0x34000] {
+        bytes[wing + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES] = 255;
+        put64(&mut bytes, wing + cair_wing::DEFAULT_STATS + 0x33 * 8, 73);
+    }
+    put64(
+        &mut bytes,
+        kit::WING + cair_wing::MISSION + engine::air_mission::REGION,
+        0xdead0000,
+    );
+    let memory = kit::memory(&bytes);
+    let mut capacity = extended::Capacities::default();
+    capacity.game_score.countries = 3;
+    capacity.game_score.wings = 2;
+    let mut captured = extended::Captured::with_capacities(&capacity);
+    let countries =
+        std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+    let mut ordinary = captured.take_ordinary_request(&countries, 0, kit::GAME_STATE);
+    let mut map = MapCaptured::with_capacities(&MapCapacities::default());
+    {
+        let mut sources = captured.sources(&memory, 0, false, true);
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            map.sample(&memory, 0, kit::GAME_STATE, &mut sources);
+        });
+    }
+    assert!(matches!(map.air_wings.outcome, Outcome::Unavailable { .. }));
+    ordinary.packs.capture(&memory, 0, kit::GAME_STATE);
+    captured.restore_ordinary_request(ordinary, None);
+    let [
+        TableView::Complete(TableRows::CountryGameScoreInputs(rows)),
+        TableView::Complete(TableRows::AirWingGameScoreStats(wings)),
+        _,
+    ] = captured.game_score_pilot().tables()
+    else {
+        panic!("country loan must retain the independently captured air buffers");
+    };
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].air_state,
+        rows::CountryGameScoreInputRow::AIR_PRESENT
+    );
+    assert!(rows[0].first_sites.is_empty());
+    assert_eq!(wings.len(), 2);
+    assert_eq!((wings[0].planes, wings[0].stat_raw), (Some(10), Some(73)));
+}

@@ -31,6 +31,31 @@ fn occupied_country_roster_preserves_saved_group_order() {
 }
 
 #[test]
+fn garrison_equipment_preserves_order_duplicates_extrema_and_missing_objects() {
+    let saved = pack("countries={A={occupation_status={occupation={B={state_garrison_data={1={equipment={equipment={id={id=9 type=70} amount=-0.00001} allow_zero_entries=yes} equipment_need={mod_weapon=1 mod_weapon=-92233720368547.75808}} 2={}}}}}}} states={} provinces={}").unwrap();
+    let first = &saved.state_garrisons[&(b"A".to_vec(), 1)];
+    assert_eq!(
+        first.equipment.as_ref().unwrap().equipment[0].amount.raw,
+        -1
+    );
+    assert_eq!(
+        first.equipment.as_ref().unwrap().allow_zero_entries,
+        Some(true)
+    );
+    let requirements = first.equipment_need.as_ref().unwrap();
+    assert_eq!(
+        requirements
+            .iter()
+            .map(|(_, value)| value.raw)
+            .collect::<Vec<_>>(),
+        [100_000, i64::MIN]
+    );
+    let missing = &saved.state_garrisons[&(b"A".to_vec(), 2)];
+    assert!(missing.equipment.is_none());
+    assert!(missing.equipment_need.is_none());
+}
+
+#[test]
 fn country_resources_keep_origin_states_and_override_entries_in_order() {
     let saved = pack(
         r#"

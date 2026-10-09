@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply, SubjectLevel, SubjectReply } from '../../generated/dashboard';
-import { laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, validateSubjectReply } from './subjectsData.ts';
+import { laneCountries, levelColours, levelName, overlordTagAt, overlordViews, subjectLanes, subjectTagAt, validateSubjectReply } from './subjectsData.ts';
 import { Lineage } from '../../dashboard/identity.ts';
 import type { LaneOptions } from './subjectsData';
 import { worldFilter } from '../../dashboard/groups.ts';
 import { laneRequests } from '../../charts/timeline/laneRequests.ts';
+import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 
 /** A modded campaign: a mod's own levels (one the content does not order, one with
  * no localisation), a dynamic overlord, and a subject released and taken again. */
@@ -34,6 +35,8 @@ const names: Record<string, string> = { D01: 'Free Republic', 'MY TAG': 'Modded 
 const text = { country: (tag: string) => ({ name: names[tag] ?? tag }), day: (hour: number) => `day ${hour}` };
 const options: LaneOptions = { order: 'first', subjects: 'since', ended: true, countries: null };
 const byToken = new Map(levels.map(level => [level.token, level]));
+const holder = (tag: string, slot: number, firstHour = 0, lastHour = 500, countryId = slot) => ({ tag, identities: [{ slot, countryId, firstHour, lastHour }] });
+const identities = countryIdentityIndex(['D01', 'MY TAG', 'A:B', 'ENG', 'CAN'].map((tag, slot) => holder(tag, slot)));
 
 test('a late recorded name outside the window reorders both overlords and subjects', () => {
   for (const field of ['subject', 'overlord'] as const) {
@@ -58,14 +61,15 @@ test('a late recorded name outside the window reorders both overlords and subjec
 
 test('end membership keeps the human subject’s overlord visible before its change of tag', () => {
   const groups: CountryGroupReply = { branchId: '1', warnings: [], factions: [], wars: [], warStarts: [], capitulations: [],
+    countryIdentities: [holder('AAA', 1, 0, 9), holder('BBB', 1, 10, 20), holder('OVR', 2)],
     identityChanges: [{ hour: 10, from: 'AAA', to: 'BBB' }], unobserved: { humans: [], factions: [], wars: [] },
     humans: [{ tag: 'AAA', firstHour: 0, lastHour: 9 }, { tag: 'BBB', firstHour: 10, lastHour: 20 }],
   };
   const views = overlordViews({ ...reply, unobserved: [], runs: [
     { overlord: 'OVR', subject: 'AAA', startHour: 0, firstHour: 0, lastHour: 9, steps: [step(0, 9, null)] },
     { overlord: 'OVR', subject: 'BBB', startHour: 0, firstHour: 10, lastHour: 20, steps: [step(10, 20, null)] },
-  ] }, new Lineage(groups.identityChanges));
-  const filter = worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [], groups, 5, 20, views[0].lineage);
+  ] }, new Lineage(groups.identityChanges), countryIdentityIndex(groups.countryIdentities));
+  const filter = worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'end', aggregate: false }, [], groups, 5, 20);
   const lanes = subjectLanes(views, byToken, new Map(), 5, { ...options, countries: filter.tags, countryIds: filter.countryIds }, text, []).lanes;
   assert.deepEqual(lanes.map(lane => lane.identity?.label), ['OVR', 'AAA']);
 });
@@ -132,7 +136,7 @@ test('each overlord heads its subjects, dated as the game dates them, coloured b
 });
 
 test('ended and unrecorded stretches are said honestly, and can be hidden or narrowed', () => {
-  const views = overlordViews(reply);
+  const views = overlordViews(reply, new Lineage([]), identities);
   const colours = levelColours(levels, ['c0', 'c1', 'c2', 'c3'], 'other');
   const at = (hour: number, extra: Partial<LaneOptions> = {}) => subjectLanes(views, byToken, colours, hour, { ...options, ...extra }, text, reply.unobserved)
     .lanes.map(lane => `${lane.identity?.label}: ${lane.label}`);
@@ -144,7 +148,7 @@ test('ended and unrecorded stretches are said honestly, and can be hidden or nar
   assert.ok(at(320).includes('Modded Realm: Ended by day 310'));
   assert.ok(at(305).includes('Free Republic: Subjects not recorded'));
   assert.ok(!at(320, { ended: false }).some(label => label.startsWith('Modded Realm')));
-  assert.deepEqual(at(320, { countries: new Set(['CAN']) }), ['United Kingdom: 1 subject', 'Canada: Puppet · since day 10']);
+  assert.deepEqual(at(320, { countries: new Set(['CAN']), countryIds: identities.selected(['CAN']) }), ['United Kingdom: 1 subject', 'Canada: Puppet · since day 10']);
   assert.deepEqual(at(320, { order: 'name', subjects: 'name' }).filter(label => !label.includes('·')).slice(0, 1), ['Free Republic: 1 subject']);
 });
 
@@ -237,19 +241,97 @@ test('a subject released by a country later renamed is not merged into whoever t
   assert.deepEqual(byTag('AAA').subjects.map(view => view.runs.map(run => `${run.overlord}/${run.subject}@${run.firstHour}`)), [['AAA/S2@400']]);
 });
 
-test('a former subject renamed after its release is named, and chosen, by its tags then', () => {
+test('a former subject is named by its current alias and manual tags keep every holder', () => {
   // S1 is released at 150 and renamed S2 at 200; a new S1 appears at 400 under nobody.
   const released: SubjectReply = { ...reply, unobserved: [], runs: [
     { overlord: 'OVR', subject: 'S1', startHour: 50, firstHour: 100, lastHour: 150, steps: [step(100, 150, 'autonomy_puppet')] },
     { overlord: 'OVR', subject: 'KEPT', startHour: 50, firstHour: 100, lastHour: 500, steps: [step(100, 500, 'autonomy_puppet')] },
   ] };
-  const views = overlordViews(released, new Lineage([{ hour: 200, from: 'S1', to: 'S2' }]));
+  const identities = countryIdentityIndex([{ tag: 'S1', identities: [...holder('S1', 1, 100, 199).identities, ...holder('S1', 2, 400, 500).identities] },
+    holder('S2', 1, 200, 500), holder('OVR', 3), holder('KEPT', 4)]);
+  const views = overlordViews(released, new Lineage([{ hour: 200, from: 'S1', to: 'S2' }]), identities);
   const colours = levelColours(levels, ['c0'], 'other');
   const labels = (extra: Partial<LaneOptions>) => subjectLanes(views, byToken, colours, 450, { ...options, ...extra }, text, []).lanes.map(lane => lane.identity?.label);
   assert.deepEqual(labels({}), ['OVR', 'KEPT', 'S2']);
-  // Choosing S2 finds its former overlord; choosing the new S1 does not.
-  assert.deepEqual(labels({ countries: new Set(['S2']) }), ['OVR', 'KEPT', 'S2']);
-  assert.deepEqual(labels({ countries: new Set(['S1']) }), []);
+  // Each literal tag includes the former holder, even though S1 was later reused.
+  for (const tag of ['S1', 'S2']) assert.deepEqual(labels({ countries: new Set([tag]), countryIds: identities.selected([tag]) }), ['OVR', 'KEPT', 'S2']);
+});
+
+test('native relation endpoints include all X holders and exclude an unrelated alias holder and gaps', () => {
+  const identities = countryIdentityIndex([{ tag: 'X', identities: [...holder('X', 1, 0, 9, 10).identities, ...holder('X', 1, 20, 30, 20).identities] },
+    { tag: 'Y', identities: [...holder('Y', 1, 10, 19, 10).identities, ...holder('Y', 2, 20, 30, 30).identities] },
+    ...['A', 'B', 'C', 'D'].map((tag, index) => holder(tag, index + 3))]);
+  const runs = [['A', 'Y', 10, 19], ['B', 'X', 20, 30], ['C', 'Y', 20, 30], ['D', 'X', 15, 16]].map(([overlord, subject, first, last]) => ({
+    overlord: String(overlord), subject: String(subject), firstHour: Number(first), lastHour: Number(last), startHour: 0,
+    steps: [step(Number(first), Number(last), null)],
+  }));
+  const views = overlordViews({ ...reply, runs, unobserved: [] }, new Lineage([]), identities);
+  const lanes = subjectLanes(views, byToken, new Map(), 30, { ...options, countries: new Set(['X']), countryIds: identities.selected(['X']) }, text, []);
+  assert.deepEqual(lanes.lanes.filter(lane => lane.heading).map(lane => lane.identity?.label), ['A', 'B']);
+});
+
+test('manual OLD never admits a replacement O tree when no tag-change event was recorded', () => {
+  const identities = countryIdentityIndex([holder('OLD', 1, 0, 4, 10),
+    { tag: 'O', identities: [...holder('O', 1, 5, 9, 10).identities, ...holder('O', 1, 10, 19, 20).identities] }, holder('S', 2, 5, 19, 30)]);
+  const data: SubjectReply = { ...reply, unobserved: [], runs: [
+    { overlord: 'O', subject: 'S', startHour: 5, firstHour: 5, lastHour: 9, steps: [step(5, 9, 'autonomy_puppet')] },
+    { overlord: 'O', subject: 'S', startHour: 10, firstHour: 10, lastHour: 19, steps: [step(10, 19, 'autonomy_mod_march')] },
+  ] };
+  const views = overlordViews(data, new Lineage([]), identities);
+  assert.deepEqual(views.map(view => view.key), ['[1,10]', '[1,20]']);
+  const selected = { ...options, countries: new Set(['OLD']), countryIds: identities.selected(['OLD']) };
+  assert.deepEqual(subjectLanes(views, byToken, new Map(), 19, { ...selected, ended: false }, text, []).lanes, []);
+  const former = subjectLanes(views, byToken, new Map(), 19, selected, text, []);
+  assert.equal(former.lanes.length, 2);
+  assert.equal(former.info.get(former.lanes[0].id)?.overlord.key, '[1,10]');
+  assert.equal(former.lanes[0].label, 'No subjects');
+  assert.equal(former.lanes[1].label, 'Ended day 10');
+  assert.equal(former.lanes[0].identity?.label, 'Native country identity not recorded');
+  assert.deepEqual(laneCountries(former.lanes, former.info, 19), ['S']);
+});
+
+test('native replacement of either relation endpoint splits the tree or lane and clips levels', () => {
+  for (const field of ['overlord', 'subject'] as const) {
+    const identities = countryIdentityIndex([{ tag: 'X', identities: [...holder('X', 1, 0, 9, 10).identities, ...holder('X', 1, 10, 19, 20).identities] }, holder('KEPT', 2, 0, 19, 30)]);
+    const views = overlordViews({ ...reply, unobserved: [], runs: [{
+      overlord: field === 'overlord' ? 'X' : 'KEPT', subject: field === 'subject' ? 'X' : 'KEPT', startHour: 0, firstHour: 0, lastHour: 19,
+      steps: [step(0, 11, 'autonomy_puppet'), step(12, 19, 'autonomy_mod_march')],
+    }] }, new Lineage([]), identities);
+    assert.equal(views.length, field === 'overlord' ? 2 : 1, field);
+    const lanes = views.flatMap(view => view.subjects);
+    assert.equal(lanes.length, 2, field);
+    assert.deepEqual(lanes.map(view => view.runs.map(run => [run.firstHour, run.lastHour])), [[[0, 9]], [[10, 19]]], field);
+    assert.deepEqual(lanes[1].runs[0].steps, [step(10, 11, 'autonomy_puppet'), step(12, 19, 'autonomy_mod_march')], field);
+    const layout = subjectLanes(views, byToken, new Map(), 19, { ...options, ended: false }, text, []);
+    assert.equal(layout.lanes.length, 2, field);
+    assert.equal(layout.lanes[0].label, '1 subject', field);
+  }
+});
+
+test('proved subject aliases across a native gap retain one relation but never supply a gap look or count', () => {
+  const identities = countryIdentityIndex([holder('O', 2, 0, 19, 30), holder('X', 1, 0, 9, 10), holder('Y', 1, 11, 19, 10)]);
+  const views = overlordViews({ ...reply, unobserved: [], runs: [
+    { overlord: 'O', subject: 'X', startHour: 0, firstHour: 0, lastHour: 10, steps: [step(0, 10, 'autonomy_puppet')] },
+    { overlord: 'O', subject: 'Y', startHour: 0, firstHour: 11, lastHour: 19, steps: [step(11, 19, 'autonomy_puppet')] },
+  ] }, new Lineage([]), identities);
+  assert.equal(views.length, 1);
+  const [view] = views;
+  assert.equal(view.subjects.length, 1);
+  assert.deepEqual(view.subjects[0].stretches.map(run => [run.firstHour, run.lastHour]), [[0, 19]]);
+  assert.deepEqual(view.counts.map(run => [run.firstHour, run.lastHour, run.value]), [[0, 9, 1], [11, 19, 1]]);
+  assert.deepEqual(view.identityGaps, [{ firstHour: 10, lastHour: 10 }]);
+  assert.equal(subjectTagAt(view, view.subjects[0], 10), null);
+  assert.equal(subjectTagAt(view, view.subjects[0], 15), 'Y');
+  const asked: string[] = [];
+  const layout = subjectLanes(views, byToken, new Map(), 10, options, { ...text, country: tag => { asked.push(tag); return text.country(tag); } }, []);
+  assert.equal(layout.lanes[0].label, 'Subjects not recorded');
+  assert.equal(layout.lanes[1].identity?.label, 'Native country identity not recorded');
+  assert.equal(layout.lanes[1].label, 'Level not recorded · since day 0');
+  assert.deepEqual([...new Set(asked)], ['O']);
+  assert.deepEqual(laneCountries(layout.lanes, layout.info, 10), ['O']);
+  const later = subjectLanes(views, byToken, new Map(), 15, options, text, []);
+  assert.equal(later.lanes[1].identity?.label, 'Y');
+  assert.deepEqual(laneCountries(later.lanes, later.info, 15), ['O', 'Y']);
 });
 
 test('a world of 1,500 countries lays out a lane per subject and overlord', () => {
@@ -266,4 +348,14 @@ test('a world of 1,500 countries lays out a lane per subject and overlord', () =
   const colours = levelColours(levels, ['c0', 'c1'], 'other');
   const lanes = subjectLanes(overlordViews(world(1500)), byToken, colours, 2500, options, text, []).lanes;
   assert.equal(lanes.length, 1500 + 150);
+});
+
+test('overlord and subject lanes reserve native flags without an available URL', () => {
+  const labels = { ...text, country: (tag: string) => ({ name: tag, flagPending: true }) };
+  const lanes = subjectLanes(overlordViews(reply), byToken, new Map(), 200, options, labels, reply.unobserved).lanes;
+  assert.ok(lanes.some(lane => lane.depth === 1) && lanes.some(lane => lane.heading));
+  for (const lane of lanes) {
+    assert.equal(lane.identity?.countryFlag?.flagPending, true);
+    assert.equal(lane.identity?.countryFlag?.flag, undefined);
+  }
 });

@@ -1,0 +1,506 @@
+//! Passive production-hover operands. Cached MIO bonuses are copied, never
+//! refreshed through 141924C20. Source trees use the shared passive formatter
+//! reader; country selection and daily cadence belong to this pack.
+//! Its requests match attrition_modifier_breakdown's public accumulator/key
+//! reader; that module's army demand selector is not a country/MIO catalogue.
+
+use crate::{
+    Memory, attrition_modifier_breakdown::Request, ccountry, cequipment_production_line as line,
+    cequipment_variant, cpdx_array::Array, cproduction_line, cproduction_status,
+    modifier_keys as keys, read,
+};
+
+/// Native production tooltip keys, in increasing order. Registration spellings
+/// and callsites remain in modifier_keys::builtins; 140E53EC0 uses A5,
+/// 1415B7AB0/C60 use A8, 141922A00 uses A9, 141921EE0 uses AA,
+/// 141924820 uses AB, and 141922160/1415B79B0/B60 use the output/refit keys.
+pub const KEYS: [u32; 11] = [
+    keys::LINE_CHANGE_PRODUCTION_EFFICIENCY_FACTOR,
+    keys::OUT_OF_POWER_IMPACT_FACTOR,
+    keys::PRODUCTION_FACTORY_MAX_EFFICIENCY_FACTOR,
+    keys::PRODUCTION_FACTORY_EFFICIENCY_GAIN_FACTOR,
+    keys::PRODUCTION_FACTORY_START_EFFICIENCY_FACTOR,
+    keys::INDUSTRIAL_CAPACITY_FACTORY,
+    keys::INDUSTRIAL_CAPACITY_FACTORY_POWERED,
+    keys::INDUSTRIAL_CAPACITY_DOCKYARD,
+    keys::INDUSTRIAL_CAPACITY_DOCKYARD_POWERED,
+    keys::EQUIPMENT_CONVERSION_SPEED,
+    keys::REFIT_SPEED,
+];
+/// LookupProductionBonusValue@1406329E0 maps these seven native categories
+/// through the runtime token table, rather than treating category as token.
+pub const BONUS_COUNT: usize = 7;
+const BONUS_KEYS_RVA: usize = 0x0337_1600;
+
+/// 141924820/141922A00 read signed i32 start/cap percentages. 141921EE0
+/// reads signed fixed5 gain/balance, and 1415B7AB0/C60 the four fixed5 rates.
+const DEFINE_RVAS: [usize; 8] = [
+    0x0331_db08,
+    0x0331_db88,
+    0x0331_dc08,
+    0x0331_dc88,
+    0x0331_d8e0,
+    0x0331_da78,
+    0x0331_d850,
+    0x0331_d9e8,
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Context {
+    pub start: i32,
+    pub cap: i32,
+    pub gain: i64,
+    pub balance: i64,
+    /// Unpowered/powered military, then unpowered/powered naval IC rates.
+    pub factory_speed: [i64; 4],
+    /// 140E53EC0: same variant, parent, family, archetype switch percentages.
+    pub retention: [i64; 4],
+    /// ConversionSpeed141920D40's base bonus, stored fixed5.
+    pub conversion: i64,
+    pub module_mask: u64,
+    pub bonus_keys: [u32; BONUS_COUNT],
+}
+
+impl Context {
+    pub fn read(memory: &impl Memory, base: usize) -> Result<Self, &'static str> {
+        let mut result = Self {
+            start: field(memory, base, DEFINE_RVAS[0])?,
+            cap: field(memory, base, DEFINE_RVAS[1])?,
+            gain: field(memory, base, DEFINE_RVAS[2])?,
+            balance: field(memory, base, DEFINE_RVAS[3])?,
+            ..Self::default()
+        };
+        for (value, rva) in result.factory_speed.iter_mut().zip(&DEFINE_RVAS[4..]) {
+            *value = field(memory, base, *rva)?;
+        }
+        for (category, key) in result.bonus_keys.iter_mut().enumerate() {
+            *key = field(memory, base, BONUS_KEYS_RVA + category * 0x28)?;
+        }
+        for (value, rva) in
+            result
+                .retention
+                .iter_mut()
+                .zip([0x0331_dcec, 0x0331_dd6c, 0x0331_de00, 0x0331_de9c])
+        {
+            *value = i64::from(field::<i32>(memory, base, rva)?).wrapping_mul(1000);
+        }
+        result.conversion = field(memory, base, 0x0331_f158)?;
+        // GetDlcEquipmentCategoryMask140F72890, feature cases1401AE640.
+        let mask = field::<u32>(memory, base, crate::dlc_feature_state::MASK_RVA)?;
+        result.module_mask = (if mask & (1 << 4) != 0 {
+            0x80004001c0
+        } else {
+            0
+        }) | (if mask & (1 << 7) != 0 { 4 } else { 0 })
+            | (if mask & (1 << 8) != 0 {
+                0x1d0026fc00
+            } else {
+                0
+            });
+        Ok(result)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Country {
+    pub country: u32,
+    /// Pass-local tree address, never serialized as an identity.
+    pub accumulator: usize,
+    /// CProductionStatus+3A8, 1415B7D10: stored powered-factory fraction.
+    pub power_raw: i64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Line {
+    pub handle: u64,
+    pub country: u32,
+    pub variant: u64,
+    pub organisation: u64,
+    pub kind: u8,
+    pub active_factories: i32,
+    /// +D8, used by growth141921EE0 and output141922E00.
+    pub resource_penalty: i64,
+    /// +B8; a getter would refresh the stored +98 bonus cache when nonzero.
+    pub organisation_dirty: bool,
+    /// +EC, written by conversion selection/RefreshProductionState141926DB0.
+    pub conversion: bool,
+    /// 141922160 calls LicenceSpeed140BC63F0 when variant+20 is positive.
+    pub licensed: bool,
+    pub conversion_output: bool,
+    pub refit_output: bool,
+    /// 140C88440 on the type, independently of cached variant flags.
+    pub naval_efficiency: bool,
+    /// 141922E00 tests the variant's stored +408 ship-family mask.
+    pub naval_output: bool,
+    pub bonuses: [i64; BONUS_COUNT],
+    /// All saved +C0 factory-efficiency occurrences, in native order.
+    pub efficiencies: [usize; 2],
+}
+
+pub struct Buffers<'a> {
+    pub countries: &'a mut [Country],
+    pub country_len: usize,
+    pub country_required: usize,
+    pub lines: &'a mut [Line],
+    pub line_len: usize,
+    pub line_required: usize,
+    pub efficiencies: &'a mut [i64],
+    pub efficiency_len: usize,
+    pub efficiency_required: usize,
+    pub requests: &'a mut [Request],
+    pub request_len: usize,
+    pub request_required: usize,
+    pub archetypes: &'a mut [usize],
+    pub archetype_required: usize,
+}
+
+fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    pointer
+        .checked_add(offset)
+        .ok_or("production modifier address overflow")
+}
+fn field<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    pointer: usize,
+    offset: usize,
+) -> Result<T, &'static str> {
+    read(memory, at(pointer, offset)?).ok_or("production modifier operand unreadable")
+}
+fn add(value: &mut usize, amount: usize) -> Result<(), &'static str> {
+    *value = value
+        .checked_add(amount)
+        .ok_or("production modifier demand overflow")?;
+    Ok(())
+}
+fn normalized(mut flags: u64) -> u64 {
+    use crate::cequipment_type as ty;
+    // NormalizeCategory140F75EA0's ordered branches.
+    if flags & ty::SHIP_MASK != 0 {
+        if flags & ty::NORMALIZE_FIRST_SELECTOR != 0 {
+            flags &= !ty::NORMALIZE_FIRST_CLEAR;
+        } else if flags & ty::NORMALIZE_SECOND_SELECTOR != 0 {
+            flags &= !ty::NORMALIZE_SECOND_CLEAR;
+        } else if flags & ty::NORMALIZE_THIRD_SELECTOR != 0 {
+            flags &= !ty::SPECIAL_POOL_MASK;
+        }
+    }
+    flags
+}
+
+/// 140C88440 recurses to the effective archetype before testing this type.
+/// Caller-owned scratch records that order without a chosen depth limit.
+fn naval(
+    memory: &impl Memory,
+    base: usize,
+    mut pointer: usize,
+    out: &mut Buffers<'_>,
+) -> Result<bool, &'static str> {
+    use crate::cequipment_type as ty;
+    let mut depth = 0;
+    loop {
+        if pointer == 0 || out.archetypes[..depth].contains(&pointer) {
+            return Err("production modifier equipment archetype null or cyclic");
+        }
+        if field::<u64>(memory, pointer, 0)? != at(base, ty::VTABLE_RVA)? as u64 {
+            return Err("production modifier equipment type vtable mismatch");
+        }
+        out.archetype_required = out.archetype_required.max(depth + 1);
+        let Some(slot) = out.archetypes.get_mut(depth) else {
+            return Err("production modifier archetype scratch capacity exceeded");
+        };
+        *slot = pointer;
+        depth += 1;
+        let parent = field::<u64>(memory, pointer, ty::ARCHETYPE)?;
+        let parent = usize::try_from(parent)
+            .map_err(|_| "production modifier archetype pointer overflow")?;
+        if parent == pointer {
+            break;
+        }
+        pointer = parent;
+    }
+    while depth > 0 {
+        depth -= 1;
+        let current = out.archetypes[depth];
+        let mut primary = field::<u64>(memory, current, ty::PRIMARY_CATEGORY_FLAGS)?;
+        if primary == 0 {
+            let parent = field::<u64>(memory, current, ty::ARCHETYPE)? as usize;
+            primary = field(memory, parent, ty::PRIMARY_CATEGORY_FLAGS)?;
+        }
+        let flags =
+            normalized(primary | field::<u64>(memory, current, ty::SECONDARY_CATEGORY_FLAGS)?);
+        if flags & ty::SHIP_MASK != 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Demand {
+    pub countries: usize,
+    pub lines: usize,
+    pub efficiencies: usize,
+    pub requests: usize,
+}
+
+/// Off-thread headers only. RefreshProductionState@141926DB0 resizes +C0
+/// to the native factory limit; neither active factories nor country count
+/// bounds the retained efficiency entries. Values still acquire independently.
+pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand, &'static str> {
+    let countries = ccountry::Reader::new(memory, base, state)?;
+    let mut demand = Demand::default();
+    for slot in 1..countries.count() {
+        let Some(country) = countries.at(slot)? else {
+            continue;
+        };
+        let status = cproduction_status::manager(memory, base, country)?;
+        let roster_at = at(status, cproduction_status::LINES)?;
+        let roster = Array::read(memory, roster_at, 8)
+            .ok_or("production modifier line roster unreadable or invalid")?;
+        if roster.count == 0 {
+            continue;
+        }
+        add(&mut demand.countries, 1)?;
+        add(&mut demand.requests, KEYS.len())?;
+        add(&mut demand.lines, roster.count as usize)?;
+        for ordinal in 0..roster.count {
+            let pointer = roster
+                .element(ordinal, 8)
+                .and_then(|p| read::<u64>(memory, p))
+                .and_then(|p| usize::try_from(p).ok())
+                .filter(|p| *p != 0)
+                .ok_or("production modifier line pointer unreadable or null")?;
+            if field::<u64>(memory, pointer, cproduction_line::PRODUCTION_STATUS)? != status as u64
+            {
+                return Err("production modifier line identity or owner mismatch");
+            }
+            let factory_at = at(pointer, line::FACTORY_EFFICIENCIES)?;
+            let header = read::<[u8; 16]>(memory, factory_at)
+                .ok_or("production modifier factory efficiencies unreadable or invalid")?;
+            let factory = Array::from_header(header, 8)
+                .ok_or("production modifier factory efficiencies unreadable or invalid")?;
+            add(&mut demand.efficiencies, factory.count as usize)?;
+            if read::<[u8; 16]>(memory, factory_at) != Some(header) {
+                return Err("production modifier sizing factory header changed");
+            }
+        }
+        if Array::read(memory, roster_at, 8) != Some(roster) {
+            return Err("production modifier sizing line roster changed");
+        }
+    }
+    Ok(demand)
+}
+
+/// One authenticated production roster. No allocation, game calls, or retries.
+/// Short caller-owned arenas retain demand for off-hour growth and refuse the
+/// supplement; the existing ProductionLines census remains independent.
+pub fn capture(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    context: &mut Option<Context>,
+    out: &mut Buffers<'_>,
+) -> Result<(), &'static str> {
+    let countries = ccountry::Reader::new(memory, base, state)?;
+    for slot in 1..countries.count() {
+        let Some(country) = countries.at(slot)? else {
+            continue;
+        };
+        let status = cproduction_status::manager(memory, base, country)?;
+        let roster = Array::read(memory, at(status, cproduction_status::LINES)?, 8)
+            .ok_or("production modifier line roster unreadable or invalid")?;
+        // Idle countries need no hover trees or factory operands.
+        if roster.count == 0 {
+            continue;
+        }
+        if context.is_none() {
+            *context = Some(Context::read(memory, base)?);
+        }
+        let context = context.as_ref().expect("nonempty production context");
+        let accumulator = at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?;
+        add(&mut out.country_required, 1)?;
+        if let Some(row) = out.countries.get_mut(out.country_len) {
+            *row = Country {
+                country: country.id,
+                accumulator,
+                power_raw: field(memory, status, 0x3a8)?,
+            };
+            out.country_len += 1;
+        }
+        for key in KEYS {
+            add(&mut out.request_required, 1)?;
+            if let Some(request) = out.requests.get_mut(out.request_len) {
+                *request = Request { accumulator, key };
+                out.request_len += 1;
+            }
+        }
+        add(&mut out.line_required, roster.count as usize)?;
+        for ordinal in 0..roster.count {
+            let pointer = roster
+                .element(ordinal, 8)
+                .and_then(|p| read::<u64>(memory, p))
+                .and_then(|p| usize::try_from(p).ok())
+                .filter(|p| *p != 0)
+                .ok_or("production modifier line pointer unreadable or null")?;
+            let identity = field::<[u8; 16]>(memory, pointer, 0)?;
+            let vtable = u64::from_le_bytes(identity[..8].try_into().unwrap());
+            let rva = usize::try_from(vtable)
+                .ok()
+                .and_then(|p| p.checked_sub(base))
+                .ok_or("production modifier line vtable mismatch")?;
+            let kind = match rva {
+                crate::cmilitary_production_line::VTABLE_RVA => line::KIND_MILITARY,
+                crate::cnaval_production_line::VTABLE_RVA => line::KIND_NAVAL,
+                crate::cship_refit_production_line::VTABLE_RVA => line::KIND_SHIP_REFIT,
+                crate::crailway_gun_production_line::VTABLE_RVA => line::KIND_RAILWAY_GUN,
+                _ => return Err("production modifier line vtable mismatch"),
+            };
+            let handle = u64::from_le_bytes(identity[8..].try_into().unwrap());
+            if handle == 0
+                || field::<u64>(memory, pointer, cproduction_line::PRODUCTION_STATUS)?
+                    != status as u64
+            {
+                return Err("production modifier line identity or owner mismatch");
+            }
+            let factory = Array::read(memory, at(pointer, line::FACTORY_EFFICIENCIES)?, 8)
+                .ok_or("production modifier factory efficiencies unreadable or invalid")?;
+            let start = out.efficiency_len;
+            add(&mut out.efficiency_required, factory.count as usize)?;
+            if factory.count as usize > out.efficiencies.len().saturating_sub(start) {
+                continue;
+            }
+            // A fixed stack batch bounds read size, never the live count.
+            for index in (0..factory.count as usize).step_by(256) {
+                let count = (factory.count as usize - index).min(256);
+                let address = factory
+                    .element(index as u32, 8)
+                    .ok_or("production modifier factory efficiency address overflow")?;
+                let mut bytes = [0_u8; 256 * 8];
+                if !crate::read_slice(memory, address, &mut bytes[..count * 8]) {
+                    return Err("production modifier factory efficiency unreadable");
+                }
+                for (offset, bytes) in bytes[..count * 8].chunks_exact(8).enumerate() {
+                    out.efficiencies[start + index + offset] =
+                        i64::from_le_bytes(bytes.try_into().unwrap());
+                }
+            }
+            out.efficiency_len += factory.count as usize;
+            if out.line_len >= out.lines.len() {
+                continue;
+            }
+            let bonus = Array::read(memory, at(pointer, 0xa0)?, 16)
+                .ok_or("production modifier organisation cache unreadable or invalid")?;
+            let mut bonuses = [0_i64; BONUS_COUNT];
+            // LookupProductionBonusValue1406329E0 selects the first equal key.
+            let mut found = [false; BONUS_COUNT];
+            for index in 0..bonus.count {
+                let entry = bonus
+                    .element(index, 16)
+                    .and_then(|p| read::<[u8; 16]>(memory, p))
+                    .ok_or("production modifier organisation bonus unreadable")?;
+                let key = u32::from_le_bytes(entry[..4].try_into().unwrap());
+                for category in 0..BONUS_COUNT {
+                    if !found[category] && context.bonus_keys[category] == key {
+                        bonuses[category] = i64::from_le_bytes(entry[8..].try_into().unwrap());
+                        found[category] = true;
+                    }
+                }
+                if found.iter().all(|found| *found) {
+                    break;
+                }
+            }
+            let variant_pointer = field::<u64>(memory, pointer, line::EQUIPMENT_VARIANT)?;
+            let variant_pointer = usize::try_from(variant_pointer)
+                .map_err(|_| "production modifier variant pointer overflow")?;
+            let variant = cequipment_variant::identity(memory, base, variant_pointer)?;
+            let definition = field::<u64>(memory, variant_pointer, cequipment_variant::DEFINITION)?;
+            let definition = usize::try_from(definition)
+                .map_err(|_| "production modifier equipment type pointer overflow")?;
+            let naval_efficiency = naval(memory, base, definition, out)?;
+            let naval_output = field::<u64>(
+                memory,
+                variant_pointer,
+                cequipment_variant::CLASSIFIER_FLAGS,
+            )? & crate::cequipment_type::SHIP_MASK
+                != 0;
+            let conversion = field::<u8>(memory, pointer, 0xec)? != 0;
+            let licensed =
+                field::<i32>(memory, variant_pointer, cequipment_variant::ORIGIN_LINK)? > 0;
+            // CalculateProductionSpeed141922E00, IncludeConversion=true.
+            let mut conversion_output = conversion
+                && ((field::<u64>(memory, variant_pointer, 0x3f8)? != 0
+                    || field::<u8>(memory, definition, 0x556)? != 0)
+                    && !licensed
+                    || field::<i32>(memory, definition, 0x49c)? != 0);
+            // HasDlcEnabledModuleSlots140C88540 gates conversion's bonus.
+            if conversion_output
+                && field::<i32>(memory, definition, crate::cequipment_type::SLOTS_COUNT)? != 0
+            {
+                let mut primary = field::<u64>(
+                    memory,
+                    definition,
+                    crate::cequipment_type::PRIMARY_CATEGORY_FLAGS,
+                )?;
+                if primary == 0 {
+                    let parent =
+                        field::<u64>(memory, definition, crate::cequipment_type::ARCHETYPE)?
+                            as usize;
+                    primary = field(
+                        memory,
+                        parent,
+                        crate::cequipment_type::PRIMARY_CATEGORY_FLAGS,
+                    )?;
+                }
+                conversion_output = normalized(
+                    primary
+                        | field::<u64>(
+                            memory,
+                            definition,
+                            crate::cequipment_type::SECONDARY_CATEGORY_FLAGS,
+                        )?,
+                ) & context.module_mask
+                    == 0;
+            }
+            // All four pinned native vtables' slot27 is a constant predicate.
+            // Ship refit142965858 uses ReturnTrue1401802A0; the other classes
+            // inherit ReturnZero14011CD10. Refuse a new virtual implementation.
+            let refit_output =
+                match field::<u64>(memory, vtable as usize, 0xd8)?.checked_sub(base as u64) {
+                    Some(0x0018_02a0) => true,
+                    Some(0x0011_cd10) => false,
+                    _ => return Err("unreached production refit virtual implementation"),
+                };
+            out.lines[out.line_len] = Line {
+                handle,
+                country: country.id,
+                kind,
+                variant,
+                organisation: field(memory, pointer, line::INDUSTRIAL_ORGANISATION_CID)?,
+                active_factories: field(memory, pointer, cproduction_line::ACTIVE_FACTORIES)?,
+                resource_penalty: field(memory, pointer, 0xd8)?,
+                organisation_dirty: field::<u8>(memory, pointer, 0xb8)? != 0,
+                conversion,
+                licensed,
+                conversion_output,
+                refit_output,
+                naval_efficiency,
+                naval_output,
+                bonuses,
+                efficiencies: [start, factory.count as usize],
+            };
+            out.line_len += 1;
+        }
+    }
+    if out.country_len != out.country_required
+        || out.line_len != out.line_required
+        || out.request_len != out.request_required
+        || out.efficiency_len != out.efficiency_required
+    {
+        Err("production modifier caller arena capacity exceeded")
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests;

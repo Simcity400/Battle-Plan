@@ -768,6 +768,17 @@ fn cadence_rotation_walks_recorded_families_once_per_24_hours() {
 }
 
 #[test]
+fn native_world_change_forces_full_acquisition_with_matching_clock_fields() {
+    let mut cadence = CadenceState::default();
+    assert!(cadence.force_full(&cadence_clock(100, 1)));
+    cadence.prev_world = crate::world_lifetime::generation() + 1;
+    assert!(!cadence.continuous(&cadence_clock(101, 1)));
+    assert!(cadence.force_full(&cadence_clock(101, 1)));
+    assert!(cadence.continuous(&cadence_clock(102, 1)));
+    assert!(!cadence.force_full(&cadence_clock(102, 1)));
+}
+
+#[test]
 fn branch_starts_loads_and_gaps_force_full_refresh_but_keyframes_do_not() {
     let mut cadence = CadenceState::default();
     assert!(cadence.force_full(&cadence_clock(100, 1)));
@@ -1195,6 +1206,7 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
     let [
         TableView::Complete(TableRows::DivisionMovement(movement)),
         TableView::Complete(TableRows::DivisionStatus(status)),
+        _,
         _,
         _,
     ] = &before
@@ -1682,4 +1694,79 @@ fn divisions_truncation_matrix_matches_direct_with_same_caps() {
         kit::assert_matches_direct(&split, &direct);
         assert_eq!(split.groups_outcome, Outcome::Rows { len: 3 });
     }
+}
+
+#[test]
+fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse() {
+    use crate::naval_result_sources::{self as sources, Entry, tests::Observation};
+    let _observation = Observation::new();
+    sources::tests::setup(1, 0);
+    sources::boundary(Some(clock(40, 7)));
+    sources::boundary(Some(clock(41, 7)));
+    let shared = Shared::new(0, 0, 1);
+    shared.roster_ready.store(true, Ordering::Release);
+    let held: Vec<_> = (0..BUFFERS).map(|_| shared.take_frame().unwrap()).collect();
+    shared.cancel_buffer_wait.store(true, Ordering::Release);
+    let index = shared.take_frame();
+    assert_eq!(index, None);
+    unsafe {
+        acquire(
+            &shared,
+            Dispatch {
+                world_generation: crate::world_lifetime::generation(),
+                index,
+                entry: Some(clock(41, 7)),
+                entry_ticks: 0,
+                dispatched: 0,
+            },
+        );
+    }
+    let mut entries = [Entry::default(); 1];
+    assert_eq!(
+        sources::drain(&mut entries).unwrap_err(),
+        "naval result sources lost observation; interval unavailable"
+    );
+    // Detach cancellation still permits a later callback to obtain a newly
+    // recycled frame. That must not make the lost event interval complete.
+    shared.recycle_frame(held[0]);
+    assert_eq!(shared.take_frame(), Some(held[0]));
+    sources::boundary(Some(clock(42, 7)));
+    assert_eq!(
+        sources::drain(&mut entries).unwrap_err(),
+        "naval result sources recovery interval is partial"
+    );
+    sources::boundary(Some(clock(43, 7)));
+    assert_eq!(sources::drain(&mut entries).unwrap(), 0);
+    assert_eq!(shared.dropped.load(Ordering::Relaxed), 1);
+    let losses = unsafe { &*shared.pending.get() };
+    let run = losses.iter().next().unwrap();
+    assert_eq!((run.first_hour, run.last_hour, run.count), (41, 41, 1));
+    for index in held {
+        shared.recycle_frame(index);
+    }
+}
+
+#[test]
+fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
+    use crate::naval_result_sources::{self as sources, Entry, tests::Observation};
+    let _observation = Observation::new();
+    sources::tests::setup(1, 0);
+    sources::boundary(Some(clock(40, 7)));
+    sources::boundary(Some(clock(41, 7)));
+    let shared = Shared::new(0, 0, 1);
+    let mut forwarded = false;
+    assert!(!unsafe {
+        synthetic_callback(
+            &shared,
+            Some(clock(41, 7)),
+            || panic!("synthetic acquisition failure"),
+            || forwarded = true,
+        )
+    });
+    assert!(forwarded);
+    assert_eq!(shared.acquisition_panics.load(Ordering::Acquire), 1);
+    assert_eq!(
+        sources::drain(&mut [Entry::default(); 1]).unwrap_err(),
+        "naval result sources lost observation; interval unavailable"
+    );
 }

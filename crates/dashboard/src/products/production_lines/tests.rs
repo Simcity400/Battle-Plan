@@ -10,6 +10,181 @@ use replay::{
 };
 
 #[test]
+fn native_producer_scan_follows_renames_excludes_reused_tags_and_keeps_real_gaps() {
+    use replay::rows::{CountryRow, ProductionLineRow};
+    let frames = (FIRST..=FIRST + 50)
+        .filter(|hour| ![FIRST + 30, FIRST + 31].contains(hour))
+        .map(|hour| {
+            let mut frame = production_frame(
+                hour,
+                [FIRST, FIRST + 24, FIRST + 48].contains(&hour),
+                true,
+                9001,
+                &[(5, 70, 8, 3276800)],
+                Some(&[(5, 70, i64::from(hour - FIRST), true, false)]),
+            );
+            let TableView::Complete(TableRows::Countries(countries)) =
+                &mut *frame.tables[TableId::Countries.index()]
+            else {
+                panic!("countries")
+            };
+            countries
+                .iter_mut()
+                .find(|country| country.id == 9001)
+                .unwrap()
+                .tag = if hour < FIRST + 24 {
+                b"X".to_vec()
+            } else {
+                b"Y".to_vec()
+            };
+            if hour >= FIRST + 24 {
+                countries.push(CountryRow {
+                    id: 9002,
+                    canonical_slot: 8,
+                    tag: b"X".to_vec(),
+                    ..Default::default()
+                });
+                let TableView::Complete(TableRows::CountryLinks(links)) =
+                    &mut *frame.tables[TableId::CountryLinks.index()]
+                else {
+                    panic!("links")
+                };
+                links.push(CountryLinkRow {
+                    id: 9002,
+                    canonical_slot: 8,
+                });
+                links.sort_by_key(|link| link.id);
+                let TableView::Complete(TableRows::ProductionLines(lines)) =
+                    &mut *frame.tables[TableId::ProductionLines.index()]
+                else {
+                    panic!("lines")
+                };
+                lines.push(ProductionLineRow {
+                    handle: 88,
+                    country: 9002,
+                    variant: 70,
+                    active_factories: 99,
+                    ..Default::default()
+                });
+                lines.sort_by_key(|line| line.handle);
+            }
+            frame
+        })
+        .collect();
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+    let selected = scan_holder(
+        &replay,
+        1,
+        "X",
+        None,
+        Some((7, 9001)),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(selected.lines.len(), 1);
+    let line = &selected.lines[0];
+    assert_eq!(line.key, "5#1");
+    assert!(
+        line.runs
+            .iter()
+            .any(|run| run.first_hour <= FIRST + 24 && run.last_hour >= FIRST + 24)
+    );
+    assert!(
+        !line
+            .runs
+            .iter()
+            .any(|run| run.first_hour <= FIRST + 30 && run.last_hour >= FIRST + 30)
+    );
+    assert!(
+        line.runs
+            .iter()
+            .any(|run| run.first_hour == FIRST + 48 && run.starts_segment)
+    );
+    assert!(line.runs.iter().all(|run| run.active_factories == 8));
+    assert_eq!(line.ended_by, None);
+    let literal = scan(&replay, 1, "X", None, &AtomicBool::new(false)).unwrap();
+    assert!(literal.lines.iter().any(|line| line.handle == 88));
+}
+
+#[test]
+fn changed_modifier_layout_refuses_only_the_production_supplement_and_counts_the_supplying_read() {
+    use replay::rows::{
+        CountryProductionModifiersRow, LexicalTokenRow, ModifierBreakdownNode,
+        ModifierDefinitionRow, ProductionLineModifiersRow, ProductionModifierTree,
+    };
+    let mut frame = production_frame(FIRST, true, true, 9001, &[(5, 70, 1, 3276800)], None);
+    let TableView::Complete(TableRows::ProductionLines(rows)) =
+        &mut *frame.tables[TableId::ProductionLines.index()]
+    else {
+        panic!("lines");
+    };
+    rows.iter_mut().find(|row| row.handle == 5).unwrap().country = 9001;
+    let keys = replay::fixed_layout::PRODUCTION_MODIFIERS.keys;
+    *frame.tables[TableId::CountryProductionModifiers.index()] =
+        TableView::Complete(TableRows::CountryProductionModifiers(vec![
+            CountryProductionModifiersRow {
+                country: 9001,
+                trees: keys
+                    .iter()
+                    .map(|key| ProductionModifierTree {
+                        key: *key,
+                        failure: vec![],
+                        nodes: vec![ModifierBreakdownNode {
+                            children: 0,
+                            value: 0,
+                            name: b"Synthetic source".to_vec(),
+                        }],
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::ProductionLineModifiers.index()] =
+        TableView::Complete(TableRows::ProductionLineModifiers(vec![
+            ProductionLineModifiersRow {
+                line: 5,
+                country: 9001,
+                variant: 70,
+                organisation: 79,
+                kind: 0,
+                active_factories: 1,
+                factory_efficiencies: vec![3276800],
+                ..Default::default()
+            },
+        ]));
+    *frame.tables[TableId::ModifierDefinitions.index()] =
+        TableView::Complete(TableRows::ModifierDefinitions(
+            keys.iter()
+                .map(|key| ModifierDefinitionRow {
+                    index: *key,
+                    token: key + 1,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    let TableView::Complete(TableRows::LexicalTokens(tokens)) =
+        &mut *frame.tables[TableId::LexicalTokens.index()]
+    else {
+        panic!("tokens");
+    };
+    tokens.extend(keys.iter().map(|key| LexicalTokenRow {
+        token: key + 1,
+        literal: b"synthetic_renumbered_modifier".to_vec(),
+    }));
+    tokens.sort_by_key(|token| token.token);
+    frame.metrics.table_ns[TableId::CountryProductionModifiers.index()] = 1;
+    let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
+    let scanned = scan(&replay, 1, "GER", None, &AtomicBool::new(false)).unwrap();
+    assert_eq!(scanned.lines[0].runs[0].speed_raw, 310000);
+    assert!(scanned.modifiers.is_empty());
+    assert_eq!(scanned.modifier_layout_refusals.values().sum::<usize>(), 1);
+    assert!(scanned.modifier_layout_refusals.keys().any(|reason| {
+        reason.contains("line_change_production_efficiency_factor")
+            && reason.contains("different script name")
+    }));
+}
+
+#[test]
 fn production_lines_keep_handles_across_switches_carry_output_and_end_at_deletions_gaps_and_new_identities()
  {
     use crate::products::production_lines::{LineKind, scan};
@@ -793,7 +968,9 @@ fn a_variant_is_named_only_from_its_first_definition_read_onwards() {
         ],
     );
     let mut shown = std::collections::BTreeMap::new();
-    let (entries, unnamed, _) = variant_entries(&scanned, None, true, &mut shown);
+    let mut texts = installed_content::localisation::Localisation::default();
+    texts.language = "english".into();
+    let (entries, unnamed, _) = variant_entries(&scanned, Some(&texts), true, &mut shown);
     assert_eq!(unnamed, 0);
     // Nothing before hour 128: the hour-104 look is unknown, never the later name.
     assert_eq!(
@@ -994,7 +1171,7 @@ fn production_lines_reply_without_content_names_only_designs_and_answers_again_f
         names,
         [
             ("70", "infantry_equipment_1", None, true),
-            ("71", "infantry_equipment_1", Some("Gewehr 98"), true)
+            ("71", "infantry_equipment_1", None, true)
         ]
     );
     assert_eq!(
@@ -1283,7 +1460,7 @@ fn a_variant_made_only_between_two_censuses_is_named_in_the_reply() {
         .iter()
         .map(|variant| (variant.id.as_str(), variant.name.as_deref()))
         .collect();
-    assert!(named.contains(&("71", Some("Gewehr 98"))), "{named:?}");
+    assert!(named.contains(&("71", None)), "{named:?}");
 }
 
 #[test]
@@ -1486,16 +1663,20 @@ fn unresolved_organisation_owner_never_selects_generic_name_or_icon() {
 #[test]
 fn scans_are_keyed_by_the_content_they_were_made_with() {
     let first = Arc::new(1_u8);
-    let key: ScanKey<u8> = (1, "GER".into(), Some(Arc::clone(&first)));
+    let key: ScanKey<u8> = (1, "GER".into(), Some(Arc::clone(&first)), None);
     drop(first);
     let other = Arc::new(1_u8);
     assert!(same_scan(&key, &key.clone()));
-    assert!(!same_scan(&key, &(1, "GER".into(), Some(other))));
-    assert!(!same_scan(&key, &(1, "GER".into(), None)));
-    assert!(!same_scan(&key, &(1, "ITA".into(), key.2.clone())));
+    assert!(!same_scan(&key, &(1, "GER".into(), Some(other), None)));
+    assert!(!same_scan(&key, &(1, "GER".into(), None, None)));
+    assert!(!same_scan(&key, &(1, "ITA".into(), key.2.clone(), None)));
+    assert!(!same_scan(
+        &key,
+        &(1, "GER".into(), key.2.clone(), Some((7, 9001)))
+    ));
     assert!(same_scan::<u8>(
-        &(1, "GER".into(), None),
-        &(1, "GER".into(), None)
+        &(1, "GER".into(), None, None),
+        &(1, "GER".into(), None, None)
     ));
 }
 
@@ -1523,4 +1704,30 @@ fn pictures_are_served_only_for_the_catalogue_they_were_decoded_from() {
     keep_image(&mut images, &b, "path:gone.dds".into(), None);
     assert_eq!(cached_image(&images, &b, "path:gone.dds"), Some(None));
     assert_eq!(cached_image(&images, &a, "path:gone.dds"), None);
+}
+
+#[test]
+fn organisation_icon_refuses_unread_token_after_independent_stored_candidate() {
+    use super::{RawOrganisation, organisation_icon_with_token};
+    let raw = RawOrganisation {
+        token: String::new(),
+        owner_tag: Some("MOD".into()),
+        icon: "GFX_stored".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        organisation_icon_with_token(&raw, false, |name| name == "GFX_stored"),
+        Ok(Some("GFX_stored".into()))
+    );
+    assert_eq!(
+        organisation_icon_with_token(&raw, false, |name| name == UNKNOWN_ORGANISATION_ICON),
+        Err(
+            "LexicalTokens does not spell the recorded organisation token for fallback icon selection"
+        )
+    );
+    // Known empty token remains a native spelling, and may select the generic fallback.
+    assert_eq!(
+        organisation_icon_with_token(&raw, true, |name| name == UNKNOWN_ORGANISATION_ICON),
+        Ok(Some(UNKNOWN_ORGANISATION_ICON.into()))
+    );
 }

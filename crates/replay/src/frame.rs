@@ -30,6 +30,9 @@ use crate::rows;
 
 pub const TABLE_COUNT: usize = TableId::ALL.len();
 
+/// Wire reason prefix when a keyframe cannot retain a truncated table baseline.
+pub const TRUNCATED_KEYFRAME_REASON: &str = "truncated at keyframe: ";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Metrics {
     pub total_ns: u64,

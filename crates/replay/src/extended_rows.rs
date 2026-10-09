@@ -18,33 +18,47 @@ value_struct!(NameOperands { kind: i32, order: i32, ordered: u8, programmatic: u
 opaque_value!(Option<NameOperands>);
 
 pub use air::*;
+pub use air_ledger::*;
 pub use characters_intelligence::*;
 pub use economy_construction::*;
 pub use equipment_destruction::*;
+pub use fuel_demand::*;
+pub use game_score::*;
 pub use map_presentation::*;
 pub use movement::*;
 pub use naval_weather::*;
 pub use politics_research::*;
 pub use raids_projects::*;
+pub use war_overview::*;
 
 #[path = "extended_rows/air.rs"]
 mod air;
+#[path = "extended_rows/air_ledger.rs"]
+mod air_ledger;
 #[path = "extended_rows/characters_intelligence.rs"]
 mod characters_intelligence;
 #[path = "extended_rows/economy_construction.rs"]
 mod economy_construction;
 #[path = "extended_rows/equipment_destruction.rs"]
 mod equipment_destruction;
+#[path = "extended_rows/fuel_demand.rs"]
+mod fuel_demand;
+#[path = "extended_rows/game_score.rs"]
+mod game_score;
 #[path = "extended_rows/map_presentation.rs"]
 mod map_presentation;
 #[path = "extended_rows/movement.rs"]
 mod movement;
 #[path = "extended_rows/naval_weather.rs"]
 mod naval_weather;
+#[path = "extended_rows/peace.rs"]
+mod peace;
 #[path = "extended_rows/politics_research.rs"]
 mod politics_research;
 #[path = "extended_rows/raids_projects.rs"]
 mod raids_projects;
+#[path = "extended_rows/war_overview.rs"]
+mod war_overview;
 
 #[cfg(test)]
 mod country_appearance_tests {

@@ -16,13 +16,48 @@ use crate::{
     script_files,
     tokens::Token,
 };
-use std::io;
+use std::{collections::BTreeMap, io};
 
 #[derive(Default)]
 pub struct Database {
     pub names: Vec<Vec<u8>>,
     pub notes: Vec<String>,
     gap: Option<String>,
+    prefixes: Vec<(Vec<u8>, Result<String, String>)>,
+}
+
+#[derive(Default)]
+pub struct Names {
+    names: BTreeMap<Token, Result<String, String>>,
+}
+
+impl Names {
+    pub fn prefix(&self, token: &str) -> Result<&str, String> {
+        self.names
+            .get(&Token::c_str(token.as_bytes()))
+            .ok_or_else(|| format!("war goal type {token:?} is absent from the recorded content"))?
+            .as_deref()
+            .map_err(Clone::clone)
+    }
+
+    fn append(&mut self, name: &[u8], prefix: Result<String, String>) {
+        let token = Token::c_str(name);
+        match self.names.get(&token) {
+            Some(Ok(old)) if prefix.as_ref().is_ok_and(|new| old == new) => (),
+            Some(_) => {
+                self.names.insert(
+                    token,
+                    Err(format!(
+                        "war goal type {:?} has differing naming overrides in repeated definitions",
+                        String::from_utf8_lossy(name)
+                    )),
+                );
+            }
+            None => {
+                self.names.insert(token, prefix);
+            }
+        }
+    }
 }
 
 impl Database {
@@ -39,7 +74,7 @@ impl Database {
     }
 }
 
-/// CWarGoalType::ReadToken 140A2C950. Names alone are projected, but its
+/// CWarGoalType::ReadToken 140A2C950. Names and war-name prefixes are projected; its
 /// trigger/effect/one-value readers still decide the surrounding consumption.
 pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
     #[derive(Clone, Copy)]
@@ -91,6 +126,33 @@ pub fn parse(input: &[u8], names: &KeyNames) -> io::Result<Database> {
         return Err(invalid(format!("wargoals: {cause}")));
     }
     Ok(Database {
+        prefixes: read
+            .items
+            .iter()
+            .filter(|item| item.keyword_is("wargoal_types"))
+            .flat_map(|item| item.value.items().unwrap_or_default())
+            .map(|item| {
+                let prefix = item
+                    .value
+                    .items()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|field| field.keyword_is("war_name"))
+                    .map(|field| {
+                        field
+                            .value
+                            .read_str()
+                            .map(str::to_owned)
+                            .map_err(|error| error.to_string())
+                    })
+                    .next_back()
+                    .unwrap_or_else(|| Ok(String::new()));
+                (
+                    c_string(item.key.as_deref().unwrap_or_default()).to_vec(),
+                    prefix,
+                )
+            })
+            .collect(),
         names: read
             .items
             .iter()
@@ -109,6 +171,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     for path in script_files::paths(layers, "common/wargoals/", Some(".txt")) {
         match parse(&layers.read(&path)?, &names) {
             Ok(parsed) => {
+                database.prefixes.extend(parsed.prefixes);
                 database.names.extend(parsed.names);
                 database.notes.extend(parsed.notes);
             }
@@ -122,9 +185,51 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<Database> {
     Ok(database)
 }
 
+/// Naming uses the same 140A2C950 consumption as identity descriptions, including
+/// reached instant_reward effects. Differing same-token definitions stay unknown
+/// because recorded goal operands do not identify their definition pointer.
+pub fn read_names(layers: &ResolvedLayers) -> io::Result<Names> {
+    let database = read(layers)?;
+    if let Some(why) = database.gap {
+        return Err(invalid(why));
+    }
+    let mut names = Names::default();
+    for (name, prefix) in database.prefixes {
+        names.append(&name, prefix);
+    }
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn war_naming_keeps_main_reader_forms_and_native_token_identity() {
+        let database = parse(
+            b"wargoal_types={First={instant_reward={set_country_flag=synthetic} take_states_limit=2 war_name=EARLY war_name=LATE} FIRST={war_name=LATE}}",
+            &KeyNames::default(),
+        )
+        .unwrap();
+        let mut names = Names::default();
+        for (name, prefix) in database.prefixes {
+            names.append(&name, prefix);
+        }
+        assert_eq!(names.prefix("first").unwrap(), "LATE");
+        names.append(b"fIrSt", Ok("DIFFERENT".into()));
+        assert!(
+            names
+                .prefix("FIRST")
+                .unwrap_err()
+                .contains("differing naming overrides")
+        );
+        assert!(
+            names
+                .prefix("undefined")
+                .unwrap_err()
+                .contains("absent from the recorded content")
+        );
+    }
 
     #[test]
     fn native_wargoal_names_and_field_consumption() {

@@ -20,3 +20,11 @@
 .resource-bars b.is-negative { color: var(--error); }
 .resource-missing { grid-column: span 2; font-size: var(--type-sm); color: var(--muted); }
 .resource-chart { flex: 1; min-height: 0; }
+.resource-deal-rows .resource-deal-flag { display: inline-block; width: 24px; height: 16px; object-fit: contain; vertical-align: middle; margin-right: var(--space-2); }
+.resource-deal-list { max-height: 240px; overflow: auto; }
+.resource-deal-rows { position: relative; margin: 0; padding: 0; list-style: none; font-size: var(--type-sm); }
+.resource-deal-rows li { position: absolute; left: 0; right: 0; display: grid; align-items: center;
+  grid-template-columns: minmax(0, 1fr) minmax(60px, 1fr) auto auto; gap: var(--space-3); }
+.resource-deal-rows b, .resource-deal-rows small { font-variant-numeric: tabular-nums; text-align: right; }
+.resource-deal-rows b.is-negative { color: var(--error); }
+.resource-deal-rows small { color: var(--muted); }

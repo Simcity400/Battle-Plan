@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { CountryFlagImage, CountryFlagReply, CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from '../dashboard/client';
 import { loadProduct } from '../dashboard/products';
+import { countryFlagUnavailable } from './countryFlagPresentation';
+export { countryFlagUnavailable } from './countryFlagPresentation';
+export type { CountryFlagLook } from './countryFlagPresentation';
 
 /** Straight-alpha RGBA, as a product reply carries it or as the flag store keeps it. */
 export interface FlagPixels { width: number; height: number; pixels: ArrayLike<number> }
@@ -16,6 +19,14 @@ export function CountryFlag({ image }: { image?: FlagPixels }) {
   }, [image]);
   return image ? <canvas ref={canvas} className="country-flag" width={image.width} height={image.height} aria-hidden="true" />
     : <span className="country-flag country-flag-unavailable" aria-hidden="true" />;
+}
+
+/** Dated row flags retain loading and unavailable reasons in the shared presentation. */
+export function CountryFlagUrl({ url, reason, pending, className = '' }: { url?: string; reason?: string; pending?: boolean; className?: string }) {
+  const [failed, setFailed] = useState<string>();
+  if (url && failed !== url) return <img className={className} src={url} alt="" onError={() => setFailed(url)} />;
+  const { text: tooltip } = countryFlagUnavailable(reason, pending, !!url && failed === url);
+  return <span className={`country-flag country-flag-unavailable ${className}`} role="img" aria-label={tooltip} data-tooltip={tooltip} />;
 }
 
 /** A country's flag from a recording's own installed content, at the hour the country

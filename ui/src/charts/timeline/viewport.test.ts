@@ -1,8 +1,27 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { laneAt, laneBandLayouts, laneBands, laneStops, lanesInView, spanAt } from './layout.ts';
+import { AXIS_HEIGHT, laneAt, laneBandLayouts, laneBands, laneRows, laneStops, lanesInView, spanAt } from './layout.ts';
 import { backingSize, toLocal } from '../surface.ts';
 import { coversViewport, laneWindow, placeLaneWindow, sizeLaneWindow, timelineHeight, timelineViewStyle, timelineViewport, timelineY, visibleTimeline } from './viewport.ts';
+
+test('compact expanded rows and tall overlap lanes share the virtual canvas coordinates', () => {
+  const lanes = [
+    { id: 'war', label: '', spans: [], rowHeight: 30 },
+    { id: 'side', label: '', spans: [], rowHeight: 18 },
+    { id: 'country', label: '', spans: [], rowHeight: 22, subrows: 500 },
+    { id: 'ordinary', label: '', spans: [] },
+  ];
+  const rows = laneRows(lanes);
+  assert.equal(timelineHeight(lanes.length, 40, rows), AXIS_HEIGHT + 30 + 18 + 11_000 + 40 + 8);
+  for (const top of [0, 5_000, 10_900]) {
+    const painted = laneWindow(lanes.length, top, 360, 40, rows);
+    assert.equal(coversViewport(painted, lanes.length, { top, height: 360 }, 40, rows), true);
+    assert.equal(laneAt(timelineY(10, painted), lanes.length, rows), laneAt(painted.top + 10, lanes.length, rows));
+    const expected = lanesInView(Math.max(0, painted.top - AXIS_HEIGHT), painted.height + AXIS_HEIGHT - Math.max(0, AXIS_HEIGHT - painted.top), lanes.length, rows);
+    assert.deepEqual([painted.first, painted.end - 1], expected);
+  }
+  assert.equal(laneWindow(lanes.length, 5_000, 360, 40, rows).first, 2);
+});
 
 test('both axis modes size the canvas backing from the laid-out window, never its 300x150 default', () => {
   for (const sticky of [false, true]) for (const row of [40, 54]) for (const dpr of [1, 1.25, 2]) {

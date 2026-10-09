@@ -167,6 +167,422 @@ fn stored_wing_names_keep_sso_heap_empty_bytes_and_field_local_failures() {
     }
 }
 
+#[test]
+fn game_score_shared_walk_preserves_stored_names_in_map_and_source_rows() {
+    let mut bytes = fixture();
+    let text = b"Literal mod player wing";
+    bytes.resize(0xe000 + text.len() + 1, 0);
+    bytes[0xe000..0xe000 + text.len()].copy_from_slice(text);
+    p64(&mut bytes, WING_A + NAME, 0xe000);
+    p64(
+        &mut bytes,
+        WING_A + NAME + crate::msvc_string::LENGTH,
+        text.len() as u64,
+    );
+    p64(
+        &mut bytes,
+        WING_A + NAME + crate::msvc_string::CAPACITY,
+        text.len() as u64,
+    );
+    p64(&mut bytes, WING_B + NAME + crate::msvc_string::CAPACITY, 15);
+    for fault in [None, Some(0xe000)] {
+        let memory = Traced {
+            bytes: &bytes,
+            reads: Default::default(),
+            fault,
+        };
+        let mut names = vec![0; text.len()];
+        let mut arena = NameArena {
+            bytes: &mut names,
+            used: 0,
+            required: 0,
+            failures: 0,
+        };
+        let mut map = [Row::default(); 2];
+        let mut sources = [Source::default(); 2];
+        let mut leaves = Vec::new();
+        let result = walk_shared_game_score_with_owners(
+            &memory,
+            0,
+            GS,
+            &mut map,
+            &mut sources,
+            2,
+            Some(&mut arena),
+            Some(2),
+            |_, _, _, _| {},
+            |_, row| leaves.push(*row),
+            |_, _| {},
+        );
+        assert_eq!(result.shared.map, Outcome::Rows { len: 2 });
+        assert_eq!(result.shared.sources, Outcome::Rows { len: 2 });
+        assert_eq!(result.score, Outcome::Rows { len: 2 });
+        assert_eq!(sources.map(|source| source.row), map);
+        assert_eq!(map[0].name, fault.is_none().then_some((0, text.len())));
+        assert_eq!(map[1].name, Some((arena.used, 0)));
+        assert_eq!(
+            (arena.required, arena.failures),
+            (text.len(), usize::from(fault.is_some()))
+        );
+        assert_eq!(
+            leaves.iter().map(|row| row.planes).collect::<Vec<_>>(),
+            [Ok(i32::MIN); 2]
+        );
+        if fault.is_none() {
+            assert_eq!(names, text);
+        }
+    }
+}
+
+#[test]
+fn game_score_owner_observations_share_reads_and_survive_a_later_pool_failure() {
+    let mut bytes = fixture();
+    let mut expected = [Row::default(); 2];
+    let legacy = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: None,
+    };
+    let expected_outcome = walk(&legacy, 0, GS, &mut expected);
+    let shared = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: None,
+    };
+    let mut rows = [Row::default(); 2];
+    let mut owners = Vec::new();
+    assert_eq!(
+        walk_game_score_with_owners(
+            &shared,
+            0,
+            GS,
+            &mut rows,
+            None,
+            None,
+            |_, _, _| {},
+            |_, _| {},
+            |slot, pointer| owners.push((slot, pointer))
+        )
+        .shared
+        .map,
+        expected_outcome
+    );
+    assert_eq!(rows, expected);
+    assert_eq!(*shared.reads.borrow(), *legacy.reads.borrow());
+    assert_eq!(owners, [(0, None), (1, Some(OWNER)), (2, None), (3, None)]);
+    p64(&mut bytes, POOL_OBJECT, 0);
+    owners.clear();
+    assert!(matches!(
+        walk_game_score_with_owners(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes
+            },
+            0,
+            GS,
+            &mut rows,
+            None,
+            None,
+            |_, _, _| {},
+            |_, _| {},
+            |slot, pointer| owners.push((slot, pointer))
+        )
+        .shared
+        .map,
+        Outcome::Unavailable { .. }
+    ));
+    assert_eq!(owners, [(0, None), (1, Some(OWNER))]);
+    p64(&mut bytes, GS + cgame_state::STRATEGIC_AIR_MANAGER, 0);
+    owners.clear();
+    assert!(matches!(
+        walk_game_score_with_owners(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes
+            },
+            0,
+            GS,
+            &mut rows,
+            None,
+            None,
+            |_, _, _| {},
+            |_, _| {},
+            |slot, pointer| owners.push((slot, pointer))
+        )
+        .shared
+        .map,
+        Outcome::Unavailable { .. }
+    ));
+    assert_eq!(owners, [(0, None), (1, None), (2, None), (3, None)]);
+    p64(
+        &mut bytes,
+        GS + cgame_state::STRATEGIC_AIR_MANAGER,
+        MANAGER as u64,
+    );
+    array(
+        &mut bytes,
+        MANAGER + cstrategic_air_manager::COUNTRY_AIR,
+        0,
+        0,
+    );
+    owners.clear();
+    assert!(matches!(
+        walk_game_score_with_owners(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes
+            },
+            0,
+            GS,
+            &mut rows,
+            None,
+            None,
+            |_, _, _| {},
+            |_, _| {},
+            |slot, pointer| owners.push((slot, pointer))
+        )
+        .shared
+        .map,
+        Outcome::Unavailable { .. }
+    ));
+    assert_eq!(owners, [(0, None), (1, None), (2, None), (3, None)]);
+    // The native getter does not bounds-check a nonempty owner roster.
+    array(
+        &mut bytes,
+        MANAGER + cstrategic_air_manager::COUNTRY_AIR,
+        OWNERS,
+        1,
+    );
+    owners.clear();
+    assert_eq!(
+        walk_game_score_with_owners(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes
+            },
+            0,
+            GS,
+            &mut rows,
+            None,
+            None,
+            |_, _, _| {},
+            |_, _| {},
+            |slot, pointer| owners.push((slot, pointer))
+        )
+        .shared
+        .map,
+        Outcome::Rows { len: 0 }
+    );
+    assert_eq!(owners, [(0, None)]);
+}
+
+#[test]
+fn game_score_slot_zero_air_owner_uses_the_catalogue_object() {
+    let mut bytes = fixture();
+    // Move the authenticated country/air owner to the sentinel slot and
+    // retain zero as its raw stored identity, without positive link lookup.
+    p64(&mut bytes, COUNTRIES, COUNTRY as u64);
+    p64(&mut bytes, COUNTRIES + 8, 0);
+    p64(&mut bytes, COUNTRIES + 24, 0);
+    p32(&mut bytes, COUNTRY + ccountry::ID, 0);
+    p64(&mut bytes, OWNERS, OWNER as u64);
+    p64(&mut bytes, OWNERS + 8, 0);
+    p32(&mut bytes, OWNER + cstrategic_air::COUNTRY, 0);
+    let mut rows = [Row::default(); 2];
+    let disabled = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: None,
+    };
+    let result = walk_game_score_with_owners(
+        &disabled,
+        0,
+        GS,
+        &mut rows,
+        None,
+        None,
+        |_, _, _| {},
+        |_, _| panic!("disabled score visitor"),
+        |_, _| {},
+    );
+    assert_eq!(
+        result.shared.map,
+        Outcome::Unavailable {
+            reason: "country id is zero"
+        }
+    );
+    assert!(
+        !disabled
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(at, _)| at == COUNTRIES)
+    );
+    assert_eq!(capture(&bytes, &mut rows), result.shared.map);
+    let mut owners = Vec::new();
+    let result = walk_game_score_with_owners(
+        &SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        },
+        0,
+        GS,
+        &mut rows,
+        None,
+        Some(2),
+        |_, _, _| {},
+        |_, _| {},
+        |slot, pointer| owners.push((slot, pointer)),
+    );
+    assert_eq!(result.score, Outcome::Rows { len: 2 });
+    assert_eq!(rows.map(|row| row.owner), [0, 0]);
+    assert_eq!(owners[0], (0, Some(OWNER)));
+    p64(&mut bytes, COUNTRIES, 0);
+    let result = walk_game_score_with_owners(
+        &SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        },
+        0,
+        GS,
+        &mut rows,
+        None,
+        Some(2),
+        |_, _, _| {},
+        |_, _| {},
+        |_, _| {},
+    );
+    assert_eq!(
+        result.score,
+        Outcome::Unavailable {
+            reason: "strategic air slot zero owner has no catalogue object"
+        }
+    );
+}
+
+#[test]
+fn game_score_leaf_census_survives_unrelated_details_and_keeps_plane_fault_independent() {
+    let mut bytes = fixture();
+    for (pointer, stat) in [(WING_A, 73_u64), (WING_B, 74)] {
+        bytes[pointer + MISSION_STATS + MISSION_STAT_INDEXES] = 255;
+        p64(&mut bytes, pointer + DEFAULT_STATS + 0x33 * 8, stat);
+    }
+    for fault in [
+        REGION,
+        WING_A + MISSION + air_mission::REGION,
+        WING_A + PLANE_COUNT,
+        POOL_OBJECT + cair_wing_pool::AIR_BASE_REFERENCE,
+    ] {
+        let memory = Traced {
+            bytes: &bytes,
+            reads: Default::default(),
+            fault: Some(fault),
+        };
+        let mut rows = [Row::default(); 2];
+        let mut scores = Vec::new();
+        let result = walk_game_score_with_owners(
+            &memory,
+            0,
+            GS,
+            &mut rows,
+            None,
+            Some(2),
+            |_, _, _| {},
+            |pointer, leaf| {
+                scores.push(crate::game_score_inputs::read_wing(&memory, pointer, leaf))
+            },
+            |_, _| {},
+        );
+        assert!(matches!(result.shared.map, Outcome::Unavailable { .. }));
+        assert_eq!(result.score, Outcome::Rows { len: 2 });
+        assert_eq!(
+            scores.iter().map(|row| row.stat_raw).collect::<Vec<_>>(),
+            [Ok(73), Ok(74)]
+        );
+        assert_eq!(scores[1].planes, Ok(i32::MIN));
+        assert_eq!(
+            scores[0].planes,
+            if fault == WING_A + PLANE_COUNT {
+                Err("game score air-wing plane count unreadable")
+            } else {
+                Ok(i32::MIN)
+            }
+        );
+        let reads = memory.reads.borrow();
+        assert_eq!(
+            reads
+                .iter()
+                .filter(|&&(at, _)| at == WING_A + PLANE_COUNT)
+                .count(),
+            1
+        );
+        assert_eq!(
+            reads
+                .iter()
+                .filter(|&&(at, _)| at == WING_B + PLANE_COUNT)
+                .count(),
+            1
+        );
+        assert!(!reads.iter().any(|&(at, _)| at == WING_B + BASE_OVERRIDE));
+    }
+    let legacy = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: None,
+    };
+    let mut expected = [Row::default(); 2];
+    let expected_outcome = walk(&legacy, 0, GS, &mut expected);
+    let disabled = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: None,
+    };
+    let mut rows = [Row::default(); 2];
+    let result = walk_game_score_with_owners(
+        &disabled,
+        0,
+        GS,
+        &mut rows,
+        None,
+        None,
+        |_, _, _| {},
+        |_, _| panic!("disabled score visitor"),
+        |_, _| {},
+    );
+    assert_eq!((result.shared.map, rows), (expected_outcome, expected));
+    assert_eq!(*disabled.reads.borrow(), *legacy.reads.borrow());
+    let omitted = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: None,
+    };
+    let result = walk_game_score_with_owners(
+        &omitted,
+        0,
+        GS,
+        &mut [],
+        None,
+        Some(0),
+        |_, _, _| {},
+        |_, _| panic!("full score visitor"),
+        |_, _| {},
+    );
+    assert_eq!(
+        result.score,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 2
+        }
+    );
+    assert!(
+        !omitted
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(at, _)| at == WING_A || at == WING_B)
+    );
+}
+
 struct Traced<'a> {
     bytes: &'a [u8],
     reads: std::cell::RefCell<Vec<(usize, usize)>>,

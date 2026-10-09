@@ -57,6 +57,7 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
         (Recorded::Value(Some(Vec::new())), None, 1),
         (Recorded::Value(None), Some(Vec::new()), 1),
         (Recorded::NotRecorded, Some(b"Old save name".to_vec()), 0),
+        (Recorded::NotRecorded, None, 1),
     ] {
         saved.air_wings.insert(
             id,
@@ -390,6 +391,8 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
                 id,
                 owner: owner.clone(),
                 home_base: Some(home_base),
+                name: Some(Vec::new()),
+                leader: None,
             },
         );
     }
@@ -398,6 +401,7 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
             id,
             save::TaskForce {
                 id,
+                name: None,
                 fleet: 11,
                 roster_owner: owner.clone(),
                 logical_owner: owner.clone(),
@@ -432,16 +436,22 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
                 id: 11,
                 owner: 101,
                 home_base: 1,
+                name: Some(Vec::new()).into(),
+                leader: Some(0).into(),
             },
             FleetRow {
                 id: 12,
                 owner: 101,
                 home_base: 1,
+                name: Some(Vec::new()).into(),
+                leader: Some(0).into(),
             },
             FleetRow {
                 id: 18,
                 owner: 101,
                 home_base: 1,
+                name: Some(Vec::new()).into(),
+                leader: Some(0).into(),
             },
         ]),
     );
@@ -592,6 +602,62 @@ fn assert_differences(report: &Report, fields: &[&str]) {
             report.differences.iter().any(|line| line.contains(field)),
             "{field}: {:?}",
             report.differences
+        );
+    }
+}
+
+#[test]
+fn fleet_name_is_mandatory_in_ordinary_save_even_for_historical_recordings() {
+    let (mut frame, mut saved, _, _) = super::super::tests::fixture();
+    let membership = membership();
+    let owner = saved.countries.keys().next().unwrap().clone();
+    saved.fleets.clear();
+    saved.task_forces.clear();
+    saved.ships.clear();
+    set(
+        &mut frame,
+        TableId::TaskForces,
+        TableRows::TaskForces(Vec::new()),
+    );
+    set(&mut frame, TableId::Ships, TableRows::Ships(Vec::new()));
+    for name in [Recorded::NotRecorded, Recorded::Value(Some(Vec::new()))] {
+        set(
+            &mut frame,
+            TableId::Fleets,
+            TableRows::Fleets(vec![FleetRow {
+                id: 17,
+                owner: 101,
+                home_base: 1,
+                name,
+                leader: Recorded::Value(Some(0)),
+            }]),
+        );
+        saved.fleets.insert(
+            17,
+            save::Fleet {
+                id: 17,
+                owner: owner.clone(),
+                home_base: Some(1),
+                name: Some(Vec::new()),
+                leader: None,
+            },
+        );
+        let context = super::super::country_context(&frame).unwrap();
+        let mut report = Report::default();
+        compare_naval_units(&frame, &saved, &membership, &context.links, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        saved.fleets.get_mut(&17).unwrap().name = None;
+        assert!(
+            compare_naval_units(
+                &frame,
+                &saved,
+                &membership,
+                &context.links,
+                &mut Report::default()
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("fleet stored name missing")
         );
     }
 }

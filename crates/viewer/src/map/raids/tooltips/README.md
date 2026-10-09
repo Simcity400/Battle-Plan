@@ -1,260 +1,27 @@
 # Ordinary-map raid hover text
 
-Only the three icons produced by ordinary map mode are covered. The unit icon
-belongs to raid planning, whose client selection is outside the recording.
-Hover uses the native ToolTip painter and hit rectangles in reverse window paint order.
-The manager sorts and reattaches visible windows (`140B2F270`, `140B2BEF0`);
-the collision walk tests their paint list backwards (`142226CC0`). Pool/live
-order can differ after a camera move or reused slot and is not hover order.
-A coalescing worker builds text for one requested hour,
-perspective and content object; the same icon keeps its last text while the next
-hour's builds. No simulation or localisation work runs per frame.
+Native text for own active/result raids, incoming raids and target offers in the default map mode. The planning unit icon needs unrecorded client selection and is outside this module.
 
-The raid frame owns hover even when disabled (`1418D7751`, `1418D81D0`,
-`1416295A0`); its drawn rectangle supplies the hit region (`14222C220`).
-Inline lookup/draw (`14162E880`, `14162EFE0`) reads the expanded text. The map
-loader therefore harvests inline sprites from every localisation entry in
-`NativeWindows::assets`, the production inventory shared by GUI loading and
-hover tests. This includes runtime-selected scripted, project and country text.
-An unloaded declared inline sprite refuses the whole tooltip layout; outer
-keys alone do not suffice. Missing assets retain their named, counted refusals.
-
-## Native evidence
-
-The addresses below refer to the supported executable in `engine::build`.
-`P` means the call and branch are present in the indexed executable; live visual
-agreement is a separate check. Localisation keys in this table are native call
-arguments, not assumptions about a particular content installation.
-
-| Tooltip | Ordered lines and conditions (P) |
+| Area | Files |
 |---|---|
-| Own active, `141E72380` → `141612820` | Prompt `tooltip_raid_view_details_prompt` in the secondary tooltip string; main string `raid_inst_item_desc(TYPE, TARGET)`, blank line, phase. `140FD5730` wraps a positive-total phase in `raid_inst_progress_desc(PHASE, PROGRESS)`; otherwise only the phase key. Phase 1 always appends preparation diagnostics. Phase 3 appends `tooltip_launch_button_disabled` and execution diagnostics only when diagnostic `140FD6550` returns false. `1414545D0` requires a resolving unit raid back-reference before adding `tooltip_launch_button_right_click(NAME)`, whose NAME is the complete `raid_inst_unit_desc(NAME)` from `1414536D0`. Army resolves before wing. |
-| Own or incoming ended, `141613BE0` | `tooltip_raid_result(RAID_DESC, OUTCOME_TYPE)`; details prompt then `tooltip_raid_close_report_prompt`. Description uses the plain target location, not the active custom target description. Phase/outcome key switches use the executable's fallback arm for out-of-range values. |
-| Incoming, `141E76D40` → `141617380` | `tooltip_raid_warning_header`; `tooltip_raid_warning_description(COUNTRY, RAID)`; blank line; `tooltip_raid_warning_success_chance_header(VALUE)`; optional blank line, `tooltip_raid_warning_counterplay_header`, then each eligible counterplay line in modifier order. VALUE is one minus the clamped success sum. Ended raids take the common result path. |
-| Target/offer, `141E732A0` → `141615C50` → `1416151F0` → `141612FC0` | `TOOLTIP_POTENTIAL_TARGET_ENTRY` or `_NOT_ALLOWED` with TARGET_NAME and CONTROLLER_FLAG. A facility then shows `TOOLTIP_TARGET_FACILITY_PROJECT_UNKNOWN_DESC(CURRENT, REQUIRED)`, `_ONGOING_PROJECT_DESC(PROJECT_NAME)`, or `_NO_ONGOING_PROJECT_DESC`. Unknown facility suppresses the detection line; otherwise a detection-requiring building adds `TOOLTIP_POTENTIAL_TARGET_ENTRY_INTEL(CURRENT)`. More than one type adds `TOOLTIP_POTENTIAL_TARGET_MULTIPLE_RAIDS`. Each type gets `_RAID_HEADER_ALLOWED` or `_RAID_HEADER_NOT_ALLOWED(RAID)`, optional `raid_type_rescue_captured_general_captive_line(NAME)`, and its description in `TOOLTIP_POTENTIAL_TARGET_RAID_DESC(TEXT)` (argument literal at `14292F680`) only outside compact mode. Denied entries append preparation diagnostics; allowed noncompact entries append `TOOLTIP_POTENTIAL_TARGET_LAUNCH_CONDITION` and the failed full launch chain. Positive range adds `RAID_RANGE_FACTOR_TOOLTIP(RANGE_FACTOR)`; once-only types add `tooltip_raid_only_launch_once`. One allowed target with one type gets `RAID_SHIFT_CLICK_QUICK_START`. Compact means anything other than exactly one target and one type. |
+| Identity, hits and worker | [mod.rs](mod.rs), [lane.rs](lane.rs) |
+| Recorded joins and diagnostic order | [recorded.rs](recorded.rs), [rules.rs](rules.rs), [diagnostic.rs](diagnostic.rs) |
+| Content and naming | [content.rs](content.rs), [names.rs](names.rs), [requirements.rs](requirements.rs) |
+| Intel and success | [intel.rs](intel.rs), [success.rs](success.rs), [chance.rs](chance.rs) |
+| Trigger-text adapter | [trigger.rs](trigger.rs) |
 
-`rules.rs` owns separators and outer line conditions. Native
-`EnsureTrailingNewlines@1424B6660` adds only missing trailing newlines, never a
-leading separator. Arguments stay typed: strings, signed integers, or fixed5;
-the content's formatting directive chooses precision, percentage and colour.
-`142232AB0`/`1424B89F0` truncate decimal digits. Viewer language and recorded mount
-order determine every expansion, country name and asset.
+## Rules
 
-Target location (`140FD1BB0`) first tries the explicit province or leader
-province's victory-point name, then the explicit state, either province's
-state, or the building's state. `CBuilding::get_state` (`1410C6520` →
-`141162450`) follows status bit 0 to the province's recorded state; otherwise
-the location is a state ID. `target_loc_key` wraps that LOCATION without
-changing its selection (`140FD1D50`). Neighbouring buildings may have different
-state names; their hit must select the same target as their painted window.
+Hit rectangles follow reverse window paint order, not pool/live order; disabled frames own hover. Hits must select their painted target. One coalescing worker binds text to content/frame/perspective, retaining same-icon text across hourly rebuilds and clearing it when icon/country/content changes. Keep joins/localisation off frames. Shared [ToolTip](../../../combat/tooltip_painter.rs) owns resources, wrapping, placement and delayed text.
 
-## Derived inputs and diagnostic order
+`rules.rs` owns compact branches, line order and separators. Keep typed string/integer/fixed5 arguments; content chooses precision/colour. Add only missing trailing newlines. Preserve native requirement/pointer-map order, repeated interception occurrences and equipment-group terminal deduplication. Army precedes wing in selected-unit naming.
 
-`GetPhaseElapsedHours@140FD53C0` and `GetPhaseProgress@140FD5090` read preparation
-hours for phase 2 and travelled distance plus the raid-unit speed for phase 4.
-`BASE_DAYS_TO_PREPARE` is used only when the raid type supplies no positive override.
-Other phases do not invent a progress fraction.
+Project names use hourly owner/definition, not daily history. Captive names use recorded input, not script IDs. Stored wing/ship/state text shares [stored_text](../../../../../dashboard/src/scripted_text.rs); lost localised provenance requires recording/viewer language agreement. Failed reads refuse; older recordings retain usable projections.
 
-`140FD0EA0` supplies CURRENT, not the building's detected flag: selected national
-intel lane, target-local network strength, controlled-neighbour term, regional
-air-score ratio, decryption term and enemy counterintelligence. The lane comes
-from the building definition's `detecting_intel_type`. REQUIRED comes from
-`NRaids.TARGET_DETECTION_INTEL_TRESHOLD`. `1411DED90`/`1411E3C60` use the strategic
-operative roster, unique operative identities, descending contributions and
-successive stacking factors. Cryptology uses the shared native predicate in
-[dashboard/cryptology.rs](../../../../../dashboard/src/cryptology.rs).
-Facility selection uses the first country program at the target province and
-its active project definition. The hourly row's authenticated project owner
-supplies the naming country; the daily project history is not needed.
-`1416151F0` takes the tooltip name record at +40 from `140FCDDF0`.
-Constructor `140FCADC0` stores template+18 at project+20, so the name record
-read at definition+1D8 is template+1F0. Its default string at +48 is
-template+238, where `140A852A0` installs the definition token. Then
-`140A81BB0`/`14146B580` select the content's nonempty narrative name or
-definition key, then `14146B1D0` tries the owner's own tag prefix. Both selected
-and default keys expand in that owner's default country scope in the viewer's
-language. `140A81510` wraps the selected name yellow and appends the default in
-parentheses when the keys differ; `140A81880` only wraps yellow otherwise.
-The captive name uses the leader's original +20 input: `140C16FB0` localises it
-into +40, which `141612FC0` reads. A character script ID is not its name.
+Use recorded operands/content for intel, progress, success and sources; carried scores stay carried. Shared evaluators use native raid event scopes and refuse unsupported links per line. Acquire inline assets from all loaded localisation, including runtime-selected text; missing declared sprites refuse layout.
 
-`14157BC30`/`14157C670` compute standard success factors from raw army, wing,
-target, air, weather and ace operands. `14157A140` applies each authored mapping
-in order, including its separate fixed5 divisions, then clamps the sum.
-`14161AC80` considers defender slot 3 and skip slot 6, choosing the smaller
-endpoint for counterplay. `141619580` builds each counterplay line: the
-modifier's `_source` key takes `VAL` and `MAX`, while
-`tooltip_raid_modifier_effect_improvement` (and `_no_source`) take `VALUE`,
-`MAX` and `SOURCE`. Resistance's skip uses the resolved target province's
-state cores (`141580300`); interception preserves repeated native pool/wing
-occurrences (`140C3FDF0`) of the wings in the target region, the only ones it
-counts. The regional air scores are rewritten only in a region's phase hour, so
-the recorder reads those regions each hour and carries the rest. Air defence sums signed healthy levels using the
-building definition's `air_defence` (`1409CB2C0`).
+Every refusal names/counts occurrences while independent lines survive. Unreadable raids refuse operand/name lines without hiding other raids. Text failures never change icon eligibility. Distinguish missing, empty, malformed and language-mismatched values; never guess text.
 
-Offer denial (`141615D40`) runs command power (`140A8C5A0`,
-`raid_insufficient_command_power(COST)`), essential stockpile requirements,
-preparation conditions, then `tooltip_raid_no_valid_unit` with requirement text,
-or `tooltip_raid_cannot_reach`. Instance diagnostics (`140FD66E0`/`140FD6550`)
-start with `raid_unit_not_yet_at_source(UNIT, SOURCE)`, then essential and
-additional pools (`140FD4C00`), then the condition chain. Additional requirements
-show their own header only when essential requirements passed. The diagnostic
-return value is the final trigger-chain result, even after earlier failures.
+## Checks
 
-`14157A760` lists nuclear equipment first, then equipment in the definition
-pointer-map order from `14157E530`. Missing amounts are signed integer differences
-in `tooltip_raid_missing_equipment_entry(EQUIPMENT, AMOUNT)`, under
-`tooltip_raid_missing_equipment_header` or `tooltip_raid_waiting_for_equipment`.
-Equipment uses current-viewer-country localisation (`140BBA630`/`140BBA780`).
-
-The condition chain is visible → category unlock (no text) → once-only used-up
-(`tooltip_raid_already_launched`) → show_target → first matching cooldown
-(`tooltip_raid_on_cooldown(DAYS)`) → available → optional launchable → optional
-launchable_from with source-country ROOT. Addresses: `140A8DDF0`, `140A8C500`,
-`140A8C360`, `140A8D3F0`, `1414D7630`, `140A8D6D0`, `140A8D8D0`. Failed script
-blocks have `raid_tooltip_trigger_title(TITLE)` before their mode-1 trigger text
-(`140A8F290`, `14053FCC0`).
-
-Special-project requirement text follows `1404A1410`: the recorded country's
-project identity selects the content narrative name, country-prefixed override
-and scripted expansion (`140FCDDF0`, `140A81BB0`, `14146B1D0`); its tooltip name
-record uses `140A81510`/`140A81880`. Pool lookup (`1405382B0`, `1414700A0`)
-does not gate names on started/completed status. An unresolved `sp:` operand
-keeps the native empty fallback. Other operand forms are refused by name.
-
-Requirement text (`141618D30`, `141579E40`) lists equipment before battalions.
-`1415790B0` uses `raid_unit_requirements_equipment_header(EQUIPMENT, AMOUNT)`,
-module entries `raid_unit_requirements_module(NAME)`, country-localised module
-names, localised `OR` between alternatives, groups
-`raid_unit_requirements_module_group(LIST)`, and
-`raid_unit_requirements_module_header`. `141578C80` reads the global subunit definition discriminator (not a country-local clone) and lists active battalions with
-nonempty limits using `raid_unit_requirements_battalion(NAME, LIMIT)`.
-`141580360` selects the empty/min/max/invalid/exact/min_max limit branch.
-`1409FC1E0`/`1409FEBA0` expand equipment groups (`installed_content::equipment::Groups`,
-found by token without case) in authored order with terminal deduplication
-without case and `", "` separators when the group's key (its description, else
-its name) has no localisation; a module is shown by its own name, found by token.
-The anonymous requirement wrapper tests `none`, not an empty key:
-`14157E990` keeps the default token `0x165` from `1424A9460`, whose native
-spelling is `none` (`140082CB0`). A localised wrapper suppresses member
-expansion (`1409FC1E0`); without that key the member list expands normally.
-
-`141580CB0` describes a source as `raid_source_desc(WHAT, LOCATION)`.
-LOCATION is the state's display name or the ship name. `141581940` selects WHAT
-from the resolved air base kind, rocket site, naval base, or building template.
-`1409B7290` resolves division/ship name groups. `1409B57C0` chooses Roman `%s`
-before decimal `%d`. Literal authored name-group strings and genuine custom
-overrides are not client-localised strings. Source air-base kind is captured
-from the exact country access-table selection (`1409C4160`/`140C3B7F0`) or
-ship +730, including the null case.
-
-## Refusals and shared text
-
-Every refused occurrence is stored as a line name plus reason and counted;
-independent lines remain visible. The viewer diagnostics expose these counts. A
-raid whose operands were unreadable when recorded has a single `UNREADABLE`
-row; its operand and naming lines are refused, and other raids keep theirs.
-The selected active raid wing name (`1414536D0` -> `140F4B8F0`) prefers
-AirWings' stored name when recorded. A refused name stays refused; older
-recordings retain the active-raid WING_NAME projection. Both paths use
-`dashboard::scripted_text::stored_text`, also used by ship names.
-`140F48F90` passes a null selected-number pointer to `140AE3750` (assembly
-`140F4903F`); the `140AE2990`/`140AE49D0` fallback chooses against the used-name
-registry. Both generators and player rename `141932C30` use `140F51FB0`, which
-keeps neither the original key/number nor a rename marker. The exact stored
-bytes therefore draw verbatim only when recording and viewer languages match;
-the existing content identity supplies the recording language.
-
-The [engine reader](../../../../../engine/src/raid_tooltip_operands/names.rs)
-reads primary+998: inline storage or data pointer, length +9A8, capacity +9B0.
-Capacity 15 selects inline storage; larger capacity selects the heap pointer
-(`140F51FB0`). Live length must fit capacity; the reader checks pointer and
-arithmetic, copies length plus terminator in one payload read when rows fit,
-and validates the terminator. No chosen name-length cap is imposed. The
-AirWings walk captures all wings' stored text in a live-sized arena; a name
-read or arena failure leaves the old columns available and counts a refusal.
-The non-ended raid walk also keeps its native selected-wing projection (army
-before wing). That row buffer grows off-thread from full demand;
-a shortage keeps a readable prefix and withholds the incomplete table.
-
-The existing string layout carries the name in its own operand family: length
-at the reserved length key, then zero-based packed eight-byte chunks with final
-zero padding. A negative length carries the shared `NameReadError` code and
-replaces all chunks. Family/error codes and byte contracts live in the
-[engine](../../../../../engine/src/raid_tooltip_operands.rs) and
-[row contract](../../../../../replay/src/extended_rows/raids_projects.rs);
-the existing collector projection and kind/key/raw codec preserve them unchanged.
-An empty name retains zero length. Missing or malformed operands, failed reads,
-invalid UTF-8 and language mismatch refuse the line by name and count it.
-The outer `tooltip_launch_button_right_click` supplies the native green prompt,
-white connector and yellow name through the viewer's localisation.
-
-The [text-save oracle](../../../../../recorder/src/oracle/projects/raids.rs)
-compares the selected wing's stored length, bytes and final-chunk padding with
-saved `name` (`CAirWing::vf2@140F539B0`, secondary+988 = primary+998).
-`CWriter::WriteString@1424ADF40` -> `1424AF5A0` escapes backslashes and quotes
-with `String_ReplaceAllCString@1424B7F40`; the
-[save parser](../../../../../installed-content/src/save/air.rs) decodes both. Missing
-saved text differs from an empty name: `140F539B0` writes the name key even
-when empty outside checksum mode. The
-[AirWings oracle](../../../../../recorder/src/oracle/military.rs) compares every
-captured name byte-exact, including saved key presence, and counts capture
-refusals as differences; old absent fields are not compared. Duplicate selected
-saved IDs produce a counted difference while other raids remain comparable.
-The packed raid operand comparison reports capture failures as named limitations;
-saved naming inputs, provenance and language have no independent comparator. The native writer stops at an embedded NUL; a stored
-length extending beyond it produces a real save difference, never a waiver.
-Regional air scores, runtime success operands and definition pointer order also
-have no text-save counterpart. Other irrecoverable naming cases remain
-programmatic overrides with lost provenance and random division/ship fallback
-names without the selected choice (`1409B4CE0`).
-
-A state's display name (`1409CC380`) is its custom name (`CState+0x38`, stored
-localised by `set_state_name` `140310B50`), else its owner name (`CState+0xE8`,
-stored localised by `1409D3770` from `SetOwner` `1409D1710`), else its
-template's localised name. The first two are recorded (`States.custom_name`,
-`States.owner_name`) without their keys, so
-`dashboard::scripted_text::stored_text` draws them only when the viewer's
-language is the recording's and refuses them by name otherwise.
-
-Content forms outside the narrow adapters are explicitly refused: unknown
-success factors or custom expressions, unsupported naming fields, equipment
-groups that contain themselves, native
-trigger text forms without a supported adapter, scripted-text brackets the
-recorded hour cannot answer or that name a province or unit-leader scope,
-unsupported numeric directives, invalid text cycles, and missing inline assets.
-No refusal changes the ordinary-map icon eligibility.
-
-Text goes through the shared code: the game's localiser with typed arguments
-(`installed_content::localisation`), `crate::combat::text` for `ensure_newlines`
-(`EnsureTrailingNewlines@1424B6660`), `country_localised` (`140BBA780`),
-`value_limit` (`141580360`) and stored state names. The shared native ToolTip
-textbox (`1402A2150`, `142247010`) and resource resolver supply its font,
-background, integer wrapping and text-sprite bake (`1422861E0`, `14228EE80`).
-The controller delays the secondary body (`1402A4080`); colour codes nest in
-the native font, and inline flags use the recorded hour's small atlas
-(`1402EEFF0`). Unsupported draws are named and counted.
-Custom trigger tooltips expand scripted text in the raid's event scopes
-(`1413931A0` → `SScopeLocalizer` `1402F5F40`) through
-`dashboard::scripted_text`. The condition chain's scope and its FROM, a default
-scope of the target, are both default-constructed (`140528800`, `140A8D3F0` →
-`141580600`), so chains such as `[FROM.ROOT.GetTag]` follow their links
-(`141A81250`); inside a scope change only the linked scopes' objects are known,
-and a chain or condition that reads their own links is refused. The target
-variables stay set, and a unit leader's scope reads as its character
-(`140529310`). `trigger.rs` keeps only the condition traversal, native leaf keys
-and evaluator joins, until the unified trigger evaluator replaces them. The raid
-line order, capture joins, success mappings and named missing-input failures
-remain raid-specific. Native modifier values use the existing recorded
-modifier-definition feature rules; there is no separate modifier-description
-catalogue here.
-
-## Verification
-
-Viewer tests cover the facility's country override, narrative/default selection
-and scripted name scope without a daily project join, the outer tooltip branches,
-fixed formatting, success mapping and counterplay, intel arithmetic, native-order equipment maps, naming
-bytes and content merges; the engine readers' tests cover memory faults and
-capacity demand. The recorder
-oracle compares saved references and available raw scalars and reports the
-runtime-only remainder explicitly.
+[Tests](tests.rs)/[join tests](recorded/tests.rs) cover branches, formatting, names and merges. Byte contracts belong to [engine](../../../../../engine/src/raid_tooltip_operands.rs)/[replay](../../../../../replay/src/extended_rows/raids_projects.rs). Fresh-save comparisons use [raid](../../../../../recorder/src/oracle/projects/raids.rs)/[AirWings](../../../../../recorder/src/oracle/military.rs) oracles; runtime success/intel/order inputs have no save comparator. Follow [viewer](../../../../README.md#compare-changes)/[recorder](../../../../../recorder/README.md) workflows: saved-value agreement is separate from matched hover parity. Addresses/arithmetic stay beside code.

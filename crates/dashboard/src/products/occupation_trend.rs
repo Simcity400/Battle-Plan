@@ -10,8 +10,10 @@
 //! native cached group means BEFORE updating state scalars; their +0x38/+0x40
 //! fields are not recorded. Our mean is explicitly of the supplying state read.
 use super::{
-    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_groups::HourSpan, occupied_states,
-    validate_tag,
+    LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
+    country_groups::HourSpan,
+    country_history::{self, CountryIdentityRun, RecordedHistories},
+    occupied_states, validate_tag,
 };
 use crate::{Source, ranking, transport::json_len};
 use serde::{Deserialize, Serialize};
@@ -52,12 +54,25 @@ pub struct OccupationTrendParams {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct OccupationCollaborationActor {
+    pub slot: u32,
+    pub country_id: u32,
+    /// The current native identity supplied this tag. Null refuses hovered
+    /// names/flags while retaining the held collaboration amount.
+    pub name_hour: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct OccupationCollaboration {
-    pub tag: String,
+    pub tag: Option<String>,
     /// P: CCountryCollaborationData+0x10, 1413DFC50; fixed5 fraction, unlike
     /// the state percentage-point scalars. Politics meter: 141C441D0.
     pub raw: Option<String>,
     pub read_hour: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub actor: Option<OccupationCollaborationActor>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -83,6 +98,9 @@ pub struct OccupationTrendSeries {
     pub runs: Vec<OccupationTrendRun>,
     pub segments: Vec<HourSpan>,
     pub membership: Option<Vec<HourSpan>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub identities: Option<Vec<CountryIdentityRun>>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -112,12 +130,24 @@ pub(super) fn same_value(left: &OccupationTrendRun, right: &OccupationTrendRun) 
         && left.collaboration == right.collaboration
 }
 
+#[cfg(test)]
 pub(super) fn reply(
     branch: &str,
     history: &History,
     params: &OccupationTrendParams,
     warnings: Vec<String>,
     cancelled: &AtomicBool,
+) -> io::Result<OccupationTrendReply> {
+    reply_with_histories(branch, history, params, warnings, cancelled, None)
+}
+
+fn reply_with_histories(
+    branch: &str,
+    history: &History,
+    params: &OccupationTrendParams,
+    warnings: Vec<String>,
+    cancelled: &AtomicBool,
+    histories: Option<&RecordedHistories>,
 ) -> io::Result<OccupationTrendReply> {
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(
@@ -151,73 +181,199 @@ pub(super) fn reply(
         series: Vec::new(),
         warnings,
     };
-    let tags: HashSet<_> = params.tags.iter().collect();
+    let selected_ids = histories
+        .filter(|_| params.top.is_none() && !params.tags.is_empty())
+        .map(|histories| country_history::selected_identities(histories, &params.tags));
+    let tags: Vec<_> = if let Some(membership) = &membership {
+        membership.keys().cloned().collect()
+    } else if let Some(histories) = histories.filter(|_| !params.tags.is_empty()) {
+        country_history::selected_aliases(histories, &params.tags)
+    } else {
+        let requested: HashSet<_> = params.tags.iter().collect();
+        history
+            .series
+            .keys()
+            .filter(|tag| requested.is_empty() || requested.contains(tag))
+            .cloned()
+            .collect()
+    };
     let mut bytes = json_len(&result, MAX_PRODUCT_REPLY_BYTES).ok_or_else(|| {
         io::Error::other("Occupation trend reply exceeds MAX_PRODUCT_REPLY_BYTES")
     })?;
-    for (tag, runs) in &history.series {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct SeriesMeasure<'a> {
+        tag: &'a str,
+        runs: &'a [OccupationTrendRun],
+        segments: &'a [HourSpan],
+        membership: Option<&'a [HourSpan]>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        identities: Option<&'a [&'a CountryIdentityRun]>,
+    }
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RunMeasure<'a> {
+        first_hour: i32,
+        last_hour: i32,
+        read_hour: i32,
+        starts_segment: bool,
+        resistance_raw: &'a str,
+        compliance_raw: &'a str,
+        states: u32,
+        held_states: u32,
+        held_complete: bool,
+        collaboration: &'a [OccupationCollaboration],
+    }
+    let mut pieces = Vec::new();
+    for tag in &tags {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Occupation trend request cancelled",
             ));
         }
+        let runs = history.series.get(tag).map_or(&[][..], Vec::as_slice);
+        let country = histories.and_then(|histories| histories.countries.get(tag));
+        let identities = histories.map(|_| {
+            country
+                .into_iter()
+                .flat_map(|country| country.identities.iter())
+                .filter(|identity| {
+                    selected_ids.as_ref().is_none_or(|selected| {
+                        selected.contains(&(identity.slot, identity.country_id))
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        let holder_spans = selected_ids.as_ref().map(|_| {
+            identities
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|identity| HourSpan {
+                    first_hour: identity.first_hour,
+                    last_hour: identity.last_hour,
+                })
+                .collect::<Vec<_>>()
+        });
         let selected = membership
             .as_ref()
             .and_then(|membership| membership.get(tag));
-        if membership.is_some() && selected.is_none()
-            || membership.is_none() && !tags.is_empty() && !tags.contains(tag)
-        {
-            continue;
-        }
-        let mut series = OccupationTrendSeries {
-            tag: tag.clone(),
-            runs: Vec::new(),
-            segments: history.segments.get(tag).cloned().unwrap_or_default(),
-            membership: selected.cloned(),
-        };
-        bytes += json_len(&series, MAX_PRODUCT_REPLY_BYTES).unwrap_or(MAX_PRODUCT_REPLY_BYTES) + 1;
-        let mut add = |run: &OccupationTrendRun, first, last| {
-            let mut run = run.clone();
-            run.first_hour = first;
-            run.last_hour = last;
-            if !params.collaboration {
-                run.collaboration.clear();
-            }
+        let spans = selected.map(Vec::as_slice).or(holder_spans.as_deref());
+        let segments = holder_spans
+            .as_deref()
+            .unwrap_or_else(|| history.segments.get(tag).map_or(&[][..], Vec::as_slice));
+        bytes += usize::from(!pieces.is_empty());
+        bytes += json_len(
+            &SeriesMeasure {
+                tag,
+                runs: &[],
+                segments,
+                membership: selected.map(Vec::as_slice),
+                identities: identities.as_deref(),
+            },
+            MAX_PRODUCT_REPLY_BYTES.saturating_sub(bytes),
+        )
+        .ok_or_else(|| {
+            io::Error::other("Occupation trend reply exceeds MAX_PRODUCT_REPLY_BYTES")
+        })?;
+        let mut clipped: Vec<(&OccupationTrendRun, i32, i32, bool)> = Vec::new();
+        let mut add = |index: usize, first, last| {
+            let run = &runs[index];
+            let starts_segment = run.starts_segment && first == run.first_hour
+                || holder_spans.as_ref().is_some_and(|spans| {
+                    spans
+                        .binary_search_by_key(&first, |span| span.first_hour)
+                        .is_ok()
+                });
             // The shared scan retains collaboration reads for both settings.
             // Without that context, its independent read boundaries do not
             // split the numeric history or inflate the reply budget.
-            if let Some(last) = series.runs.last_mut()
-                && !run.starts_segment
-                && last.last_hour.checked_add(1) == Some(run.first_hour)
-                && same_value(last, &run)
+            if let Some((previous, _, end, _)) = clipped.last_mut()
+                && !starts_segment
+                && end.checked_add(1) == Some(first)
+                && previous.read_hour == run.read_hour
+                && previous.resistance_raw == run.resistance_raw
+                && previous.compliance_raw == run.compliance_raw
+                && previous.states == run.states
+                && previous.held_states == run.held_states
+                && previous.held_complete == run.held_complete
+                && (!params.collaboration || previous.collaboration == run.collaboration)
             {
-                last.last_hour = run.last_hour;
+                *end = last;
                 return Ok(());
             }
-            bytes += json_len(&run, MAX_PRODUCT_REPLY_BYTES).unwrap_or(MAX_PRODUCT_REPLY_BYTES) + 1;
-            if bytes > MAX_PRODUCT_REPLY_BYTES {
-                return Err(io::Error::other(
-                    "Occupation trend reply exceeds MAX_PRODUCT_REPLY_BYTES",
-                ));
-            }
-            series.runs.push(run);
+            clipped.push((run, first, last, starts_segment));
             Ok(())
         };
-        if let Some(spans) = selected {
+        if let Some(spans) = spans {
+            let indices: Vec<_> = (0..runs.len()).collect();
             ranking::for_each_piece(
-                runs,
+                &indices,
                 spans,
-                |run| (run.first_hour, run.last_hour),
+                |index| (runs[*index].first_hour, runs[*index].last_hour),
                 cancelled,
-                &mut add,
+                |index, first, last| add(*index, first, last),
             )?;
         } else {
-            for run in runs {
-                add(run, run.first_hour, run.last_hour)?;
+            for (index, run) in runs.iter().enumerate() {
+                add(index, run.first_hour, run.last_hour)?;
             }
         }
-        result.series.push(series);
+        for (index, (run, first, last, starts_segment)) in clipped.iter().enumerate() {
+            let value = RunMeasure {
+                first_hour: *first,
+                last_hour: *last,
+                starts_segment: *starts_segment,
+                read_hour: run.read_hour,
+                resistance_raw: &run.resistance_raw,
+                compliance_raw: &run.compliance_raw,
+                states: run.states,
+                held_states: run.held_states,
+                held_complete: run.held_complete,
+                collaboration: if params.collaboration {
+                    &run.collaboration
+                } else {
+                    &[]
+                },
+            };
+            bytes += usize::from(index > 0);
+            bytes += json_len(&value, MAX_PRODUCT_REPLY_BYTES.saturating_sub(bytes)).ok_or_else(
+                || io::Error::other("Occupation trend reply exceeds MAX_PRODUCT_REPLY_BYTES"),
+            )?;
+        }
+        pieces.push((tag, clipped, holder_spans, selected, identities));
+    }
+    for (tag, clipped, holder_spans, selected, identities) in pieces {
+        let segments =
+            holder_spans.unwrap_or_else(|| history.segments.get(tag).cloned().unwrap_or_default());
+        result.series.push(OccupationTrendSeries {
+            tag: tag.clone(),
+            segments,
+            membership: selected.cloned(),
+            identities: identities.map(|identities| identities.into_iter().cloned().collect()),
+            runs: clipped
+                .into_iter()
+                .map(
+                    |(run, first_hour, last_hour, starts_segment)| OccupationTrendRun {
+                        first_hour,
+                        last_hour,
+                        starts_segment,
+                        collaboration: if params.collaboration {
+                            run.collaboration.clone()
+                        } else {
+                            Vec::new()
+                        },
+                        read_hour: run.read_hour,
+                        resistance_raw: run.resistance_raw.clone(),
+                        compliance_raw: run.compliance_raw.clone(),
+                        states: run.states,
+                        held_states: run.held_states,
+                        held_complete: run.held_complete,
+                    },
+                )
+                .collect(),
+        });
     }
     if json_len(&result, MAX_PRODUCT_REPLY_BYTES).is_none() {
         return Err(io::Error::other(
@@ -253,6 +409,7 @@ impl Product for OccupationTrend {
             OccupationMeasure::decl(),
             OccupationTop::decl(),
             OccupationTrendParams::decl(),
+            OccupationCollaborationActor::decl(),
             OccupationCollaboration::decl(),
             OccupationTrendRun::decl(),
             OccupationTrendSeries::decl(),
@@ -275,12 +432,20 @@ impl Product for OccupationTrend {
         if params.collaboration {
             warnings.extend(scanned.trend.collaboration_warnings.iter().cloned());
         }
-        reply(
+        let histories = country_history::branch_histories(
+            source,
+            params.branch_id.parse().expect("validated branch"),
+            false,
+            &[],
+            cancelled,
+        )?;
+        reply_with_histories(
             &params.branch_id,
             &scanned.trend,
             params,
             warnings,
             cancelled,
+            Some(&histories),
         )
     }
 }

@@ -3,7 +3,7 @@ use crate::test_fixtures::{CAMPAIGN, records, source};
 use replay::{
     container::Replay,
     frame::DecodedFrame,
-    rows::{CountryLinkRow, CountryRow, TableRows},
+    rows::{CountryLinkRow, CountryRow, RocketProductionOutputRow, TableRows},
 };
 
 fn hour(year: i64, month: usize, day: i64, hour: i64) -> i32 {
@@ -13,6 +13,29 @@ fn hour(year: i64, month: usize, day: i64, hour: i64) -> i32 {
         .map(|days| i64::from(*days))
         .sum();
     (i64::from(HOUR_EPOCH) + (year * 365 + before + day - 1) * 24 + hour) as i32
+}
+
+/// Projection fixtures already own their native read/identity evidence. Give
+/// them a separate settled empty Rocket scope, without fabricating designs.
+fn zero_rocket_scope(scanned: &mut ScannedProduced) {
+    scanned.rocket.tags = scanned
+        .tags
+        .iter()
+        .map(|(tag, track)| {
+            (
+                tag.clone(),
+                TagHistory {
+                    hours: track.hours.clone(),
+                    last_hours: track.last_hours.clone(),
+                    starts: track.starts.clone(),
+                    identities: track.identities.clone(),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    scanned.rocket.reads = scanned.reads.clone();
+    scanned.rocket.observations = scanned.observations.clone();
 }
 
 #[test]
@@ -29,7 +52,7 @@ fn produced_selections_follow_the_recorded_countries_and_types() {
             )
         })
         .collect();
-    let scanned = ScannedProduced {
+    let mut scanned = ScannedProduced {
         tags: (0..5_000)
             .map(|country| {
                 (
@@ -56,6 +79,7 @@ fn produced_selections_follow_the_recorded_countries_and_types() {
             .collect(),
         ..Default::default()
     };
+    zero_rocket_scope(&mut scanned);
     let mut params = ProducedParams {
         tags: scanned.tags.keys().cloned().collect(),
         included: types.values().map(|kind| kind.key.clone()).collect(),
@@ -103,28 +127,216 @@ fn a_month_before_is_the_same_moment_of_the_month_before_or_its_last_day() {
 
 #[test]
 fn values_code_as_deltas_from_the_first_nonzero_with_unknown_ranges() {
-    let coded = encode(&[Some(0), Some(0), Some(5), Some(7), Some(7), Some(7)]).unwrap();
+    let coded = encode(&[Some(0), Some(0), Some(5), Some(7), Some(7), Some(7)])
+        .unwrap()
+        .unwrap();
     assert_eq!((coded.from, coded.unknown.as_slice()), (2, &[][..]));
     assert_eq!(coded.deltas, [5, 2]);
     // Unknown samples are ranges and hold the last known sum, so a known value
     // after them is coded against the one before them.
-    let unknown = encode(&[Some(0), Some(4), None, None, Some(9), None]).unwrap();
+    let unknown = encode(&[Some(0), Some(4), None, None, Some(9), None])
+        .unwrap()
+        .unwrap();
     assert_eq!(
         (unknown.from, unknown.unknown.as_slice()),
         (1, &[2, 4, 5, 6][..])
     );
     assert_eq!(unknown.deltas, [4, 0, 0, 5]);
     // Unknown before anything nonzero is still coded.
-    let early = encode(&[None, Some(0)]).unwrap();
+    let early = encode(&[None, Some(0)]).unwrap().unwrap();
     assert_eq!((early.from, early.unknown.as_slice()), (2, &[0, 1][..]));
     // A per-week value can fall again.
     assert_eq!(
-        encode(&[Some(3), Some(1), Some(0)]).unwrap().deltas,
+        encode(&[Some(3), Some(1), Some(0)])
+            .unwrap()
+            .unwrap()
+            .deltas,
         [3, -2, -1]
     );
     // A known zero throughout needs nothing.
-    assert_eq!(encode(&[Some(0), Some(0)]), None);
-    assert_eq!(encode(&[]), None);
+    assert_eq!(encode(&[Some(0), Some(0)]).unwrap(), None);
+    assert_eq!(encode(&[]).unwrap(), None);
+}
+
+#[test]
+fn produced_codec_refuses_unsafe_signed_totals_without_abs_overflow() {
+    for value in [i64::MIN, i64::MAX, -MAX_EXACT - 1, MAX_EXACT + 1] {
+        assert_eq!(
+            encode(&[Some(0), Some(value)]).unwrap_err().to_string(),
+            "A production total is too large to reply exactly"
+        );
+    }
+}
+
+#[test]
+fn produced_codec_refuses_an_unsafe_delta_between_safe_endpoints() {
+    for (before, after) in [(MAX_EXACT, -2), (-MAX_EXACT, 2)] {
+        for values in [
+            vec![Some(before), Some(after)],
+            vec![Some(before), None, Some(after)],
+        ] {
+            assert_eq!(
+                encode(&values).unwrap_err().to_string(),
+                "A production delta is too large to reply exactly"
+            );
+        }
+    }
+}
+
+#[test]
+fn produced_codec_keeps_exact_boundary_deltas_and_signed_corrections() {
+    let coded = encode(&[Some(MAX_EXACT), None, Some(0), Some(-MAX_EXACT)])
+        .unwrap()
+        .unwrap();
+    assert_eq!(coded.from, 0);
+    assert_eq!(coded.unknown, [1, 2]);
+    assert_eq!(coded.deltas, [MAX_EXACT, 0, -MAX_EXACT, -MAX_EXACT]);
+}
+
+#[test]
+fn produced_reply_propagates_group_and_total_codec_refusals() {
+    let total = |units: i64| Total {
+        units: i128::from(units),
+        inexact: 0,
+    };
+    let params = produced_params(
+        &["AAA"],
+        None,
+        ProducedMeasure::Total,
+        ProducedGrouping::Variant,
+    );
+    let types = [10, 20]
+        .into_iter()
+        .map(|variant| {
+            (
+                variant,
+                VariantType {
+                    key: "equipment".into(),
+                    ordinal: Some(0),
+                    domain: Some(Domain::Land),
+                },
+            )
+        })
+        .collect();
+    for (changes, reason) in [
+        (
+            BTreeMap::from([((10, false), vec![(0, total(i64::MIN))])]),
+            "A production total is too large to reply exactly",
+        ),
+        (
+            BTreeMap::from([
+                ((10, false), vec![(0, total(MAX_EXACT)), (1, total(0))]),
+                ((20, false), vec![(0, total(0)), (1, total(-2))]),
+            ]),
+            "A production delta is too large to reply exactly",
+        ),
+    ] {
+        let mut scanned = ScannedProduced {
+            tags: BTreeMap::from([(
+                "AAA".to_owned(),
+                TagHistory {
+                    hours: vec![10, 34],
+                    last_hours: vec![33, 57],
+                    starts: vec![true, false],
+                    identities: vec![(1, 1, 0); 2],
+                    changes,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        zero_rocket_scope(&mut scanned);
+        let groups = grouped(&scanned, &types, Named::default(), &params);
+        let error = requested(&scanned, &groups, &params, &AtomicBool::new(false))
+            .err()
+            .expect("an unsafe group or total must refuse the reply");
+        assert_eq!(error.to_string(), reason);
+    }
+}
+
+#[test]
+fn produced_groups_widen_signed_updates_before_adding_and_subtracting() {
+    let exact = |units: i64| Total {
+        units: i128::from(units),
+        inexact: 0,
+    };
+    let track = TagHistory {
+        changes: BTreeMap::from([
+            (
+                (10, false),
+                vec![(0, exact(i64::MAX)), (1, exact(i64::MIN))],
+            ),
+            ((20, false), vec![(0, exact(i64::MAX))]),
+            ((30, false), vec![(0, exact(-i64::MAX))]),
+        ]),
+        ..Default::default()
+    };
+    let groups = group_totals(&track, |_| Some(0), 1).unwrap();
+    assert_eq!(
+        groups[0],
+        [
+            (0, i128::from(i64::MAX), true),
+            (1, i128::from(i64::MIN), true),
+        ]
+    );
+    assert_eq!(measure_at(&groups[0], 1, 1, true).unwrap(), Some(i64::MIN));
+    assert_eq!(
+        measure_at(&groups[0], 1, 0, false).unwrap_err().to_string(),
+        "Produced equipment units exceed their exact integer range"
+    );
+}
+
+#[test]
+fn produced_groups_refuse_an_overflowing_widened_update() {
+    let track = TagHistory {
+        changes: BTreeMap::from([(
+            (10, false),
+            vec![
+                (
+                    0,
+                    Total {
+                        units: i128::MAX,
+                        inexact: 0,
+                    },
+                ),
+                (
+                    1,
+                    Total {
+                        units: i128::MIN,
+                        inexact: 0,
+                    },
+                ),
+            ],
+        )]),
+        ..Default::default()
+    };
+    assert_eq!(
+        group_totals(&track, |_| Some(0), 1)
+            .unwrap_err()
+            .to_string(),
+        "Produced equipment group exceeds its exact integer range"
+    );
+}
+
+#[test]
+fn produced_measure_refuses_an_out_of_range_aggregate_instead_of_saturating() {
+    let exact = |units: i64| Total {
+        units: i128::from(units),
+        inexact: 0,
+    };
+    let track = TagHistory {
+        changes: BTreeMap::from([
+            ((10, false), vec![(0, exact(i64::MAX))]),
+            ((20, false), vec![(0, exact(1))]),
+        ]),
+        ..Default::default()
+    };
+    assert_eq!(
+        measured(&track, &[Some(0)], true, |_| true)
+            .unwrap_err()
+            .to_string(),
+        "Produced equipment units exceed their exact integer range"
+    );
 }
 
 #[test]
@@ -269,6 +481,15 @@ fn produced_frame(
             reason: "unhooked".into(),
         },
     };
+    *frame.tables[TableId::RocketProductionOutput.index()] =
+        TableView::Complete(TableRows::RocketProductionOutput(vec![
+            RocketProductionOutputRow {
+                since_hour: since,
+                exact: true,
+                units_exact: true,
+                ..Default::default()
+            },
+        ]));
     *frame.tables[TableId::LexicalTokens.index()] =
         TableView::Complete(TableRows::LexicalTokens(vec![
             LexicalTokenRow {
@@ -337,6 +558,57 @@ fn produced_source(frames: Vec<DecodedFrame>) -> crate::Source {
     .unwrap()
 }
 
+#[test]
+fn produced_complete_empty_census_keeps_its_output_read_and_independent_rocket_coverage() {
+    let cancel = AtomicBool::new(false);
+    let mut frames = produced_day(0, 9001, produced_hour(0), &[], Some(&[]));
+    frames.extend(produced_day(1, 9001, produced_hour(0), &[], Some(&[])));
+    let source = produced_source(frames.clone());
+    let scanned = scan(&source.replay(), 1, &cancel).unwrap();
+    let params = crate::products::production_spending::ProductionSpendingParams {
+        branch_id: "1".into(),
+        tag: "GER".into(),
+        refits: false,
+    };
+    let spending = crate::products::production_spending::reply(
+        &scanned,
+        &params,
+        Named::default(),
+        Vec::new(),
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(spending.production.len(), 2);
+    assert_eq!(
+        spending.production[0].empty_census_hour,
+        Some(produced_hour(0))
+    );
+    assert_eq!(spending.production[0].last_hour, produced_hour(1) - 1);
+    for frame in &mut frames {
+        *frame.tables[TableId::ProductionLineOutput.index()] = TableView::Unavailable {
+            reason: "unread output".into(),
+        };
+    }
+    let source = produced_source(frames);
+    let scanned = scan(&source.replay(), 1, &cancel).unwrap();
+    assert!(scanned.tags.is_empty());
+    assert_eq!(scanned.rocket.reads, [produced_hour(0), produced_hour(1)]);
+    let spending = crate::products::production_spending::reply(
+        &scanned,
+        &params,
+        Named::default(),
+        Vec::new(),
+        &cancel,
+    )
+    .unwrap();
+    assert!(
+        spending
+            .production
+            .iter()
+            .all(|run| run.empty_census_hour.is_none())
+    );
+}
+
 fn produced_params(
     tags: &[&str],
     top: Option<u32>,
@@ -352,6 +624,271 @@ fn produced_params(
         included: Vec::new(),
         refits: false,
     }
+}
+
+#[test]
+fn produced_scan_widens_signed_row_corrections_and_keeps_applied_ic_independent() {
+    let since = produced_hour(0);
+    let mut frames = Vec::new();
+    for (day, (units, spent)) in [(i64::MAX, 123_456), (i64::MIN, -654_321)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut next = produced_day(
+            day as i32,
+            9001,
+            since,
+            &[(1, 11, 0, 10)],
+            Some(&[(1, 0, 11, 10, units, true, false)]),
+        );
+        for frame in &mut next {
+            let TableView::Complete(TableRows::ProductionLineOutput(rows)) =
+                &mut *frame.tables[TableId::ProductionLineOutput.index()]
+            else {
+                unreachable!()
+            };
+            rows[0].spent_raw = replay::rows::Recorded::Value(Some(spent));
+        }
+        frames.extend(next);
+    }
+    let source = produced_source(frames);
+    let scanned = scan(&source.replay(), 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        scanned.tags["GER"].changes[&(10, false)]
+            .iter()
+            .map(|(sample, total)| (*sample, total.units, total.inexact))
+            .collect::<Vec<_>>(),
+        [(0, i128::from(i64::MAX), 0), (1, i128::from(i64::MIN), 0)]
+    );
+    let totals = country_totals(&scanned, &["GER".into()], &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        totals["GER"]
+            .iter()
+            .map(|run| run.amount)
+            .collect::<Vec<_>>(),
+        [Some(i64::MAX), Some(i64::MIN)]
+    );
+    let spending = crate::products::production_spending::reply(
+        &scanned,
+        &crate::products::production_spending::ProductionSpendingParams {
+            branch_id: "1".into(),
+            tag: "GER".into(),
+            refits: false,
+        },
+        Named::default(),
+        Vec::new(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        spending
+            .total
+            .iter()
+            .map(|run| run.total_raw.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("123456"), Some("-654321")]
+    );
+}
+
+#[test]
+fn produced_scan_retains_multiline_totals_above_unit_transport_and_keeps_applied_ic() {
+    let lines: Vec<_> = (1..=3).map(|line| (line, 11, 0, 10)).collect();
+    let output: Vec<_> = (1..=3)
+        .map(|line| (line, 0, 11, 10, i64::MAX, true, false))
+        .collect();
+    let mut frames = produced_day(0, 9001, produced_hour(0), &lines, Some(&output));
+    for frame in &mut frames {
+        let TableView::Complete(TableRows::ProductionLineOutput(rows)) =
+            &mut *frame.tables[TableId::ProductionLineOutput.index()]
+        else {
+            unreachable!()
+        };
+        for row in rows {
+            row.spent_raw = replay::rows::Recorded::Value(Some(i64::MAX));
+        }
+    }
+    let source = produced_source(frames);
+    let scanned = scan(&source.replay(), 1, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        scanned.tags["GER"].current[&(10, false)],
+        Total {
+            units: i128::from(i64::MAX) * 3,
+            inexact: 0
+        }
+    );
+    assert_eq!(
+        country_totals(&scanned, &["GER".into()], &AtomicBool::new(false))
+            .err()
+            .expect("out-of-range delivered units must refuse")
+            .to_string(),
+        "Produced equipment units exceed their exact integer range"
+    );
+    let spending = crate::products::production_spending::reply(
+        &scanned,
+        &crate::products::production_spending::ProductionSpendingParams {
+            branch_id: "1".into(),
+            tag: "GER".into(),
+            refits: false,
+        },
+        Named::default(),
+        Vec::new(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        spending.total[0].total_raw,
+        Some((i128::from(i64::MAX) * 3).to_string())
+    );
+}
+
+fn rocket_deliveries(frames: &mut [DecodedFrame], units: i64, units_exact: bool) {
+    for frame in frames {
+        *frame.tables[TableId::RocketProductionOutput.index()] =
+            TableView::Complete(TableRows::RocketProductionOutput(vec![
+                RocketProductionOutputRow {
+                    since_hour: produced_hour(0),
+                    exact: true,
+                    units_exact: true,
+                    ticks: 1,
+                    deliveries: 1,
+                    inexact_deliveries: u64::from(!units_exact),
+                    ..Default::default()
+                },
+                RocketProductionOutputRow {
+                    country: 11,
+                    since_hour: produced_hour(0),
+                    exact: false,
+                    units_exact,
+                    ticks: 1,
+                    inexact_ticks: 1,
+                    deliveries: 1,
+                    inexact_deliveries: u64::from(!units_exact),
+                    ..Default::default()
+                },
+                RocketProductionOutputRow {
+                    country: 11,
+                    variant: 10,
+                    since_hour: produced_hour(0),
+                    exact: false,
+                    units_exact,
+                    ticks: 1,
+                    inexact_ticks: 1,
+                    units,
+                    deliveries: 1,
+                    inexact_deliveries: u64::from(!units_exact),
+                    ..Default::default()
+                },
+            ]));
+    }
+}
+
+#[test]
+fn produced_rocket_deliveries_add_by_existing_variant_without_spending_or_census_proof() {
+    let since = produced_hour(0);
+    let mut frames = produced_day(0, 9001, since, &[], Some(&[(1, 0, 11, 10, 5, true, true)]));
+    rocket_deliveries(&mut frames, -2, true);
+    let source = produced_source(frames);
+    let scanned = scan(&source.replay(), 1, &AtomicBool::new(false)).unwrap();
+    let result = reply(
+        &scanned,
+        &produced_params(
+            &["GER"],
+            None,
+            ProducedMeasure::Total,
+            ProducedGrouping::Variant,
+        ),
+        Named::default(),
+        Vec::new(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(result.keys[0].key, "10");
+    assert_eq!(produced_values(&result.series[0], 0), [Some(3)]);
+    assert_eq!(
+        produced_decode(result.series[0].total.as_ref(), 1),
+        [Some(3)]
+    );
+    assert!(result.series[0].values[0].equipment_values.is_none());
+}
+
+#[test]
+fn produced_missing_rocket_retains_explicit_equipment_subtotal_without_ranking_combined() {
+    let since = produced_hour(0);
+    let mut frames = produced_day(0, 9001, since, &[], Some(&[(1, 0, 11, 10, -5, true, true)]));
+    for frame in &mut frames {
+        *frame.tables[TableId::RocketProductionOutput.index()] = TableView::Unavailable {
+            reason: "historical absence".into(),
+        };
+    }
+    let source = produced_source(frames);
+    let scanned = scan(&source.replay(), 1, &AtomicBool::new(false)).unwrap();
+    let mut params = produced_params(
+        &["GER"],
+        None,
+        ProducedMeasure::Total,
+        ProducedGrouping::Variant,
+    );
+    let result = reply(
+        &scanned,
+        &params,
+        Named::default(),
+        Vec::new(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let series = &result.series[0];
+    assert_eq!(produced_decode(series.total.as_ref(), 1), [None]);
+    assert_eq!(produced_values(series, 0), [None]);
+    assert_eq!(
+        produced_decode(series.values[0].equipment_values.as_ref(), 1),
+        [Some(-5)]
+    );
+    assert!(result.known.is_empty());
+    params.tags.clear();
+    params.top = Some(10);
+    assert!(
+        reply(
+            &scanned,
+            &params,
+            Named::default(),
+            Vec::new(),
+            &AtomicBool::new(false)
+        )
+        .unwrap()
+        .series
+        .is_empty()
+    );
+}
+
+#[test]
+fn produced_rocket_delivery_refusal_is_independent_and_combined_overflow_is_named() {
+    let since = produced_hour(0);
+    let mut frames = produced_day(0, 9001, since, &[], Some(&[(1, 0, 11, 10, 5, true, true)]));
+    rocket_deliveries(&mut frames, 2, false);
+    let source = produced_source(frames);
+    let scanned = scan(&source.replay(), 1, &AtomicBool::new(false)).unwrap();
+    let result = reply(
+        &scanned,
+        &produced_params(
+            &["GER"],
+            None,
+            ProducedMeasure::Total,
+            ProducedGrouping::Variant,
+        ),
+        Named::default(),
+        Vec::new(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(produced_decode(result.series[0].total.as_ref(), 1), [None]);
+    assert_eq!(
+        produced_decode(result.series[0].values[0].equipment_values.as_ref(), 1),
+        [Some(5)]
+    );
+    assert_eq!(
+        add_units(Some(i64::MAX), Some(1)).unwrap_err().to_string(),
+        "Combined delivered units exceed their exact integer range"
+    );
 }
 
 /// Each sample's value of a key (by its position in the reply's keys), as the
@@ -680,7 +1217,34 @@ fn produced_totals_survive_deleted_lines_and_count_lines_made_between_reads() {
         produced_values(italy, 0),
         [Some(0), Some(3), Some(4), Some(6)]
     );
-    assert!(reply.warnings.iter().any(|warning| warning.contains("XXX")));
+    let absent = load(produced_params(
+        &["XXX"],
+        None,
+        ProducedMeasure::Total,
+        ProducedGrouping::Type,
+    ));
+    assert!(absent.series.is_empty() && absent.keys.is_empty() && absent.known.is_empty());
+    let repeated_params = produced_params(
+        &["XXX", "XXX"],
+        None,
+        ProducedMeasure::Total,
+        ProducedGrouping::Type,
+    );
+    assert!(EquipmentProduced::validate(&repeated_params).is_ok());
+    let repeated = load(repeated_params);
+    assert!(repeated.series.is_empty() && repeated.keys.is_empty() && repeated.known.is_empty());
+    for result in [&reply, &absent, &repeated] {
+        assert_eq!(
+            result
+                .warnings
+                .iter()
+                .filter(|warning| warning.starts_with("XXX:"))
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["XXX: no recorded production in this branch"]
+        );
+        assert!(!result.series.iter().any(|series| series.tag == "XXX"));
+    }
     assert!(
         reply
             .warnings
@@ -704,7 +1268,7 @@ fn produced_totals_survive_deleted_lines_and_count_lines_made_between_reads() {
         produced_values(&with.series[0], 0),
         [Some(0), Some(0), Some(0), Some(1)]
     );
-    // By variant: a variant is named only from the read that named it.
+    // Stored variant names require a recorded/viewer language context.
     let variants = load(produced_params(
         &["GER"],
         None,
@@ -713,9 +1277,45 @@ fn produced_totals_survive_deleted_lines_and_count_lines_made_between_reads() {
     ));
     let keys: Vec<&str> = variants.keys.iter().map(|key| key.key.as_str()).collect();
     assert_eq!(keys, ["10", "20"]);
-    assert_eq!(variants.keys[1].names[0].name, None);
     assert_eq!(
-        variants.keys[1].names.last().unwrap(),
+        variants.keys[1].names,
+        [StockVariantName {
+            first_hour: since,
+            name: None,
+            known: true,
+            design: None,
+        }]
+    );
+    assert!(
+        variants
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("Equipment names and types are unavailable:"))
+    );
+    // With that context, the retained variant is named only from its naming read.
+    let mut texts = installed_content::localisation::Localisation::default();
+    texts.language = "english".into();
+    let scanned = equipment::production::scanned(&source, 1, &AtomicBool::new(false)).unwrap();
+    let named_variants = super::reply(
+        &scanned,
+        &produced_params(
+            &["GER"],
+            None,
+            ProducedMeasure::Total,
+            ProducedGrouping::Variant,
+        ),
+        Named {
+            texts: Some(&texts),
+            ..Default::default()
+        },
+        Vec::new(),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(named_variants.keys[1].names.len(), 2);
+    assert_eq!(named_variants.keys[1].names[0], variants.keys[1].names[0]);
+    assert_eq!(
+        named_variants.keys[1].names.last().unwrap(),
         &crate::products::equipment::StockVariantName {
             first_hour: produced_hour(2),
             name: Some("Gewehr 43".into()),
@@ -727,6 +1327,7 @@ fn produced_totals_survive_deleted_lines_and_count_lines_made_between_reads() {
         produced_values(&variants.series[0], 1),
         [Some(0), Some(2), Some(2), Some(2)]
     );
+    assert_eq!(named_variants.series[0].values, variants.series[0].values);
     // By domain: without content, an unresolved arm.
     let domains = load(produced_params(
         &["GER"],
@@ -832,7 +1433,22 @@ fn produced_totals_stay_unknown_where_a_count_was_lost_or_not_exact_or_unread() 
         &AtomicBool::new(false),
     )
     .unwrap();
-    assert!(reply.reads.is_empty() && reply.series.is_empty());
+    assert!(reply.reads.is_empty() && reply.observations.is_empty());
+    assert!(reply.keys.is_empty() && reply.known.is_empty());
+    // The native holder stays selectable without any production sample or value.
+    assert_eq!(
+        reply.series,
+        [ProducedSeries {
+            tag: "GER".into(),
+            identities: Some(vec![super::super::country_history::CountryIdentityRun {
+                first_hour: since,
+                last_hour: since,
+                slot: 7,
+                country_id: 9001,
+            }]),
+            ..Default::default()
+        }]
+    );
     assert!(
         reply
             .warnings

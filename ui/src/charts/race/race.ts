@@ -16,6 +16,13 @@ import { stackEdges } from '../stack.ts';
 import type { Edge } from '../stack';
 import { linearTicks } from '../valueAxis.ts';
 
+/** Pointer and keyboard activation share the same optional row callback. */
+export function selectRaceRow(key: string | null, trigger: string, select?: (key: string) => void): boolean {
+  if (key === null || !select || !['click', 'Enter', ' '].includes(trigger)) return false;
+  select(key);
+  return true;
+}
+
 /** One part of a bar: `value` drawn solid from where the part starts, then `hatched`
  * (a size) drawn hatched after it, away from zero. Values are signed: segments are
  * stacked as the time charts stack them (`stackEdges`), positive ones right of the
@@ -26,6 +33,8 @@ export interface RaceSegment { id: string; value: number; hatched?: number; colo
 /** One entry of the race at the moment shown. */
 export interface RaceItem {
   key: string;
+  /** Country lookup stays separate from the stable animation key. */
+  tag?: string; hour?: number;
   /** What the entry ranks by. */
   value: number;
   /** The exact value, as the label at the bar's tip shows it. */
@@ -325,6 +334,6 @@ export function keyedEntry(key: 'ArrowUp' | 'ArrowDown' | 'Home' | 'End', curren
 }
 
 /** The ranking as one line for assistive technology: "1. Germany 45; 2. …". */
-export function raceText(items: readonly RaceItem[], name: (key: string) => string): string {
-  return items.map((item, index) => `${index + 1}. ${name(item.key)} ${item.label}`).join('; ');
+export function raceText(items: readonly RaceItem[], name: (key: string, item?: RaceItem) => string): string {
+  return items.map((item, index) => `${index + 1}. ${name(item.key, item)} ${item.label}`).join('; ');
 }

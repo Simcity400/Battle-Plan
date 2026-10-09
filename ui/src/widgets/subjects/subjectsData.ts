@@ -1,7 +1,9 @@
+import type { CountryFlagLook } from '../../components/CountryFlag';
 import type { BandStep, TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import { isSpan } from '../../charts/series.ts';
 import { bridgeGaps, coverCounts, runState, stretchesOf, withoutHours } from '../../charts/timeline/runState.ts';
 import { Lineage } from '../../dashboard/identity.ts';
+import type { CountryIdentityIndex } from '../../dashboard/countryIdentity.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import type { HourRange } from '../../charts/timeline/runState';
 import type { HourSpan, SubjectLevel, SubjectReply, SubjectRun } from '../../generated/dashboard';
@@ -41,9 +43,9 @@ export type SubjectOrder = 'since' | 'name';
  * order, joined across a change of either country's tag (the runs then name other
  * tags), so a tag switch is never read as one subject released and another taken. */
 export interface SubjectView {
-  /** The subject's country (`Lineage.countryAt`). */
+  /** The subject's native holder when the catalogue is supplied. */
   subject: string;
-  /** Unique within the reply: its overlord's and subject's countries (`Lineage`), as JSON. */
+  /** Unique within the reply: its overlord and subject holders, as JSON. */
   key: string;
   runs: SubjectRun[];
   /** Its relations where nothing recorded says they stopped (`bridgeGaps`): runs of one
@@ -53,7 +55,9 @@ export interface SubjectView {
 }
 
 export interface OverlordView {
-  /** Unique within the reply: its country (`Lineage.countryAt`). */
+  /** Native holders proved on either endpoint of this overlord's relations. */
+  countryIds: ReadonlySet<string>;
+  /** Unique within the reply: its overlord holder. */
   key: string;
   subjects: SubjectView[];
   /** How many subjects it held over the hours its relations were recorded: its band's
@@ -61,8 +65,13 @@ export interface OverlordView {
   counts: BandStep[];
   /** When its first subject became one, as the game dates it. */
   firstSince: number;
-  /** The countries behind the tags (`Lineage`), shared by every overlord of a reply. */
+  /** Label history for the legacy helper path without a native catalogue. */
   lineage: Lineage;
+  identities?: CountryIdentityIndex;
+  /** Relation hours whose native endpoints could not be attributed. */
+  identityGaps: HourSpan[];
+  /** Missing relation reads or native endpoints; shared by this reply's views. */
+  unknown: HourSpan[];
 }
 
 /** When a subject became one, as the game dates it: the start hour of its first run. */
@@ -70,22 +79,22 @@ const since = (view: SubjectView) => view.runs[0]?.startHour ?? Infinity;
 
 const pair = (...parts: readonly (string | number)[]) => JSON.stringify(parts);
 
-/** Each overlord with its subjects, from the reply's runs. Every run's overlord and
- * subject are resolved to countries through the recorded changes of tag (`Lineage`),
- * so a lane is one subject country under one overlord country, and an overlord one
- * country, however either was renamed; a tag given up and later taken by another
- * country names that other country. Linear in the runs (plus a sort and a binary
- * search per run). */
-export function overlordViews(reply: SubjectReply, lineage: Lineage = new Lineage([])): OverlordView[] {
+/** Each native overlord with its native subject holders, splitting at either
+ * endpoint's recorded identity boundaries. The legacy helper path is used only
+ * when no native catalogue is supplied. */
+export function overlordViews(reply: SubjectReply, lineage: Lineage = new Lineage([]), identities?: CountryIdentityIndex): OverlordView[] {
   // Each overlord country's lanes, one per subject country, in order of first run.
   const byOverlord = new Map<string, Map<string, SubjectRun[]>>();
+  const identityGaps: HourSpan[] = [];
   for (const run of reply.runs) {
     // Either tag can keep its native run while another country takes it. Split at
     // both histories' changes, keeping the levels dated to their recorded hours.
-    const starts = [run.firstHour, ...new Set([
+    const native = identities?.membershipRuns([{ tag: run.overlord, firstHour: run.firstHour, lastHour: run.lastHour },
+      { tag: run.subject, firstHour: run.firstHour, lastHour: run.lastHour }]);
+    const starts = [...new Set([run.firstHour, ...(native ? native.flatMap(span => [span.firstHour, span.lastHour + 1]) : [
       ...lineage.changeHours(run.overlord, run.firstHour + 1, run.lastHour),
       ...lineage.changeHours(run.subject, run.firstHour + 1, run.lastHour),
-    ].sort((a, b) => a - b))];
+    ])])].filter(hour => hour <= run.lastHour).sort((a, b) => a - b);
     let stepIndex = 0;
     for (let index = 0; index < starts.length; index++) {
       const firstHour = starts[index];
@@ -98,15 +107,21 @@ export function overlordViews(reply: SubjectReply, lineage: Lineage = new Lineag
         stepIndex++;
       }
       const piece = starts.length === 1 ? run : { ...run, firstHour, lastHour, steps };
-      const overlord = lineage.countryAt(run.overlord, firstHour);
-      const subject = lineage.countryAt(run.subject, firstHour);
+      const overlord = identities ? identities.keyAt(run.overlord, firstHour) : lineage.countryAt(run.overlord, firstHour);
+      const subject = identities ? identities.keyAt(run.subject, firstHour) : lineage.countryAt(run.subject, firstHour);
+      if (overlord === null || subject === null) { identityGaps.push({ firstHour, lastHour }); continue; }
       let lanes = byOverlord.get(overlord);
       if (!lanes) { lanes = new Map(); byOverlord.set(overlord, lanes); }
       const runs = lanes.get(subject);
       if (runs) runs.push(piece); else lanes.set(subject, [piece]);
     }
   }
-  const unobserved = [...reply.unobserved].sort((a, b) => a.firstHour - b.firstHour);
+  const unobserved: HourSpan[] = [];
+  for (const span of [...reply.unobserved, ...identityGaps].sort((a, b) => a.firstHour - b.firstHour)) {
+    const last = unobserved.at(-1);
+    if (last && span.firstHour <= last.lastHour + 1) last.lastHour = Math.max(last.lastHour, span.lastHour);
+    else unobserved.push({ ...span });
+  }
   const groups = new Map<string, SubjectView[]>();
   const firstObserved = new Map<string, number>();
   for (const [overlord, lanes] of byOverlord) {
@@ -117,10 +132,13 @@ export function overlordViews(reply: SubjectReply, lineage: Lineage = new Lineag
     firstObserved.set(overlord, [...lanes.values()].reduce((first, runs) => Math.min(first, runs[0].firstHour), Infinity));
   }
   return [...groups].map(([key, subjects]) => ({
-    key, subjects,
+    key, subjects, countryIds: identities?.keysDuring(subjects.flatMap(subject => subject.runs.flatMap(run => [
+      { tag: run.overlord, firstHour: run.firstHour, lastHour: run.lastHour },
+      { tag: run.subject, firstHour: run.firstHour, lastHour: run.lastHour },
+    ]))) ?? new Set(),
     counts: withoutHours(coverCounts(subjects.flatMap(view => view.runs)), unobserved),
     firstSince: subjects.reduce((least, view) => Math.min(least, since(view)), Infinity),
-    lineage,
+    lineage, identities, identityGaps, unknown: unobserved,
   })).sort((a, b) => firstObserved.get(a.key)! - firstObserved.get(b.key)!);
 }
 
@@ -131,16 +149,15 @@ export function runNear(view: SubjectView, hour: number): SubjectRun {
   return found;
 }
 
-/** An overlord's tag at an hour, through its country's whole history of tags
- * (`Lineage.tagOf`), never one another country took later. */
-export function overlordTagAt(view: OverlordView, hour: number): string {
-  return view.lineage.tagOf(view.key, hour);
+/** An overlord's proved alias at this hour; a native gap never acquires a tag. */
+export function overlordTagAt(view: OverlordView, hour: number): string | null {
+  return view.identities ? view.identities.aliasesAt(new Set([view.key]), hour)[0] ?? null : view.lineage.tagOf(view.key, hour);
 }
 
 /** A subject's tag at an hour, the same way: a former subject renamed after it was
  * released is named by its tag then. */
-export function subjectTagAt(overlord: OverlordView, view: SubjectView, hour: number): string {
-  return overlord.lineage.tagOf(view.subject, hour);
+export function subjectTagAt(overlord: OverlordView, view: SubjectView, hour: number): string | null {
+  return overlord.identities ? overlord.identities.aliasesAt(new Set([view.subject]), hour)[0] ?? null : overlord.lineage.tagOf(view.subject, hour);
 }
 
 /** The colour of each level: the categorical palette in the levels' order (least free
@@ -161,7 +178,7 @@ export function levelAt(run: SubjectRun, hour: number): string | null | undefine
 }
 
 export interface SubjectText {
-  country: (tag: string) => { name: string; flag?: string };
+  country: (tag: string) => CountryFlagLook & { name: string };
   day: (hour: number) => string;
 }
 
@@ -172,7 +189,7 @@ export interface LaneOptions {
   ended: boolean;
   /** Only overlords that are, or held, one of these countries; null for all. */
   countries: ReadonlySet<string> | null;
-  /** Group members resolved at the hour their membership counts. */
+  /** Manual all-ever holders or group holders at their counted membership dates. */
   countryIds?: ReadonlySet<string> | null;
   /** The neutral colour of an overlord's band (a theme colour, as the mock-up's war bars). */
   bandColor?: string;
@@ -195,42 +212,43 @@ export function subjectLanes(views: readonly OverlordView[], levels: ReadonlyMap
   hour: number, options: LaneOptions, text: SubjectText, unobserved: readonly HourSpan[]): { lanes: TimelineLane[]; info: Map<string, LaneInfo> } {
   const lanes: TimelineLane[] = [];
   const info = new Map<string, LaneInfo>();
+  const missing = views[0]?.identityGaps ?? [];
+  const unread = missing.length ? [...unobserved, ...missing] : unobserved;
   const shownSubjects = (overlord: OverlordView) => overlord.subjects.filter(view => firstHour(view.runs) <= hour
-    && (options.ended || runState(view.stretches, hour, unobserved).kind !== 'ended'));
+    && (options.ended || runState(view.stretches, hour, unread).kind !== 'ended'));
   const heldCount = (overlord: OverlordView) => overlord.counts.find(step => step.firstHour <= hour && hour <= step.lastHour)?.value ?? 0;
-  // Groups count tags at their membership hour; direct choices use the moment shown.
-  const chosen = options.countryIds !== undefined ? options.countryIds : options.countries && views[0]
-    ? new Set([...options.countries].map(tag => views[0].lineage.countryAt(tag, hour))) : null;
-  const involves = (overlord: OverlordView) => chosen!.has(overlord.key) || overlord.subjects.some(view => chosen!.has(view.subject));
+  const chosen = options.countryIds ?? (options.countries === null ? null : new Set<string>());
+  const involves = (overlord: OverlordView) => { for (const key of overlord.countryIds) if (chosen!.has(key)) return true; return false; };
   const overlords = views.filter(view => shownSubjects(view).length && (!chosen || involves(view)));
   // Each overlord's tag and subjects at the hour, found once rather than in every comparison.
   const tags = new Map(overlords.map(view => [view, overlordTagAt(view, hour)]));
   const counts = new Map(overlords.map(view => [view, heldCount(view)]));
-  const name = (tag: string) => text.country(tag).name;
-  const overlordName = (view: OverlordView) => name(tags.get(view)!);
+  const countryAt = (tag: string | null) => tag === null ? { name: 'Native country identity not recorded', flagReason: 'Native country identity not recorded at this hour.' } : text.country(tag);
+  const name = (tag: string | null) => countryAt(tag).name;
+  const overlordName = (view: OverlordView) => name(tags.get(view) ?? null);
   overlords.sort(options.order === 'name' ? (a, b) => overlordName(a).localeCompare(overlordName(b)) || compareTags(a.key, b.key)
     : options.order === 'subjects' ? (a, b) => counts.get(b)! - counts.get(a)! || firstHour(a.counts) - firstHour(b.counts) || compareTags(a.key, b.key)
       : (a, b) => a.firstSince - b.firstSince || compareTags(a.key, b.key));
-  const unknown = unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
   for (const overlord of overlords) {
-    const country = text.country(tags.get(overlord)!);
+    const unknown = unread.some(span => span.firstHour <= hour && hour <= span.lastHour);
+    const country = countryAt(tags.get(overlord) ?? null);
     const count = counts.get(overlord)!;
     const headingId = laneId(overlord.key, null);
     info.set(headingId, { overlord, subject: null });
     lanes.push({
-      id: headingId, heading: true, identity: { label: country.name, icon: country.flag }, icons: false, names: false,
+      id: headingId, heading: true, identity: { label: country.name, countryFlag: country }, icons: false, names: false,
       label: unknown ? 'Subjects not recorded' : count ? `${count} ${count === 1 ? 'subject' : 'subjects'}` : 'No subjects', muted: !unknown && !count,
       spans: stretchesOf(overlord.counts).map(stretch => ({ id: `${stretch.firstHour}`, firstHour: stretch.firstHour, lastHour: stretch.lastHour,
         label: country.name, band: stretch.steps, ...(options.bandColor ? { color: options.bandColor } : {}) })),
     });
     const subjects = shownSubjects(overlord);
     const subjectTags = new Map(subjects.map(view => [view, subjectTagAt(overlord, view, hour)]));
-    const subjectName = (view: SubjectView) => name(subjectTags.get(view)!);
+    const subjectName = (view: SubjectView) => name(subjectTags.get(view) ?? null);
     subjects.sort(options.subjects === 'name' ? (a, b) => subjectName(a).localeCompare(subjectName(b)) || compareTags(a.key, b.key)
       : (a, b) => since(a) - since(b) || subjectName(a).localeCompare(subjectName(b)) || compareTags(a.key, b.key));
     for (const view of subjects) {
-      const subject = text.country(subjectTags.get(view)!);
-      const state = runState(view.stretches, hour, unobserved);
+      const subject = countryAt(subjectTags.get(view) ?? null);
+      const state = runState(view.stretches, hour, unread);
       const run = runNear(view, hour);
       const level = state.kind === 'held' ? levelAt(run, hour) : undefined;
       // A relation continued across unrecorded hours is held, at an unknown level then.
@@ -244,7 +262,7 @@ export function subjectLanes(views: readonly OverlordView[], levels: ReadonlyMap
       })));
       const id = laneId(overlord.key, view.key);
       info.set(id, { overlord, subject: view });
-      lanes.push({ id, depth: 1, identity: { label: subject.name, icon: subject.flag }, icons: false, label, muted: state.kind === 'ended', spans });
+      lanes.push({ id, depth: 1, identity: { label: subject.name, countryFlag: subject }, icons: false, label, muted: state.kind === 'ended', spans });
     }
   }
   return { lanes, info };
@@ -255,7 +273,10 @@ export function laneCountries(lanes: readonly TimelineLane[], info: ReadonlyMap<
   const tags = new Set<string>();
   for (const lane of lanes) {
     const about = info.get(lane.id);
-    if (about) tags.add(about.subject ? subjectTagAt(about.overlord, about.subject, hour) : overlordTagAt(about.overlord, hour));
+    if (about) {
+      const tag = about.subject ? subjectTagAt(about.overlord, about.subject, hour) : overlordTagAt(about.overlord, hour);
+      if (tag !== null) tags.add(tag);
+    }
   }
   return [...tags];
 }

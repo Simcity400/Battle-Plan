@@ -22,7 +22,10 @@ use super::{
 use crate::{
     Artwork, Source,
     catalogue::View,
-    metadata::{TaggedCountry, branch_bounds, link_slot, tagged_country, validate_campaign},
+    metadata::{
+        TaggedCountry, branch_bounds, link_slot, tagged_countries, tagged_country,
+        validate_campaign,
+    },
     products::country_groups::HourSpan,
 };
 use installed_content::{
@@ -30,7 +33,11 @@ use installed_content::{
     coverage::Gap,
     modifiers::{Modifier, Modifiers},
 };
-use replay::{container::Replay, frame::FrameDecoder, rows::tables};
+use replay::{
+    container::Replay,
+    frame::{FrameDecoder, ViewIdentity},
+    rows::{TableId, tables},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -44,8 +51,7 @@ use ts_rs::TS;
 
 pub struct IdeaHistory;
 
-/// Spans kept per country before the scan refuses.
-const MAX_SPANS: usize = 100_000;
+const CACHED_BRANCHES: usize = 2;
 const CACHED_COUNTRIES: usize = 8;
 
 /// An idea held over consecutive recorded hours. An advisor idea carries the
@@ -231,6 +237,87 @@ pub struct ScannedIdeas {
     /// character id, or why the recording does not give it.
     pub(crate) templates: BTreeMap<u32, Result<BuiltTemplate, String>>,
     pub warnings: Vec<String>,
+    /// Feed-only naming at each span's first hour, in the same order as `spans`.
+    pub(crate) span_naming: Vec<NamingCountry>,
+    /// Starts of the same identity after unobserved hours, where additions
+    /// cannot be separated from holdings that continued through the gap.
+    pub(crate) gap_starts: Vec<i32>,
+}
+
+/// Witnessed additions only (active ideas: AddIdeas 140349B50, RemoveIdeas
+/// 14035D500, SwapIdeas 140366540; appointed advisors: CCountryCharacters+0x58).
+/// A rename or newly resolved script token for the
+/// same character and seat does not hire an advisor again. Every sampled
+/// addition is dated by first observation, an upper bound rather than a writer hour.
+#[cfg(test)]
+pub(crate) fn additions(scanned: &ScannedIdeas) -> impl Iterator<Item = &IdeaSpan> {
+    addition_indices(scanned).map(move |index| &scanned.spans[index])
+}
+
+/// Each addition with the naming read at the same span's first hour.
+pub(crate) fn named_additions(
+    scanned: &ScannedIdeas,
+) -> impl Iterator<Item = (&IdeaSpan, Option<&NamingCountry>)> {
+    addition_indices(scanned)
+        .map(move |index| (&scanned.spans[index], scanned.span_naming.get(index)))
+}
+
+fn addition_indices(scanned: &ScannedIdeas) -> impl Iterator<Item = usize> {
+    let mut previous: BTreeMap<&str, &IdeaSpan> = BTreeMap::new();
+    scanned
+        .spans
+        .iter()
+        .enumerate()
+        .filter(move |(_, span)| {
+            let preceding = previous.insert(&span.token, span);
+            let same_holding = preceding.is_some_and(|last| {
+                last.last_hour.checked_add(1) == Some(span.first_hour)
+                    && last.slot == span.slot
+                    && last.character.as_ref().map(|holder| holder.id)
+                        == span.character.as_ref().map(|holder| holder.id)
+            });
+            let after_gap = scanned
+                .unobserved
+                .partition_point(|gap| gap.first_hour < span.first_hour)
+                .checked_sub(1)
+                .and_then(|index| scanned.unobserved.get(index))
+                .is_some_and(|gap| gap.last_hour.checked_add(1) >= Some(span.first_hour));
+            !same_holding
+                && !after_gap
+                && scanned
+                    .identity_starts
+                    .binary_search(&span.first_hour)
+                    .is_err()
+        })
+        .map(|(index, _)| index)
+}
+
+/// New or changed holdings first observed after a gap cannot prove an
+/// appointment or a law change. The feed names and counts these refusals.
+pub(crate) fn unavailable_additions(scanned: &ScannedIdeas) -> usize {
+    let mut previous: BTreeMap<&str, &IdeaSpan> = BTreeMap::new();
+    scanned
+        .spans
+        .iter()
+        .filter(|span| {
+            let preceding = previous.insert(&span.token, span);
+            let gap = scanned
+                .unobserved
+                .partition_point(|gap| gap.first_hour < span.first_hour)
+                .checked_sub(1)
+                .and_then(|index| scanned.unobserved.get(index))
+                .filter(|gap| gap.last_hour.checked_add(1) == Some(span.first_hour));
+            scanned.gap_starts.binary_search(&span.first_hour).is_ok()
+                && gap.is_some_and(|gap| {
+                    preceding.is_none_or(|last| {
+                        last.slot != span.slot
+                            || last.character.as_ref().map(|holder| holder.id)
+                                != span.character.as_ref().map(|holder| holder.id)
+                            || last.last_hour.checked_add(1) != Some(gap.first_hour)
+                    })
+                })
+        })
+        .count()
 }
 
 /// Adds hours to the unobserved spans, merging with the last span they touch.
@@ -247,14 +334,255 @@ fn mark(spans: &mut Vec<HourSpan>, first_hour: i32, last_hour: i32) {
     }
 }
 
-/// Scans one branch for one country's ideas.
+/// The feed's held-idea spans and row-hour naming. The topic product retains
+/// only its selected country's history, through the same observer.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ScannedIdeaBranch {
+    pub countries: BTreeMap<String, ScannedIdeas>,
+    pub observed: bool,
+    pub warnings: Vec<String>,
+    /// Feed-only refused observations, each with its named reason and count.
+    pub refusals: Vec<(String, usize)>,
+    absent: ScannedIdeas,
+}
+
+impl ScannedIdeaBranch {
+    #[cfg(test)]
+    pub fn country(&self, tag: &str) -> &ScannedIdeas {
+        self.countries.get(tag).unwrap_or(&self.absent)
+    }
+}
+
+type RefusedRows = BTreeMap<&'static str, BTreeSet<(u32, u32, Vec<u8>)>>;
+
+#[derive(Default)]
+struct CountryScan {
+    result: ScannedIdeas,
+    open: BTreeMap<String, usize>,
+    last: Option<((u32, u32), i32)>,
+    tokenless: BTreeSet<(u32, String)>,
+    unresolved_now: bool,
+}
+
+const HOLDING_VIEWS: [TableId; 6] = [
+    TableId::Countries,
+    TableId::CountryLinks,
+    TableId::ActiveIdeas,
+    TableId::HiredAdvisors,
+    TableId::Characters,
+    TableId::LexicalTokens,
+];
+
+struct CountryRead<'a> {
+    country: &'a replay::rows::CountryRow,
+    slot: u32,
+    ideas: Option<&'a Vec<&'a replay::rows::ActiveIdeaRow>>,
+    advisors: Option<&'a Vec<&'a replay::rows::HiredAdvisorRow>>,
+    appearance: Option<&'a replay::rows::CountryAppearanceRow>,
+}
+
+impl CountryScan {
+    fn extend(&mut self, hour: i32) {
+        let Some((_, previous)) = self.last.as_mut() else {
+            return;
+        };
+        if previous.checked_add(1) != Some(hour) {
+            return;
+        }
+        for &index in self.open.values() {
+            self.result.spans[index].last_hour = hour;
+        }
+        *previous = hour;
+    }
+
+    fn observe(
+        &mut self,
+        decoded: &replay::frame::DecodedFrame,
+        read: CountryRead<'_>,
+        feed: bool,
+        refused: &mut RefusedRows,
+    ) {
+        let Self {
+            result,
+            open,
+            last,
+            tokenless,
+            ..
+        } = self;
+        let CountryRead {
+            country,
+            slot,
+            ideas,
+            advisors,
+            appearance,
+        } = read;
+        let hour = decoded.hour;
+        let identity = (slot, country.id);
+        let continues = last
+            .as_ref()
+            .is_some_and(|(seen, at)| *seen == identity && at.checked_add(1) == Some(hour));
+        if !continues && last.as_ref().is_some_and(|(seen, _)| *seen == identity) {
+            result.gap_starts.push(hour);
+        }
+        *last = Some((identity, hour));
+        if !continues {
+            result.identity_starts.push(hour);
+            if !feed {
+                result
+                    .identity_naming
+                    .push(NamingCountry::read_with_appearance(
+                        decoded, country, appearance,
+                    ));
+            }
+        }
+        // Each appointed advisor's idea with its recorded seat and character.
+        let characters = decoded.complete::<tables::Characters>().ok();
+        let lexical = decoded.complete::<tables::LexicalTokens>().ok();
+        let mut roles = BTreeMap::new();
+        for advisor in advisors.into_iter().flatten() {
+            let Ok(seat) = std::str::from_utf8(&advisor.slot) else {
+                refused
+                    .entry("HiredAdvisors seat is not UTF-8; appointment cannot be identified.")
+                    .or_default()
+                    .insert((country.id, advisor.ordinal, advisor.slot.clone()));
+                continue;
+            };
+            if advisor.idea.is_empty() {
+                // The appointment has no recorded idea: nothing to name it by.
+                tokenless.insert((advisor.character, seat.to_owned()));
+                continue;
+            }
+            // The character's script token (its saved name is another field);
+            // unresolved, the holder stays unidentified rather than misnamed.
+            let row = characters.and_then(|rows| {
+                rows.binary_search_by_key(&advisor.character, |character| character.id)
+                    .ok()
+                    .map(|index| &rows[index])
+            });
+            let token = row
+                .zip(lexical)
+                .and_then(|(row, lexical)| character_script_token(row, lexical))
+                .unwrap_or_default();
+            let name = row
+                .and_then(|row| std::str::from_utf8(&row.token).ok())
+                .unwrap_or_default();
+            // Only a build or a save load sets CCharacter+0x20, so the
+            // first template read stands.
+            if !matches!(result.templates.get(&advisor.character), Some(Ok(_))) {
+                let template = match (characters, row) {
+                    (_, Some(row)) => built_template(row, lexical),
+                    (Some(_), None) => Err(format!(
+                        "character {} has no Characters row at hour {hour}",
+                        advisor.character
+                    )),
+                    (None, None) => {
+                        Err(format!("the Characters table is incomplete at hour {hour}"))
+                    }
+                };
+                result.templates.insert(advisor.character, template);
+            }
+            roles.insert(
+                advisor.idea.as_slice(),
+                (seat, advisor.character, token, name),
+            );
+        }
+        let held: BTreeSet<&[u8]> = ideas
+            .into_iter()
+            .flatten()
+            .map(|row| row.token.as_slice())
+            .chain(roles.keys().copied())
+            .filter(|token| !token.is_empty())
+            .collect();
+        if !continues {
+            open.clear();
+        }
+        open.retain(|token, _| held.contains(token.as_bytes()));
+        let mut naming = None;
+        for token in held {
+            let Ok(token) = std::str::from_utf8(token) else {
+                refused
+                    .entry("Held idea token is not UTF-8; holding cannot be identified.")
+                    .or_default()
+                    .insert((country.id, 0, token.to_vec()));
+                continue;
+            };
+            let role = roles.get(token.as_bytes());
+            match open.get(token) {
+                // The same holder in the same seat continues its span.
+                Some(&index)
+                    if result.spans[index].slot.as_deref() == role.map(|role| role.0)
+                        && match (&result.spans[index].character, role) {
+                            (None, None) => true,
+                            (Some(holder), Some((_, id, token, name))) => {
+                                holder.id == *id && holder.token == *token && holder.name == *name
+                            }
+                            _ => false,
+                        } =>
+                {
+                    result.spans[index].last_hour = hour
+                }
+                _ => {
+                    if feed {
+                        result.span_naming.push(
+                            naming
+                                .get_or_insert_with(|| {
+                                    NamingCountry::read_with_appearance(
+                                        decoded, country, appearance,
+                                    )
+                                })
+                                .clone(),
+                        );
+                    }
+                    open.insert(token.to_owned(), result.spans.len());
+                    result.spans.push(IdeaSpan {
+                        token: token.to_owned(),
+                        first_hour: hour,
+                        last_hour: hour,
+                        slot: role.map(|role| role.0.to_owned()),
+                        character: role.map(|(_, id, token, name)| IdeaCharacter {
+                            id: *id,
+                            token: (*token).to_owned(),
+                            name: (*name).to_owned(),
+                        }),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Scans and retains only the requested country's topic history.
 pub fn scan(
     replay: &Replay,
     branch: u64,
     tag: &str,
     cancelled: &AtomicBool,
 ) -> io::Result<ScannedIdeas> {
-    use replay::rows::TableId;
+    let mut scanned = scan_selected(replay, branch, Some(tag), cancelled)?;
+    let mut result = scanned.countries.remove(tag).unwrap_or(scanned.absent);
+    result.warnings.extend(
+        scanned
+            .refusals
+            .into_iter()
+            .map(|(reason, count)| format!("{reason} (count: {count})")),
+    );
+    Ok(result)
+}
+
+pub(crate) fn scan_all(
+    replay: &Replay,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<ScannedIdeaBranch> {
+    scan_selected(replay, branch, None, cancelled)
+}
+
+fn scan_selected(
+    replay: &Replay,
+    branch: u64,
+    requested: Option<&str>,
+    cancelled: &AtomicBool,
+) -> io::Result<ScannedIdeaBranch> {
     let selected = [
         TableId::Campaign,
         TableId::Countries,
@@ -264,21 +592,18 @@ pub fn scan(
         TableId::Characters,
         TableId::LexicalTokens,
         TableId::CountryAppearance,
-        // Whether a dynamic country is in civil war (super::identity::civil_war).
         TableId::CountryCivilWars,
         TableId::CountryWars,
         TableId::WarRelations,
         TableId::CountryCounterInputs,
     ];
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Idea request cancelled");
-    let mut result = ScannedIdeas::default();
-    // Each held idea's open span, and the identity and hour the country was last seen with.
-    let mut open: BTreeMap<String, usize> = BTreeMap::new();
-    let mut last: Option<((u32, u32), i32)> = None;
+    let mut states: BTreeMap<String, CountryScan> = BTreeMap::new();
+    let mut unobserved = Vec::new();
     let mut unreadable = 0_u32;
-    let mut tokenless = false;
-    // Every hour of the branch without a readable frame is unobserved, including
-    // before the first and after the last, so an edge gap is never read as a removal.
+    let mut observed = false;
+    let mut refused = RefusedRows::new();
+    let mut previous_frame: Option<(i32, [ViewIdentity; 6])> = None;
     let bounds = replay
         .branches
         .iter()
@@ -310,7 +635,7 @@ pub fn scan(
             if let Some(previous) = previous_hour
                 && previous.checked_add(1).is_some_and(|next| next < hour)
             {
-                mark(&mut result.unobserved, previous + 1, hour - 1);
+                mark(&mut unobserved, previous + 1, hour - 1);
             }
             previous_hour = Some(hour);
             let (Ok(countries), Ok(links), Ok(ideas), Ok(advisors)) = (
@@ -319,146 +644,232 @@ pub fn scan(
                 decoded.complete::<tables::ActiveIdeas>(),
                 decoded.complete::<tables::HiredAdvisors>(),
             ) else {
-                mark(&mut result.unobserved, hour, hour);
+                mark(&mut unobserved, hour, hour);
                 continue;
             };
-            let (country, slot) = match tagged_country(countries, links, tag) {
-                TaggedCountry::Found(country, slot) => (country, slot),
-                // Not a country this hour: its ideas simply are not held.
-                TaggedCountry::Absent => continue,
-                // The country exists but its identity cannot be read: unknown, not absent.
-                TaggedCountry::Unresolved => {
-                    mark(&mut result.unobserved, hour, hour);
-                    continue;
+            observed = true;
+            if let Some(tag) = requested {
+                if !states.contains_key(tag) {
+                    states.insert(tag.to_owned(), CountryScan::default());
                 }
-            };
-            let identity = (slot, country.id);
-            let continues =
-                last.is_some_and(|(seen, at)| seen == identity && at.checked_add(1) == Some(hour));
-            last = Some((identity, hour));
-            if !continues {
-                result.identity_starts.push(hour);
-                result
-                    .identity_naming
-                    .push(NamingCountry::read(decoded, country));
-            }
-            let owner = |raw: u32| link_slot(links, raw) == Some(slot);
-            // Each appointed advisor's idea with its recorded seat and character.
-            let characters = decoded.complete::<tables::Characters>().ok();
-            let lexical = decoded.complete::<tables::LexicalTokens>().ok();
-            let mut roles: BTreeMap<&[u8], (String, IdeaCharacter)> = BTreeMap::new();
-            for advisor in advisors.iter().filter(|advisor| owner(advisor.country)) {
-                let Ok(seat) = std::str::from_utf8(&advisor.slot) else {
-                    continue;
+                let state = states.get_mut(tag).expect("selected country inserted");
+                let (country, slot) = match tagged_country(countries, links, tag) {
+                    TaggedCountry::Found(country, slot) => (country, slot),
+                    TaggedCountry::Absent => continue,
+                    TaggedCountry::Unresolved => {
+                        mark(&mut state.result.unobserved, hour, hour);
+                        continue;
+                    }
                 };
-                if advisor.idea.is_empty() {
-                    // The appointment has no recorded idea: nothing to name it by.
-                    tokenless = true;
-                    continue;
-                }
-                // The character's script token (its saved name is another field);
-                // unresolved, the holder stays unidentified rather than misnamed.
-                let row = characters.and_then(|rows| {
-                    rows.binary_search_by_key(&advisor.character, |character| character.id)
-                        .ok()
-                        .map(|index| &rows[index])
-                });
-                let token = row
-                    .zip(lexical)
-                    .and_then(|(row, lexical)| character_script_token(row, lexical))
-                    .unwrap_or_default();
-                let name = row
-                    .and_then(|row| std::str::from_utf8(&row.token).ok())
-                    .unwrap_or_default();
-                // Only a build or a save load sets CCharacter+0x20, so the
-                // first template read stands.
-                if !matches!(result.templates.get(&advisor.character), Some(Ok(_))) {
-                    let template = match (characters, row) {
-                        (_, Some(row)) => built_template(row, lexical),
-                        (Some(_), None) => Err(format!(
-                            "character {} has no Characters row at hour {hour}",
-                            advisor.character
-                        )),
-                        (None, None) => {
-                            Err(format!("the Characters table is incomplete at hour {hour}"))
-                        }
-                    };
-                    result.templates.insert(advisor.character, template);
-                }
-                roles.insert(
-                    advisor.idea.as_slice(),
-                    (
-                        seat.to_owned(),
-                        IdeaCharacter {
-                            id: advisor.character,
-                            token: token.to_owned(),
-                            name: name.to_owned(),
-                        },
-                    ),
+                let owned_ideas: Vec<_> = ideas
+                    .iter()
+                    .filter(|row| link_slot(links, row.country) == Some(slot))
+                    .collect();
+                let owned_advisors: Vec<_> = advisors
+                    .iter()
+                    .filter(|row| link_slot(links, row.country) == Some(slot))
+                    .collect();
+                let appearance = decoded
+                    .complete::<tables::CountryAppearance>()
+                    .ok()
+                    .and_then(|rows| rows.iter().find(|row| row.country == country.id));
+                state.observe(
+                    decoded,
+                    CountryRead {
+                        country,
+                        slot,
+                        ideas: Some(&owned_ideas),
+                        advisors: Some(&owned_advisors),
+                        appearance,
+                    },
+                    false,
+                    &mut refused,
                 );
+                continue;
             }
-            let held: BTreeSet<&[u8]> = ideas
-                .iter()
-                .filter(|row| owner(row.country))
-                .map(|row| row.token.as_slice())
-                .chain(roles.keys().copied())
-                .filter(|token| !token.is_empty())
-                .collect();
-            if !continues {
-                open.clear();
-            }
-            open.retain(|token, _| held.contains(token.as_bytes()));
-            for token in held {
-                let Ok(token) = std::str::from_utf8(token) else {
-                    continue;
-                };
-                let (slot, character) = roles
-                    .get(token.as_bytes())
-                    .cloned()
-                    .map_or((None, None), |(slot, character)| {
-                        (Some(slot), Some(character))
-                    });
-                match open.get(token) {
-                    // The same holder in the same seat continues its span.
-                    Some(&index)
-                        if result.spans[index].slot == slot
-                            && result.spans[index].character == character =>
-                    {
-                        result.spans[index].last_hour = hour
-                    }
-                    _ => {
-                        if result.spans.len() >= MAX_SPANS {
-                            return Err(io::Error::other("Idea history exceeds its memory budget"));
-                        }
-                        open.insert(token.to_owned(), result.spans.len());
-                        result.spans.push(IdeaSpan {
-                            token: token.to_owned(),
-                            first_hour: hour,
-                            last_hour: hour,
-                            slot,
-                            character,
-                        });
+            if previous_frame.as_ref().is_some_and(|(previous, views)| {
+                previous.checked_add(1) == Some(hour)
+                    && views
+                        .iter()
+                        .zip(HOLDING_VIEWS)
+                        .all(|(view, table)| view.is(&decoded.tables[table.index()]))
+            }) {
+                for state in states.values_mut() {
+                    if state.unresolved_now {
+                        mark(&mut state.result.unobserved, hour, hour);
+                    } else {
+                        state.extend(hour);
                     }
                 }
+                previous_frame.as_mut().expect("unchanged frame exists").0 = hour;
+                continue;
+            }
+            previous_frame = Some((
+                hour,
+                HOLDING_VIEWS.map(|table| decoded.tables[table.index()].identity()),
+            ));
+            for country in countries {
+                if std::str::from_utf8(&country.tag).is_err() {
+                    refused
+                        .entry("Countries tag is not UTF-8; idea holder cannot be identified.")
+                        .or_default()
+                        .insert((country.id, country.canonical_slot, country.tag.clone()));
+                }
+            }
+            let found = tagged_countries(countries, links);
+            let holders: BTreeSet<_> = found
+                .iter()
+                .filter_map(|(tag, holder)| {
+                    std::str::from_utf8(tag)
+                        .ok()
+                        .and_then(|_| holder.found().map(|(_, slot)| slot))
+                })
+                .collect();
+            let mut ideas_by_slot: BTreeMap<u32, Vec<_>> = BTreeMap::new();
+            for row in ideas {
+                if let Some(slot) = link_slot(links, row.country) {
+                    if holders.contains(&slot) {
+                        ideas_by_slot.entry(slot).or_default().push(row);
+                    } else {
+                        refused.entry("ActiveIdeas owner has no resolved Countries holder; holding cannot be attributed.")
+                            .or_default().insert((row.country, row.ordinal, row.token.clone()));
+                    }
+                } else {
+                    refused.entry("ActiveIdeas owner is unresolved through CountryLinks; holding cannot be attributed.")
+                        .or_default().insert((row.country, row.ordinal, row.token.clone()));
+                }
+            }
+            let mut advisors_by_slot: BTreeMap<u32, Vec<_>> = BTreeMap::new();
+            for row in advisors {
+                if let Some(slot) = link_slot(links, row.country) {
+                    if holders.contains(&slot) {
+                        advisors_by_slot.entry(slot).or_default().push(row);
+                    } else {
+                        refused.entry("HiredAdvisors owner has no resolved Countries holder; appointment cannot be attributed.")
+                            .or_default().insert((row.country, row.ordinal, row.idea.clone()));
+                    }
+                } else {
+                    refused.entry("HiredAdvisors owner is unresolved through CountryLinks; appointment cannot be attributed.")
+                        .or_default().insert((row.country, row.ordinal, row.idea.clone()));
+                }
+            }
+            let appearances: BTreeMap<_, _> = decoded
+                .complete::<tables::CountryAppearance>()
+                .ok()
+                .into_iter()
+                .flatten()
+                .map(|row| (row.country, row))
+                .collect();
+            for state in states.values_mut() {
+                state.unresolved_now = false;
+            }
+            for (tag, found) in found {
+                let Ok(tag) = std::str::from_utf8(tag) else {
+                    continue;
+                };
+                if !states.contains_key(tag) {
+                    states.insert(tag.to_owned(), CountryScan::default());
+                }
+                let state = states.get_mut(tag).expect("feed country inserted");
+                let (country, slot) = match found {
+                    TaggedCountry::Found(country, slot) => (country, slot),
+                    TaggedCountry::Absent => continue,
+                    TaggedCountry::Unresolved => {
+                        state.unresolved_now = true;
+                        mark(&mut state.result.unobserved, hour, hour);
+                        continue;
+                    }
+                };
+                state.observe(
+                    decoded,
+                    CountryRead {
+                        country,
+                        slot,
+                        ideas: ideas_by_slot.get(&slot),
+                        advisors: advisors_by_slot.get(&slot),
+                        appearance: appearances.get(&country.id).copied(),
+                    },
+                    true,
+                    &mut refused,
+                );
             }
         }
     }
     if let (Some((first, last)), previous) = (bounds, previous_hour) {
         let from = previous.map_or(first, |previous| previous.saturating_add(1));
         if from <= last {
-            mark(&mut result.unobserved, from, last);
+            mark(&mut unobserved, from, last);
         }
     }
-    if tokenless {
-        result.warnings.push(
-            "Some appointed advisors have no recorded idea, so their seats show as empty.".into(),
-        );
-    }
-    if unreadable > 0 {
-        result.warnings.push(format!(
+    let warnings = if unreadable > 0 {
+        vec![format!(
             "Part of this branch could not be read ({unreadable} blocks or reads); idea history is missing there."
+        )]
+    } else {
+        Vec::new()
+    };
+    let mut result = ScannedIdeaBranch {
+        observed,
+        warnings: if requested.is_some() {
+            warnings.clone()
+        } else {
+            Vec::new()
+        },
+        absent: ScannedIdeas {
+            unobserved: unobserved.clone(),
+            warnings: warnings.clone(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    if requested.is_none() && unreadable > 0 {
+        result.refusals.push((
+            "Part of this branch could not be read; idea history is missing there.".into(),
+            unreadable as usize,
         ));
     }
+    let mut tokenless = 0_usize;
+    for (tag, mut state) in states {
+        let mut spans = std::mem::take(&mut state.result.unobserved);
+        spans.extend(unobserved.iter().cloned());
+        spans.sort_by_key(|span| span.first_hour);
+        for span in spans {
+            mark(
+                &mut state.result.unobserved,
+                span.first_hour,
+                span.last_hour,
+            );
+        }
+        if !state.tokenless.is_empty() {
+            if requested.is_some() {
+                state.result.warnings.push(
+                    "Some appointed advisors have no recorded idea, so their seats show as empty."
+                        .into(),
+                );
+            } else {
+                tokenless = tokenless
+                    .checked_add(state.tokenless.len())
+                    .ok_or_else(|| {
+                        io::Error::other("Idea unavailable appointment count exceeds usize")
+                    })?;
+            }
+        }
+        if requested.is_some() {
+            state.result.warnings.extend(warnings.iter().cloned());
+        }
+        result.countries.insert(tag, state.result);
+    }
+    if tokenless > 0 {
+        result.refusals.push((
+            "Appointed advisors have no recorded idea token, so cannot be named.".into(),
+            tokenless,
+        ));
+    }
+    result.refusals.extend(
+        refused
+            .into_iter()
+            .map(|(reason, rows)| (reason.to_owned(), rows.len())),
+    );
     Ok(result)
 }
 
@@ -702,48 +1113,6 @@ pub(crate) fn prepare_info(
     )
 }
 
-/// Tooltip dependencies shared by the recorded reply and the offline check.
-pub(crate) fn effect_keys(ideas: &[IdeaInfo]) -> (BTreeSet<String>, BTreeSet<String>) {
-    // YES/NO: FormatValue 14054FE50 (YES at 142760760).
-    let mut modifier_keys = BTreeSet::new();
-    let mut text_keys: BTreeSet<String> = ["YES", "NO"].map(str::to_owned).into();
-    let mut effects = |lines: &[EffectLine], targeted: &[EffectGroup], tooltips: &[String]| {
-        modifier_keys.extend(
-            lines
-                .iter()
-                .chain(targeted.iter().flat_map(|group| &group.lines))
-                .map(|line| line.key.clone()),
-        );
-        text_keys.extend(tooltips.iter().cloned());
-        text_keys.extend(
-            targeted
-                .iter()
-                .flat_map(|group| group.tooltips.iter().cloned()),
-        );
-    };
-    for idea in ideas {
-        effects(&idea.effects, &idea.targeted, &idea.tooltips);
-        for found in &idea.traits {
-            effects(&found.lines, &found.targeted, &found.tooltips);
-        }
-    }
-    for idea in ideas {
-        // _research: CCountryTechnologyView::BuildTooltip 1415E5420, 1427516B0.
-        text_keys.extend(
-            idea.research
-                .iter()
-                .map(|line| format!("{}_research", line.key)),
-        );
-        text_keys.extend(
-            idea.equipment
-                .iter()
-                .chain(idea.traits.iter().flat_map(|found| &found.equipment))
-                .filter_map(|group| group.target.clone()),
-        );
-    }
-    (modifier_keys, text_keys)
-}
-
 /// Every category read, in load order. When a file that could declare one
 /// stops short the list may be incomplete: [`IdeaHistory`] warns.
 pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
@@ -798,6 +1167,81 @@ pub fn categories(content: &Joined) -> Vec<CategoryInfo> {
         .collect()
 }
 
+/// Tooltip dependencies shared by the recorded reply, feed and offline check.
+pub(crate) fn effect_keys<'a>(
+    ideas: impl IntoIterator<Item = &'a IdeaInfo>,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    // YES/NO: FormatValue 14054FE50 (YES at 142760760).
+    let mut modifier_keys = BTreeSet::new();
+    let mut text_keys: BTreeSet<String> = ["YES", "NO"].map(str::to_owned).into();
+    for idea in ideas {
+        {
+            let mut effects =
+                |lines: &[EffectLine], targeted: &[EffectGroup], tooltips: &[String]| {
+                    modifier_keys.extend(
+                        lines
+                            .iter()
+                            .chain(targeted.iter().flat_map(|group| &group.lines))
+                            .map(|line| line.key.clone()),
+                    );
+                    text_keys.extend(tooltips.iter().cloned());
+                    text_keys.extend(
+                        targeted
+                            .iter()
+                            .flat_map(|group| group.tooltips.iter().cloned()),
+                    );
+                };
+            effects(&idea.effects, &idea.targeted, &idea.tooltips);
+            for found in &idea.traits {
+                effects(&found.lines, &found.targeted, &found.tooltips);
+            }
+        }
+        // _research: CCountryTechnologyView::BuildTooltip 1415E5420, 1427516B0.
+        text_keys.extend(
+            idea.research
+                .iter()
+                .map(|line| format!("{}_research", line.key)),
+        );
+        text_keys.extend(
+            idea.equipment
+                .iter()
+                .chain(idea.traits.iter().flat_map(|found| &found.equipment))
+                .filter_map(|group| group.target.clone()),
+        );
+    }
+    (modifier_keys, text_keys)
+}
+
+#[derive(Default)]
+struct BranchCache {
+    entries: VecDeque<(u64, Arc<ScannedIdeaBranch>)>,
+}
+
+pub(crate) fn scanned_branch(
+    source: &Source,
+    branch: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<Arc<ScannedIdeaBranch>> {
+    let state = source.state::<BranchCache>();
+    {
+        let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(index) = cache.entries.iter().position(|(key, _)| *key == branch) {
+            let entry = cache.entries.remove(index).expect("cached branch exists");
+            let scanned = Arc::clone(&entry.1);
+            cache.entries.push_back(entry);
+            return Ok(scanned);
+        }
+    }
+    let scanned = Arc::new(scan_all(&source.replay(), branch, cancelled)?);
+    let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
+    cache.entries.retain(|(key, _)| *key != branch);
+    cache.entries.push_back((branch, Arc::clone(&scanned)));
+    while cache.entries.len() > CACHED_BRANCHES {
+        cache.entries.pop_front();
+    }
+    Ok(scanned)
+}
+
 #[derive(Default)]
 struct Cache {
     entries: VecDeque<((u64, String), Arc<ScannedIdeas>)>,
@@ -840,14 +1284,19 @@ impl Product for IdeaHistory {
         let key = (params.branch(), params.tag.clone());
         let state = source.state::<Cache>();
         let cached = {
-            let cache = state.lock().unwrap_or_else(|error| error.into_inner());
+            let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
             cache
                 .entries
                 .iter()
-                .find(|(cached, _)| *cached == key)
-                .map(|(_, scanned)| Arc::clone(scanned))
+                .position(|(cached, _)| *cached == key)
+                .map(|index| {
+                    let entry = cache.entries.remove(index).expect("cached country exists");
+                    let scanned = Arc::clone(&entry.1);
+                    cache.entries.push_back(entry);
+                    scanned
+                })
         };
-        // Scan outside the lock, so other countries' requests are not held up.
+        // Keep the selected-country scan outside the cache lock.
         let scanned = match cached {
             Some(scanned) => scanned,
             None => {

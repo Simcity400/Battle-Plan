@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChipSet } from '../../components/ChipSet';
 import WidgetState from '../../components/WidgetState';
+import { CountryFlagUrl } from '../../components/CountryFlag';
 import LogList from '../../charts/log/LogList';
 import type { LogRow } from '../../charts/log/logData';
 import { logSettings } from '../../charts/log/logOptions';
 import ProgressMeter from '../../charts/meter/ProgressMeter';
 import { jumpItem } from '../../charts/jump';
 import { runAt } from '../../charts/series';
+import { loadOperationDescription } from '../../dashboard/operationDescription';
+import type { OperationDescriptionRef } from '../../generated/dashboard';
 import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import type { CountryLabel } from '../../dashboard/countryFlagsAt';
 import { selectedTags } from '../../dashboard/countrySelection';
 import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
@@ -17,9 +21,9 @@ import { contentKey, contentSet, resolveOptions, toggleContentSet } from '../../
 import { usePlaybackHour } from '../../dashboard/playback';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { OPTIONS } from './definition';
-import { operationChoices, operationJumpHours, operationName, operationRows, operationState, operationTooltip, operationWording, operationProgress, operationOutcome } from './espionageData';
+import { operationChoices, operationJumpHours, operationName, windowedOperationRows, operationWindowIndex, operationWindows, operationState, operationTooltip, operationWording, operationProgress, operationOutcome } from './espionageData';
 import type { OperationAt } from './espionageData';
-import { useEspionageLog } from './useEspionageLog';
+import { useEspionageLog, useEspionageWindows } from './useEspionageLog';
 import './espionageLog.css';
 
 const NO_WARNINGS: string[] = [];
@@ -33,10 +37,11 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const options = resolveOptions(OPTIONS, widget.options);
   const log = logSettings(options);
   const { track, data, error, retry } = useEspionageLog(widget, runtime, active);
-  const grouped = widget.countries.kind === 'group';
-  const groups = useCountryGroups(runtime, track, active && grouped);
+  const needsGroups = widget.countries.kind !== 'all';
+  const groups = useCountryGroups(runtime, track, active && needsGroups);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const hour = window?.lastHour;
+  const inBranch = track !== undefined && hour != null && hour >= track.branch.firstHour && hour <= track.branch.lastHour;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? null : null;
   const selected = selectedTags(widget.countries, track);
   const selectedKey = JSON.stringify(selected);
@@ -49,37 +54,96 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
   const live = widget.time.mode === 'follow';
   const runningOrder = options.runningOrder === 'preparation' ? 'preparation' : 'start';
   const includeUnknownCountries = widget.countries.kind === 'all';
-  const rows = useMemo(() => data && hour != null && match.ready
-    ? operationRows(data, hour, { types: contentSet(types).map(contentKey), role, country: match.matches, from, live, runningOrder, includeUnknownCountries }) : NO_ROWS,
-  [data, hour, match, types, role, from, live, runningOrder, includeUnknownCountries]);
+  const identity = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : null;
+  const playheadWindow = operationWindowIndex(data?.windows ?? [], hour ?? 0);
+  const [browse, setBrowse] = useState<{ identity: string | null; hour: number | null }>({ identity: null, hour: null });
+  const shownHour = browse.identity === identity && browse.hour !== null ? Math.min(browse.hour, hour ?? browse.hour) : hour;
+  const browseIndex = operationWindowIndex(data?.windows ?? [], shownHour ?? 0);
+  const [visibleWindows, setVisibleWindows] = useState<{ identity: string | null; at: number; windows: number[] }>({ identity: null, at: -1, windows: [] });
+  const visibleIndices = visibleWindows.identity === identity && visibleWindows.at === playheadWindow ? visibleWindows.windows : [];
+  const wantedWindows = operationWindows(data, hour ?? 0, live,
+    [...visibleIndices, ...(browse.identity === identity && browse.hour !== null ? [browseIndex] : [])], from ?? -Infinity);
+  const history = useEspionageWindows(track, runtime, wantedWindows, active && !!data);
+  const rows = useMemo(() => inBranch && shownHour != null && match.ready
+    ? windowedOperationRows(history.data, shownHour, { types: contentSet(types).map(contentKey), role, country: match.matches, from, live, runningOrder, includeUnknownCountries }) : NO_ROWS,
+  [history.data, inBranch, shownHour, match, types, role, from, live, runningOrder, includeUnknownCountries]);
   const [visible, setVisible] = useState<readonly LogRow<OperationAt>[]>(NO_ROWS);
-  // Names and flags belong to each displayed row's date, including an ending's upper bound.
+  const currentRows = useMemo(() => new Map(rows.map(row => [row.id, row])), [rows]);
+  const drawn = useMemo(() => visible.flatMap(row => { const current = currentRows.get(row.id); return current ? [current] : []; }), [visible, currentRows]);
+  const onVisible = useCallback((drawn: readonly LogRow<OperationAt>[]) => {
+    setVisible(previous => {
+      const next = drawn.map(row => currentRows.get(row.id) ?? row);
+      return previous.length === next.length && previous.every((row, index) => row === next[index]) ? previous : next;
+    });
+    const windows = [...new Set(drawn.flatMap(row => row.item.windowIndex === undefined ? [] : [row.item.windowIndex]))].sort((a, b) => a - b);
+    setVisibleWindows(previous => previous.identity === identity && previous.at === playheadWindow && JSON.stringify(previous.windows) === JSON.stringify(windows)
+      ? previous : { identity, at: playheadWindow, windows });
+  }, [currentRows, identity, playheadWindow]);
+  const [tooltipRow, setTooltipRow] = useState<LogRow<OperationAt> | null>(null);
+  const [description, setDescription] = useState<{ reference: OperationDescriptionRef; text: string } | null>(null);
+  const descriptionRef = tooltipRow && shownHour != null && (tooltipRow.item.operation.end?.byHour ?? Infinity) <= shownHour
+    && (tooltipRow.item.state === 'completed' || tooltipRow.item.state === 'disappeared')
+    ? tooltipRow.item.operation.end?.outcome?.descriptionRef ?? null : null;
+  const onTooltip = useCallback((row: LogRow<OperationAt> | null) => {
+    setTooltipRow(row);
+    if (!row) setDescription(null);
+  }, []);
+  const sourceId = track?.source.id, revision = track?.source.revision;
+  const descriptionSource = useMemo(() => sourceId !== undefined && revision !== undefined ? { sourceId, revision } : null,
+    [sourceId, revision]);
+  const branchId = track?.branch.id;
+  const descriptionLanguage = tooltipRow?.item.operation.end?.outcome?.recordedLanguage;
+  useEffect(() => {
+    if (!active || !descriptionRef || !descriptionSource || !branchId) return;
+    const controller = new AbortController();
+    loadOperationDescription(runtime.client, descriptionSource, branchId, descriptionRef, controller.signal)
+      .then(result => {
+        if (result.recordedLanguage !== descriptionLanguage)
+          throw new Error('The stored description language differs from its outcome.');
+        if (!controller.signal.aborted) setDescription({ reference: descriptionRef, text: result.text });
+      })
+      .catch(error => { if (!controller.signal.aborted) setDescription({ reference: descriptionRef,
+        text: `Stored operation description unavailable: ${error instanceof Error ? error.message : String(error)}` }); });
+    return () => controller.abort();
+  }, [active, runtime.client, descriptionRef, descriptionSource, branchId, descriptionLanguage]);
+  // Names and flags belong to the endpoints' supplying read, including an ending's upper bound.
   const wanted = useMemo(() => {
     const seen = new Map<string, { hour: number; tag: string }>();
-    for (const row of visible) for (const tag of [row.item.ownerTag, row.item.targetTag]) {
-      if (tag !== null) seen.set(JSON.stringify([row.hour, tag]), { hour: row.hour, tag });
+    for (const row of drawn) for (const tag of [row.item.ownerTag, row.item.targetTag]) {
+      if (tag !== null) seen.set(JSON.stringify([row.item.countryHour, tag]), { hour: row.item.countryHour, tag });
     }
     return [...seen.values()];
-  }, [visible]);
+  }, [drawn]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
-  const labels = useCallback((row: LogRow<OperationAt>, tag: string | null) => tag === null ? { name: 'Unknown country' } : labelAt(row.hour)(tag), [labelAt]);
+  const labels = useCallback((row: LogRow<OperationAt>, tag: string | null): ReturnType<CountryLabel> => tag === null ? { name: 'Unknown country' } : labelAt(row.item.countryHour)(tag), [labelAt]);
   const chips = useMemo(() => operationChoices(data), [data]);
   const byType = useMemo(() => new Map(data?.types.map(type => [type.key, type])), [data]);
+  const warnings = useMemo(() => [...new Set([...(data?.warnings ?? NO_WARNINGS), ...[...history.data.values()].flatMap(reply => reply.warnings)])], [data, history.data]);
   useEffect(() => {
-    onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
+    onDiagnostics(warnings);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, onDiagnostics]);
+  }, [warnings, onDiagnostics]);
 
   if (!track) return <WidgetState kind="empty" icon="target" message="Load a campaign to see its espionage operations." />;
+  const windowError = history.errors.values().next().value;
+  if (windowError) return <WidgetState kind="error" message={windowError} onRetry={history.retry} />;
   if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (grouped && groups.error) return <WidgetState kind="error" message={`Country groups are unavailable: ${groups.error}`} onRetry={groups.retry} />;
-  if (!data || (grouped && !groups.data)) return <WidgetState kind="loading" label="Loading espionage operations…" />;
+  if (needsGroups && groups.error) return <WidgetState kind="error" message={`Country identities are unavailable: ${groups.error}`} onRetry={groups.retry} />;
+  if (!data || (needsGroups && !groups.data)) return <WidgetState kind="loading" label="Loading espionage operations…" />;
   if (match.reason) return <WidgetState kind="unavailable" message={match.reason} />;
   if (data.unavailable && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message={data.unavailable} />;
-  if (hour == null) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
+  if (!inBranch || hour == null) return <WidgetState kind="unavailable" message="The chosen moment is outside this campaign branch." />;
   if (!data.available.length && !data.completionsAvailable.length) return <WidgetState kind="unavailable" message="Espionage operations are not in this recording." />;
-  if (!runAt(data.available, hour) && !runAt(data.completionsAvailable, hour) && !rows.length) return <WidgetState kind="unavailable" message="Operations were not recorded at this hour. Gaps stay gaps." />;
+  if (!history.data.has(browseIndex)) return <WidgetState kind="loading" label="Loading espionage window..." />;
 
+  const preceding = wantedWindows.filter(index => index <= browseIndex);
+  const oldest = preceding.length ? Math.min(...preceding) : 0;
+  const earlier = oldest > 0 && data.windows[oldest - 1].lastHour >= (from ?? -Infinity);
+  const navigation = <div className="espionage-navigation">
+    {earlier && <button type="button" onClick={() => { setBrowse({ identity, hour: data.windows[oldest - 1].lastHour }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Earlier operations</button>}
+    {shownHour !== hour && <button type="button" onClick={() => { setBrowse({ identity, hour: null }); setVisibleWindows({ identity, at: playheadWindow, windows: [] }); }}>Latest operations</button>}
+  </div>;
+  const unread = !runAt(data.available, shownHour ?? hour) && !runAt(data.completionsAvailable, shownHour ?? hour);
   const chosen = contentSet(types);
   const toggle = (value: string) => { const next = toggleContentSet(types, value, Number.MAX_SAFE_INTEGER); if (next !== null) setOption?.('types', next); };
   const renderRow = (row: LogRow<OperationAt>) => {
@@ -93,9 +157,9 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     return <>
       <span className={`log-art${type?.icon ? '' : ' is-missing'}`} aria-hidden="true">{type?.icon ? <img src={type.icon} alt="" /> : '?'}</span>
       <span className="log-text">
-        {owner.flag && <img className="log-flag" src={owner.flag} alt="" />}<b>{owner.name}</b>
+        {at.ownerTag !== null && <CountryFlagUrl className="log-flag" url={owner.flag} reason={owner.flagReason} pending={owner.flagPending} />}<b>{owner.name}</b>
         <span className="espionage-muted">{wording.action}</span>{operationName(type)}<span className="espionage-muted"> against </span>
-        {target.flag && <img className="log-flag" src={target.flag} alt="" />}<b>{target.name}</b><span className="espionage-muted">{wording.afterTarget}</span>
+        {at.targetTag !== null && <CountryFlagUrl className="log-flag" url={target.flag} reason={target.flagReason} pending={target.flagPending} />}<b>{target.name}</b><span className="espionage-muted">{wording.afterTarget}</span>
         {at.startHour !== null && <span className="espionage-muted"> · started {formatDateTime(at.startHour)}</span>}
         {!meter && <span className="espionage-muted"> · {operationState(at)}{outcome && <> · {outcome}</>}</span>}
       </span>
@@ -107,16 +171,20 @@ export default function EspionageLogWidget({ widget, runtime, active, onDiagnost
     </>;
   };
   return <div className="espionage-log">
+    {navigation}
+    {shownHour !== hour && <p className="espionage-muted">Operation reads through {formatDateTime(shownHour!)}</p>}
     {log.chips && chips.length > 1 && <div className="log-chips">
       <ChipSet label="Operation types" max={Number.MAX_SAFE_INTEGER} selected={chosen.length ? chosen : ['']}
         chips={[{ value: '', label: 'All types' }, ...chips]}
         onToggle={value => { if (value === '') { if (chosen.length) setOption?.('types', ''); } else toggle(value); }} />
     </div>}
-    <LogList key={`${track.source.id}:${track.branch.id}`} rows={rows} label="Espionage operations" density={log.density} months={log.months}
-      animate={log.animate && live} columns={row => drawsMeter(row.item, live) ? METER_COLUMNS : COLUMNS} renderRow={renderRow}
+    <LogList anchorRows key={`${track.source.id}:${track.branch.id}`} rows={rows} label="Espionage operations" density={log.density} months={log.months}
+      animate={log.animate && live && shownHour === hour} columns={row => drawsMeter(row.item, live) ? METER_COLUMNS : COLUMNS} renderRow={renderRow}
       describe={row => `${labels(row, row.item.ownerTag).name}${operationWording(row.item).action}${operationName(row.item.typeKey === null ? undefined : byType.get(row.item.typeKey))} against ${labels(row, row.item.targetTag).name}${operationWording(row.item).afterTarget}. ${operationState(row.item)}.`}
-      tooltip={row => operationTooltip(data, row, tag => labels(row, tag).name)}
-      menu={row => operationJumpHours(row.item, hour, row.hour).map(at => jumpItem(runtime, track.id, at))}
-      empty="No espionage operations match these countries and settings by this moment." onVisible={setVisible} />
+      onTooltip={onTooltip}
+      tooltip={row => operationTooltip(data, row, tag => labels(row, tag),
+        description?.reference === row.item.operation.end?.outcome?.descriptionRef ? description?.text : undefined)}
+      menu={row => operationJumpHours(row.item, shownHour ?? hour, row.hour).map(at => jumpItem(runtime, track.id, at))}
+      empty={unread ? "Operations were not recorded at this hour. Gaps stay gaps." : "No espionage operations match these countries and settings by this moment."} onVisible={onVisible} />
   </div>;
 }

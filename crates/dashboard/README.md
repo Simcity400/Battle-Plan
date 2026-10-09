@@ -1,680 +1,180 @@
 # dashboard
 
-Resolved content carries shared uncovered-read diagnostics. Source metadata,
-catalogue diagnostics and every serialized product reply refresh the named,
-counted note after lazy reads; it states that those bytes are not hash-verified.
-Production detail windows carry warnings too, so a cached history cannot hide a
-later content read. The [installed-content contract](../installed-content/README.md) owns this
-reporting opt-in and the strict default for other readers.
-
-State templates, names and defines share one lazy catalogue cache with scripted
-text. Plain state names do not require scripted-localisation defines. Live replies
-filter the producer's typed state diagnostics and report each failure once;
-offline corpus readers retain the native template-skip diagnostic kinds.
-
-Everything a widget needs natively: opened recordings, data products, the host/viewer protocol and the data service that answers the frontend. No map pixels are drawn here and no live game memory is read.
-
-Opened metadata carries the replay's terminal partial marker separately from branch gaps. The verified prefix remains readable; the marker keeps the failure reason and an optional attempted hour. An unknown failed hour adds no inferred gap. Recording-library summaries read only the validated replay trailer, leaving frame blocks to the normal source-open path.
-
-Readable older recordings keep unchanged field prefixes. Products count a named refusal only when they need an appended field that was not recorded; ordinary names, colours, flags and scopes remain usable. Layout/meaning changes still withhold tables. See [replay compatibility](../replay/README.md#compatibility-and-recovery).
+Native widget data: opened recordings, typed products, the data service and the
+host/viewer protocol. This crate reads recordings and their content stack; it
+neither reads live game memory nor draws map pixels. See the
+[architecture](../../docs/dashboard.md), [desktop host](../desktop/README.md) and
+[widget framework](../../ui/src/widgets/README.md) for the surrounding flow.
 
 ## Layout
 
 | Module | What it does |
 |---|---|
-| `source.rs` | One opened recording: replay bytes, metadata, resolved game content and each product's per-source cache. |
-| `catalogue.rs` | Content facts every product shares, read once per source, folders and game language: the localisation (the same parse country naming uses, from `content::localisation`; every text goes through the shared game localiser in `installed_content::localisation`; a refusal, such as a scripted expression or a control plain text cannot show, is kept apart from a missing key and noted by reason and key for the product warnings) and interface sprites, with the native GUI registry and client decode settings shared by products, plus the texture decoding, within a budget, and PNG encoding every image reply uses. |
-| `triggers.rs` | The one trigger evaluator: raid, combat-tactic, scripted-localisation, equipment-graphics pool and adjacency-rule triggers decided from one recorded hour. Each key is dispatched as `CTrigger::LoadKey` does (`installed_content::trigger_keys`), each coded trigger checked against its class's accepted scopes first. Only the children LoadKey adds count: a key that names nothing adds none, `else`/`else_if` attach to the last `if` added, and `World::has_children` is the emptiness test every consumer reads. A key names a character by the content's character templates; scope keys resolve through `scope.rs`, and deeper links use the caller's `EventScopes` graph when supplied; flattened callers still refuse a link they cannot describe. Tag aliases resolve as `AliasResolve` does (`triggers/aliases.rs`). Script variable operands (`check_variable`, `has_variable`, `var:` keys, variable counts, country and state operands, arrays and tag alias variables) are evaluated as `CScopedVariable::Evaluate` does over the recorded `ScriptVariables` stores (`triggers/variables.rs`); unreproduced built-in game variables, unsupported temp writers and outside-context residual temps are refused by name. A combat scope's own triggers come from its caller (`Combat`). A caller without a country uses `Scopes::empty`, the default event scope: no carried objects, and THIS/ROOT/FROM/PREV all empty. Scope-masked triggers are false there; country-tag scopes resolve normally over the recorded World. A context trigger targeting an empty scope is false by its own mask, including an empty ROOT block. What the recording cannot answer is `Eval::Unknown` with its reason. |
-| `scope.rs` | Script scope targets resolved over one recorded hour (`RecordedScopes`), including the faction leader from `FactionMembers` order for triggers and scripted text, with exact recorded `_CountriesForOriginalTags` buckets and physical country-array order (`scope/original_tags.rs`). |
-| `metadata.rs` | Branch ranges, gaps and the first readable country catalogue, and the helpers every product shares: frame checks, a tag's country this hour (`tagged_country`: found, absent, or unresolved when the links cannot tell which country holds it; `tagged_countries` gives every tag's in one pass), a raw link's canonical slot (`link_slot`), one consecutive-hour country identity check (`IdentityTrack`, used by segment histories through `country_history::observe_identity`) and which hours read a daily table (`slot_read`: its cadence slot hour, or a timed walk within its slot on a forced full hour; CountryIntel requires its own measured walk and is no evidence for its slot peers, as in the fresh-save oracle; a product dating values by their read uses it). |
-| [cryptology.rs](src/cryptology.rs) | Native cipher thresholds, full-decryption predicate and progress meter frames, shared with viewer raid tooltips. |
-| `products/` | One module per data product, registered once in `products/mod.rs`. Helpers products share sit beside them, such as `resources.rs` (recorded resources in the game's order, named and pictured through the content stack for every resource product). |
-| `read_runs.rs` | A daily table's keyed values as runs over the hours each read covers, with the spans where the table is known at all. A recorded zero is a run, told apart from a key the read did not list; a value read but not computable is a run with no amount (unknown, never zero or part of a sum). Products turn daily tables into runs here. |
-| `products/equipment.rs` | Equipment facts every equipment product shares: units per week by the game's weekly formula (none without a positive cost, where the game shows only a placeholder), a variant's name (`GetDisplayName`), every variant's names over a branch with where they are known (`VariantCatalogue`: a gap, a due variant read that did not land, or an hour between reads whose variant table is not complete ends them; each read also fingerprints its name, modules and recorded upgrades, so a later branch's other design under the handle stays apart; `names` dates each by its read and never carries one back), an equipment type's archetype, database place and domain through the recorded content stack (`archetype_of`), that content's equipment types read once per catalogue for every equipment product (`units`), the mark keying a type content does not resolve (`UNRESOLVED_MARK`, and `UNRESOLVED_ARM` for its arm) and native reader diagnostics naming each file and definition (`equipment_warnings`). |
-| `content_check.rs` | Offline content preparation for every registered product, in registry order. Shares the products' loaders, naming and artwork functions; reports actionable product failures, informational content and aggregated recorded-context coverage. |
-| `ranking.rs` | The top N countries at every hour a value changes, for every product that ranks countries (Factories, Equipment produced): a country with no value, or an unknown one, is not ranked, never as zero. |
-| `service.rs`, `service/` | The service facade and its private modules for admission and leases, source and loader jobs, and the bounded response pump. |
-| `transport.rs` | Data commands, the generic product request and fragmented replies. |
-| `protocol.rs` | Control messages between the Tauri host and the viewer process. |
-| `map_settings.rs`, `config.rs`, `content.rs` | Map preferences, game folders and content verification. |
-| `bin/dashboard-bridge.rs` | Development-only stdio adapter for browser UI work. |
-| `bin/export-types.rs` | Generates the TypeScript contract. |
-
-Faction names share [faction_names.rs](src/faction_names.rs) with scripted
-text and effect descriptions: `CFaction::display_name@140D77360` copies a
-nonempty literal unchanged in the recording language (another viewer language
-refuses it through `stored_text`). With an empty literal, a recorded null template
-returns empty text without reading content or the lexical dictionary; a nonnull
-template resolves through `LexicalTokens` and the recorded content stack's bound
-localisation. Unread template inputs retain their named refusal.
-Naming, scripted text and diplomacy effect descriptions resolve through
-`faction_names.rs` and the content stack's lazy native `Catalog` cache
-(`ResolvedLayers::faction_templates`); character effect descriptions keep their
-own reader call and scope-aware evaluator. Bound names evaluate their authored arguments through the core
-localiser; token arguments use that hour's lexical dictionary, and unsupported
-formatter callbacks retain their named refusal. Country
-groups reads only localisation and templates when a recorded name needs them;
-interface assets and their diagnostics do not affect its reply. It exports
-ordered name runs
-independently of roster completeness; gaps and unread Factions hours break
-them. Its latest `name` and `nameReason` are summaries, while hover and playback
-use `names`. Missing templates, dictionary entries, content, empty bindings
-and unsupported forms leave a null name with a counted, named reason for the
-UI's "Unnamed faction" fallback. A literal never becomes a localisation key. Name runs
-keep every recorded change; a complete reply past `MAX_PRODUCT_REPLY_BYTES` is
-refused with the transport-budget reason. Evicting a cached branch only causes
-a full rescan.
-
-Border-event descriptions share the evaluator's caller-owned `EventScopes` graph and active variable session. Scope switches preserve ROOT, FROM and PREV links and both native seed words. Description-only targets are stored by scope identity: saving follows ROOT, lookup follows FROM, and outer completion clears only terminal-FROM tooltip targets and global tooltip targets. `has_event_target` reads saved targets only. Scripted-localisation conditions and variable operands use the same graph and session. `num_owned_states` reads `CountryCounterInputs`; `has_template` compares native display-name bytes, resolving the recorded fallback key through the recording language and template country. Template names retain their recorded daily freshness. `any_owned_state` derives nonempty owned membership from `States` and `Provinces`; order-sensitive predicates refuse the unrecorded native roster order.
-
-Locked-tactic doctrine sources share
-[doctrine_sources.rs](src/effect_description/doctrine_sources.rs). Each available
-trigger uses a fresh country scope. Source order and duplicate occurrences come
-from the cached content inventory; track names use the shared unscoped bound
-localiser, and reward mastery includes preceding rewards. Independent source
-fragments survive named failures; an unproven empty list retains its refusal.
-
-[unit_names.rs](src/unit_names.rs) shares the native cached Army-name getter
-across UNIT descriptions, counters and combat entries. A recorded cache,
-including empty text, is authoritative; read failures do not substitute generated
-names. Only historical cache absence consults the captured generator operands
-and lazy content database. Literal overrides with proved matching bytes can be
-shown in any language; other stored text keeps the recording-language guard.
-
-[Ability descriptions](src/effect_description/ability.rs) reuse the content's
-ability definitions and the shared modifier, adjuster and effect formatters.
-The caller supplies a fresh country/commander carrier with both native scope
-bits. Each getter follows its own native priority: text promotion and Tag use
-leader-first resolution, while country variables and context headers select the country.
-Effect sessions and independent failures retain their ordinary shared contracts.
+| [source.rs](src/source.rs) | One recording revision, metadata, resolved content and typed per-source caches. |
+| [metadata.rs](src/metadata.rs) | Branch bounds, gaps, initial country catalogue, frame checks, country-link resolution and supplying-read detection. |
+| [catalogue.rs](src/catalogue.rs) | Shared lazy localisation, content databases, native GUI/sprite lookup, texture decoding and PNG replies. |
+| [products/](src/products/mod.rs) | Product registry and shared domain helpers; each product's behaviour lives beside its code or in its widget README. |
+| [country_history.rs](src/products/country_history.rs) | Shared native country identities, tag aliases and requested balance histories. |
+| [read_runs.rs](src/read_runs.rs), [ranking.rs](src/ranking.rs) | Read-derived value runs, known coverage and event-based top-N selection/clipping. |
+| [triggers.rs](src/triggers.rs), [scope.rs](src/scope.rs), [character_scope.rs](src/character_scope.rs) | Recorded-hour trigger evaluation, scope links, aliases and character operands. |
+| [scripted_text.rs](src/scripted_text.rs), [effect_description.rs](src/effect_description.rs) | Scoped localisation and native effect descriptions, sharing the trigger/variable evaluator. |
+| [modifier_text.rs](src/modifier_text.rs), [faction_names.rs](src/faction_names.rs), [unit_names.rs](src/unit_names.rs) | Shared modifier formatting and native stored/generated names. |
+| [cryptology.rs](src/cryptology.rs), [naval_battle_name.rs](src/naval_battle_name.rs), [state_resources.rs](src/state_resources.rs) | Native helpers shared by products and viewer tooltips. |
+| [content_check.rs](src/content_check.rs) | Offline preparation and diagnostics for every registered product. |
+| [service.rs](src/service.rs), [service/](src/service/) | Source leases, loader jobs, request admission and the bounded response pump. |
+| [transport.rs](src/transport.rs), [protocol.rs](src/protocol.rs) | Generic data requests, fragmented replies and host/viewer control messages. |
+| [config.rs](src/config.rs), [content.rs](src/content.rs), [map_settings.rs](src/map_settings.rs) | Game folders, content verification/cache keys and map preferences. |
+| [dto.rs](src/dto.rs), [lib.rs](src/lib.rs) | Shared wire types, public facade and TypeScript contract assembly. |
+| [bin/dashboard-bridge.rs](src/bin/dashboard-bridge.rs) | Development stdio adapter for browser UI work. |
+| [bin/export-types.rs](src/bin/export-types.rs) | Generates the frontend contract. |
 
 ## Products
 
-A product turns a source plus typed parameters into a typed reply. History products cover a whole branch, so playback reads them locally. Decryption uses exact daily linear runs checked against every hourly read, with separate tag runs and no values across gaps; it keeps this whole-branch contract. Hour-specific artwork and formula details use separate requests through the frontend's transient path, outside the history cache. To add one:
+A `Product` turns a `Source` plus typed parameters into a typed reply. History
+products cover a whole branch, so playback is a local lookup. Hour-specific
+artwork and formula details use separate transient requests; explicitly windowed
+products reuse a branch scan rather than decoding it for each window.
 
-1. Add `products/<name>.rs` implementing `Product` (a key, `CONTENT_DEPENDENT` (whether any reply field reads game content), `Params`, `Reply`, optional `validate`, and `load`). Keep per-source caches in `source.state::<YourState>()`. Read localisation and sprites through `catalogue::catalogue`, never by parsing them again.
-2. Register it in the `PRODUCTS` list in `products/mod.rs`.
-3. Regenerate the contract and add the widget folder under `ui/src/widgets/`.
+Each product defines a unique `KEY`, `CONTENT_DEPENDENT`, `Params`, `Reply` and
+`load`; `validate` checks parameters before loading. Parameters deserialize and
+export through `TS`; replies serialize and export through `TS` and implement
+`ReplyWarnings`. Override `types()` when nested wire types need declarations.
+Use the shared parameter and selection validators in `products/mod.rs`.
 
-Products refuse a complete reply past `MAX_PRODUCT_REPLY_BYTES`; they never truncate.
+`CONTENT_DEPENDENT` is true when any reply field reads localisation, artwork or
+content definitions. The generated `CONTENT_PRODUCTS` list controls frontend
+content-cache invalidation. Service, transport and host route by key; widgets
+and their data helpers choose products. The shared serialization boundary adds
+current uncovered-content-read warnings through `ReplyWarnings`, including for
+cached replies. Preserve independent known values when a name or image refuses.
 
-The generated contract also exports the products declared content-dependent; only those frontend cache keys include folder/readiness changes. The generated `CONTENT_PRODUCTS` list is the authority on which products those are. The service, transport and host route generic requests by key; widgets and their data helpers choose the product. Replies are serialized with the frontend's lease identity so they cannot be attributed to another recording. Products read verified recorded content only; missing localisation or artwork stays null.
+Keep caches in `source.state::<YourState>()`. Share scans between consumers of
+the same inputs instead of decoding a branch again. Numeric history and
+content-dependent presentation can have separate cache keys. State is revision
+local; append inheritance is an explicit `append_state` opt-in after the source
+verifies the recorded prefix. Its clone shares immutable history and gives the
+new revision an independent mutable continuation. Cache eviction changes reuse,
+never the completeness of a reply.
 
-Current products: national focus order, decryption, research slot history, country flags, country styles (each country's engine-built name and recorded map colour at an hour), country groups (human players, recorded factions with their members and leaders (the member at order zero), and war pairs, as runs of consecutive recorded hours), country balances (political power or command power: exact balance runs and net drops per country), party history (popularity, ruling runs and elections per country, with content ideology colours), idea history (each idea a country held, joined to its content category, slot, effects and artwork, with how the game formats each effect's modifier (`idea_format.rs`: the recorded modifier definitions, else content's scripted ones); `politics_content.rs` reads the Politics content once per catalogue), country stability (displayed stability, war support and maximum command power computed from recorded inputs with the engine's arithmetic, plus an hour's formula terms, tree lines with their source identity or recorded text, and an explicit remainder), stability parts (each of those parts of one country over the branch, as runs, known only where recorded), resource balance (one country's recorded resource pools and trade deals as hourly runs, with content's resource names and icons), equipment stockpile (one country's recorded logistics surplus or shortage per equipment archetype with the stock the same record counted, the hours it was AI-controlled, and its recorded stock and weekly production per variant, grouped by content's archetypes), trade flows (every recorded resource trade deal, or the chosen countries', as seller-buyer-resource flows over the branch, with the hours their deals are known and those known only in part, where a read listed deals it could not attribute), equipment produced (every country's units delivered from the exact per-line output, each row's last count kept so deleted lines still count, as a running total or the week or month before, grouped by content's archetypes, exact variant or domain, for chosen countries or the top N, the reply delta coded, with the hours at least one requested country has an exact total (including zero) and no requested country with a piece at that hour has an unknown total (before ranking), and its size counted before it is built), land ownership, country fuel (one country's tank level and capacity at each daily read, and the fuel gained and burned in the 24 hourly updates before it, each update counted once and only while the game updated it) and subjects (every overlord–subject relation as runs of consecutive recorded hours, with the engine's start hour and the subject's current autonomy level through each run, levels named and ordered by content's autonomy states), and country factories (the three factory groups hour by hour, as whole factories the game shows, with their content building types named, for chosen countries or the top N ranked here at every hour, each cut to its hours in the top N, the reply's size counted before it is built), world tension (each daily read of world tension and of every country's contribution to it, and the threat sources as events with the game's own text) and autonomy (each subject's level, overlord, score and move-down and move-up scores, hour by hour, with the levels ordered and named by the content's autonomy states), and production lines (one country's recorded lines at each daily read with their efficiency, the units each delivered as the collector counted them, each produced variant's names and icon as the game's production row shows them, and each organisation's name and icon; `production-lines` sends each line's factory steps and final count, `production-line-detail` its reads one 30-day window at a time, so neither reply grows with the campaign, and each is measured with `transport::json_len` and refused past its bound before it is sent). `equipment.rs` and `equipment_icon.rs` hold what equipment products share: units per week, variant names, domains and the production row's icon rule. A product about a whole branch takes `BranchParams`. `catalogue::display_text` turns a string the engine built for display (a stability tree line, a threat's reason) into plain text, and the construction log (every building and railway line of every country's construction queue in a branch: when it started, the levels its target's hourly building record shows it built, and whether it finished, was removed or left unknowably, each known only from the read that shows it, with content's building names, queue icons and state names), and construction spending (one country's construction progress from the same cached scan: the IC each project's `produced` and the new levels its building's rises confirm show between its reads, per stretch (a line can repair, then build), running totals per repair or new kind, building type and state, with every stretch the reads do not establish counted by reason and repairs refused as not measured). Their rules live beside their code and in the matching widget README. `metadata::LinkTags` names a scan's raw country links by tag hour by hour, keeping the mapping across balance-only reads and rebuilding when country identities change or a complete read resumes after an unavailable one.
+### Add a product
 
-The [`production-spending` product](src/products/production_spending.rs) supplies
-one country's domain → content equipment type → exact design hierarchy as
-complete fixed5 running totals over recorded hours. It shares Equipment produced's
-single per-source branch scan and cache in
-[`equipment/production.rs`](src/products/equipment/production.rs), including
-producer attribution, retained deleted-line output, ship-refit selection,
-naval and railway-gun delivery rules, recorded design names and content resolution.
-No country is excluded by player or AI status. Complete replies refuse
-`MAX_PRODUCT_REPLY_BYTES` rather than truncate; large totals use decimal strings
-of checked 128-bit integers.
+1. Add `products/<name>.rs` implementing `Product`, with validation, cancellation
+   checks and the complete-reply budget. Reuse shared history/content helpers.
+2. Export the module and register it once in `PRODUCTS` in `products/mod.rs`.
+   Implement `ReplyWarnings` for its reply, normally through `reply_warnings!`.
+3. Add its dispatch in `content_check.rs`, reusing the actual naming/artwork
+   loaders. State which inputs require a recording, even for recording-only products.
+4. Export its nested wire types through `types()` and regenerate the contract.
+5. Add/register the widget under `ui/src/widgets/`, following the
+   [widget guide](../../ui/src/widgets/README.md). Put product-specific behaviour
+   in its code or widget README, then run the affected checks below.
 
-Its unit is **Delivered IC at read cost**: each new whole delivered unit in
-`ProductionLineOutput` is multiplied once by the matching producer, variant and
-organisation's `ProductionLines.cost_raw` at that read. Earlier units are never
-repriced, and progress awaiting delivery is excluded. Summing recorded speed
-would not measure exact factory output: military `ProduceEquipment` at
-`0x140F596C0` and naval production at `0x140F59ED0` replace speed on their instant
-paths. Nor does a census establish the historical delivery price:
-`SetEquipmentVariant` at `0x141926570` can change design and cost between passes,
-and `RefreshProductionState` at `0x141926DB0` refreshes the MIO-adjusted cost;
-ordinary delivery reads it at `0x141921B80` / `0x141921C10`. The widget therefore
-states the read-cost valuation explicitly.
+### Exact and derived peace outcomes
 
-A new delivery without a matching cost is **Not known**, including a refit
-removed in the finishing pass (`0x140F5CA10`). A deleted line's final publication
-with no new units needs no cost and retains its earlier exact value. An inexact
-output row, a lost final publication, an explicit or implicit recording gap,
-an observation restart, or a change of country identity ends what can be known;
-later reads never invent the lost amount or resume an exact campaign total.
-Unresolved equipment keeps its recorded token in the shared unresolved arm;
-the country's independent total can still be exact. See the
-[widget guide](../../ui/src/widgets/production-spending/README.md) for playback,
-settings and display rules.
+See [peace-deals.rs](src/products/peace_deals.rs) and the
+[Territory transfers guide](../../ui/src/widgets/territory-transfers/README.md).
 
-Smart country groups retain every recorded membership run, war start,
-capitulation and identity change. The complete localised reply is measured by
-`transport::json_len` and refused past `MAX_PRODUCT_REPLY_BYTES`. The per-source
-branch cache may evict a scan; requesting that branch again rescans its recording
-and returns the same complete history.
+## Recorded histories
 
-The `occupied-states` product supplies the whole branch's active occupied-state
-inventory as equal-value runs, with separate daily read dates and gaps. Daily
-occupation joins freeze the read's controller and country links; other hours
-project only owner/name changes. It uses
-the shared state-name precedence and recorded occupation-law content. The
-unrecorded country-level law pointer prevents guessing a default; displayed
-garrison strength also needs unrecorded equipment allocation/requirements.
-The native garrison amount and failure marker are recorded; the bar is known
-only for the failure flag or complete zero assigned manpower. Those
-limitations remain explicit in the [widget guide](../../ui/src/widgets/occupied-states/README.md).
+Preserve exact recorded values and distinguish zero, absent rows, unavailable
+reads and values that cannot be computed. `read_runs` tracks known coverage;
+outside it, an absent run cannot establish zero. Gaps and identity changes end
+continuity. Never backfill a missing hour from a later observation.
 
-The `occupation-trend` product shares that cached branch scan and its daily
-joins. It supplies every occupier's readable-state mean, using the native
-unweighted fixed5 arithmetic over recorded scalars, with covered/held counts,
-separate read dates, identity segments and gaps. Chosen countries and top-N
-requests use shared ranking and `MAX_PRODUCT_REPLY_BYTES`; no country, entry,
-scan or run count cap applies. Top requests refuse zero or a simultaneous tag
-selection. Country collaboration is optional tooltip context,
-joined from the occupied country's relation toward its occupier. The shared
-reader builds one unambiguous country index for both occupation consumers and
-keeps it through hourly balance changes; unchanged projections extend endpoints
-without cloning labels or context. Numeric-only replies omit collaboration and
-merge its additional boundaries. See its
-[widget guide](../../ui/src/widgets/occupation-trend/README.md) for the distinction
-between these read-derived means and the game's unrecorded cached group means.
+A held daily value retains its **supplying read hour**. Use `metadata::slot_read`
+and check table completeness; a held table or an unchanged value is not evidence
+of another successful read. Keep read confirmations separate from numeric
+changes. Carry values only over the coverage allowed by the supplying table.
+Cadence belongs to [replay](../replay/README.md), not a product's private schedule.
+Keep native event dates, observation dates and publication/read dates distinct;
+first/last sightings establish observed bounds, not an invented exact start or end.
 
-The Experience widget reads [`country_experience.rs`](src/products/country_experience.rs): banked army, navy and air experience at each read, and their net change from a read one day earlier in the same unbroken country stretch. Its [widget guide](../../ui/src/widgets/experience/README.md) describes the display and missing-data rules. Multi-country line products share selection validation in `products/mod.rs`.
+Tags are opaque lookup keys, not paths or a fixed spelling format. Resolve raw
+country references through recorded CountryLinks. Native identity is
+`(canonical slot, country_id)`; a slot or tag alone is insufficient. Shared
+country-history identity runs let manual picks follow the holders recorded
+under selected tags through renames and aliases, without including unrelated
+later holders of an alias. An origin-hour selection binds the holder at that
+hour; smart groups use identities at their membership dates. Ambiguous links,
+missing hours and a replacement holder break continuity; do not infer identities
+from tag-change events or bridge a gap.
 
-Political and Command power use [country_measure.rs](src/products/country_measure.rs);
-Stability and War support use [country_stability.rs](src/products/country_stability.rs).
-Stability selections and both products' histories size from the recording.
-CountryMeasure uses the shared country-selection validator. Complete replies use
-the shared serialized-byte budget, refusing with `MeasureReplyTooLarge` or
-`StabilityReplyTooLarge` instead of omitting countries or runs. Cache eviction
-retains every series needed by the current request, including requests larger
-than the cache's usual retention size.
+Metadata's country catalogue is an initial observation, not the campaign census.
+Initial selection uses that frame's LocalPlayer, including observer choice,
+joined through CountryLinks; the multiplayer human roster does not identify the
+recording client. A terminal partial marker is separate from branch gaps: an
+unknown failed hour supplies no inferred gap. See
+[replay compatibility and recovery](../replay/README.md#compatibility-and-recovery)
+for readable prefixes and field availability. Refuse only dependent fields that
+were not recorded when the rest of an older recording remains usable.
 
-`war-casualties` answers chosen countries, all sampled countries (empty tags without top), or any user-selected top N with dealt, taken and deduplicated unknown totals at daily and readable-stretch boundaries. Ranking always uses dealt plus known taken; unknown losses affect display only. The two most recently used complete branch scans are shared across selections, and packed runs and columnar replies keep exact totals, implicit daily confirmations and lower-bound start hours for relations lost in a recording gap. Full ranking windows are cached, and label snapshots are collected in the same decode only when their naming inputs change. It retains ended and disappeared relations; evidence and missing-data rules live in [the product](src/products/war_casualties.rs) and [Casualties](../../ui/src/widgets/casualties/README.md). Selections and scans have no chosen cap. Complete replies are counted with `transport::json_len` and refused beyond `products::MAX_PRODUCT_REPLY_BYTES`, never truncated.
+## Content and text
 
-`war_casualties::scanned_branch(source, branch, cancelled)?.country_at(tag, hour)` is the shared casualties measure: known dealt/taken, optional exact unknown, read hour and lower-bound flag from the product cache; no sample or a gap returns `None`, and the cached scan's `has_gap()` flags wars that could be wholly missing.
-Equipment losses (one country's losses as cause, equipment type and design, each a running total: the Combat Log's reasons and recovered equipment for land, SunkShips, SunkConvoys and lend-lease sunk and sent, with air reported unknown; hours the game did not log the country's land losses are unknown, not zero; each cause lists the hours its record was not read, and lend-lease the exchanges that ended after their last read, whose totals are lower bounds from then; a Combat Log retention define below 1 makes land unknown by name; cause names the executable does not name come from the content's interface files). Daily values change only at their recorded read hours. Recorded gaps, failed blocks and the unread remainder of failed frames have explicit unknown coverage and unread spans. CombatLogState explains missing native land records and never selects capture; the product also checks division orders-group membership, since country-gate admission alone does not prove logging. A mixed census is Partial with the number of that country's divisions outside orders groups: the game kept losses of divisions in armies, not of those divisions. The native equipment writer also tests the runtime feature mask recorded by SimulationFeatures: a closed feature gate is NotLogged, missing writer inputs stay Unknown, and every captured amount is still counted. Combat Log observation checks the requested country's slice reads before accessing its sorted row ranges. The product selects the hourly DivisionCensus counts instead of Divisions. The collector accumulates every country's counts in its existing authenticated division core projection, preserving the writer's raw expeditionary or roster owner; aliases resolve through CountryLinks. Coverage is dated by each hourly census read, including equal successful reads; consecutive hours merge only for equal states and equal ungrouped counts, and an unavailable hour is Unknown. Missing country rows, unread counts or unresolved nonempty owners remain Unknown. Wire decoding and reconstruction of the selected tables remain part of the scan cost. The ignored release test `equipment_losses_observer_scale` measures observation of shared decoded observer frames; `equipment_losses_observer_scale_including_decode` keeps the same major-sized division workload in the wire recording but omits Divisions from the selected decode, and separately measures the Combat Log/SliceReads decode. Live detour cost remains separate. Its rules live beside [the product code](src/products/equipment_losses.rs).
+Resolve content through the recording's stack and the shared `catalogue`;
+localisation, native GUI/sprite lookup and texture decoding must not acquire
+parallel parsers. The [installed-content contract](../installed-content/README.md) owns content
+verification and uncovered-read reporting. Keep its named, counted diagnostics
+visible after lazy reads. Missing artwork leaves independent text and values
+available with its reason.
 
-Special projects adds per-country project episodes, native prototype progress and localized completed-iteration counts, exact or bounded dates, and shared character names and portraits. Gaps interrupt reads within an episode.
+Use the shared localiser and plain-text helpers. Stored display text without a
+proven localisation key keeps the shared recording-language guard; a literal
+never becomes a key. Scoped text, triggers and descriptions use the same
+recorded-hour evaluator and caller-owned event graph/variable session. Missing
+operands and unsupported reached forms retain named, counted refusals, without
+invented scopes, roster order or rebuilt native caches. Native evidence and exact
+form handling belong beside those helpers.
 
-The Decryption widget reads [`decryption.rs`](src/products/decryption.rs): sparse pair runs with same-hour thresholds, native progress, bonus states, each current attempt's observed start, dated breaks and capture coverage for every recorded pair independently of player status. Its [widget guide](../../ui/src/widgets/decryption/README.md) describes the display and missing-data rules. Warnings count affected pairs or countries once per reason and retain recorded amounts and states when tags, thresholds or progress are unknown. Replies refuse the shared complete-response byte budget.
+`content_check::check` visits products in registry order, shares preparation per
+stack and calls their real loaders. Offline findings belong to that preparation,
+not later live replies. Preserve producer diagnostic kinds: `Content` requires
+cited native parity, while `Offline` identifies a recording dependency. Keep
+counts/examples separate from diagnostic identity and avoid duplicating
+reader-owned notes in product checks.
 
-The Intel products [`espionage_log.rs`](src/products/espionage_log.rs) and
-[`agency_comparison.rs`](src/products/agency_comparison.rs) include every
-country. Operations are identified by their full handle and raw owner, target and
-definition token. Launch, repeat, phase/slot changes and missing country names
-remain dated changes within that episode; only a finished instance reopening or
-a different raw identity starts another. Missing reads break value runs, and a
-missing lexical name is a counted recording gap, distinct from a content miss.
-Completion does not identify an outcome on main: stored bonus, detection and
-result text were not captured. The outcome contract retains those independent
-results, exact completion dates/sequences, description lengths/refusals and
-completion-batch coverage for the capture adapter; main says **Not recorded**.
-Capture PR #336 must add the `OperationCompletions` consumer, matching owner and
-sequence and retaining completion-only operations; until then its coverage is
-empty with a **Not recorded** reason.
-Descriptions retain the recorded client language; non-UTF-8 bytes are refused
-by name without losing independent results. Raw bonus and detection flag bytes
-other than 0 or 1 refuse the outcome by field name and value, counted by reason.
-Agency comparison uses the agency screen's stored active count and maximum,
-rather than its recruitment admission ceiling, and localises defence through
-the content's formatter. A missing `AGENCY_DEFENSE_LEVEL` is refused by name
-and counted. Acquired upgrades remain **Not recorded** on main; their placeholder
-retains native array order, signed levels, raw pointer/token identities, named
-identity refusals, separate content reasons and the upgrade read date. Their
-inventory total is an exact decimal sum of nonnegative stored levels, not a
-native slot maximum. Agency values compress independently
-of roster counts and their shared daily reads. Both products refuse only the
-shared complete-response byte budget and share
-[`intelligence_content.rs`](src/products/intelligence_content.rs) for names,
-artwork and agency text. Top-N selection and run clipping use
-[`ranking.rs`](src/ranking.rs), also used by Factories. Their UI rules live
-in the [operation log](../../ui/src/widgets/espionage-log/README.md) and
-[agency table](../../ui/src/widgets/agency-comparison/README.md) guides.
+## Service and limits
 
-Agency comparison neither shows nor reads operation definitions. It prepares
-only agency text and keeps name and defence refusals. Operation-definition and
-artwork notes belong to espionage and remain in the offline corpus.
+`Service` shares sources by canonical path and revision and issues independently
+releasable leases; `open_map` uses the same sources. An outdated expected revision
+is refused. A new revision uses a separate source and caches. Every product reply
+echoes the requesting lease, revision and key so it cannot answer another recording.
 
-Nuclear arsenal reads [country_nukes.rs](src/products/country_nukes.rs): every
-country's whole stockpile as the native top bar displays it, with native type
-ordinals named through recorded tokens and content. The queued-drop `ready`
-counter is a different quantity. Country selections and scans size from the
-recording; exact serialized reply bytes are the only product size bound, with a
-named refusal instead of omitted countries or runs.
-[Raids](src/products/raids.rs) shares one cached branch scan between the
-[Raid log](../../ui/src/widgets/raid-log/README.md) and
-[Raid tally](../../ui/src/widgets/raid-tally/README.md), preserving observed dates,
-target controllers, phase/outcome localization and observed totals. Preparation
-uses exact linear runs over consecutive successful hourly reads; every encoded
-hour retains that supplying read, and missing reads split the runs. Consumers
-receive native phase/outcome IDs from the product. The complete JSON replies
-refuse oversized histories as `RaidReplyTooLarge` or `NuclearReplyTooLarge`.
-[Raid target resolution](../installed-content/README.md#map-movement-and-raids) is shared
-with map hovers.
+Loader jobs run off rendering. Ordinary product caches serialize their own
+requests; scans with their own gates do expensive work outside short cache locks.
+Open/append work stays outside the global sources lock. Check cancellation during
+reads, scans and serialization, and never publish a cancelled partial result.
+Different products and sources can run in parallel; replies are fragmented and bounded.
 
-Land battles uses the cached hourly census in
-[`land_battles.rs`](src/products/land_battles.rs), returned as recording-block
-windows. The manifest checks only through the first complete census read;
-the UI window hook retains the playhead and drawn log windows. Biggest battles
-uses one server-ranked top-N summary reply, filtering before ranking with the
-same dated predicate as client `countryMatch`. Counter runs store exact +1
-steps, splitting on any different step. The cache retains the two most recently
-used branches. Gaps split episodes, adjacent complete
-censuses establish exact observation dates, and missing endings stay visible.
-Side counts include distinct reserve participants; peaks retain their read hour.
-Native hourly-round duration supplies a minimum length. Dated cumulative and
-post-flush terminal casualty reads have a normalized product adapter; main
-still records neither casualties nor winners. Supplied side losses project into
-the shared row unchanged, with running losses marked so far. Default casualty
-ranking uses manpower lost on both sides and falls back to peak size while no
-eligible total is known. Shared recording windows and dated warnings also live
-in `battles.rs`. Only the shared reply budget refuses oversized
-responses, never truncating. Generic wire values live in
-[`battles.rs`](src/products/battles.rs); [`place_names.rs`](src/products/place_names.rs)
-resolves drawn province/hour names, including state-less sea regions, and
-state-only names at each requested state/hour. States-only requests need no
-province tables or scripted-localisation inputs. Places,
-Occupied states and Raids share `scripted_text::state_display_name` and its
-cached state-content read. Callers own state-name failure reporting, preserving
-Occupied states / Raids diagnostics without also registering a catalogue refusal;
-Occupied states reuses the cached defines. See the [widget guide](../../ui/src/widgets/land-battles/README.md)
-and [shared battle module](../../ui/src/widgets/battles/README.md).
+Measure complete product replies against `products::MAX_PRODUCT_REPLY_BYTES`
+with `transport::json_len` (or the shared budget helper), including identity,
+read-date and warning metadata. Refuse oversized replies explicitly; never
+truncate countries, entries or runs to fit. Preflight large allocations as well
+as checking final serialized size. Request envelopes share
+`protocol::MAX_MESSAGE_BYTES` across the desktop host, native reader and browser
+bridge. These are byte/retention budgets, not chosen country limits: size buffers
+from recorded data, design for 1,500 countries and verify at 5,000 synthetic countries.
 
-## Service
+Capacity errors use `transport::TRANSIENT_ERROR_NAMES` and its shared classifier;
+the generated frontend contract exports the same names. They decide no country
+fact and can be retried. Other errors remain failures until an explicit retry or
+content/configuration change, never successful empty data.
 
-`protocol::MAX_MESSAGE_BYTES` uses the reply transport's byte budget for requests
-too. The desktop host, native reader and browser bridge share that bound,
-including the forwarded command envelope, and refuse oversized requests without
-truncation. The desktop data queue can hold one complete request of that size.
+## Check a change
 
-`Service` owns sources by canonical path and revision, hands the frontend independently releasable leases, and runs product and open jobs on a small loader pool. Requests for the same product on the same source serialise on that product's cache; different products and sources run in parallel. Replies are bounded, fragmented and cancellable at every step. The map process shares the same sources through `open_map`. [transport.rs](src/transport.rs) owns the retryable refusal catalogue, including the browser bridge and native command queue capacity messages; the generated frontend constants and desktop queue read that catalogue. A capacity refusal decides no country fact and is retried.
+Follow [AGENTS.md](../../AGENTS.md#builds-and-merging) for the build wrapper and
+crate-scoped formatting, clippy and affected synthetic tests. Exercise changed
+identity, gap/read-date, mod-content and complete-reply-budget behaviour at the
+required scale. Capture integration also needs the relevant fresh-save oracle
+and smoke workflow in [recorder](../recorder/README.md).
 
-A refusal for want of room says nothing of the product: the frontend tries it again. Other errors remain failures until an explicit retry or a content/configuration change; they never become answered empty facts. Every such refusal, the service's and the hosts' alike (the desktop's admission, its queue to the native service and its map controls, and the browser bridge's admission), starts with one of the named constants in `transport::TRANSIENT_ERROR_NAMES`, which the contract exports with `TRANSIENT_ERRORS`. A new queue or capacity limit adds its constant there and builds its message from it, never from its own text; `transport::transient_error` and the frontend's `transientError` classify by those constants alone.
+Rust owns [ui/src/generated/dashboard.ts](../../ui/src/generated/dashboard.ts);
+do not hand-edit it. From the worktree root, generate changed types and check
+that the committed contract matches (every cargo invocation uses the wrapper):
 
-## Types
-
-Rust owns the generated frontend types. Use the shared [build commands](../../AGENTS.md#keep-these-guarantees):
-
-```powershell
-bash tools/build-slot.sh "dev/dashboard" "cargo run -p dashboard --bin export-types"
-bash tools/build-slot.sh "dev/dashboard" "cargo run -p dashboard --bin export-types -- --check"
+```bash
+bash tools/build-slot.sh "dev/<task>" "cargo run -q --profile test -p dashboard --bin export-types"
+bash tools/build-slot.sh "dev/<task>" "cargo run -q --profile test -p dashboard --bin export-types -- --check"
 ```
 
-Generation updates `ui/src/generated/dashboard.ts`; do not hand-edit it. Follow with the checks in [AGENTS.md](../../AGENTS.md).
-
-## Rules
-
-Widget artwork resolves through the recorded stack's native sprite and GUI readers. Resource rows and top-bar shields share the catalogue's native GUI registry and texture decoder. Both use their window's button lookup; the trade resource row follows CTradeResourceInfoItem::CTradeResourceInfoItem (141CA4B50). Resource frames share one texture decode per preparation batch. Repeated declarations and relevant refusals remain diagnostics. Idea icons try all native candidates in order, including the picture suffixed with the holder's opaque tag, with a refused candidate ending the search. Advisor portraits use the native portrait-role order only when no idea artwork is selected. Each artwork problem reaches its product's reply; unrelated catalogue warnings are not copied into Politics replies. Missing artwork keeps the text and reports the placeholder. An unresolvable preferred flag key stops only that country's search; resolvable subfolders remain valid.
-
-Preserve recorded values exactly and keep missing, unavailable and zero distinct. Never bridge a gap or carry a value across missing hours. Opening with an outdated expected revision is refused. A changed revision uses a separate source and caches; product replies identify the lease, revision and product key they answer.
-
-The initial country selection uses LocalPlayer at the first readable country catalogue (including an observer's selected country), joined through that frame's CountryLinks. The human roster does not determine the recording client.
-
-Country flag shields and resource icons bind templates through `installed_content::gui::native` over the complete recorded content stack, then use the native window-local button lookup and inherited sprite. The catalogue caches the GUI registry and the configured user's `settings.txt` texture decode result once alongside the sprites. A missing or unreadable settings file leaves the catalogue available, with localisation in the recorded language and a warning; every item needing an unknown decode setting reports that reason. Focus, technology, idea and portrait artwork share the shields' and resource icons' [native texture resource path](../installed-content/src/gui/native/resources.rs), including PNG decoding and `force_pow2_textures`. A file past the game's own 16 MiB `load_file` limit is refused as the game refuses it, and an image whose decoded texels (after `force_pow2_textures` padding) would exceed the dashboard's budget (`catalogue::MAX_TEXELS`, sized from the largest sprite texture across the installed mod corpus) is refused by name from its header, before it is decoded. One frame helper uses the native integer extent and fractional pitch over the padded texture; sprite artwork takes the sprite's own frame count and direction, and an animated, masked or custom-effect sprite is refused by name. Missing candidates, undecodable files (which the game also draws without a texture), undefined reads, cube maps and device-dependent outcomes retain their distinct reasons in product warnings. A refused shield returns a warning and no flags. Country flag Targas keep their separate `installed_content::flags::decode` path.
-
-Scripted text uses [scripted_text.rs](src/scripted_text.rs) and the shared [recorded trigger evaluator](src/triggers.rs). Built-in functions read the sampled party leaders, gender, manpower operands, agency, old country names and balance-of-power operands; content-defined entries select their first passing text alternative. Missing inputs and unsupported trigger or description forms remain named refusals. State template keys come from the recorded content layers. Text the game stored already localised or as a literal, without its key (a created agency's name, a state's custom or owner name, a country's retained old names), is exact only in the recording client's language: it is shown when the viewer's language is that one and refused by name otherwise. A caller with its own event scope passes it with the scopes it links to and its script variables (`EventScopes`): each bracket starts from it, ROOT, FROM and PREV move to the linked scope, and a content-defined entry is evaluated, and its text expanded, in the scope the game binds for it. A character it promotes is a character scope, where `tag`, `skill`, `has_trait` and `has_character_flag` read the recorded character inputs through [character_scope.rs](src/character_scope.rs), which the tactic evaluator shares; any other trigger there is checked against its scope mask first, and one that passes but is not reproduced is refused by name. A link or scope object the caller cannot describe is refused only where a promotion or a reached condition reads it. Native dispatch addresses and exact refusal reasons live beside each property.
-
-Live state warnings omit only typed recoveries proven native-exact beside
-`installed_content::states::MisreadCause`. Construction, occupied states, raids and
-scripted text share this filter. Other `Misread` notes and unported readers keep
-their existing warnings; the offline states reader retains every note.
-
-GetPowerBalanceModDesc renders the cached daily then weekly source values, with ordered static modifier keys localised through the recorded content stack. Its numeric and tree formatting is shared with the viewer in [modifier_text.rs](src/modifier_text.rs).
-
-Active-range modifier and changed-rule descriptions use authored balance ranges
-from [installed-content](../installed-content/src/power_balance.rs), recorded modifier definitions
-and the same value formatter. Wrappers and custom tooltips expand in a fresh
-country scope. Feature gates use the recorded simulation mask; missing masks and
-ambiguous range identities remain named, counted refusals.
-Activation/deactivation and the viewer's border-war event tails use one
-[effect description dispatcher](src/effect_description.rs). Native `effect_keys`
-class identities make aliases share a dispatcher row; unknown keys and unported
-classes are counted by name. Domain rows are grouped in
-`effect_description/dispatch.rs`; the core's module documentation defines the
-shared porting entry points. It ports the reached
-country/state leaves, numeric fixed5 values, faction and doctrine descriptions,
-targeted decisions and timed ideas, with the native conditional/context/state-list
-builders. Own lines use three spaces per level; `IndentNonEmptyLines` uses one.
-The shared evaluator and event graph carry projects (pool owner/local ID), full
-raid references and full UNIT references alongside MIOs. Native `sp:` and `mio:`
-selectors join the recorded project pool and ordered organisation roster; a
-missing object clears THIS, while a countryless caller keeps THIS (`14146BB30`).
-ROOT/FROM/PREV copies keep the existing graph links and seeds. Project and MIO
-names use their native fresh localisation environments; raid names join instance,
-target and type content lazily. These joins keep the tables' recorded freshness.
-UNIT naming refuses the unrecorded `CNameGroupMember` display cache instead of
-refreshing it from combat naming operands. Persisted object targets missing full
-references and project/raid/MIO variable-store reads remain named refusals. Native
-description-target projection omits PROJECT (`14052DE40`); saved RAID context
-selection retains caller THIS, even though its variable reader resolves RAID.
-`modifier_description_with` exposes raw `FormatDescription` text; `modifier_list_with`
-adds the native scoped expansion. `ModifierListOptions` maps requested precision,
-outer colour, include/exclude category masks, numeric-line separator, fixed5 scale,
-forced plus signs and colour inversion. Defaults keep the existing formatting
-arguments. The separate prefix applies only to numeric lines; custom tooltip
-entries add LF only when needed. Zero visibility stays definition-controlled,
-after native getter clamping and wrapping fixed5 scaling. The options documentation
-maps every native argument and gives the trait, advisor and scientist call values.
-Context layout repeats native description probes instead of counting rendered
-newlines; a failed probe retains its named leaf causes once. Unattached conditional
-continuations are named refusals. State leaves require the complete state roster
-before applying native invalid-state behavior. Generic builders and probes share
-the native own-key projection: an empty own description still visits effect children.
-
-The shared scope iterator builder lists at most four targets, or the first
-three plus the native others text when five or more pass the limit. It describes
-the body in the first target unless individual scopes are requested. Random
-selectors and subset removal advance the caller's native scope seed, including
-singleton random picks. Individual descriptions and their tooltip use one copied
-scope across targets, carrying its RNG and targets. A random-selector layout probe
-advances the same copy before rebuilding; its refusals count only once.
-Prioritized random states retain roster order and fall
-back to the full roster only if no prioritized state passes. Country, faction, subject, state, character, scientist
-and script-array rosters retain their native recorded or content order. Missing
-country neighbor/occupied rosters, division roster order and scientist
-activity produce named refusals rather than invented values. Owned/core/controlled
-states and army/navy leaders use the exact ordered `CountryCounterInputs` arrays.
-Owned-controlled selection filters the owned array without reordering; combined
-unit leaders walk army then navy, without operatives. The native global army
-selector repeats the caller's ordered roster for each other existing country
-(`140338900`). Collection owned/controlled operators select their first successful
-path in those same recorded arrays. Missing or unreadable arrays refuse; no
-membership-derived order is substituted. Operatives use their recorded membership
-ordinals. Original-tag lists
-refuse ambiguous order; party-leader selection compares the recorded current
-role ideology independently of its map key. A missing current ideology remains
-unknown; without the mandatory ideology predicate the selector returns empty.
-
-MIO selectors use the recorded roster and reference handles,
-the shared evaluator's organisation scopes, and the content's own or directly
-inherited visibility trigger, including deleted inherited values. Their variable
-store is not recorded; dependent conditions retain a named refusal.
-
-Character-list military sections refuse their unrecorded
-assignment references; advisor-only lists use the recorded roles and traits.
-
-Scripted-effect bodies load through the recorded stack's registered templates;
-calls describe the template regardless of the execution boolean. Recursive
-calls into different THIS scopes expand up to a counted 64-level port backstop;
-re-entry into an active template in the same THIS scope remains a named recursion
-refusal. Meta text uses the native effect reader after
-case-sensitive parameter substitution.
-
-Random/list descriptions share the
-existing evaluator, variable session and seeded graph; every weighted member
-renders, including zero weights, with both seed words restored per member.
-For-each-array descriptions use the first decodable object only when a tooltip
-is authored. Collection descriptions resolve named collections and country/state
-constants through content, use the first successful representative with fresh
-native scope seeds, and expand their header in the caller's environment.
-Zero-reach classes remain named, counted refusals.
-
-Variable descriptions share the trigger evaluator's operand parser, arithmetic
-and description session. Persistent scalar effects evaluate RIGHT then LEFT
-only for an authored tooltip; temporary scalar effects execute before that
-description. Temporary clamp and modulo execute and emit no text. Array,
-round/randomize and persistent builder descriptions remain native empty setters.
-Effect division reads `if_zero` from TLS even for a nonzero divisor; unlike
-trigger division, a zero divisor stores that fallback rather than preserving
-the destination (1403554E0 / 1405389B0).
-Global description targets use the separate tooltip registry and existing
-completion cleanup; a combined scope saves its state before its country.
-Temporary country scorers load through the recorded content stack, reuse shared
-CScriptTargets/MTTH evaluation and retain native highest/sorted tie order.
-Array target filters run before the next indexed value is evaluated. Temporary
-random ranges consume the recorded `ScriptVariables.seed`, with native THIS/FROM
-hashes, TLS seed mixing and integer flooring (`1405354A0` / `140537810` /
-`14047B530`). Descriptions, nested checks and MTTH modifiers share their outer
-TLS context; iterator RNG remains independent. Seed failures are retained until
-consumed, so ordinary text and reversed-range no-ops remain usable. Unknown
-writers do not silently restart the generator. Temporary supply operands use
-`TrainInventory`'s allocated trucks, raw required trucks and required trains,
-with native ceiling/narrowing and the content's strict `NSupply.MIN_TRAIN_REQUIREMENT`
-gate. These cover every reached supply-temp form in the surveyed stacks. Actual
-trains (`CCountrySupplySystem+0x110`) remain a named refusal: neither the scalar
-nor a proven equivalent is recorded, and that subform has zero surveyed reach.
-Unknown supply types store native zero. Older/unavailable seeds and supply fields
-retain named refusals. Scorer dynamic
-tails and state-target modes are named refusals with no reached temporary
-scorer form in the audited corpus.
-
-Hidden effects build and discard text while retaining failures.
-
-The D2 diplomacy family adds its assigned classes alongside declare-war,
-annex and add-to-faction. Its own-text ports preserve native autonomy arithmetic,
-subject/exile and faction gates, relation-factory labels, war targets, border-war
-headings, expansion and LF behavior. Deferred classes retain named, counted output
-refusals while describing their native empty branches. Release/set autonomy
-resolve the exact declared state and native free-state sentinel from the cached
-autonomy database. Influence text uses the shared faction expansion environment;
-civil-war text shares the selected-ideology party-name accessor with politics.
-Purchase contracts share marked country names with scripted text and equipment
-names/rosters with units. Market archetype selection and viewer model candidates
-use one variant comparator in `products::equipment`; distinct variants of one
-archetype still refuse the pool's unrecorded version-byte comparison. The reached
-`faction_leader` variable uses recorded membership and shared country-tag encoding.
-Deferred paths need faction definitions or the unrecorded owned wargoal roster
-used by the native duplicate check.
-Combat-context border data, referenced operative exile and unsupported auxiliary
-target forms retain precise refusals. Faction template tokens never substitute
-for their bound name expression.
-
-The D2 units family dispatches its assigned classes alongside the existing
-template-deletion port. Template changes, unit destruction and organization use
-the shared UNIT carrier. Null units retain native empty text; organization uses
-the raw scoped value without expansion or LF. Template lookup shares the trigger
-evaluator's exact display-name comparison and uses the division's logical owner.
-Descriptions needing a unit name share the cached Army-name formatter and
-stored wing text, with field-local historical and language refusals.
-Experience and manpower, template locks/caps/recruiting, unit and ship creation,
-navy and unit transfers, equipment fractions, raid damage, design bonuses and
-equipment-stat bonuses preserve their native operands, key
-choices, expansion, indentation and LF behavior. Sub-unit names use the cached
-content roster and selected-country localisation. Unit-location admission uses
-the shared evaluator, cached state content and recorded province/access inputs.
-Production, stockpile, equipment variants, ship destruction, equipment transfers
-and subsidies use the cached complete equipment database and native type/module
-lookups. Variant version checks require their recorded version byte. Unit bonuses
-use the shared native formatter and viewer counter preference. Seller-trigger
-descriptions, missing legacy name-allocation inputs and unsupported unit naming
-forms retain named, counted refusals. No content
-database is reread by a description leaf.
-
-The D2 empty family dispatches all assigned native classes to empty own text
-(`140176EE0` / `1402E9B40`), including the four empty build overrides. Setters
-never execute during description. `create_dynamic_country` and targeted
-`force_disable_resistance` share the generic child walk (`140532780`) and
-multiple-description probe (`140533D80`); their children describe once while
-their childless forms describe nothing. Railway and targeted resistance
-descriptions use the same core traversal after their own text.
-
-The D2 states family dispatches its 43 assigned classes. State/country changes,
-capital and state naming, resistance/compliance, shared slots, supply, province
-navigation/controller and resource rights use native operands, names, keys,
-expansion and LF rules. Invalid targets retain each native empty or error branch;
-zero state operands remain zero. `occupied` reads `StateResistance.country`,
-including inactive rows. Descriptions require complete recorded rosters.
-State-category validity uses the cached content-stack database; the description
-localises the authored operand spelling and preserves its native plain text.
-Resistance-target text shares marked country names, signed percent formatting
-and rounded duration text without expansion. Native construction names both
-countries even when one is zero; those forms retain the reserved-country naming
-refusal. Repeated operands retain a named reader-flags refusal.
-
-All scalar-state rows, including claim and transfer, use core `state_target`;
-literal zero stays zero (`1403A1950` -> `140533BE0` -> `14052FA10`). In state
-scope `capital` selects the owner's capital; in country scope it keeps zero.
-Core `country_target` uses native effect selectors: linked states promote their
-recorded `States.owner` (`14052B6A0`, state +0xC8); owner/controller/occupied
-read the current state, while capital/random keep country zero. Saved targets
-probe terminal-FROM local tooltip, local saved, global tooltip, then global saved
-(`1405302E0`), reading country +0x0C independently of state +8. Invalid nonzero
-linked states remain refused. Projected character, leader and province graph
-targets retain named refusals pending core saved-target liveness plumbing.
-State saved targets read +8 directly (`14052FA10`), without resolving an unused
-country or retaining caller scope through a context projection. Repeated block
-targets with selectors retain a named auxiliary-reader refusal: their native
-sticky +0x24 flags (`140530BB0`) are not reconstructed from the final field.
-
-The effect content cache also reads equipment, autonomy states, declared building
-names, resource icon frames and `NSupply::MAX_RAILWAY_LEVEL` once per stack; its
-define read is shared with idea content. Reader notes and independent gaps are
-retained. Construction, offsite and random provincial buildings, explicit
-building damage/repair, typed state building removal, building-resource changes,
-resource additions,
-railway guns and unfiltered explicit railway paths use that content. Resource
-changes distinguish the icon frame from the recorded resource database index.
-One-province railway paths are accepted; unfiltered paths do not inspect interior
-province IDs. Building names keep their declared case and native `_plural` key.
-
-Province VP, rename and reset effects share the distinct effect display accessor
-(`140E69320`); ordinary scripted `GetName` retains `140E67930` behavior. Effect
-display returns a nonempty raw override even when its localisation is empty,
-then tries VP text and the state name. Country adjectives reuse country naming.
-State-category descriptions also retain native validity and empty branches,
-using the cached content database `1413AFAC0`.
-
-Named, counted form refusals remain for marked country names,
-tag-selected building targets, provincial removal's
-unexposed land flag, strategic-location templates and computed/filtered railway
-paths (`140E7E560`). Differing building declarations
-and unresolved signed resource frames retain content refusals. State-less
-province display needs the unrecorded strategic-region pointer and instance
-name; country-zero capital inputs also remain absent. Reserved-country names
-and adjectives use their dedicated recorded singleton. Native
-null dereferences, uninitialised operands and unsupported auxiliary forms are
-refused precisely.
-
-Effect conditions and values share the trigger evaluator and its full scope
-graph. Description-only targets save through terminal ROOT and look up through
-terminal FROM. Separate immediate/option calls preserve caller storage but clear
-only terminal-FROM/global tooltip targets at each completion. Ordinary setters
-do not execute while being described. Faction subject order, template fallback
-names and targeted-decision seeds read their replay operands at each table's
-existing cadence; decision definition seeds derive from the authored identifier.
-Content databases are cached per stack, with independent reader failures refused
-only by dependent leaves. Referenced event titles load by ID and never recursively
-describe their event bodies. Idea/law descriptions share display-name and
-research/equipment/trait/targeted-modifier fragments with timed ideas. Dynamic
-modifier values use the same scoped-variable session, and opinion/static
-modifier catalogues come from the recorded content stack. Balance-of-power
-effects read their values, sides and ordered range identities from the replay;
-range transitions use the native strict interval probe and numeric modifier
-difference. Timed-idea modifications and swaps use the recorded ordered roster
-and remaining days; historical field absence refuses only dependent fragments.
-Idea swaps share numeric, research, rule, targeted and equipment differential
-formatters. Advisor-backed add/remove/
-show idea descriptions use the recorded AvailableAdvisors order before the
-CountryRetiredCharacters order (`1410D69C0`); the primary compares exact idea
-bytes, the fallback compares folded names (`140F8A630`). Multi-idea forms name
-the selected characters without reading caches. Single-idea forms resolve the
-character's first matching role and format AdvisorRoles' numeric cache by
-recorded ModifierDefinitions IDs, retaining array order and the full category
-mask (`14128C670`/`14128C8E0`/`14054E050`). Research, equipment and targeted
-fragments resolve through the content stack and recorded role traits; content
-failures remain named without discarding the numeric fragment. Stored numeric
-caches are never rebuilt from authored modifiers or current traits. The cached
-tooltip-key table keeps its recorded occupied-slot order and exact key bytes.
-Historical absence and current capture failures remain distinct, named refusals;
-numeric cache fragments remain available independently.
-
-Bound custom tooltips share the GUI bound-localisation tree reader. Each node
-keeps its own scope expansion and callback arguments; idea and technology
-callbacks reuse their ordinary description helpers. Unit bonuses share one
-sub-unit/category formatter, including terrain and equipment-stat lines. Their
-unit icons follow the viewer's NATO choice through the scripted-text instance,
-including nested balance-of-power descriptions.
-
-Fixed5 numeric leaves share one formatting template, with native rounding,
-truncation, integer clamping and newline rules selected per class. Mines refuse
-the unrecorded strategic-region instance name. Corpus-zero classes and ambiguous
-range identities remain named, counted refusals; doctrine technology operands are
-also refused by name rather than dropped from a folder-only description.
-Character effects resolve names and roles through the cached content stack and
-recorded character/leader rosters. Operative-event titles use the ordinary event
-catalogue; missing caller inputs and nested option readers requiring an unavailable
-scope helper remain named, counted refusals.
-Balance callers keep their strict
-refusal policy; event tails retain known native lines alongside refusal counts.
-Neither balance effect entrypoint is called by the installed localisation corpus.
-
-MTTH evaluation tests obtain weight fields through the native tactic reader, so the modifier's own `factor` and `add` operands are read before its trigger conditions (140545820).
-
-Scripted entries restart ProcessString at depth zero and reject repeated effective contexts; growing histories and fresh-context nesting are refused at our 10,000-level backstop on a dedicated large-stack thread.
-Effect descriptions retain that caller's entry history, fresh-context depth and
-large-stack state. Their evaluator and World are acquired only when an operand
-or condition needs them, so custom tooltip text can render without those inputs.
-Balance context headers use the viewing country's perspective.
-
-`opinion@target` evaluates its country target in the native callback scope and reads the directed cached opinion from RelationOpinions, at that table's daily slice cadence. A missing nonzero row in a complete table means zero; country zero uses an unrecorded reserved relation slot and remains a named refusal. `num_owned_controlled_states` counts nonempty owned states whose recorded controller is the same country, including country aliases. Both callbacks precede stored keys; unavailable inputs remain unknown. MIO and special-project variable callbacks, outside-context residual temps and other unreproduced built-ins remain named, counted refusals.
-
-Trigger-local temp assignment, addition, subtraction, multiplication, division, clamp, round and modulo execute in order over one evaluation's store ([variables/temps.rs](src/triggers/variables/temps.rs)). Nested checks share it; the next outer check clears it (1405354A0 / 140544190 / 140535830). A destination is inserted before its RHS, then read after the RHS and any alias conditions. Modulo (14047B280) instead caches the floored, signed32 target before its RHS, rounds the divisor to signed32, skips a negative target's RHS and preserves RHS mutations for a nonpositive divisor. The selected localisation's `random_list` weights and seed use that same evaluator. Arithmetic wraps at 64 bits before fixed5 division, round sends halves away from zero, zero division preserves the destination, and clamp applies max before min. Existing native trigger/effect readers supply the parsed items; no parallel reader is used. Core `CExpression` arithmetic is supported; other operators and repeated nonliteral operand reads remain named refusals. The numeric `[?...]` form is implemented in [numeric.rs](src/scripted_text/numeric.rs). It evaluates in the bracket's event scope and shares the existing localisation formatter's directives, truncation and empty-output fallback. Known temporary writes retain their native context boundaries; unavailable residual state stays unknown. Unimplemented property, flag-age and character forms retain named refusals.
-
-`set_temp_variable_to_random` reproduces the TLS scoped-variable RNG context and draws (1405354A0 / 140537810, called by 14047B530) from `ScriptVariables.seed` and the native immediate THIS/FROM hashes (140536DF0 / 140529EE0). Older recordings and failed seed captures retain named refusals; nested checks share the outer seed. The native effect reader's ambiguous bare scalar also retains its counted `Deferred effect` refusal (14047EF60 / 140481030). `randomize_temp_variable` is effect-only (registrar 14001BE20), so direct trigger bodies keep native invalid-key dispatch. Its own description (140176EE0, invoked by 140532780) is empty and never executes the setter; an actual effect-execution consumer is not ported. Its executor (1403452E0) draws from CEventScope+0x0C/+0x10 via 14039D050 or 1403A82C0 / 1424DB9D0, with the constructor seed derivation used by `random_list`. Neither random form uses the global game RNG. No outside-context residual temp history is inferred.
-
-Explicit province text contexts use recorded province names, state ownership and perspective, with terrain from the recorded content stack. The native event scope cannot carry a province, and province text objects do not bind scripted entries.
-
-`random_list` selection follows the native scoped seed and wrapping integer pick in [scripted_text/random.rs](src/scripted_text/random.rs). Default and promoted scopes derive their seed from their native constructors. Weights and explicit seed operands use [triggers/scripted_localisation.rs](src/triggers/scripted_localisation.rs): the native weight function applies every modifier without testing its conditions, accumulates additions and factors separately, and stops on a zero factor. A single member bypasses weights and seed; a nonpositive total returns empty text. `num_of_controlled_factories` reads the three stored group-head levels from hourly CountryFactories, sums them with native i32 wrapping and converts the result to fixed5. An unavailable table or absent country row is unknown by name. The content corpus does not evaluate recording-dependent operands.
-
-Saved-global event targets resolve from the recorded registry in native first-match order. Scope keys, country operands, scoped variables and tag aliases use their respective native lookup paths; missing, cleared and dead targets decide as invalid. Current consumers construct fresh scopes; event-chain consumers must supply their runtime target arrays when introduced. Live object kinds without a reproduced evaluator remain named refusals; countries, states, characters and character-backed leaders are supported in triggers. Scripted-text promotions use their separate native selector for countries, states and characters; a missing or invalid name leaves the text context unchanged. Other text object kinds remain named refusals.
-
-`has_dynamic_modifier` reads the current country's or state's recorded modifier container. Its optional `scope` operand uses the shared scoped-variable evaluator: a country target compares country aliases, a state target compares the stored state ID, and an empty target tests only the first matching entry for an empty scope. Explicit targets scan every entry of the definition. Presence ignores the entry's enabled state and remaining duration. Definition names come from the recorded native definitions and the trigger body from the recorded content stack; missing tables and unresolved target links remain named refusals.
-
-The [Scoreboard product](src/products/scoreboard.rs) is a table of requested
-shared per-country measures, with a single registry for labels, units, exact
-formatting. Its defaults are returned by the product; country selection has no
-product count cap. Factory counts use the Factories scan and count helper;
-Stability and War support use their single-stat histories; Nukes and Equipment
-produced reuse their existing cached scans. Political and Command power share
-the country identity/balance scan in
-[country_history.rs](src/products/country_history.rs) with Country measure.
-That cache retains identities for every country and materializes each balance
-field only when requested. Native values stay numeric internally, and adding
-another field shares existing histories through Arc while scanning only the
-missing field. Stability histories also share immutable per-country cache entries
-without evicting a large table when another widget asks for a new country.
-Owned territory is the recorded native owned-state roster count, which excludes
-zero-province state templates exactly as the native roster writer does. An
-unavailable or ambiguous row remains unknown rather than becoming zero.
-
-The Military leads' Army size, Planes, Ships and Casualties columns each have
-one unavailable adapter supplying both availability and values, pending their
-shared measures. Unavailable measures cannot supply top-N membership. The table
-ranks over every identity-present country, places missing values last in either
-sort direction, and cuts requested values to top-membership spans using the shared
-ranking helper. Ranking updates ordered membership only for countries whose
-value changes; supplying read dates are merged in a forward walk only for
-returned countries. Manual country picks follow their recorded native identity
-through a tag rename. Values and supplying read dates are separate; gaps and
-identity changes end runs. Replies refuse the shared product budget rather than
-truncating. The UI sends one request for the chosen countries or top N;
-only the shared reply-size budget refuses an oversized Scoreboard response.
-No live capture or new recording field is required.
-
-## Offline product checks
-
-Raid checks name every authored type through the live product's shared type
-preparation, draw its generic icon through the shared decoder, and localise the
-native phase/outcome keys. Target names
-and building-specific icons need recorded target scopes. Nuclear type-name keys
-come from recorded `LexicalTokens`; their inventory cannot be constructed offline.
-
-Espionage checks name and draw every authored operation through shared intelligence
-preparation. Agency checks use its default name and defense-label template; numeric
-defense text needs the recorded value. Created names, rosters and operation episodes
-need their recorded rows; uncaptured upgrade definitions are not read.
-
-`content_check::check` enumerates the recorded content stack without a recording, using a catalogue collector owned by that preparation. Live catalogues retain only their existing aggregated text refusals; offline findings never join later replies. Findings keep the kind assigned by the product or content reader that creates them. The corpus does not infer kinds from diagnostic wording.
-
-`content` means cited engine parity. Native localisation recovery, including missing keys shown as bytes, cites 142230940; a missing focus description retains that live key copy and a content note. The idea description ladder can select no key (140FBAE40 / 140FC16E0), so its authored absence emits no finding. A declared iconless focus draws the content stack's executable unknown-goal sprite (1402D0890). Trigger-chosen focus icons remain unsupported because the live product does not evaluate their triggers.
-
-Country-scripted focus text, idea text and tooltip text remain unsupported in both live and offline preparation. Stability and special projects report unavailable country evaluation as `offline`, because their recorded paths pass the scope. Generated advisor names, missing offline holder templates, dynamic country identities and recorded modifier display definitions also have actual recorded variants. Authored name ambiguity remains ambiguous on recorded paths, including when no saved holder name exists. Only the offline idea-holder path defers name alternatives to the recording. Offline idea artwork skips the tag-suffixed candidate and aggregates its recorded-holder-tag dependency; portrait alternatives remain ambiguous and emit one finding per idea.
-
-Flags decode once per set/asset and share images through Arc. File refusals are reported once; an absent flag is reported once per static tag. Native header rejection is content (14122AB00 / 14122A730), while stricter port bounds checks remain refused. Medium-to-normal substitution and unavailable flag artwork have no cited display parity and remain actionable fallback findings. Country-name ladder exhaustion copies the bare tag key as `content` (142230940). Party checks exclude dynamic slots, report their recording dependency offline, and aggregate static findings by reason. The native group-name rung is cited at 14118F860 / 14118EAD0.
-
-Aggregate counts and every distinct subject's examples live in separate fields, outside diagnostic diff identity. Grouped findings retain their original reasons in those examples. Faction keys are recorded and localised through the content stack, so country-groups needs a recording to enumerate its names. Technology inventories and equipment links share one native read. Resource preparation reports one shared refusal rather than repeating the ensuing missing icon for every resource, and its live declaration cache holds only names and images.
-
-Factory checks share the product's building-group preparation: content flags determine membership and localisation names each type. Conflicting flags remain ambiguous; unnamed types keep the native localiser's token copy as `content` (142230940), while empty-group substitutions remain actionable. Country totals require the recorded factory rows.
-
-Equipment-produced, production-spending, equipment-losses, autonomy, construction and special-project checks call their products' naming, ordering and image preparation over authored inventories. The two production totals products share equipment production preparation; production-line checks load the shared icon content and draw declared generic candidates through the reply's decoder. Variant entries, country overrides, graphic-pool selection and organisation inventories require recorded rows. Recording-only products state their table and text dependencies in their check notes.
-
-Shared reads are cached once per stack, including country-tag definitions and
-ideologies. Native notes already carried by a corpus reader stay with that reader;
-product checks omit equipment, state, resource, ideology, focus, technology and
-Politics reader notes. Remaining preparation notes retain their producer kinds
-under the keys exported by `content_check::SHARED_CHECK_KEYS`: `autonomy_content`,
-`construction_content`, `production_lines_content` and `intelligence_content`.
-Construction reads states and buildings once. Both production-line products share
-icon preparation. Operations are read only for espionage checks; agency checks use
-agency-only preparation. The corpus has no separate operation reader, so its native
-notes appear once under `intelligence_content`.
+UI changes also need `npm.cmd run check:ui` and `npm.cmd run test:ui`, as described
+in [ui](../../ui/README.md). Documentation-only changes need link and diff checks.

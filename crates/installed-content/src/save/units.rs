@@ -79,6 +79,9 @@ pub struct Division {
 /// Positive-only fields retain omission, rather than inventing a zero value.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DivisionPresentation {
+    /// CArmy::Serialize140C80E00: primary+628, token3BC2 (`fuel_requested`,
+    /// native literal142AD37B0), signed fixed5, omitted exactly at zero.
+    pub fuel_requested: Option<Decimal>,
     pub path: Vec<u32>,
     /// CUnit::Serialize@140BF7010: target (0x2EDA) and alternate route (0x362C).
     pub support_attack: Option<u32>,
@@ -168,11 +171,16 @@ pub struct Fleet {
     pub id: u64,
     pub owner: Vec<u8>,
     pub home_base: Option<u32>,
+    /// Serialize@140D4A390 writes +E0 except in checksum writer mode.
+    pub name: Option<Vec<u8>>,
+    pub leader: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskForce {
     pub id: u64,
+    /// CUnit::Serialize140BF7010 writes primary+258 only when nonempty.
+    pub name: Option<Vec<u8>>,
     pub fleet: u64,
     pub roster_owner: Vec<u8>,
     pub logical_owner: Vec<u8>,
@@ -454,6 +462,7 @@ pub(super) fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<
         organisation: Decimal::parse(&required_bytes(items, b"organisation")?)?,
         country_intel: country_intel(items)?,
         presentation: DivisionPresentation {
+            fuel_requested: decimal(items, b"fuel_requested")?,
             path: integer_list(items, b"path")?,
             support_attack: bytes(items, b"support_attack")?
                 .map(|value| integer(&value))
@@ -577,6 +586,8 @@ pub(super) fn parse_fleet(owner: &[u8], items: &[Item]) -> io::Result<Fleet> {
     Ok(Fleet {
         id: object_id(items)?,
         owner: owner.to_vec(),
+        name: bytes(items, b"name")?,
+        leader: field(items, b"leader")?.map(typed_handle).transpose()?,
         home_base: field(items, b"home_base")?
             .map(|value| integer(scalar(value)?))
             .transpose()?,
@@ -586,6 +597,7 @@ pub(super) fn parse_fleet(owner: &[u8], items: &[Item]) -> io::Result<Fleet> {
 pub(super) fn parse_task_force(owner: &[u8], fleet: u64, items: &[Item]) -> io::Result<TaskForce> {
     Ok(TaskForce {
         id: object_id(items)?,
+        name: bytes(items, b"name")?,
         fleet,
         roster_owner: owner.to_vec(),
         logical_owner: required_bytes(items, b"logical_country")?,

@@ -178,6 +178,7 @@ fn state_divisions_follow_native_province_and_mixed_unit_order() {
         let dlcs = std::collections::BTreeSet::new();
         let mut facts = ContentFacts::content_only(&dlcs, &fixture.triggers, &fixture.aliases);
         facts.state_provinces = &provinces;
+        facts.state_content = Ok(());
         text.set_synthetic_world(World::read(&fixture.frame, facts));
         let context = Context::new(
             &text,
@@ -1076,7 +1077,7 @@ fn operand_gaps_and_zero_reach_are_named_once_by_native_class() {
             "Politics\nideology=tip\nParty tip\n",
         ),
         (
-            "ruling_party=2 long_name=TIP",
+            "ruling_party=var:2 long_name=TIP",
             1,
             "Politics\nideology=tip\nParty tip\n",
         ),

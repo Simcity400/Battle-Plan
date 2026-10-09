@@ -2,6 +2,7 @@ import type { ReactNode, SVGProps } from 'react';
 
 // One outline family: 24px grid, 1.75 stroke, round caps and joins.
 const paths = {
+  plane: <path d="m21 12-7-3V4a2 2 0 0 0-4 0v5l-7 3v2l7-1v5l-2 2v1l4-1 4 1v-1l-2-2v-5l7 1v-2Z" />,
   map: <><path d="M9 4 3.5 6v14L9 18l6 2 5.5-2V4L15 6 9 4Z" /><path d="M9 4v14M15 6v14" /></>,
   globe: <><circle cx="12" cy="12" r="8.75" /><path d="M3.5 12h17" /><path d="M12 3.25c2.4 2.4 3.6 5.3 3.6 8.75s-1.2 6.35-3.6 8.75c-2.4-2.4-3.6-5.3-3.6-8.75S9.6 5.65 12 3.25Z" /></>,
   grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.75" /><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5" /><rect x="13.5" y="11" width="7" height="9.5" rx="1.75" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.75" /></>,

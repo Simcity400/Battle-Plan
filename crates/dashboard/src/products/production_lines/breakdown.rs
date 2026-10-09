@@ -1,0 +1,1198 @@
+//! Production hover formulas. A current factory cache cannot identify all past
+//! growth, switches and assignments; those remain a reconciled residual rather
+//! than attributing today's modifiers to yesterday's efficiency.
+use super::*;
+use replay::fixed_point::{fixed5_to_q15, q15_to_fixed5};
+use replay::rows::{
+    CountryProductionModifiersRow, ProductionLineModifiersRow, ProductionModifierTree,
+};
+
+const FACTORS: &[(&str, &str)] = &[
+    ("efficiency", "Stored factory efficiency"),
+    ("start", "Starting efficiency"),
+    ("cap", "Efficiency cap"),
+    ("gain", "Efficiency growth coefficient"),
+    ("daily", "Native daily efficiency increase"),
+    ("retention-0", "Variant switch retention"),
+    ("retention-1", "Parent switch retention"),
+    ("retention-2", "Family switch retention"),
+    ("retention-3", "Archetype switch retention"),
+    ("output", "Recorded daily production IC"),
+    ("power", "Effective powered-factory fraction"),
+    ("resources", "Resource output factor"),
+    ("conversion", "Conversion speed parameter"),
+    ("refit", "Refit speed parameter"),
+];
+
+/// Country trees are owned once per changed country read, shared by its lines.
+/// Presentation is projected only for a requested window or one factor history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawModifierRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub country: Arc<CountryProductionModifiersRow>,
+    pub line: ProductionLineModifiersRow,
+    pub run: RawRun,
+    pub organisation: Option<String>,
+    pub localisation: Option<Arc<installed_content::localisation::Localisation>>,
+    pub recorded_language: Arc<str>,
+}
+impl RawModifierRun {
+    pub fn project(&self, selected: Option<&str>) -> ProductionModifierRun {
+        let mut run = at(self, selected);
+        run.last_hour = self.last_hour;
+        run
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionModifierPart {
+    pub id: String,
+    pub label: Option<String>,
+    pub raw: String,
+    pub unknown: Option<String>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionModifierGroup {
+    pub id: String,
+    pub label: String,
+    /// Exact sum of the displayed signed parts; null when an operand failed.
+    pub total_raw: Option<String>,
+    pub decimals: u8,
+    pub unit: String,
+    pub parts: Vec<ProductionModifierPart>,
+    pub note: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionModifierRun {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub groups: Vec<ProductionModifierGroup>,
+    pub warnings: Vec<String>,
+}
+
+fn part(id: impl Into<String>, label: impl Into<String>, raw: i64) -> ProductionModifierPart {
+    ProductionModifierPart {
+        id: id.into(),
+        label: Some(label.into()),
+        raw: raw.to_string(),
+        unknown: None,
+    }
+}
+fn residual(parts: &mut Vec<ProductionModifierPart>, total: i64, reason: &str) {
+    let sum = parts
+        .iter()
+        .map(|part| {
+            part.raw
+                .parse::<i128>()
+                .expect("native integer or presentation residual")
+        })
+        .sum::<i128>();
+    let value = i128::from(total) - sum;
+    if value != 0 || parts.is_empty() {
+        parts.push(ProductionModifierPart {
+            id: "other".into(),
+            label: None,
+            raw: value.to_string(),
+            unknown: Some(reason.into()),
+        });
+    }
+}
+fn group(
+    id: &str,
+    total: Option<i64>,
+    mut parts: Vec<ProductionModifierPart>,
+    unit: &str,
+    note: &str,
+) -> ProductionModifierGroup {
+    if let Some(total) = total {
+        residual(
+            &mut parts,
+            total,
+            "Native clamp, rounding, retained state or an unidentified contribution",
+        );
+    }
+    let label = FACTORS
+        .iter()
+        .find(|(factor, _)| *factor == id)
+        .expect("production factor")
+        .1;
+    ProductionModifierGroup {
+        id: id.into(),
+        label: label.into(),
+        total_raw: total.map(|value| value.to_string()),
+        decimals: 5,
+        unit: unit.into(),
+        parts,
+        note: note.into(),
+    }
+}
+fn tree(country: &CountryProductionModifiersRow, key: u32) -> Option<&ProductionModifierTree> {
+    country
+        .trees
+        .binary_search_by_key(&key, |tree| tree.key)
+        .ok()
+        .map(|index| &country.trees[index])
+}
+fn value(country: &CountryProductionModifiersRow, key: u32) -> Option<i64> {
+    let tree = tree(country, key)?;
+    tree.failure
+        .is_empty()
+        .then(|| tree.nodes.first().map(|node| node.value))
+        .flatten()
+}
+fn subtree_end(nodes: &[replay::rows::ModifierBreakdownNode], start: usize) -> usize {
+    let mut pending = 1_usize;
+    let mut end = start;
+    while pending != 0 && end < nodes.len() {
+        pending = pending - 1 + nodes[end].children as usize;
+        end += 1;
+    }
+    end
+}
+/// The native 14054D0F0 depth selects rows without double counting interiors.
+/// Exact selectable rows retain zeros and aliases; modifier_text::breakdown
+/// instead suppresses zero text. Both use the same captured preorder tree.
+fn sources(
+    country: &CountryProductionModifiersRow,
+    key: u32,
+    depth: i32,
+    scale: impl Fn(i64) -> i64,
+    localisation: Option<&installed_content::localisation::Localisation>,
+    recorded_language: &str,
+    warnings: &mut BTreeSet<String>,
+) -> Vec<ProductionModifierPart> {
+    let Some(tree) = tree(country, key) else {
+        warnings.insert(format!("Modifier key {key:#x} was not recorded"));
+        return Vec::new();
+    };
+    if !tree.failure.is_empty() {
+        warnings.insert(format!(
+            "Modifier key {key:#x}: {}",
+            String::from_utf8_lossy(&tree.failure)
+        ));
+        return Vec::new();
+    }
+    let mut result = Vec::new();
+    let mut occurrences = BTreeMap::<Vec<u8>, usize>::new();
+    let mut pending = vec![(0_usize, depth)];
+    while let Some((index, depth)) = pending.pop() {
+        let Some(node) = tree.nodes.get(index) else {
+            continue;
+        };
+        if depth == 0 || node.children == 0 {
+            let label = localisation
+                .ok_or_else(|| "Native source label has no localisation context".to_owned())
+                .and_then(|localisation| {
+                    crate::scripted_text::stored_text(
+                        localisation,
+                        recorded_language,
+                        &node.name,
+                        "production modifier source",
+                    )
+                })
+                .and_then(|text| catalogue::display_text(text.as_bytes()))
+                .and_then(|label| {
+                    if label.is_empty() || label.contains('$') || label.contains('[') {
+                        Err("Native source label is empty or needs scripted expansion".to_owned())
+                    } else {
+                        Ok(label)
+                    }
+                });
+            let (label, unknown) = match label {
+                Ok(label) => (Some(label), None),
+                Err(reason) => (None, Some(reason)),
+            };
+            if let Some(reason) = &unknown {
+                warnings.insert(format!("Modifier key {key:#x}, source {index}: {reason}"));
+            }
+            let occurrence = occurrences.entry(node.name.clone()).or_default();
+            *occurrence += 1;
+            let identity = std::str::from_utf8(&node.name)
+                .map(|name| format!("text:{name}"))
+                .unwrap_or_else(|_| format!("bytes:{:?}", node.name));
+            result.push(ProductionModifierPart {
+                id: format!("{key:x}/{identity}#{occurrence}"),
+                label,
+                raw: scale(node.value).to_string(),
+                unknown,
+            });
+        } else {
+            let mut children = Vec::with_capacity(node.children as usize);
+            let mut child = index + 1;
+            for _ in 0..node.children {
+                children.push((child, depth.wrapping_sub(1)));
+                child = subtree_end(&tree.nodes, child);
+            }
+            pending.extend(children.into_iter().rev());
+        }
+    }
+    result
+}
+fn percent(value: i64) -> i64 {
+    value.wrapping_mul(100)
+}
+fn multiply(a: i64, b: i64, denominator: i64) -> Option<i64> {
+    a.wrapping_mul(b).checked_div(denominator)
+}
+
+/// FactoryEfficiencyGain141921EE0, including the native fixed5/Q15 roundings.
+fn factory_gain(current: i64, cap: i64, gain: i64, balance: i64) -> Option<i64> {
+    if balance <= 0 || current == 0 {
+        return Some(0);
+    }
+    let numerator = ((cap.wrapping_mul(cap) >> 15).wrapping_mul(gain)) >> 15;
+    let denominator = ((current.wrapping_mul(0x13880000) >> 15).wrapping_mul(balance)) >> 15;
+    numerator.wrapping_shl(15).checked_div(denominator)
+}
+/// The tooltip141921160 averages clamped *per-factory* gains over active,
+/// even when the maximum admits fewer factories. It does not grow the average.
+fn daily_gain(
+    line: &ProductionLineModifiersRow,
+    run: &RawRun,
+    start: i64,
+    cap: i64,
+    gain: i64,
+    balance: i64,
+) -> Option<i64> {
+    let count = run.active_factories.min(run.max_factories).max(0) as usize;
+    if line.factory_efficiencies.len() < count {
+        return None;
+    }
+    let mut sum = 0_i64;
+    for &current in &line.factory_efficiencies[..count] {
+        let next = current.wrapping_add(factory_gain(current, cap, gain, balance)?);
+        let next = if next < start {
+            start
+        } else if next > cap {
+            cap
+        } else {
+            next
+        };
+        sum = sum.wrapping_add(next.wrapping_sub(current));
+    }
+    if run.active_factories == 0 {
+        Some(0)
+    } else {
+        sum.wrapping_shl(15)
+            .checked_div(i64::from(run.active_factories).wrapping_shl(15))
+    }
+}
+/// EffectivePoweredFraction1415B7D10 and BaseFactorySpeed1415B7AB0/C60.
+fn factory_speed(
+    country: &CountryProductionModifiersRow,
+    power_modifier: i64,
+    naval: bool,
+) -> Option<i64> {
+    let power = multiply(
+        power_modifier.wrapping_add(100000),
+        country.power_raw,
+        100000,
+    )?
+    .max(0);
+    let [unpowered, powered] = if naval {
+        [country.factory_speed[2], country.factory_speed[3]]
+    } else {
+        [country.factory_speed[0], country.factory_speed[1]]
+    };
+    Some(unpowered.wrapping_add(multiply(power, powered.wrapping_sub(unpowered), 100000)?))
+}
+fn output_base(
+    country: &CountryProductionModifiersRow,
+    line: &ProductionLineModifiersRow,
+    run: &RawRun,
+) -> Option<i64> {
+    let base = factory_speed(country, value(country, 0xa8)?, line.naval_output)?;
+    // 141922E00 scales IC by active factories, while efficiency_average alone
+    // clamps its cache lookup to the virtual maximum.
+    let factories = run.active_factories;
+    let speed = multiply(i64::from(factories).wrapping_mul(100000), base, 100000)?;
+    let speed = multiply(
+        speed,
+        line.resource_penalty_raw.wrapping_add(100000),
+        100000,
+    )?;
+    let efficiency = multiply(q15_to_fixed5(run.efficiency_raw), 1000, 100000)?;
+    multiply(speed, efficiency, 100000)
+}
+
+fn at(raw: &RawModifierRun, selected: Option<&str>) -> ProductionModifierRun {
+    let hour = raw.first_hour;
+    let country = &raw.country;
+    let line = &raw.line;
+    let run = &raw.run;
+    let organisation = raw.organisation.as_deref();
+    let localisation = raw.localisation.as_deref();
+    let recorded_language = raw.recorded_language.as_ref();
+    let mut warnings = BTreeSet::new();
+    let wants = |id: &str| selected.is_none_or(|selected| selected == id);
+    let mut groups = Vec::new();
+    let mio_part = |raw: i64| ProductionModifierPart {
+        id: format!("mio/{}", line.organisation),
+        label: if line.organisation == 0 {
+            Some("No organisation".into())
+        } else {
+            organisation.map(str::to_owned)
+        },
+        raw: raw.to_string(),
+        unknown: (line.organisation != 0 && organisation.is_none())
+            .then(|| "Recorded content does not name this organisation".into()),
+    };
+    if line.organisation != 0 && organisation.is_none() {
+        warnings.insert(format!(
+            "Organisation {} has no recorded content name",
+            line.organisation
+        ));
+    }
+    if line.organisation_dirty {
+        warnings.insert(
+            "Organisation bonuses were pending refresh at this read; retained values are shown"
+                .into(),
+        );
+    }
+    if line.licensed && wants("output") {
+        // LicenceSpeed1414260B0 selects importer country and exporter-specific
+        // +10 accumulators, archetype keys, year and faction penalties. Their
+        // complete supplying pack is absent, so no country-only approximation.
+        warnings.insert("Licence output source attribution lacks exporter-specific accumulator, year and faction operands; its exact difference is Other / not identified".into());
+    }
+    if run.max_factories < 0 {
+        warnings.insert("Native maximum factory count is negative".into());
+    }
+    let start = if line.naval_efficiency {
+        Some(10000000)
+    } else {
+        value(country, 0xab).map(|value| {
+            percent(value).wrapping_add(i64::from(country.base_start).wrapping_mul(100000))
+        })
+    };
+    let cap = if line.naval_efficiency {
+        Some(10000000)
+    } else {
+        value(country, 0xa9).map(|value| {
+            percent(value)
+                .wrapping_add(i64::from(country.base_cap).wrapping_mul(100000))
+                .wrapping_add(percent(line.bonuses[2]))
+                .max(0)
+        })
+    };
+    if wants("efficiency") {
+        let mut current_parts = Vec::new();
+        if let Some(start) = start {
+            current_parts.push(part(
+                "start",
+                "Current starting-efficiency parameter",
+                start,
+            ));
+        }
+        let current = q15_to_fixed5(run.efficiency_raw);
+        residual(
+            &mut current_parts,
+            current,
+            "Historical growth, switching retention and factory assignments are not individually recorded",
+        );
+        if current_parts.iter().all(|part| part.id != "other") {
+            current_parts.push(ProductionModifierPart { id: "other".into(), label: None, raw: "0".into(),
+            unknown: Some("Historical growth and switching may cancel; individual causes are not recorded".into()) });
+        }
+        groups.push(group("efficiency", Some(current), current_parts, "%",
+        "The native average of the admitted factory caches. Current source parameters below do not identify the causes of all past growth or switches."));
+    }
+    if wants("start") {
+        let start_parts = if line.naval_efficiency {
+            vec![part("naval", "Native naval efficiency", 10000000)]
+        } else {
+            let mut parts = vec![part(
+                "base",
+                "Base starting efficiency",
+                i64::from(country.base_start).wrapping_mul(100000),
+            )];
+            parts.extend(sources(
+                country,
+                0xab,
+                -1,
+                percent,
+                localisation,
+                recorded_language,
+                &mut warnings,
+            ));
+            parts
+        };
+        groups.push(group(
+            "start",
+            start,
+            start_parts,
+            "%",
+            "Applied to new factory caches; a current parameter, not the line's original value.",
+        ));
+    }
+    if wants("cap") {
+        let cap_parts = if line.naval_efficiency {
+            vec![part("naval", "Native naval efficiency", 10000000)]
+        } else {
+            let mut parts = vec![part(
+                "base",
+                "Base efficiency cap",
+                i64::from(country.base_cap).wrapping_mul(100000),
+            )];
+            parts.extend(sources(
+                country,
+                0xa9,
+                -1,
+                percent,
+                localisation,
+                recorded_language,
+                &mut warnings,
+            ));
+            parts.push(mio_part(percent(line.bonuses[2])));
+            parts
+        };
+        groups.push(group(
+            "cap",
+            cap,
+            cap_parts,
+            "%",
+            "The native cap clamps the sum at zero; naval types use the native fixed cap.",
+        ));
+    }
+    let gain = value(country, 0xaa).map(|country_gain| {
+        fixed5_to_q15(country.gain_raw)
+            .wrapping_add(fixed5_to_q15(country_gain))
+            .wrapping_add(fixed5_to_q15(line.resource_penalty_raw))
+            .wrapping_add(fixed5_to_q15(line.bonuses[3]))
+    });
+    if wants("gain") {
+        let mut gain_parts = vec![part(
+            "base",
+            "Base efficiency gain",
+            percent(q15_to_fixed5(fixed5_to_q15(country.gain_raw))),
+        )];
+        // Growth tooltip141921160 passes native depth -1 (style argument 2).
+        gain_parts.extend(sources(
+            country,
+            0xaa,
+            -1,
+            |value| percent(q15_to_fixed5(fixed5_to_q15(value))),
+            localisation,
+            recorded_language,
+            &mut warnings,
+        ));
+        gain_parts.push(part(
+            "resources",
+            "Resource penalty",
+            percent(q15_to_fixed5(fixed5_to_q15(line.resource_penalty_raw))),
+        ));
+        gain_parts.push(mio_part(percent(q15_to_fixed5(fixed5_to_q15(
+            line.bonuses[3],
+        )))));
+        groups.push(group("gain", gain.map(|value| percent(q15_to_fixed5(value))), gain_parts, "%",
+        "Growth also depends on each admitted factory's current efficiency, cap and the recorded balance factor; it is not an additive increase in the displayed efficiency."));
+    }
+    if wants("daily") {
+        let daily = start
+            .zip(cap)
+            .zip(gain)
+            .and_then(|((start, cap), gain)| {
+                daily_gain(
+                    line,
+                    run,
+                    fixed5_to_q15(start),
+                    fixed5_to_q15(cap),
+                    gain,
+                    fixed5_to_q15(country.balance_raw),
+                )
+            })
+            .map(q15_to_fixed5);
+        groups.push(group("daily", daily, daily.map(|value| vec![part("native", "Per-factory growth and clamp", value)]).unwrap_or_default(), "%",
+        "Ported per-factory tooltip calculation; summed admitted gains are divided by the active factory count."));
+    }
+    for index in 0..country.retention.len() {
+        let id = format!("retention-{index}");
+        if !wants(&id) {
+            continue;
+        }
+        let base = country.retention[index];
+        let retained = value(country, 0xa5)
+            .and_then(|modifier| {
+                multiply(
+                    100000_i64.wrapping_sub(modifier).max(0),
+                    100000_i64.wrapping_sub(base),
+                    100000,
+                )
+            })
+            .map(|loss| percent(100000_i64.wrapping_sub(loss)));
+        let mut parts = vec![part("base", "Base switch retention", percent(base))];
+        // Source contributions explain the country retention parameter, not a
+        // switch that may not have occurred. The nonlinear clamp is reconciled.
+        parts.extend(sources(
+            country,
+            0xa5,
+            -1,
+            |modifier| multiply(modifier, 100000_i64.wrapping_sub(base), 1000).unwrap_or(0),
+            localisation,
+            recorded_language,
+            &mut warnings,
+        ));
+        groups.push(group(&id, retained, parts, "%",
+            "Current native switch parameter. Actual switch family, module compatibility and intermediate switches are not inferred from daily reads."));
+    }
+    if wants("output") {
+        let base = output_base(country, line, run);
+        let mut output_parts = base
+            .map(|value| {
+                vec![part(
+                    "base",
+                    "Factories × powered IC × resources × stored efficiency",
+                    value,
+                )]
+            })
+            .unwrap_or_default();
+        if let Some(base) = base {
+            let key = if line.naval_output { 0xd6 } else { 0xd4 };
+            // Output formatter1415B76F0, refit141922160 and conversion141920D40
+            // use native depth 1. The full recorded trees retain deeper operands.
+            output_parts.extend(sources(
+                country,
+                key,
+                1,
+                |modifier| multiply(base, modifier, 100000).unwrap_or(0),
+                localisation,
+                recorded_language,
+                &mut warnings,
+            ));
+            if country.power_raw > 99999 {
+                output_parts.extend(sources(
+                    country,
+                    key + 1,
+                    1,
+                    |modifier| multiply(base, modifier, 100000).unwrap_or(0),
+                    localisation,
+                    recorded_language,
+                    &mut warnings,
+                ));
+            } else if let Some(modifier) = value(country, key).filter(|value| *value > 0)
+                && let Some(power) = value(country, 0xa8)
+                    .and_then(|modifier| {
+                        multiply(modifier.wrapping_add(100000), country.power_raw, 100000)
+                    })
+                    .map(|value| value.max(0))
+            {
+                // 1415B7D6C calls NegateInt64Into1424DA720 (NEG RDX); the
+                // military/naval callers1415B79B0/B60 add this negative return.
+                let adjustment = multiply(
+                    100000_i64.wrapping_sub(power),
+                    modifier.wrapping_neg(),
+                    100000,
+                )
+                .and_then(|value| multiply(base, value, 100000));
+                if let Some(value) = adjustment {
+                    output_parts.push(part(
+                        "power-adjustment",
+                        "Native partial-power output adjustment",
+                        value,
+                    ));
+                }
+            }
+            output_parts.push(mio_part(
+                multiply(base, line.bonuses[1], 100000).unwrap_or(0),
+            ));
+            if line.refit_output {
+                output_parts.extend(sources(
+                    country,
+                    0x1d5,
+                    1,
+                    |modifier| multiply(base, modifier, 100000).unwrap_or(0),
+                    localisation,
+                    recorded_language,
+                    &mut warnings,
+                ));
+            }
+            if line.conversion_output {
+                output_parts.push(part(
+                    "conversion-base",
+                    "Base conversion bonus",
+                    multiply(base, country.conversion_raw, 100000).unwrap_or(0),
+                ));
+                output_parts.extend(sources(
+                    country,
+                    0xdc,
+                    1,
+                    |modifier| multiply(base, modifier, 100000).unwrap_or(0),
+                    localisation,
+                    recorded_language,
+                    &mut warnings,
+                ));
+                output_parts.push(mio_part(
+                    multiply(base, line.bonuses[6], 100000).unwrap_or(0),
+                ));
+                if let Some(last) = output_parts.last_mut() {
+                    last.id.push_str("/conversion");
+                }
+            }
+        }
+        residual(
+            &mut output_parts,
+            run.speed_raw,
+            "Licence, native clamp/rounding or retained speed not identified by the supplying operands",
+        );
+        if line.licensed && output_parts.iter().all(|part| part.id != "other") {
+            output_parts.push(ProductionModifierPart { id: "other".into(), label: None, raw: "0".into(),
+            unknown: Some("Licence contributor operands were not recorded, even though the net residual is zero".into()) });
+        }
+        groups.push(group("output", Some(run.speed_raw), output_parts, "IC",
+        "Parts include factory output, conversion and refit bonuses where applicable. Other / not identified reconciles licence, rounding or earlier retained state with the recorded IC rate."));
+    }
+    if wants("power") {
+        let mut power_parts = vec![part(
+            "base",
+            "Stored powered-factory fraction",
+            percent(country.power_raw),
+        )];
+        power_parts.extend(sources(
+            country,
+            0xa8,
+            -1,
+            |modifier| multiply(country.power_raw, modifier, 1000).unwrap_or(0),
+            localisation,
+            recorded_language,
+            &mut warnings,
+        ));
+        let power = value(country, 0xa8)
+            .and_then(|modifier| multiply(modifier.wrapping_add(100000), country.power_raw, 1000))
+            .map(|value| value.max(0));
+        groups.push(group("power", power, power_parts, "%", "Native powered-factory bonus and zero clamp; this factor changes the military or naval base IC rate."));
+    }
+    if wants("resources") {
+        groups.push(group("resources", Some(percent(100000_i64.wrapping_add(line.resource_penalty_raw))),
+        vec![part("base", "Base output factor", 10000000), part("resources", "Stored resource penalty", percent(line.resource_penalty_raw))], "%", "Line-local retained resource factor; also participates in the native efficiency growth coefficient."));
+    }
+    if wants("conversion") {
+        let conversion = value(country, 0xdc).map(|value| {
+            percent(
+                country
+                    .conversion_raw
+                    .wrapping_add(value)
+                    .wrapping_add(line.bonuses[6]),
+            )
+        });
+        let mut conversion_parts = vec![part(
+            "base",
+            "Base conversion bonus",
+            percent(country.conversion_raw),
+        )];
+        conversion_parts.extend(sources(
+            country,
+            0xdc,
+            1,
+            percent,
+            localisation,
+            recorded_language,
+            &mut warnings,
+        ));
+        conversion_parts.push(mio_part(percent(line.bonuses[6])));
+        groups.push(group("conversion", conversion, conversion_parts, "%",
+        "Current conversion speed bonus. The output breakdown applies it only to equipment eligible for conversion under the recorded DLC settings."));
+    }
+    if wants("refit") {
+        let refit = value(country, 0x1d5).map(percent);
+        let refit_parts = sources(
+            country,
+            0x1d5,
+            1,
+            percent,
+            localisation,
+            recorded_language,
+            &mut warnings,
+        );
+        groups.push(group("refit", refit, refit_parts, "%",
+        "Current refit speed bonus. The output breakdown applies it only to eligible refit lines."));
+    }
+    ProductionModifierRun {
+        first_hour: hour,
+        last_hour: hour,
+        groups,
+        warnings: warnings.into_iter().collect(),
+    }
+}
+
+pub struct ProductionLineBreakdown;
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProductionBreakdownParams {
+    pub branch_id: String,
+    pub tag: String,
+    pub key: String,
+    pub group: String,
+    /// Bind the original producer at this recorded hour, then follow its native row.
+    #[serde(default)]
+    #[ts(optional)]
+    pub origin_hour: Option<i32>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+pub struct ProductionModifierChoice {
+    pub id: String,
+    pub label: String,
+}
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionLineBreakdownReply {
+    pub branch_id: String,
+    pub tag: String,
+    pub key: String,
+    pub groups: Vec<ProductionModifierChoice>,
+    pub reads: Vec<i32>,
+    pub runs: Vec<ProductionModifierRun>,
+    pub warnings: Vec<String>,
+}
+impl Product for ProductionLineBreakdown {
+    const KEY: &'static str = "production-line-breakdown";
+    const CONTENT_DEPENDENT: bool = true;
+    type Params = ProductionBreakdownParams;
+    type Reply = ProductionLineBreakdownReply;
+    fn types() -> Vec<String> {
+        vec![
+            ProductionModifierPart::decl(),
+            ProductionModifierGroup::decl(),
+            ProductionModifierRun::decl(),
+            ProductionModifierChoice::decl(),
+            ProductionBreakdownParams::decl(),
+            ProductionLineBreakdownReply::decl(),
+        ]
+    }
+    fn validate(params: &Self::Params) -> Result<(), &'static str> {
+        CountryParams {
+            branch_id: params.branch_id.clone(),
+            tag: params.tag.clone(),
+        }
+        .validate()?;
+        if params.group.is_empty() {
+            return Err("Invalid production factor");
+        }
+        let Some((handle, appearance)) = params.key.split_once('#') else {
+            return Err("Invalid production line key");
+        };
+        if handle.parse::<u64>().is_err()
+            || !appearance
+                .parse::<u32>()
+                .is_ok_and(|appearance| appearance > 0)
+        {
+            return Err("Invalid production line key");
+        }
+        Ok(())
+    }
+    fn load(
+        source: &Source,
+        params: &Self::Params,
+        context: &LoadContext,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self::Reply> {
+        let country = CountryParams {
+            branch_id: params.branch_id.clone(),
+            tag: params.tag.clone(),
+        };
+        let mut warnings = Vec::new();
+        let (_, original) =
+            scanned_lines(source, &country, None, context, cancelled, &mut warnings)?;
+        let (scanned, selected_key) = if let Some(hour) = params.origin_hour {
+            let history = super::super::country_history::branch_histories(
+                source,
+                country.branch(),
+                false,
+                &[],
+                cancelled,
+            )?;
+            let identities = history
+                .countries
+                .get(&params.tag)
+                .ok_or_else(|| crate::invalid("The original production country is not recorded"))?;
+            let identity = identities
+                .identities
+                .iter()
+                .find(|identity| identity.first_hour <= hour && hour <= identity.last_hour)
+                .ok_or_else(|| {
+                    crate::invalid(
+                        "The original production country identity is unavailable at its choice",
+                    )
+                })?;
+            let holder = (identity.slot, identity.country_id);
+            let (_, selected) = scanned_lines(
+                source,
+                &country,
+                Some(holder),
+                context,
+                cancelled,
+                &mut warnings,
+            )?;
+            // Literal-tag appearance numbers can include a previous holder's line.
+            // Match the original line's recorded runs as well as its handle.
+            let original_line = original.lines.iter().find(|line| line.key == params.key);
+            let key = if let Some(line) = original_line {
+                let mut matching = selected.lines.iter().filter(|candidate| {
+                    candidate.handle == line.handle
+                        && candidate.runs.iter().any(|run| {
+                            line.runs.iter().any(|old| {
+                                old.first_hour <= run.last_hour && run.first_hour <= old.last_hour
+                            })
+                        })
+                });
+                let first = matching.next();
+                if matching.next().is_some() {
+                    return Err(crate::invalid(
+                        "Conflicting appearances for the original production line",
+                    ));
+                }
+                first.map(|line| line.key.clone())
+            } else {
+                None
+            };
+            (selected, key)
+        } else {
+            (original, Some(params.key.clone()))
+        };
+        let raw = selected_key
+            .as_ref()
+            .and_then(|key| scanned.modifiers.get(key))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let reads = raw.iter().map(|run| run.first_hour).collect();
+        let groups: Vec<ProductionModifierChoice> = if raw.is_empty() {
+            Vec::new()
+        } else {
+            FACTORS
+                .iter()
+                .map(|(id, label)| ProductionModifierChoice {
+                    id: (*id).into(),
+                    label: (*label).into(),
+                })
+                .collect()
+        };
+        if !raw.is_empty() && !groups.iter().any(|group| group.id == params.group) {
+            return Err(crate::invalid("Unknown production factor"));
+        }
+        let mut runs: Vec<ProductionModifierRun> = Vec::new();
+        for raw in raw {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(cancelled_error());
+            }
+            let value = raw.project(Some(&params.group));
+            match runs.last_mut() {
+                Some(last)
+                    if last.last_hour.checked_add(1) == Some(value.first_hour)
+                        && last.groups == value.groups
+                        && last.warnings == value.warnings =>
+                {
+                    last.last_hour = value.last_hour
+                }
+                _ => runs.push(value),
+            }
+        }
+        if runs.is_empty() {
+            warnings.push("Production modifier inputs were not recorded for this line".into());
+        }
+        bounded(
+            ProductionLineBreakdownReply {
+                branch_id: params.branch_id.clone(),
+                tag: params.tag.clone(),
+                key: params.key.clone(),
+                groups,
+                reads,
+                runs,
+                warnings,
+            },
+            "This production line's modifier history",
+            "its full breakdown cannot be shown.",
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn clamped_growth_is_averaged_over_active_not_admitted_factories() {
+        let line = ProductionLineModifiersRow {
+            factory_efficiencies: vec![3276800, 1638400],
+            ..Default::default()
+        };
+        let run = RawRun {
+            active_factories: 4,
+            max_factories: 2,
+            ..Default::default()
+        };
+        let first = factory_gain(3276800, 3276800, 32768, 32768).unwrap();
+        let second = factory_gain(1638400, 3276800, 32768, 32768).unwrap();
+        assert!(first > 0);
+        assert_eq!(
+            daily_gain(&line, &run, 0, 3276800, 32768, 32768),
+            Some(second / 4)
+        );
+    }
+    #[test]
+    fn signed_residual_reconciles_without_discarding_corrections() {
+        let mut parts = vec![part("source", "Source", 120)];
+        residual(&mut parts, 100, "unidentified");
+        assert_eq!(parts[1].raw, "-20");
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part.raw.parse::<i64>().unwrap())
+                .sum::<i64>(),
+            100
+        );
+    }
+    #[test]
+    fn presentation_residual_reconciles_the_wide_signed_sum_without_native_wrapping() {
+        let mut parts = vec![
+            part("first", "First source", i64::MAX),
+            part("second", "Second source", 1),
+        ];
+        residual(&mut parts, i64::MIN, "unidentified");
+        assert_eq!(parts.last().unwrap().raw, "-18446744073709551616");
+        assert_eq!(
+            parts
+                .iter()
+                .map(|part| part.raw.parse::<i128>().unwrap())
+                .sum::<i128>(),
+            i128::from(i64::MIN)
+        );
+    }
+    #[test]
+    fn selected_history_does_not_expand_or_warn_about_unrelated_modifier_roots() {
+        let raw = RawModifierRun {
+            first_hour: 0,
+            last_hour: 23,
+            country: Arc::new(CountryProductionModifiersRow {
+                trees: vec![ProductionModifierTree {
+                    key: 0xa9,
+                    failure: b"synthetic unrelated cap failure".to_vec(),
+                    nodes: vec![],
+                }],
+                ..Default::default()
+            }),
+            line: ProductionLineModifiersRow::default(),
+            run: RawRun::default(),
+            organisation: None,
+            localisation: None,
+            recorded_language: "english".into(),
+        };
+        let projected = raw.project(Some("resources"));
+        assert_eq!(
+            projected
+                .groups
+                .iter()
+                .map(|group| group.id.as_str())
+                .collect::<Vec<_>>(),
+            ["resources"]
+        );
+        assert!(projected.warnings.is_empty());
+        assert_eq!(projected.last_hour, 23);
+    }
+    #[test]
+    fn military_and_naval_partial_power_remove_the_unpowered_bonus_without_a_residual() {
+        use replay::rows::ModifierBreakdownNode as Node;
+        for (naval, base, adjustment, speed) in [
+            (false, 300000, -30000, 330000),
+            (true, 800000, -80000, 880000),
+        ] {
+            let output_key = if naval { 0xd6 } else { 0xd4 };
+            let trees = [0xa8, 0xd4, 0xd6]
+                .into_iter()
+                .map(|key| ProductionModifierTree {
+                    key,
+                    failure: vec![],
+                    nodes: vec![Node {
+                        children: 0,
+                        value: if key == output_key { 20000 } else { 0 },
+                        name: b"Synthetic source".to_vec(),
+                    }],
+                })
+                .collect();
+            let country = CountryProductionModifiersRow {
+                power_raw: 50000,
+                base_cap: 100,
+                factory_speed: [200000, 400000, 600000, 1000000],
+                trees,
+                ..Default::default()
+            };
+            let line = ProductionLineModifiersRow {
+                naval_output: naval,
+                factory_efficiencies: vec![3276800],
+                ..Default::default()
+            };
+            let run = RawRun {
+                active_factories: 1,
+                max_factories: 1,
+                efficiency_raw: 3276800,
+                speed_raw: speed,
+                ..Default::default()
+            };
+            let groups = RawModifierRun {
+                first_hour: 0,
+                last_hour: 0,
+                country: Arc::new(country),
+                line,
+                run,
+                organisation: None,
+                localisation: None,
+                recorded_language: "english".into(),
+            }
+            .project(Some("output"))
+            .groups;
+            let output = groups.iter().find(|group| group.id == "output").unwrap();
+            assert_eq!(
+                output
+                    .parts
+                    .iter()
+                    .find(|part| part.id == "base")
+                    .unwrap()
+                    .raw,
+                base.to_string()
+            );
+            assert_eq!(
+                output
+                    .parts
+                    .iter()
+                    .find(|part| part.id == "power-adjustment")
+                    .unwrap()
+                    .raw,
+                adjustment.to_string()
+            );
+            assert!(output.parts.iter().all(|part| part.id != "other"));
+            assert_eq!(output.total_raw, Some(speed.to_string()));
+        }
+    }
+    #[test]
+    fn formatter_depth_preserves_aliases_zeros_and_ignores_nonzero_interior_totals() {
+        use replay::rows::ModifierBreakdownNode as Node;
+        let country = CountryProductionModifiersRow {
+            trees: vec![ProductionModifierTree {
+                key: 0xa9,
+                failure: vec![],
+                nodes: vec![
+                    Node {
+                        children: 2,
+                        value: 9,
+                        name: b"root".to_vec(),
+                    },
+                    Node {
+                        children: 1,
+                        value: 7,
+                        name: b"interior".to_vec(),
+                    },
+                    Node {
+                        children: 0,
+                        value: -2,
+                        name: b"alias".to_vec(),
+                    },
+                    Node {
+                        children: 0,
+                        value: 0,
+                        name: b"alias".to_vec(),
+                    },
+                ],
+            }],
+            ..Default::default()
+        };
+        let mut localisation = installed_content::localisation::Localisation::default();
+        localisation.language = "english".into();
+        let parts = sources(
+            &country,
+            0xa9,
+            2,
+            |value| value,
+            Some(&localisation),
+            "english",
+            &mut BTreeSet::new(),
+        );
+        assert_eq!(parts.len(), 2);
+        assert_ne!(parts[0].id, parts[1].id);
+        assert_eq!((parts[0].raw.as_str(), parts[1].raw.as_str()), ("-2", "0"));
+        let mut parts = parts;
+        residual(&mut parts, 9, "native nonlinear total");
+        assert_eq!(parts.last().unwrap().raw, "11");
+    }
+    #[test]
+    fn source_labels_share_the_recorded_text_guard_without_refusing_exact_amounts() {
+        use replay::rows::ModifierBreakdownNode as Node;
+        let mut country = CountryProductionModifiersRow {
+            trees: vec![ProductionModifierTree {
+                key: 0xa9,
+                failure: vec![],
+                nodes: vec![Node {
+                    children: 0,
+                    value: -2,
+                    name: b"Synthetic spirit".to_vec(),
+                }],
+            }],
+            ..Default::default()
+        };
+        let mut english = installed_content::localisation::Localisation::default();
+        english.language = "english".into();
+        let mut german = installed_content::localisation::Localisation::default();
+        german.language = "german".into();
+        let mut warnings = BTreeSet::new();
+        let rows = sources(
+            &country,
+            0xa9,
+            -1,
+            |value| value,
+            Some(&english),
+            "english",
+            &mut warnings,
+        );
+        assert_eq!(rows[0].label.as_deref(), Some("Synthetic spirit"));
+        assert_eq!(rows[0].raw, "-2");
+        assert!(warnings.is_empty());
+        let expected = crate::scripted_text::stored_text(
+            &german,
+            "english",
+            b"Synthetic spirit",
+            "production modifier source",
+        )
+        .unwrap_err();
+        let rows = sources(
+            &country,
+            0xa9,
+            -1,
+            |value| value,
+            Some(&german),
+            "english",
+            &mut warnings,
+        );
+        assert_eq!(rows[0].unknown.as_deref(), Some(expected.as_str()));
+        assert_eq!(rows[0].raw, "-2");
+        assert!(rows[0].label.is_none());
+        assert!(warnings.iter().any(|warning| warning.contains(&expected)));
+        country.trees[0].nodes[0].name = vec![0xff];
+        let rows = sources(
+            &country,
+            0xa9,
+            -1,
+            |value| value,
+            Some(&english),
+            "english",
+            &mut warnings,
+        );
+        assert_eq!(
+            rows[0].unknown.as_deref(),
+            Some("production modifier source is not UTF-8")
+        );
+        assert_eq!(rows[0].raw, "-2");
+        let rows = sources(
+            &country,
+            0xa9,
+            -1,
+            |value| value,
+            None,
+            "english",
+            &mut warnings,
+        );
+        assert_eq!(
+            rows[0].unknown.as_deref(),
+            Some("Native source label has no localisation context")
+        );
+    }
+}

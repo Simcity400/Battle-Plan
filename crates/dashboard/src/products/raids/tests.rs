@@ -5,6 +5,106 @@ use replay::{
     rows::{CountryAppearanceRow, LexicalTokenRow, RaidCountryRow, RaidTargetRow, TableRows},
 };
 
+#[test]
+fn raids_tally_counts_follow_native_holder_through_renames_and_reused_tags() {
+    let first = frame(
+        100,
+        vec![raid(1, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE)],
+    );
+    let mut renamed = frame(
+        101,
+        vec![raid(1, native::PHASE_IN_PROGRESS, native::OUTCOME_NONE)],
+    );
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *renamed.tables[TableId::Countries.index()]
+    {
+        rows[0].tag = b"alias".to_vec();
+    }
+    let mut reused = renamed.clone();
+    reused.hour = 102;
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *reused.tables[TableId::Countries.index()]
+    {
+        rows.push(replay::rows::CountryRow {
+            id: 22,
+            canonical_slot: 8,
+            tag: b"GER".to_vec(),
+            ..Default::default()
+        });
+        rows.sort_by_key(|row| row.id);
+    }
+    if let TableView::Complete(TableRows::CountryLinks(rows)) =
+        &mut *reused.tables[TableId::CountryLinks.index()]
+    {
+        rows.push(replay::rows::CountryLinkRow {
+            id: 22,
+            canonical_slot: 8,
+        });
+        rows.sort_by_key(|row| row.id);
+    }
+    if let TableView::Complete(TableRows::RaidCountries(rows)) =
+        &mut *reused.tables[TableId::RaidCountries.index()]
+    {
+        rows.push(RaidCountryRow {
+            canonical_slot: 8,
+            country: 22,
+            eligible_types: vec![50],
+            ..Default::default()
+        });
+    }
+    let replay = crate::test_fixtures::replay(vec![first, renamed, reused]);
+    let result = scan(&replay, 1, None, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        result.series["alias"][0].launched, 1,
+        "rename keeps the original holder's observed launch"
+    );
+    assert_eq!(
+        result.series["GER"].last().unwrap().launched,
+        0,
+        "a different holder never inherits the tag's count"
+    );
+    let histories =
+        country_history::scan_histories(&replay, 1, false, &[], &AtomicBool::new(false)).unwrap();
+    let projected = selected_series_with_histories(
+        &result,
+        &tally_params(vec!["GER".into()], None),
+        &AtomicBool::new(false),
+        Some(&histories),
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        projected
+            .iter()
+            .find(|series| series.tag == "GER")
+            .unwrap()
+            .identities
+            .as_ref()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        projected
+            .iter()
+            .find(|series| series.tag == "alias")
+            .unwrap()
+            .runs[0]
+            .launched,
+        1
+    );
+    assert!(
+        selected_series_with_histories(
+            &result,
+            &tally_params(vec!["GER".into()], None),
+            &AtomicBool::new(false),
+            Some(&histories),
+            MAX_PRODUCT_REPLY_BYTES
+        )
+        .is_err()
+    );
+}
+
 fn raid(id: u32, phase: i32, outcome: i32) -> RaidRow {
     RaidRow {
         id,
@@ -1349,6 +1449,8 @@ fn raids_link_tags_keep_balance_reads_and_follow_identity_changes_without_bridgi
     ] {
         scan.observe(&observed, None).unwrap();
     }
+    assert_eq!(scan.counted_launch.len(), 1);
+    assert_eq!(scan.tallies.get(&(7, 9001)), Some(&(1, 0)));
     let result = scan.finish();
     assert_eq!(result.read_hours, [100, 101, 102, 103, 106]);
     assert_eq!(result.episodes.len(), 1);
@@ -1384,8 +1486,8 @@ fn raids_link_tags_keep_balance_reads_and_follow_identity_changes_without_bridgi
             .iter()
             .map(|run| (run.first_hour, run.last_hour, run.launched))
             .collect::<Vec<_>>(),
-        [(102, 103, 0), (106, 106, 0)],
-        "a tag change does not re-count the same native raid handle"
+        [(102, 103, 1), (106, 106, 1)],
+        "a tag change retains the native holder's one launch without re-counting it"
     );
     assert_eq!(
         result.segments["GER"],

@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from 'react';
+import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { BattleSide } from '../../generated/dashboard';
 import { battleFlagCount } from './battleRows';
 import type { BattleCountryLabel, BattleRow, BattleSideSummary } from './battleRows';
@@ -29,7 +30,7 @@ function Flags({ side, country }: { side: BattleSide; country: BattleCountryLabe
     {side.countries.slice(0, shown).map(part => {
       const named = country(part.tag, part.hour);
       return <span className="battle-country" key={JSON.stringify([part.tag, part.hour])} title={named.name}>
-        {named.flag ? <img className="log-flag" src={named.flag} alt={named.name} /> : <i className="battle-flag-missing" aria-label={named.name} />}
+        <CountryFlagUrl className="log-flag" url={named.flag} reason={named.flagReason} pending={named.flagPending} />
       </span>;
     })}
     {shown < count && <span className="battle-flags-more">+{count - shown}</span>}

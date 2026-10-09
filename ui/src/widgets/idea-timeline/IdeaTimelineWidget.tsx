@@ -29,7 +29,10 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
-  const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
+  const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
+  const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 1;
+  const at = Math.floor(playhead ?? last);
+  const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const category = data ? chosenCategory(data.categories, String(options.category ?? '')) : null;
   const lanes = useMemo(() => data && category ? lanesFor(data, category, { laws: options.laws as LawStyle, holders: options.holders as HolderStyle }) : [],
     [data, category, options.laws, options.holders]);
@@ -54,7 +57,6 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
   const infos = new Map(data.ideas.map(info => [info.token, info]));
   const tokenOf = (span: { id: string }) => span.id.slice(0, span.id.lastIndexOf(':'));
   // Each slot's holder at the moment shown, with its effects, for keyboard and screen-reader users.
-  const at = Math.floor(playhead ?? extent[1]);
   const description = `${dayLabel(at)}: ${lanes.map(lane => {
     const span = lane.spans.find(item => item.firstHour <= at && at <= item.lastHour);
     if (!span) return `${lane.label}: ${inSpans(data.unobserved, at) ? 'not recorded' : 'empty'}`;
@@ -63,7 +65,7 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
       tooltips.art.get(token)?.description, [], undefined, span.firstHour, Infinity)) : `${lane.label}: ${span.label}`;
   }).join('. ')}.`;
   return <div className="idea-timeline">
-    <Timeline label={`${category.name ?? category.token} of ${tag}`} extent={extent} playhead={playhead} lanes={lanes} description={description}
+    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`${category.name ?? category.token} of ${tag}`} extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} description={description}
       showIcons showNames unobserved={data.unobserved} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} revision={data}
       tooltip={(lane, span, hour, full) => {
         if (!span) return { title: lane.label, rows: [{ label: inSpans(data.unobserved, hour) ? 'Not recorded' : 'Empty', value: dayLabel(hour), tone: 'muted' }] };
@@ -74,7 +76,7 @@ export default function IdeaTimelineWidget({ widget, runtime, active, onDiagnost
           { label: 'Observed from', value: dayLabel(span.firstHour) },
           { label: 'Until', value: until },
         ];
-        const note = 'Ideas are recorded once a day, so a change is dated to the day it was first seen.';
+        const note = 'Spans start when first observed, not at an exact change time. Active ideas are read hourly; appointed advisors use their daily supplying read between reads.';
         const subtitle = level ? `${lane.label} · level ${level}` : lane.label;
         if (!tooltips) return { title: span.label, subtitle, icon: span.icon, rows, note };
         return ideaTooltip({ title: span.label, icon: span.icon, subtitle }, infos.get(token), tooltips.sources, tooltips.art.get(token)?.description, rows, note, span.firstHour,

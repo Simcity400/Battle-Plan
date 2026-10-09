@@ -1,13 +1,27 @@
 # Command power
 
-Each country's command power balance over time, one line per country, with the hours its balance fell. It is the [Political power](../political-power/README.md) widget's chart for another recorded balance: both render [`country-measure/MeasureWidget`](../country-measure/MeasureWidget.tsx) with the same look, settings and behaviour.
+## What it shows
 
-## Data
+Country command-power balances over time, with payment ticks and an optional dashed maximum.
 
-- **Product `country-measure`** with `measure: 'commandPower'` (`crates/dashboard/src/products/country_measure.rs`): each country's `Countries.command_power_raw` as runs of the exact fixed-point integer, and its net drops. Runs and drops follow the same rules as political power.
-- **Products `country-styles` and `country-groups`**, as for Political power.
-- **Product `country-stability`** (`crates/dashboard/src/products/country_stability.rs`) for the **maximum**: each country's maximum command power, computed from its recorded inputs with the engine's arithmetic (`GetMaxCommandPower`: the loaded define plus the recorded `max_command_power` and `max_command_power_mult` totals, less the command power reserved by allocators, as the game's top bar shows it and clamps the balance to). It is drawn dashed in the country's colour, named by a "Dashed line" key under the legend and in the tooltip; the **Maximum** setting hides it. It loads on its own, so the balance never waits for it, and a country's maximum follows the same group membership as its balance. Where the inputs were not recorded it is missing, never guessed from defines.
+## Products it reads
 
-## Not recorded yet
+[`country-measure`](../../../../crates/dashboard/src/products/country_measure.rs) (`commandPower`) supplies balances; [`politics-ledger`](../../../../crates/dashboard/src/products/politics_ledger.rs) supplies income, payments and reservations. [`country-stability`](../../../../crates/dashboard/src/products/country_stability.rs) supplies the native maximum. Shared country looks and groups follow the [widget contract](../README.md#contract).
 
-- **Daily income and causes** (abilities, traits, promotions, upkeep) need new capture, so spends are **net** falls in the balance and there is no drill-down.
+## Settings
+
+Countries, campaign/follow/pin/range, shared [balance options](../country-measure/options.ts), and Maximum. Whole campaign is the default.
+
+## Notable behaviour
+
+- Uses the [shared balance renderer](../country-measure/README.md); change common chart and drill behaviour there.
+- The maximum loads independently; missing operands leave it unknown.
+- Current CP holds are reservations, separate from spending. Allocations and releases never become payment ticks. Negative daily gain is Daily deficit.
+- Missing ledger capture retains explicitly net balance-drop ticks. Named payments retain evaluated charges separately from realized changes.
+
+## Files
+
+| File | Responsibility |
+|---|---|
+| [definition.ts](definition.ts) | Metadata and maximum toggle. |
+| [index.ts](index.ts) | Configures the shared MeasureWidget for CP. |

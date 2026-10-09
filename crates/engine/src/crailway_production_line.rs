@@ -10,7 +10,8 @@ pub const REFERENCE_TYPE_ID: u32 = 4_713;
 pub const BASE_LEVEL: usize = 0x70;
 /// CRailwayProductionLine requested railway level i32; exact 1419F0F20 serializes signed dword, correcting the old unsigned read.
 pub const TARGET_LEVEL: usize = 0x74;
-/// CRailwayProductionLine completion flag u8; read_railway_construction_queue_from_manager.
+/// Cancel byte: setter 1419EEE90, save key `cancel` at 1419F0F20;
+/// IsComplete@1419F02A0 returns true for it independently of route completion.
 pub const COMPLETION_FLAG: usize = 0x78;
 /// CRailwayProductionLine province-id route array; construction lane lib.rs RAILWAY_LINE_ROUTE_PTR.
 pub const ROUTE: usize = 0x80;

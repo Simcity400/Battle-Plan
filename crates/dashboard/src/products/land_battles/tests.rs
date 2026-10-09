@@ -65,6 +65,182 @@ fn windows(first: i32, last: i32) -> Vec<BattleWindow> {
         last_hour: last,
     }]
 }
+fn loss_frame(hour: i32, manpower: i32) -> DecodedFrame {
+    let mut sample = frame(hour, 5000, 1);
+    *sample.tables[TableId::LandCombatProgress.index()] =
+        TableView::Complete(TableRows::LandCombatProgress(vec![
+            replay::rows::LandCombatProgressRow {
+                combat: 1,
+                attacker_manpower_loss: manpower.into(),
+                defender_manpower_loss: (manpower + 1).into(),
+                attacker_equipment_losses: vec![replay::rows::LandEquipmentLoss {
+                    variant: 7,
+                    amount_raw: -100_000,
+                }]
+                .into(),
+                ..Default::default()
+            },
+        ]));
+    sample
+}
+fn result_frame(hour: i32, winners: u8) -> DecodedFrame {
+    let mut sample = frame(hour, 5000, 0);
+    *sample.tables[TableId::LandCombatResults.index()] =
+        TableView::Complete(TableRows::LandCombatResults(vec![
+            replay::rows::LandCombatResultsRow {
+                id: 1,
+                combat: 1,
+                province: 1,
+                end_hour: hour,
+                duration: 13,
+                winners,
+                sides: std::array::from_fn(|index| replay::rows::LandResultSide {
+                    countries: vec![index as u32 + 1],
+                    ..Default::default()
+                }),
+                losses: std::array::from_fn(|index| replay::rows::LandSideLosses {
+                    manpower: 10 + index as i32,
+                    equipment: Vec::new(),
+                }),
+                ..Default::default()
+            },
+        ]));
+    *sample.tables[TableId::LandEventCoverage.index()] =
+        TableView::Complete(TableRows::LandEventCoverage(vec![
+            replay::rows::LandEventCoverageRow {
+                from_hour: hour - 1,
+                to_hour: hour,
+                complete: true,
+                ..Default::default()
+            },
+        ]));
+    sample
+}
+#[test]
+fn land_battles_wire_joins_hourly_losses_missing_reads_and_terminal_verdict() {
+    let mut missing = loss_frame(101, 5);
+    *missing.tables[TableId::LandCombatProgress.index()] = TableView::Unavailable {
+        reason: "short loss arena".into(),
+    };
+    let replay = Replay::from_records(
+        crate::test_fixtures::CAMPAIGN.into(),
+        &[crate::test_fixtures::records(
+            1,
+            vec![
+                loss_frame(100, 4),
+                missing,
+                loss_frame(102, 6),
+                result_frame(103, 2),
+            ],
+        )],
+    )
+    .unwrap();
+    let census = scan(&replay, 1, &AtomicBool::new(false), None).unwrap();
+    let row = &census.episodes[0];
+    assert_eq!(census.episodes.len(), 1);
+    assert_eq!(row.casualties_at(100), Some(9.0));
+    assert_eq!(row.casualties_at(101), None);
+    assert_eq!(row.casualties_at(102), Some(13.0));
+    assert_eq!(row.casualties_at(103), Some(21.0));
+    assert!(
+        matches!(&row.losses[0].sides[0][1], BattleValue::Known { value, .. } if *value == -1.0)
+    );
+    let early = census.reply(&params(None), &windows(100, 102)).unwrap();
+    assert!(early.rows[0].result.is_none());
+    assert!(!early.rows[0].losses.last().unwrap().terminal);
+    let ended = census.reply(&params(None), &windows(103, 103)).unwrap();
+    assert!(matches!(
+        ended.rows[0].result.as_ref().unwrap().winner,
+        battles::BattleWinner::Side { side: 1 }
+    ));
+    assert!(ended.rows[0].losses.last().unwrap().terminal);
+}
+#[test]
+fn land_battles_loss_fields_remain_independent_and_equipment_stays_exact() {
+    let mut sample = loss_frame(100, 4);
+    if let TableView::Complete(TableRows::LandCombatProgress(rows)) =
+        &mut *sample.tables[TableId::LandCombatProgress.index()]
+    {
+        rows[0].attacker_equipment_losses = replay::rows::Recorded::NotRecorded;
+        rows[0].defender_equipment_losses = vec![replay::rows::LandEquipmentLoss {
+            variant: 8,
+            amount_raw: -9_223_372_036_854_775_807,
+        }]
+        .into();
+    }
+    let mut census = Census::default();
+    census.observe(&sample).unwrap();
+    let episode = &census.episodes[0];
+    assert_eq!(episode.casualties_at(100), Some(9.0));
+    let read = &episode.losses[0];
+    assert!(matches!(&read.sides[0][1], BattleValue::Unknown { .. }));
+    assert_eq!(
+        read.equipment_raw.as_ref().unwrap()[0],
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        read.equipment_raw.as_ref().unwrap()[1],
+        ["-9223372036854775807", "-9223372036854775807",]
+    );
+}
+#[test]
+fn land_battles_terminal_only_rows_keep_unknown_rosters_and_do_not_join_across_gaps() {
+    let mut census = Census::default();
+    census.observe(&loss_frame(100, 4)).unwrap();
+    let mut ended = result_frame(105, 3);
+    if let TableView::Complete(TableRows::LandEventCoverage(rows)) =
+        &mut *ended.tables[TableId::LandEventCoverage.index()]
+    {
+        rows[0].from_hour = 100;
+    }
+    census.observe(&ended).unwrap();
+    assert_eq!(census.episodes.len(), 2);
+    assert!(census.episodes[0].result.is_none());
+    assert!(matches!(
+        &census.episodes[0].end,
+        Some((_, BattleEnd::Unknown { .. }))
+    ));
+    let terminal = &census.episodes[1];
+    assert!(terminal.runs[0].roster_unknown);
+    assert!(terminal.peak_before(105).is_none());
+    assert_eq!(terminal.casualties_at(105), Some(21.0));
+    assert!(
+        matches!(&terminal.result.as_ref().unwrap().winner, battles::BattleWinner::Unknown { unknown } if unknown == "Both sides awarded a win")
+    );
+    let ranking = census
+        .ranked(
+            &ranking_params(100, 105, 2, "Peak size"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert!(!ranking.rows[0].runs[0].roster_unknown);
+    assert!(ranking.rows[1].runs[0].roster_unknown);
+}
+#[test]
+fn land_battles_terminal_only_availability_requires_current_complete_coverage() {
+    for complete in [false, true] {
+        let mut sample = result_frame(100, 1);
+        *sample.tables[TableId::LandCombats.index()] = TableView::Unavailable {
+            reason: "census unread".into(),
+        };
+        if let TableView::Complete(TableRows::LandEventCoverage(rows)) =
+            &mut *sample.tables[TableId::LandEventCoverage.index()]
+        {
+            rows[0].complete = complete;
+        }
+        let replay = Replay::from_records(
+            crate::test_fixtures::CAMPAIGN.into(),
+            &[crate::test_fixtures::records(1, vec![sample])],
+        )
+        .unwrap();
+        assert_eq!(
+            recording_available(&replay, 1, &AtomicBool::new(false)).unwrap(),
+            complete
+        );
+        let census = scan(&replay, 1, &AtomicBool::new(false), None).unwrap();
+        assert_eq!(census.episodes.len(), usize::from(complete));
+    }
+}
 #[test]
 fn land_battles_exact_adjacent_boundaries_distinct_rosters_and_native_duration() {
     let mut census = Census::default();
@@ -223,14 +399,14 @@ fn land_battles_wire_scan_keeps_branch_tail_and_absent_read_end() {
         )],
     )
     .unwrap();
-    let census = scan(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let census = scan(&replay, 1, &AtomicBool::new(false), None).unwrap();
     let reply = census.reply(&params(Some(0)), &windows(100, 102)).unwrap();
     assert_eq!(reply.rows.len(), 2);
     assert!(
         matches!(&reply.rows[0].end, Some(BattleEnd::Moment(end)) if end.hour == 101 && end.bound == BattleBound::Exact)
     );
     assert!(reply.rows[1].end.is_none());
-    assert!(scan(&replay, 1, &AtomicBool::new(true)).is_err());
+    assert!(scan(&replay, 1, &AtomicBool::new(true), None).is_err());
 }
 #[test]
 #[ignore = "nine-year synthetic scan measurement; run explicitly"]
@@ -468,9 +644,9 @@ fn land_battles_cache_retains_two_most_recent_branches() {
     for id in [1, 2] {
         cache.insert(id, Arc::new(Census::default()));
     }
-    assert!(cache.get(1).is_some());
+    assert!(cache.get(1, None).is_some());
     cache.insert(3, Arc::new(Census::default()));
-    assert!(cache.get(2).is_none());
+    assert!(cache.get(2, None).is_none());
     assert_eq!(cache.branches.len(), 2);
 }
 #[test]
@@ -556,6 +732,7 @@ fn loss_read(hour: i32, terminal: bool, amounts: [f64; 2]) -> LandBattleLossRead
     LandBattleLossRead {
         hour,
         terminal,
+        equipment_raw: None,
         sides: amounts.map(|value| {
             vec![
                 battles::BattleValue::Known {
@@ -633,7 +810,10 @@ fn land_battles_casualties_rank_so_far_and_terminal_manpower_before_top_n() {
         [1, 2, 3]
     );
     assert!(reply.rows[0].losses.last().unwrap().terminal);
-    assert!(reply.rows[2].losses.is_empty());
+    assert!(matches!(
+        &reply.rows[2].losses[0].sides[0][0],
+        BattleValue::Unknown { .. }
+    ));
     let earlier = census
         .ranked(
             &ranking_params(100, 100, 1, "Casualties"),

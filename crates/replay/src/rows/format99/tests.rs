@@ -551,7 +551,7 @@ fn format99_reserved_original_tag_retains_presence_states_and_suffix_delta() {
     assert!(gap.encode_fields(&mut Vec::new()).is_err());
     assert_eq!(
         FormatVersion::CURRENT.fields(TableId::ReservedCountryNaming),
-        13
+        14
     );
     let field = TableId::ReservedCountryNaming.last_change().appended[0];
     assert_eq!(
@@ -733,4 +733,98 @@ fn format99_reserved_owned_state_count_retains_signed_zero_failure_and_gap() {
                 && field.name == "owned_state_count"
                 && field.introduced == EFFECT_INPUTS_FORMAT)
     );
+}
+
+#[test]
+fn occupation_law_union_preserves_published_occupied_roster_prefix() {
+    let row = OccupationSettingsRow {
+        country: 5000,
+        occupied: Recorded::Value(Some(vec![7, 0, 7])),
+        group_laws: Recorded::Value(Some(vec![OccupationGroupLaw {
+            occupied: 7,
+            scope_country: Some(9),
+            law: Some(b"synthetic_law".to_vec()),
+        }])),
+        fallback_law: Recorded::Value(Some(b"synthetic_fallback".to_vec())),
+        ..Default::default()
+    };
+    let format = FormatVersion::read(EFFECT_INPUTS_FORMAT).unwrap();
+    assert_eq!(format.fields(TableId::OccupationSettings), 4);
+    let mut bytes = Vec::new();
+    row.encode_fields(&mut bytes).unwrap();
+    let mut cursor = Decoder::new(&bytes);
+    for kind in &OccupationSettingsRow::SCHEMA[..4] {
+        kind.decode(&mut cursor).unwrap();
+    }
+    let prefix = &bytes[..bytes.len() - cursor.remaining()];
+    let mut input = Decoder::new(prefix);
+    input.format = format.version();
+    input.recorded_fields = 4;
+    let old = OccupationSettingsRow::decode_fields(row.key(), &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(old.occupied, row.occupied);
+    assert_eq!(old.group_laws, Recorded::NotRecorded);
+    assert_eq!(old.fallback_law, Recorded::NotRecorded);
+    assert_eq!(old.not_recorded_fields(), (1 << 4) | (1 << 5));
+    let delta = row.delta(None).unwrap().unwrap();
+    let mut cursor = Decoder::new(&delta.values);
+    for kind in &OccupationSettingsRow::SCHEMA[..4] {
+        kind.decode_change(&mut cursor).unwrap();
+    }
+    let mut bytes = Vec::new();
+    TableId::OccupationSettings
+        .encode_key(row.key(), 0, &mut bytes)
+        .unwrap();
+    bytes.push(15);
+    bytes.extend_from_slice(&delta.values[..delta.values.len() - cursor.remaining()]);
+    let mut input = Decoder::new(&bytes);
+    input.format = format.version();
+    input.recorded_fields = 4;
+    let delta = decode_delta(TableId::OccupationSettings, 0, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(delta.apply::<OccupationSettingsRow>(None).unwrap(), old);
+}
+
+#[test]
+fn dynamic_boundary_suffix_keeps_prior_recorded_prefix_and_signed_deltas() {
+    let row = ReservedCountryNamingRow {
+        tag: b"synthetic_zero".to_vec(),
+        dynamic_tag_boundary: Recorded::Value(Some(7)),
+        ..Default::default()
+    };
+    for boundary in [None, Some(i32::MIN), Some(-1), Some(0), Some(i32::MAX)] {
+        let next = ReservedCountryNamingRow {
+            dynamic_tag_boundary: Recorded::Value(boundary),
+            ..row.clone()
+        };
+        let delta = next.delta(Some(&row)).unwrap().unwrap();
+        assert_eq!(delta.mask, 1 << 13);
+        assert_eq!(delta.apply(Some(row.clone())).unwrap(), next);
+        let mut bytes = Vec::new();
+        encode_row(&next, 0, &mut bytes).unwrap();
+        let mut input = Decoder::new(&bytes);
+        assert_eq!(
+            decode_row::<ReservedCountryNamingRow>(0, &mut input).unwrap(),
+            next
+        );
+        input.finish().unwrap();
+    }
+    let old = FormatVersion::read(EFFECT_INPUTS_FORMAT).unwrap();
+    assert_eq!(old.fields(TableId::ReservedCountryNaming), 13);
+    assert!(old.table_refusal(TableId::ReservedCountryNaming).is_none());
+    let mut encoded = Vec::new();
+    row.encode_fields(&mut encoded).unwrap();
+    let mut input = Decoder::new(&encoded);
+    for kind in &ReservedCountryNamingRow::SCHEMA[..old.fields(TableId::ReservedCountryNaming)] {
+        kind.decode(&mut input).unwrap();
+    }
+    let prefix = &encoded[..encoded.len() - input.remaining()];
+    let mut input = Decoder::new(prefix);
+    input.format = old.version();
+    input.recorded_fields = 13;
+    let decoded = ReservedCountryNamingRow::decode_fields(0, &mut input).unwrap();
+    assert_eq!(decoded.tag, row.tag);
+    assert_eq!(decoded.dynamic_tag_boundary, Recorded::NotRecorded);
+    assert_eq!(decoded.not_recorded_fields(), 1 << 13);
+    input.finish().unwrap();
 }

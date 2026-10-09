@@ -86,13 +86,12 @@
 //!    from the hour it was created, whatever it shows at its first read, so every
 //!    change from that hour on is nobody's and a rise among them makes the stretch
 //!    *doubtful*.
-//! 3. **New levels.** While listed, as many as its count fell or, if more, as
-//!    its progress shows: `produced` falling by f means at least f / `cost`
-//!    completions, rounded up, across a stretch with no repair or damage. No more
-//!    than the possible completions in step 2, counting a multi-level rise as its
-//!    count. Sampled speed bounds nothing between reads: factories can be added
-//!    and taken off at any hour (`UpdateProductionSpeed@140f59260`), so any daily
-//!    update after the last read can add any progress and complete several levels.
+//! 3. **New levels.** While listed, as many as its count fell, no more than
+//!    the possible completions in step 2, counting a multi-level rise as its count.
+//!    A progress fall proves no extra completion: native signed factory output
+//!    can lower it, and the qword addition wraps (140F557F5 / 140F55813). Sampled
+//!    speed bounds nothing between reads: factories can be added and taken off
+//!    at any hour (`UpdateProductionSpeed@140f59260`).
 //!    The levels are dated by their rises only when the possible completions are
 //!    exactly as many as the completions; otherwise by the read (`hour` null).
 //! 4. **Repairs.** A repair and damage are the line's while it is open: while
@@ -104,34 +103,24 @@
 //!    they were), else before its last new level. Once gone, what was added is the
 //!    damage before its last claimed rise, or its repairs beyond what it had left
 //!    if more.
-//! 5. **Counts.** While listed, completions beyond how far its count fell are
-//!    `added`. In a clear stretch, extra possible completions are `possible`:
+//! 5. **Counts.** While listed, a rise in its queued count is `added`. In a
+//!    clear stretch, extra possible completions are `possible`:
 //!    levels it may have both built and had added, dated by the read, widening
 //!    both counts by that many. A fall beyond what it built was dropped, or is
 //!    `unaccounted` when the stretch is doubtful.
-//! 6. **Ending, once gone.** With new levels left, *finished* when the possible
-//!    completions are exactly its levels left, at the last rise; *unknown*
-//!    (`RisesUnclear`) when there are more; *removed* when there are fewer, since
-//!    some level was never built. With none queued, a repair finishes when it
-//!    leaves the building fully healthy. A doubtful stretch stays unknown
-//!    (`SharedTarget`) when it cannot show a finish; the other unknown reasons in
-//!    step 1 stay as they are. Whatever an unknown ending leaves unshown is
-//!    `unaccounted`.
+//! 6. **Ending, once gone.** The true daily IsComplete call at 140E52A28,
+//!    or linked partner removal at 140F55C07, proves native queue completion.
+//!    Railway cancellation uses the
+//!    same getter and retains its +0x78 cancel operand. A complete observation
+//!    of an unlinked line with no such result proves another removal path, dated
+//!    only by the read. A linked line with no outcome stays unknown.
+//!    Older prefixes and departures outside observation stay unknown. Final
+//!    between-read level counts remain unaccounted: completion does not prove
+//!    which levels commands may have dropped before that native decision.
 //!
-//! A railway line's segments built are the fall of its `amount`, known only by the
-//! read that shows it. Gone, it is finished when the last province of its route
-//! (segments are built in route order) rose to the line's target level at a daily
-//! update (`CRailwayProductionLine::AdvanceProduction@1419eeea0` is slot 24 of the
-//! same daily call), no other railway line through that province built a segment
-//! or left the queue in the same stretch, and none first listed at this read
-//! through it was created before the rise. It is removed when a route province is still below its
-//! target level, and unknown otherwise: an hour not recorded, a route recorded
-//! empty, or no such rise (`RouteUnclear`).
-//!
-//! A focus or effect at a possible completion, while the line is cancelled, still
-//! reads as the line's when the counts agree: the recording cannot tell them apart.
-//! The construction-IC capture (`capture/w3-construction-ic`, each line's daily IC)
-//! will make completions exact.
+//! A railway line's segments built while listed are the fall of its `amount`,
+//! known only by the read that shows it. Building/route changes never establish
+//! its ending; the native completion adapter owns that decision for both types.
 //!
 //! In the PR132 part-M recording (branch 1, hours 60828745..=60829113, 17 reads
 //! of 350 lines) 63 lines left the queue. Of these, 58 building lines (28 new
@@ -158,12 +147,8 @@
 //! the table's cadence or whose frame timed a walk of any table of its slot
 //! (`metadata::slot_read`).
 
-use super::{
-    LoadContext, Product,
-    construction_spending::{
-        self as spending, Progress as SpendProgress, ProjectSpending, SpendingGap,
-    },
-};
+use super::{LoadContext, Product};
+mod output;
 use crate::{
     Source,
     catalogue::{self, Catalogue},
@@ -171,6 +156,8 @@ use crate::{
 };
 use engine::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
 use installed_content::{ResolvedLayers, gfx::SpriteSet, gui::native};
+pub use output::{ConstructionOutputRead, SpendingGap};
+use output::{OutputScan, OutputUnknown};
 use replay::{
     container::Replay,
     frame::{DecodedFrame, FrameDecoder, SharedView, TableView},
@@ -230,9 +217,9 @@ pub enum ProjectKind {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum EndKind {
-    /// Its last level (or its repair) was built at `hour`.
+    /// Native completion (daily getter or linked removal) was observed at `hour`.
     Finished,
-    /// It left with levels unbuilt: cancelled, or its target lost.
+    /// Cancelled, or removed without an observed native completion decision.
     Removed,
     /// It left, but whether it was finished is not known (`unknown` says why).
     Unknown,
@@ -250,22 +237,15 @@ pub enum UnknownEnd {
     SharedTarget,
     /// Its last read held no levels left to build.
     NothingLeft,
-    /// No rise of its route's last province at a daily update its progress could
-    /// reach shows when it was built, its route was recorded empty, or another
-    /// railway line through that province also changed then.
-    RouteUnclear,
-    /// Its building rose where its own completion could have raised it, but its
-    /// completions could fall at different hours, or would need a rise its
-    /// recorded progress could not reach: a focus, decision, event or effect may
-    /// have raised it, so whether (and when) it finished is not known.
-    RisesUnclear,
+    /// No native queue-completion outcome covered its departure.
+    CompletionNotRecorded,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectEnd {
     pub kind: EndKind,
-    /// The hour the last level rose, for a finished project.
+    /// The native outcome hour, when observed; otherwise only `known_at` bounds it.
     pub hour: Option<i32>,
     /// The read that showed the line gone: nothing about the ending shows before it.
     pub known_at: i32,
@@ -336,10 +316,10 @@ pub struct ConstructionProject {
     pub earlier_unknown: bool,
     pub runs: Vec<ProjectRun>,
     /// Levels (railway: segments) the line completed. A building line's are as many
-    /// as the line itself shows it completed (its count or progress fell, or a
-    /// daily healthy rise under its repair), dated by the daily rise its progress
-    /// could have made; by the read (`hour` null) when more such rises at
-    /// different hours could be them. A railway's are dated by the read. A rise at
+    /// as the line itself shows it completed (its count fell, or a daily healthy
+    /// rise under its repair), dated by the corresponding daily rise; by the
+    /// read (`hour` null) when more such rises at different hours could be them.
+    /// A railway's are dated by the read. A rise at
     /// another hour (a player's decision or event choice) is never among them.
     pub built: Vec<LevelsBuilt>,
     /// Levels that cannot be told built or dropped, dated by the read (`hour`
@@ -363,6 +343,8 @@ pub struct ConstructionProject {
     pub added: Vec<LevelsBuilt>,
     /// Null while it is in the queue at the branch's last read.
     pub end: Option<ProjectEnd>,
+    /// Factory output observed since the recording began, dated by its publication.
+    pub output: Vec<ConstructionOutputRead>,
 }
 
 /// A building type the projects name, with its name and icon from content.
@@ -676,27 +658,8 @@ struct Open {
     carried: bool,
     remaining: i32,
     repair_levels: i32,
-    /// Its last read's fixed5 progress toward the next level and cost per level
-    /// (a railway: its route's progress and cost, for spending).
-    produced: i64,
-    cost: i64,
-    /// Why its next stretch is not known whole: an hour since its last read was
-    /// not recorded, or a scheduled read of its queue failed (its cost could have
-    /// changed unseen). None while every hour and read since was recorded.
-    missed: Option<SpendingGap>,
     /// The building it is watched through (a railway: its route provinces).
     keys: Vec<Key>,
-}
-
-impl Open {
-    fn progress(&self) -> SpendProgress {
-        SpendProgress {
-            produced: self.produced,
-            cost: self.cost,
-            remaining: self.remaining,
-            repair_levels: self.repair_levels,
-        }
-    }
 }
 
 #[derive(Default)]
@@ -704,9 +667,6 @@ struct Family {
     open: BTreeMap<u64, Open>,
     watch: Watch,
     reads: Vec<i32>,
-    /// Its last successful read, and whether an hour since was not recorded.
-    last_read: Option<i32>,
-    unrecorded: bool,
 }
 
 impl Family {
@@ -721,8 +681,9 @@ impl Family {
 #[derive(Clone, Debug, Default)]
 pub struct ScannedLog {
     pub projects: Vec<ConstructionProject>,
-    /// Each project's spending (`construction_spending`), by project index.
-    pub spending: Vec<ProjectSpending>,
+    /// Lost output or output whose line never had a census owner.
+    pub(crate) output_unknown: Vec<OutputUnknown>,
+    pub unowned_lines: usize,
     pub reads: Vec<i32>,
     pub railway_reads: Vec<i32>,
     /// The branch's last hour, gaps recorded after its last frame included: a
@@ -752,6 +713,7 @@ struct Scan {
     dictionary: Option<SharedView>,
     /// Lines whose country the links do not resolve, each counted once.
     unresolved: BTreeSet<u64>,
+    output: OutputScan,
 }
 
 impl Scan {
@@ -939,23 +901,6 @@ impl Stretch {
     }
 }
 
-/// Levels a building line's own progress shows it completed between two reads that
-/// both found it building new levels, with no damage between. The engine's
-/// completion takes `cost` off `produced` (`AdvanceProduction@140f55590`) and
-/// nothing else lowers it while the line builds, and a day's progress only raises
-/// it: `produced` falling by f between the reads means at least f / `cost`
-/// (rounded up) levels completed, however much progress came between (never
-/// negative, not recorded). A line whose progress between reads reaches a whole
-/// `cost` can complete a level without `produced` falling: its count then shows it,
-/// or nothing does.
-fn completed(before: i64, after: i64, cost: i64) -> u32 {
-    let fall = before.saturating_sub(after);
-    if cost <= 0 || fall <= 0 {
-        return 0;
-    }
-    u32::try_from((fall - 1) / cost + 1).unwrap_or(u32::MAX)
-}
-
 /// Levels built at the rises, dated by them.
 fn claim(rises: &[Rise], known_at: i32, repair: bool) -> Vec<LevelsBuilt> {
     rises
@@ -1115,84 +1060,22 @@ fn settle(
             vec![by_read(completions, hour, false)]
         }
     };
-    let Some(row) = row else {
-        // Gone. Leaving proves nothing built (a cancelled line leaves too).
-        // New levels: it finished them only if its possible completions are
-        // exactly placed. Its repairs are its while it was open: up to the rise
-        // that left its building fully healthy when that was all it had to do,
-        // else before its last new level (every one, if it did not finish).
-        let completions = (new_left as u32).min(candidates);
-        let finished_new = candidates == new_left as u32;
-        let unclear = new_left > 0 && candidates > new_left as u32;
-        let built = if new_left > 0 && !unclear {
-            dated(completions)
-        } else {
-            Vec::new()
-        };
-        let close = finished_new
-            .then(|| built.iter().filter_map(|levels| levels.hour).max())
-            .flatten();
-        let repairs: Vec<(Rise, bool)> = if new_left == 0 {
-            let end = stretch.repairs.iter().position(|(_, full)| *full);
-            stretch.repairs[..end.map_or(stretch.repairs.len(), |end| end + 1)].to_vec()
-        } else {
-            stretch
-                .repairs
-                .iter()
-                .copied()
-                .filter(|(rise, _)| close.is_none_or(|close| rise.hour < close))
-                .collect()
-        };
-        let finished = if new_left == 0 {
-            repairs.last().is_some_and(|(_, full)| *full)
-        } else {
-            finished_new
-        };
-        let repaired = claim(
-            &repairs.iter().map(|(rise, _)| *rise).collect::<Vec<_>>(),
+    if row.is_none() {
+        // Disappearance and building changes cannot distinguish completion from
+        // cancellation. The output adapter applies the observed native outcome.
+        let end = ended(
+            EndKind::Unknown,
+            None,
             hour,
-            true,
+            Some(UnknownEnd::CompletionNotRecorded),
         );
-        let count = |list: &[LevelsBuilt]| list.iter().map(|levels| levels.count).sum::<u32>();
-        let until = repaired
-            .iter()
-            .chain(&built)
-            .filter_map(|levels| levels.hour)
-            .max();
-        let added = (count(&repaired).saturating_sub(repair_left as u32)).max(if until.is_some() {
-            damaged(until)
-        } else {
-            0
-        });
-        project.built.extend(repaired);
-        project.built.extend(built);
-        push_read(&mut project.added, i64::from(added), hour, true);
-        let end = if finished {
-            ended(EndKind::Finished, until, hour, None)
-        } else if stretch.doubtful {
-            ended(EndKind::Unknown, None, hour, Some(UnknownEnd::SharedTarget))
-        } else if unclear {
-            ended(EndKind::Unknown, None, hour, Some(UnknownEnd::RisesUnclear))
-        } else {
-            ended(EndKind::Removed, None, hour, None)
-        };
         leave_unaccounted(project, &end, &left, hour);
         return Some(end);
-    };
-    // Listed at both reads. New levels: as many as it shows it completed (its
-    // count fell, or its progress fell by a level's cost: a completion that a
-    // level added hid), as far as the rises can hold them.
+    }
+    // Native signed output and qword wrapping can lower progress without a
+    // completion (140F557F5 / 140F55813). Bound claims only by the count's fall.
     let fell = u32::try_from(new_left - new_now).unwrap_or(0);
-    let shown = if repair_left == 0
-        && repair_now == 0
-        && stretch.repairs.is_empty()
-        && stretch.damage.is_empty()
-    {
-        completed(line.produced, row.produced, row.cost)
-    } else {
-        0
-    };
-    let completions = fell.max(shown).min(candidates);
+    let completions = fell.min(candidates);
     let built = if completions > 0 {
         dated(completions)
     } else {
@@ -1247,12 +1130,6 @@ fn read_buildings(
     for line in scan.buildings.open.values() {
         *sharing.entry(line.keys[0]).or_default() += 1;
     }
-    // Lines without repair work per building at this read: a linked line shares its
-    // `produced` with its partner, so neither's progress is its own.
-    let mut building_now: BTreeMap<Key, usize> = BTreeMap::new();
-    for row in rows.iter().filter(|row| row.repair_levels <= 0) {
-        *building_now.entry(building_key(row)).or_default() += 1;
-    }
     // Lines first listed now at the same building: each may have repaired or built
     // there from the hour it was created (its recorded `created_hour`), never
     // before, whatever it shows at its first read.
@@ -1285,59 +1162,9 @@ fn read_buildings(
             _ => Seen::Lost,
         };
         let row = present.get(&id).copied();
-        // For spending: every daily rise of new levels in the stretch, or why the
-        // record cannot settle them.
-        let spend_seen: Result<u32, SpendingGap> = match &seen {
-            Seen::Lost => Err(SpendingGap::NotRecorded),
-            Seen::Shared => Err(SpendingGap::SharedTarget),
-            Seen::Clear(track, newcomer) => {
-                let stretch = Stretch::of(&track.changes, *newcomer);
-                if stretch.doubtful {
-                    Err(SpendingGap::SharedTarget)
-                } else {
-                    Ok(stretch.levels.iter().map(|rise| rise.count).sum())
-                }
-            }
-        };
         let end = settle(project, line, row, seen, hour);
         match row {
             Some(row) => {
-                // Spending, for a stretch with new levels to build: `produced`
-                // gained plus the cost of each new level it finished, levels added
-                // meanwhile included. Every daily rise of its building in the
-                // stretch must be settled: claimed as the line's (a completion, at
-                // the level's cost, dated by rise or read), or none at all; a rise
-                // the log leaves unclaimed may be a completion whose cost is
-                // unresolved.
-                if line.remaining > 0 || row.amount > 0 {
-                    let claimed: u32 = project
-                        .built
-                        .iter()
-                        .filter(|levels| levels.known_at == hour && !levels.repair)
-                        .map(|levels| levels.count)
-                        .sum();
-                    let finished = spend_seen.and_then(|rose| {
-                        if project
-                            .unaccounted
-                            .iter()
-                            .any(|levels| levels.known_at == hour && !levels.repair)
-                        {
-                            Err(SpendingGap::LevelsUnaccounted)
-                        } else if rose > claimed {
-                            Err(SpendingGap::UnclaimedRise)
-                        } else {
-                            Ok(claimed)
-                        }
-                    });
-                    let stretch = spending::building_stretch(
-                        line.progress(),
-                        building_progress(row),
-                        line.missed,
-                        building_now.get(&key).copied().unwrap_or(0) > 1,
-                        finished,
-                    );
-                    scan.log.spending[index].record(hour, stretch);
-                }
                 record_run(
                     project,
                     line,
@@ -1346,26 +1173,13 @@ fn read_buildings(
                     row.amount,
                     row.repair_levels,
                 );
-                line.produced = row.produced;
-                line.cost = row.cost;
-                line.missed = None;
             }
             None => {
-                // Spending: a line with new levels left may have progressed after
-                // its last read (a repair's effort is never measured).
-                if let Some(end) = &end
-                    && line.remaining > 0
-                {
-                    let gap = spending::ending(end.kind, line.missed);
-                    scan.log.spending[index].record(hour, Err(gap));
-                }
                 project.end = end;
                 scan.buildings.open.remove(&id);
             }
         }
     }
-    let previous = scan.buildings.last_read;
-    let unrecorded = scan.buildings.unrecorded;
     for row in rows {
         if scan.buildings.open.contains_key(&row.id) {
             continue;
@@ -1386,33 +1200,6 @@ fn read_buildings(
             scan.buildings.reads.last().copied(),
             false,
         );
-        // A repair's effort is not measured (`construction_spending`); a new
-        // building's progress before this read counts when the read before shows
-        // it was not yet in the queue and its building's level held at every
-        // recorded hour since, with no repair or possible completion in its
-        // opening stretch (step 1 of the claim algorithm).
-        let mut spent = ProjectSpending::default();
-        if row.repair_levels <= 0 {
-            let first = match previous {
-                None => None,
-                Some(_) if unrecorded => Some(Err(SpendingGap::NotRecorded)),
-                Some(previous) if row.created_hour <= previous => {
-                    Some(Err(SpendingGap::ListedLate))
-                }
-                Some(_) if building_now.get(&key).copied().unwrap_or(0) > 1 => {
-                    Some(Err(SpendingGap::SharedTarget))
-                }
-                Some(_) => Some(spending::before_first_read(
-                    scan.changes.changed_since_read(key),
-                    earlier_unknown,
-                    row.produced,
-                )),
-            };
-            match first {
-                Some(first) => spent.record(hour, first),
-                None => spent.before_first_read = true,
-            }
-        }
         let mut project = ConstructionProject {
             id: row.id.to_string(),
             kind: ProjectKind::Building,
@@ -1435,15 +1222,13 @@ fn read_buildings(
             possible: Vec::new(),
             added: Vec::new(),
             end: None,
+            output: Vec::new(),
         };
         let mut line = Open {
             project: scan.log.projects.len(),
             carried: false,
             remaining: row.amount,
             repair_levels: row.repair_levels,
-            produced: row.produced,
-            cost: row.cost,
-            missed: None,
             keys: vec![key],
         };
         record_run(
@@ -1455,25 +1240,13 @@ fn read_buildings(
             row.repair_levels,
         );
         scan.log.projects.push(project);
-        scan.log.spending.push(spent);
         scan.buildings.watch.watch(key, states, provinces);
         scan.buildings.open.insert(row.id, line);
     }
     let needed = scan.buildings.needed();
     scan.buildings.watch.reset(&needed);
     scan.buildings.reads.push(hour);
-    scan.buildings.last_read = Some(hour);
-    scan.buildings.unrecorded = false;
     scan.changes.reset(false);
-}
-
-fn building_progress(row: &BuildingConstructionRow) -> SpendProgress {
-    SpendProgress {
-        produced: row.produced,
-        cost: row.cost,
-        remaining: row.amount,
-        repair_levels: row.repair_levels,
-    }
 }
 
 /// One read of the railway queue at `hour`.
@@ -1487,32 +1260,6 @@ fn read_railways(
     let hour = frame.hour;
     let present: BTreeMap<u64, &RailwayConstructionRow> =
         rows.iter().map(|row| (row.id, row)).collect();
-    // Railway lines that built a segment or left in this stretch, by route province.
-    let mut changed: BTreeMap<u32, usize> = BTreeMap::new();
-    for (id, line) in &scan.railways.open {
-        let moved = present
-            .get(id)
-            .is_none_or(|row| row.amount < line.remaining);
-        if moved {
-            for key in &line.keys {
-                *changed.entry(key.1).or_default() += 1;
-            }
-        }
-    }
-    // A line first listed now may have built a segment through its provinces from
-    // the hour it was created, never before: per province, the earliest such hour.
-    let mut newcomers: BTreeMap<u32, i32> = BTreeMap::new();
-    for row in rows
-        .iter()
-        .filter(|row| !scan.railways.open.contains_key(&row.id))
-    {
-        for province in &row.route {
-            newcomers
-                .entry(*province)
-                .and_modify(|since| *since = (*since).min(row.created_hour))
-                .or_insert(row.created_hour);
-        }
-    }
     let ids: Vec<u64> = scan.railways.open.keys().copied().collect();
     for id in ids {
         let Some(line) = scan.railways.open.get_mut(&id) else {
@@ -1526,75 +1273,21 @@ fn read_railways(
                 if fell > 0 {
                     project.built.push(by_read(fell as u32, hour, false));
                 }
-                let stretch =
-                    spending::railway_stretch(line.progress(), railway_progress(row), line.missed);
-                scan.log.spending[index].record(hour, stretch);
                 record_run(project, line, hour, row.active_factories, row.amount, 0);
-                line.produced = row.produced;
-                line.cost = row.cost;
-                line.missed = None;
             }
             None => {
-                let tracks: Vec<Option<&Track>> = line
-                    .keys
-                    .iter()
-                    .map(|key| scan.railways.watch.tracks.get(key))
-                    .collect();
-                let target = project.target_level.unwrap_or(i32::MAX);
-                let end = if line.remaining <= 0 {
-                    ended(EndKind::Unknown, None, hour, Some(UnknownEnd::NothingLeft))
-                } else if line.keys.is_empty() {
-                    // No route was recorded: there is no province to tell by.
-                    ended(EndKind::Unknown, None, hour, Some(UnknownEnd::RouteUnclear))
-                } else if tracks
-                    .iter()
-                    .any(|track| track.is_none_or(|track| track.lost))
-                {
-                    ended(EndKind::Unknown, None, hour, Some(UnknownEnd::NotRecorded))
-                } else if tracks.iter().flatten().any(|track| {
-                    track
-                        .value
-                        .is_some_and(|(level, _)| i32::from(level) < target)
-                }) {
-                    ended(EndKind::Removed, None, hour, None)
-                } else {
-                    // Segments are built in route order: the last province rises last,
-                    // at a daily update, like a building line's completion.
-                    let last = line.keys.last().map_or(0, |key| key.1);
-                    let rose = tracks.last().copied().flatten().and_then(|track| {
-                        track
-                            .changes
-                            .iter()
-                            .rev()
-                            .find(|(_, (was, _), (now, _))| {
-                                i32::from(*now) >= target && i32::from(*was) < target
-                            })
-                            .map(|(hour, _, _)| *hour)
-                    });
-                    match rose {
-                        Some(rose)
-                            if daily(rose)
-                                && changed.get(&last).copied().unwrap_or(0) <= 1
-                                && newcomers.get(&last).is_none_or(|since| rose < *since) =>
-                        {
-                            project
-                                .built
-                                .push(by_read(line.remaining as u32, hour, false));
-                            ended(EndKind::Finished, Some(rose), hour, None)
-                        }
-                        _ => ended(EndKind::Unknown, None, hour, Some(UnknownEnd::RouteUnclear)),
-                    }
-                };
-                let gap = spending::ending(end.kind, line.missed);
-                scan.log.spending[index].record(hour, Err(gap));
+                let end = ended(
+                    EndKind::Unknown,
+                    None,
+                    hour,
+                    Some(UnknownEnd::CompletionNotRecorded),
+                );
                 leave_unaccounted(project, &end, &[(false, line.remaining)], hour);
                 project.end = Some(end);
                 scan.railways.open.remove(&id);
             }
         }
     }
-    let previous = scan.railways.last_read;
-    let unrecorded = scan.railways.unrecorded;
     for row in rows {
         if scan.railways.open.contains_key(&row.id) {
             continue;
@@ -1647,15 +1340,13 @@ fn read_railways(
             possible: Vec::new(),
             added: Vec::new(),
             end: None,
+            output: Vec::new(),
         };
         let mut line = Open {
             project: scan.log.projects.len(),
             carried: false,
             remaining: row.amount,
             repair_levels: 0,
-            produced: row.produced,
-            cost: row.cost,
-            missed: None,
             keys: keys.clone(),
         };
         record_run(
@@ -1666,22 +1357,7 @@ fn read_railways(
             row.amount,
             0,
         );
-        // A railway's `produced` is its whole route's progress since it was
-        // created, so it all counts when the line was created after the read before.
-        let mut spent = ProjectSpending::default();
-        let first = match previous {
-            None => None,
-            Some(_) if unrecorded => Some(Err(SpendingGap::NotRecorded)),
-            Some(previous) if row.created_hour <= previous => Some(Err(SpendingGap::ListedLate)),
-            Some(_) if row.produced < 0 => Some(Err(SpendingGap::Unexplained)),
-            Some(_) => Some(Ok(row.produced)),
-        };
-        match first {
-            Some(first) => spent.record(hour, first),
-            None => spent.before_first_read = true,
-        }
         scan.log.projects.push(project);
-        scan.log.spending.push(spent);
         for key in keys {
             scan.railways.watch.watch(key, states, provinces);
         }
@@ -1690,18 +1366,7 @@ fn read_railways(
     let needed = scan.railways.needed();
     scan.railways.watch.reset(&needed);
     scan.railways.reads.push(hour);
-    scan.railways.last_read = Some(hour);
-    scan.railways.unrecorded = false;
     scan.changes.reset(true);
-}
-
-fn railway_progress(row: &RailwayConstructionRow) -> SpendProgress {
-    SpendProgress {
-        produced: row.produced,
-        cost: row.cost,
-        remaining: row.amount,
-        repair_levels: 0,
-    }
 }
 
 /// Scans one branch for every construction project.
@@ -1726,6 +1391,7 @@ fn scan_with_reads(
         TableId::ProvinceBuildings,
         TableId::BuildingConstruction,
         TableId::RailwayConstruction,
+        TableId::ConstructionLineOutput,
         TableId::LexicalTokens,
     ];
     let cancel = || io::Error::new(io::ErrorKind::Interrupted, "Construction request cancelled");
@@ -1737,6 +1403,7 @@ fn scan_with_reads(
         type_index: BTreeMap::new(),
         dictionary: None,
         unresolved: BTreeSet::new(),
+        output: OutputScan::default(),
     };
     let mut last: Option<i32> = None;
     for block in replay.index.iter().filter(|block| block.branch == branch) {
@@ -1761,13 +1428,14 @@ fn scan_with_reads(
             scan.observe_dictionary(&decoded.tables[TableId::LexicalTokens.index()]);
             // An hour the recording lacks breaks every run and loses every watched building.
             if last.and_then(|last| last.checked_add(1)) != Some(hour) {
+                if let Some(missing) = last.and_then(|last| last.checked_add(1)) {
+                    scan.output.gap(&mut scan.log, missing);
+                }
                 scan.changes.lose();
                 for family in [&mut scan.buildings, &mut scan.railways] {
                     family.watch.lose();
-                    family.unrecorded = true;
                     for line in family.open.values_mut() {
                         line.carried = false;
-                        line.missed = Some(SpendingGap::NotRecorded);
                     }
                 }
             }
@@ -1781,10 +1449,9 @@ fn scan_with_reads(
             match (read, decoded.complete::<tables::BuildingConstruction>()) {
                 (true, Ok(rows)) => read_buildings(&mut scan, decoded, rows, states, provinces),
                 // A read that failed: its values are unknown, so nothing is carried,
-                // and the spending stretch across it is unknown.
+                // until another successful queue read.
                 (true, Err(_)) => scan.buildings.open.values_mut().for_each(|line| {
                     line.carried = false;
-                    line.missed.get_or_insert(SpendingGap::ReadFailed);
                 }),
                 (false, _) => carry(&mut scan.log.projects, &scan.buildings.open, hour),
             }
@@ -1793,9 +1460,11 @@ fn scan_with_reads(
                 (true, Ok(rows)) => read_railways(&mut scan, decoded, rows, states, provinces),
                 (true, Err(_)) => scan.railways.open.values_mut().for_each(|line| {
                     line.carried = false;
-                    line.missed.get_or_insert(SpendingGap::ReadFailed);
                 }),
                 (false, _) => carry(&mut scan.log.projects, &scan.railways.open, hour),
+            }
+            if read_queue(decoded, TableId::ConstructionLineOutput) {
+                scan.output.observe(&mut scan.log, decoded);
             }
         }
     }
@@ -1809,6 +1478,11 @@ fn scan_with_reads(
         .find(|start| start.id == branch)
         .map(|start| branch_bounds(replay, start).1)
         .or(last);
+    if let Some(missing) = last.and_then(|last| last.checked_add(1))
+        && scan.log.last_hour.is_some_and(|end| missing <= end)
+    {
+        scan.output.gap(&mut scan.log, missing);
+    }
     Ok(scan.log)
 }
 
@@ -2404,9 +2078,33 @@ pub(crate) fn scan_warnings(log: &ScannedLog, warnings: &mut Vec<String>) {
         ));
     }
     warnings.push(
-        "A project started and finished between two daily reads of the queue is not in the recording."
-            .to_owned(),
+        "A line created and removed between daily queue reads has no recorded owner or target; its output cannot be attributed.".to_owned(),
     );
+    if log.unowned_lines > 0 {
+        warnings.push(format!(
+            "{} construction output lines have no recorded census owner or target; their projects cannot be attributed.",
+            log.unowned_lines
+        ));
+    }
+    let unknown: BTreeSet<_> = log
+        .projects
+        .iter()
+        .flat_map(|project| {
+            project
+                .output
+                .iter()
+                .filter_map(|read| read.reason.map(|reason| (reason, &project.id)))
+        })
+        .collect();
+    let mut reasons = BTreeMap::new();
+    for (reason, _) in unknown {
+        *reasons.entry(reason).or_insert(0_usize) += 1;
+    }
+    for (reason, count) in reasons {
+        warnings.push(format!(
+            "{count} construction lines have unavailable factory output ({reason:?})."
+        ));
+    }
     if log.reads.is_empty() && log.railway_reads.is_empty() {
         warnings.push("No recorded construction queue in this branch.".to_owned());
     }
@@ -2427,6 +2125,8 @@ impl Product for ConstructionLog {
             ProjectEnd::decl(),
             LevelsBuilt::decl(),
             ProjectRun::decl(),
+            ConstructionOutputRead::decl(),
+            SpendingGap::decl(),
             ConstructionProject::decl(),
             BuildingInfo::decl(),
             StateName::decl(),

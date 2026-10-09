@@ -14,6 +14,8 @@ use std::{
 pub struct IntelligenceContent {
     pub catalogue: Arc<Catalogue>,
     pub definitions: installed_content::intelligence::Intelligence,
+    pub upgrades: installed_content::intelligence::AgencyUpgrades,
+    upgrade_content_error: Option<String>,
     pub warnings: Vec<String>,
     agency_refusals: Mutex<Refusals>,
     defense: OnceLock<Option<DefenseTemplate>>,
@@ -117,7 +119,7 @@ fn prepared_content(
         return Ok(Arc::clone(cached));
     }
     let loaded = Arc::new(match scope {
-        ContentScope::Agency => IntelligenceContent::load_agency(catalogue),
+        ContentScope::Agency => IntelligenceContent::load_acquired_agency(catalogue),
         ContentScope::Operations => IntelligenceContent::load(catalogue)?,
     });
     *cached = Some(Arc::clone(&loaded));
@@ -188,12 +190,57 @@ impl IntelligenceContent {
         Ok(content)
     }
 
+    fn load_acquired_agency(catalogue: Arc<Catalogue>) -> Self {
+        let mut content = Self::load_agency(catalogue);
+        match installed_content::intelligence::read_agency_upgrades(&content.catalogue.content.layers) {
+            Ok(upgrades) => {
+                content.warnings.extend(upgrades.warnings.iter().cloned());
+                content.upgrades = upgrades;
+            }
+            Err(error) => {
+                let reason = format!("Acquired upgrade content unavailable: {error}");
+                content.warnings.push(reason.clone());
+                content.upgrade_content_error = Some(reason);
+            }
+        }
+        content
+    }
+
+    /// CAgencyUpgrade::id_copy 140616BC0 localises its authored identifier.
+    pub fn upgrade_name(&self, branch: &str, token: &str) -> Result<String, String> {
+        if let Some(reason) = &self.upgrade_content_error {
+            return Err(reason.clone());
+        }
+        let definition = self
+            .upgrades
+            .branch_upgrade(branch, token)?
+            .ok_or_else(|| {
+                format!("agency upgrade {branch}/{token}: absent from the recorded content stack")
+            })?;
+        self.catalogue
+            .localised(&definition.name, View::Plain)
+            .ok_or_else(|| format!("agency upgrade {branch}/{token}: localisation refused"))
+    }
+
+    /// COperation::vf4 140A70140 stores the authored name; 140A6DF00 localises it.
+    pub fn operation_name(&self, token: &str) -> Result<String, String> {
+        let definition = self
+            .definitions
+            .operation(token)?
+            .ok_or_else(|| format!("operation {token}: absent from the recorded content stack"))?;
+        self.catalogue
+            .localised(&definition.name, View::Plain)
+            .ok_or_else(|| format!("operation {token}: name localisation refused"))
+    }
+
     pub(crate) fn load_agency(catalogue: Arc<Catalogue>) -> Self {
         let mut warnings = catalogue.verification.clone();
         warnings.extend(catalogue.warnings.iter().cloned());
         Self {
             catalogue,
             definitions: installed_content::intelligence::Intelligence::default(),
+            upgrades: installed_content::intelligence::AgencyUpgrades::default(),
+            upgrade_content_error: None,
             warnings,
             agency_refusals: Mutex::default(),
             defense: OnceLock::default(),
@@ -304,9 +351,7 @@ impl IntelligenceContent {
                 return (artwork, Some(why));
             }
         };
-        artwork.name = (!definition.name.is_empty())
-            .then(|| self.catalogue.localised(&definition.name, View::Plain))
-            .flatten();
+        artwork.name = self.operation_name(token).ok();
         let icon = self.sprite_png(&definition.sprite);
         let reason = match icon {
             Ok(icon) => {
@@ -469,6 +514,27 @@ mod tests {
                 .iter()
                 .all(|warning| !warning.contains("agency upgrade"))
         );
+    }
+
+    #[test]
+    fn intelligence_content_operation_artwork_keeps_authored_and_localised_empty_names() {
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/operations/mod.txt",
+                "authored_empty = { name = \"\" } localised_empty = { name = EMPTY_OPERATION } refused_name = { name = REFUSED_OPERATION }",
+            ),
+            (
+                "localisation/test_l_english.yml",
+                "\u{feff}l_english:\n EMPTY_OPERATION:0 \"\"\n REFUSED_OPERATION:0 \"\u{a4}\"\n",
+            ),
+        ]);
+        let content = IntelligenceContent::load(Arc::new(catalogue)).unwrap();
+        for token in ["authored_empty", "localised_empty"] {
+            assert_eq!(content.operation_name(token).unwrap(), "");
+            assert_eq!(content.operation_artwork(token).0.name.as_deref(), Some(""));
+        }
+        assert_eq!(content.operation_artwork("refused_name").0.name, None);
+        assert_eq!(content.operation_artwork("absent_definition").0.name, None);
     }
 
     #[test]

@@ -26,6 +26,10 @@ const ordered = <T extends { firstHour: number; lastHour: number }>(runs: readon
 
 const POOLS = ['producedRaw', 'subjectsRaw', 'importedRaw', 'toExportRaw', 'exportedRaw', 'availableRaw', 'afterProjectsRaw', 'productionRaw'] as const;
 
+/** Recorded operands/identities only; pending content shows raw resource tokens. */
+export const resourceNumbers = (reply: ResourceBalanceReply): ResourceBalanceReply => ({ ...reply,
+  resources: reply.resources.map(resource => ({ ...resource, name: null, icon: null })), warnings: [] });
+
 /** Checks the reply's shape: resources by ascending native index, one series each,
  * runs and deal hours in hour order that never overlap, and exact raw values. */
 export function validateResourceBalanceReply(data: unknown): ResourceBalanceReply {
@@ -75,6 +79,33 @@ export function balanceOf(run: PoolRun): Balance {
   };
 }
 
+/** Signed components sum to the recorded net, including the game's pool
+ * rounding rather than silently replacing it with a recomputed balance. */
+export function resourceParts(run: PoolRun) {
+  const balance = balanceOf(run);
+  return [
+    { id: 'produced', label: 'Produced', raw: balance.produced },
+    { id: 'subjects', label: 'From subjects', raw: balance.fromSubjects },
+    { id: 'imported', label: 'Imported', raw: balance.imported },
+    { id: 'projects', label: 'Needed by Special Projects', raw: -balance.projects },
+    { id: 'production', label: 'Needed by Production Lines', raw: -balance.production },
+    { id: 'overlord', label: 'To the overlord', raw: -balance.toOverlord },
+    { id: 'exported', label: 'Export reserve', raw: -balance.exportReserve },
+    { id: 'unidentified', label: 'Other / not identified', raw: balance.net - (balance.supply - balance.demand) },
+  ];
+}
+
+/** Demand is presented in its own sign convention; native negative supply or
+ * reversed demand remains negative, while bar geometry uses its magnitude. */
+export function resourcePartGroups(run: PoolRun) {
+  const balance = balanceOf(run), parts = resourceParts(run);
+  return [
+    { title: 'Supply', total: balance.supply, values: parts.filter(part => ['produced', 'subjects', 'imported'].includes(part.id)) },
+    { title: 'Demand', total: balance.demand, values: parts.filter(part => ['projects', 'production', 'overlord', 'exported'].includes(part.id))
+      .map(part => ({ ...part, raw: -part.raw })) },
+  ];
+}
+
 /** Whether the deals at an hour are known: the deal table was recorded at that
  * hour, as the product records it. Where it was not, the deals are unknown, not
  * none, even while the pools go on. */
@@ -94,16 +125,6 @@ export interface Deals { imports: readonly TradeRun[]; exports: readonly TradeRu
 
 /** The reply's deals, indexed once per reply so no hover scans them (`IntervalIndex`). */
 export const tradeIndex = (reply: ResourceBalanceReply) => intervalIndexOf(reply, () => reply.trades);
-
-/** The countries trading with this one at an hour, for any of `resources` (all when
- * absent), each once, in the order first seen. */
-export function partnersAt(index: IntervalIndex<TradeRun>, hour: number, resources?: readonly number[]): string[] {
-  const partners = new Set<string>();
-  for (const trade of index.at(hour)) {
-    if (!resources || resources.includes(trade.resource)) partners.add(trade.partner);
-  }
-  return [...partners];
-}
 
 /** The hours where any of `resources` (native indices) changes, ascending: a pool
  * run, a deal or the deals' coverage (`dealHours`) starts, or one ends the hour
@@ -218,6 +239,17 @@ export const FULL_BREAKDOWN_MAX = 2;
 
 const factories = (count: number) => `${count} civilian ${count === 1 ? 'factory' : 'factories'}`;
 
+// Fitting keeps the visible row objects, including their partner identity.
+const rowPartners = new WeakMap<TooltipRow, string>();
+
+/** Only the partners whose rows survived fitting, in their displayed order. */
+export function tooltipPartners(content: TooltipContent | null): string[] {
+  return [...new Set(content?.rows.flatMap(row => {
+    const tag = rowPartners.get(row);
+    return tag === undefined ? [] : [tag];
+  }) ?? [])];
+}
+
 /** The game-style breakdown of one resource at one hour: where it comes from,
  * where it goes (with each trade partner), what is available and what is needed,
  * then the surplus or deficit. Each direction lists its `maxDeals` largest deals
@@ -231,7 +263,9 @@ export function breakdownRows(balance: Balance, trades: Deals | null, decimals: 
   const deal = (trade: TradeRun): TooltipRow => {
     const who = partner(trade.partner);
     const convoys = trade.convoysRequired > 0 ? ` · ${trade.convoysAssigned}/${trade.convoysRequired} convoys` : '';
-    return { label: `${who.name} · ${factories(trade.factories)}${convoys}`, icon: who.flag, value: amount(BigInt(trade.deliveredRaw)), indent: true, short: true };
+    const row: TooltipRow = { label: `${who.name} · ${factories(trade.factories)}${convoys}`, countryFlag: who, value: amount(BigInt(trade.deliveredRaw)), indent: true, short: true };
+    rowPartners.set(row, trade.partner);
+    return row;
   };
   const total = (deals: readonly TradeRun[]) => deals.reduce((sum, trade) => sum + BigInt(trade.deliveredRaw), 0n);
   const limit = Math.max(1, maxDeals);

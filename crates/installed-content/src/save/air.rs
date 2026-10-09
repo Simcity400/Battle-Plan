@@ -20,6 +20,10 @@ pub struct Pack {
     pub wings: Vec<Wing>,
     pub regions: Vec<Region>,
     pub statistics: Vec<Statistics>,
+    /// Absent daily queues remain absent, including in older synthetic saves.
+    pub daily_statistics: Vec<DailyStatistics>,
+    /// Daily-reader faults belong only to the air-event oracle group.
+    pub daily_errors: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +42,10 @@ pub struct Ace {
     pub country: Vec<u8>,
     pub ordinal: u32,
     pub modifier: Option<Vec<u8>>,
+    /// 14060F1F0 emits is_female only for a nonzero raw byte.
+    pub female: bool,
+    /// 14060F1F0 always writes the signed portrait word.
+    pub portrait: i32,
     pub alive: bool,
     pub handled: bool,
     pub kill_type: u32,
@@ -117,6 +125,18 @@ pub struct Statistics {
     pub channels: [i64; 24],
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DailyStatistics {
+    pub country: Vec<u8>,
+    pub region: u32,
+    pub current_slot: u32,
+    pub wrapped: bool,
+    /// All native fields in the physical slot preceding `current_slot`.
+    /// The queue saves no dates or proof that this slot covered a whole day.
+    pub previous_fields: [i64; 89],
+    pub current_fields: [i64; 89],
+}
+
 fn number<T: std::str::FromStr>(items: &[Item], name: &[u8]) -> io::Result<T> {
     integer(&required_bytes(items, name)?)
 }
@@ -187,6 +207,8 @@ fn parse_ace(country: &[u8], ordinal: u32, fields: &[Item]) -> io::Result<Ace> {
         country: country.to_vec(),
         ordinal,
         modifier: bytes(fields, b"modifier")?,
+        female: optional_flag(fields, b"is_female", false)?,
+        portrait: number(fields, b"portrait")?,
         alive: optional_flag(fields, b"alive", true)?,
         handled: optional_flag(fields, b"handled", false)?,
         kill_type: if field(fields, b"kill_type")?.is_some() {
@@ -329,6 +351,63 @@ fn parse_statistics(country: &[u8], region: u32, fields: &[Item]) -> io::Result<
     })
 }
 
+fn parse_daily_statistics(
+    country: &[u8],
+    region: u32,
+    fields: &[Item],
+) -> io::Result<Option<DailyStatistics>> {
+    // CLoopHistory::vf2@141505B90 writes its queue. The queue writer
+    // @141505F20 serializes +8/+10/+18 as keys 0/1/2: daily is key 0.
+    let queue = required_block(fields, b"history_queue")?;
+    let Some(daily) = field(queue, b"0")? else {
+        return Ok(None);
+    };
+    let daily = block(daily)?;
+    let capacity: u32 = number(daily, b"max_elements")?;
+    let current_slot: u32 = number(daily, b"offset")?;
+    // GetOrCreateRegionHistory@140C40870 constructs 89 fields. Its
+    // @141504680 -> @141504690 initialization constructs 30 daily records.
+    if capacity != 30 || current_slot >= capacity {
+        return Err(invalid(
+            "air daily history has invalid native capacity or cursor",
+        ));
+    }
+    let wrapped = flag(daily, b"is_full")?;
+    let previous_slot = (current_slot + capacity - 1) % capacity;
+    let mut previous_fields = [0; 89];
+    let mut current_fields = [0; 89];
+    // Container::vf2@141505BB0 saves all records in physical slot order;
+    // it omits data only when every field in every record is zero.
+    if let Some(data) = field(daily, b"data")? {
+        let data = block(data)?;
+        if data.len() != 30 * 89 {
+            return Err(invalid(
+                "air daily history data does not contain thirty 89-field rows",
+            ));
+        }
+        for (index, item) in data.iter().enumerate() {
+            if item.key.is_some() {
+                return Err(invalid("air history data must be an ordered scalar array"));
+            }
+            let value = Decimal::parse(scalar(&item.value)?)?;
+            if index / 89 == current_slot as usize {
+                current_fields[index % 89] = value.raw;
+            }
+            if index / 89 == previous_slot as usize {
+                previous_fields[index % 89] = value.raw;
+            }
+        }
+    }
+    Ok(Some(DailyStatistics {
+        country: country.to_vec(),
+        region,
+        current_slot,
+        wrapped,
+        previous_fields,
+        current_fields,
+    }))
+}
+
 pub fn parse(items: &[Item]) -> io::Result<Pack> {
     let mut pack = Pack::default();
     if let Some(countries) = field(items, b"countries")? {
@@ -386,6 +465,14 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
                 )?;
                 pack.statistics
                     .push(parse_statistics(tag, id, block(&region.value)?)?);
+                match parse_daily_statistics(tag, id, block(&region.value)?) {
+                    Ok(Some(daily)) => pack.daily_statistics.push(daily),
+                    Ok(None) => {}
+                    Err(error) => pack.daily_errors.push(format!(
+                        "{} region {id}: {error}",
+                        String::from_utf8_lossy(tag)
+                    )),
+                }
             }
         }
     }
@@ -441,12 +528,21 @@ mod tests {
 
     #[test]
     fn ace_omissions_keep_native_defaults_and_all_reference_bits() {
-        let doc = parser::parse(br#"countries={GER={ace={id={id=4294967295 type=4294967295} name="" surname="S"} ace={id={id=1 type=4} name="N" surname="S" alive=no handled=yes kill_type=-1 killer_name={id=9 type=2147483648} killer_country="ENG"}}}"#).unwrap();
+        let doc = parser::parse(br#"countries={GER={ace={id={id=4294967295 type=4294967295} name="" surname="S" portrait=0} ace={id={id=1 type=4} name="N" surname="S" modifier="authored_type" is_female=yes portrait=-1 alive=no handled=yes kill_type=-1 killer_name={id=9 type=2147483648} killer_country="ENG"}}}"#).unwrap();
         let pack = parse(&doc.items).unwrap();
         assert_eq!(pack.aces[0].id, u64::MAX);
         assert!(pack.aces[0].alive);
         assert!(!pack.aces[0].handled);
         assert!(pack.aces[0].callsign.is_empty());
+        assert!(!pack.aces[0].female);
+        assert_eq!(pack.aces[0].portrait, 0);
+        assert_eq!(pack.aces[0].modifier, None);
+        assert!(pack.aces[1].female);
+        assert_eq!(pack.aces[1].portrait, -1);
+        assert_eq!(
+            pack.aces[1].modifier.as_deref(),
+            Some(&b"authored_type"[..])
+        );
         assert_eq!(pack.aces[1].ordinal, 1);
         assert_eq!(pack.aces[1].kill_type, u32::MAX);
         assert_eq!(pack.aces[1].killer_ace, (9_u64 << 32) | (1 << 31));
@@ -486,5 +582,113 @@ mod tests {
         let malformed =
             parser::parse(b"history_queue={2={max_elements=5 offset=5 is_full=no}}").unwrap();
         assert!(parse_statistics(b"GER", 23, &malformed.items).is_err());
+    }
+
+    #[test]
+    fn daily_previous_slot_preserves_every_native_field_and_wraps_at_zero() {
+        for current_slot in [0_usize, 1, 29] {
+            let previous_slot = (current_slot + 29) % 30;
+            let mut values = vec!["0".to_owned(); 30 * 89];
+            for channel in 0..89 {
+                values[previous_slot * 89 + channel] = format!("{}.{channel:05}", channel + 1);
+            }
+            values[previous_slot * 89 + 88] = "-92233720368547.75808".to_owned();
+            values[current_slot * 89 + 30] = "9".to_owned();
+            let text = format!(
+                "history_queue={{0={{max_elements=30 offset={current_slot} is_full=yes data={{ {} }} }} }}",
+                values.join(" ")
+            );
+            let doc = parser::parse(text.as_bytes()).unwrap();
+            let row = parse_daily_statistics(b"mod country", 4001, &doc.items)
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.country, b"mod country");
+            assert_eq!(row.region, 4001);
+            assert_eq!(row.current_slot, current_slot as u32);
+            assert!(row.wrapped);
+            for (channel, value) in row.previous_fields.iter().enumerate().take(88) {
+                assert_eq!(*value, (channel as i64 + 1) * 100_000 + channel as i64);
+            }
+            assert_eq!(row.previous_fields[88], i64::MIN);
+            assert_eq!(row.current_fields[30], 900000);
+        }
+    }
+
+    #[test]
+    fn daily_zero_omission_is_exact_but_missing_daily_queue_stays_absent() {
+        let doc =
+            parser::parse(b"history_queue={0={max_elements=30 offset=1 is_full=no}}").unwrap();
+        let row = parse_daily_statistics(b"mod country", 4001, &doc.items)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.previous_fields, [0; 89]);
+        assert_eq!(row.current_fields, [0; 89]);
+        assert!(!row.wrapped);
+        let doc =
+            parser::parse(b"history_queue={2={max_elements=5 offset=4 is_full=yes}}").unwrap();
+        assert!(
+            parse_daily_statistics(b"mod country", 4001, &doc.items)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn daily_malformed_metadata_and_arrays_are_refused() {
+        for fields in [
+            "max_elements=29 offset=0 is_full=no",
+            "max_elements=31 offset=0 is_full=no",
+            "max_elements=30 offset=30 is_full=no",
+            "max_elements=30 offset=-1 is_full=no",
+            "max_elements=30 offset=1 is_full=maybe",
+            "max_elements=30 offset=1",
+            "max_elements=30 offset=1 is_full=no data={0}",
+            "max_elements=30 offset=1 is_full=no data={}",
+            "max_elements=30 offset=1 is_full=no offset=2",
+        ] {
+            let text = format!("history_queue={{0={{ {fields} }} }}");
+            let doc = parser::parse(text.as_bytes()).unwrap();
+            assert!(
+                parse_daily_statistics(b"tag", 3, &doc.items).is_err(),
+                "{fields}"
+            );
+        }
+        for bad_value in ["x=0", "{}", "bad", "92233720368547.75808"] {
+            let mut values = vec!["0"; 30 * 89];
+            // Even a field outside the selected record must remain valid.
+            values[89 + 88] = bad_value;
+            let text = format!(
+                "history_queue={{0={{max_elements=30 offset=1 is_full=no data={{ {} }} }} }}",
+                values.join(" ")
+            );
+            let doc = parser::parse(text.as_bytes()).unwrap();
+            assert!(
+                parse_daily_statistics(b"tag", 3, &doc.items).is_err(),
+                "{bad_value}"
+            );
+        }
+    }
+
+    #[test]
+    fn daily_repeated_country_region_coordinates_remain_visible_to_oracle() {
+        let text = b"strategic_air={\"mod country\"={history={4001={history_queue={0={max_elements=30 offset=1 is_full=no} 2={max_elements=5 offset=1 is_full=no}}} 4001={history_queue={0={max_elements=30 offset=2 is_full=no} 2={max_elements=5 offset=1 is_full=no}}}}}}";
+        let doc = parser::parse(text).unwrap();
+        let pack = parse(&doc.items).unwrap();
+        assert_eq!(pack.daily_statistics.len(), 2);
+        assert_eq!(pack.statistics.len(), 2);
+        assert_eq!(pack.daily_statistics[0].current_slot, 1);
+        assert_eq!(pack.daily_statistics[1].current_slot, 2);
+        assert_eq!(pack.daily_statistics[0].country, b"mod country");
+        assert_eq!(pack.daily_statistics[0].region, 4001);
+    }
+
+    #[test]
+    fn malformed_daily_queue_does_not_abort_other_air_fields() {
+        let text = b"strategic_air={tag={history={3={history_queue={0={max_elements=30 offset=30 is_full=no} 2={max_elements=5 offset=1 is_full=no}}}}}}";
+        let doc = parser::parse(text).unwrap();
+        let pack = parse(&doc.items).unwrap();
+        assert_eq!(pack.statistics.len(), 1);
+        assert_eq!(pack.daily_errors.len(), 1);
+        assert!(pack.daily_statistics.is_empty());
     }
 }

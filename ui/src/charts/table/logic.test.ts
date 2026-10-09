@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { commitRows, EMPTY_HISTORY, shownRows } from '../rowMotion.ts';
-import { barFraction, barMaximum, nextSort, rankChanges, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
+import { barFraction, barMaximum, groupedRows, nextSort, rankChanges, rowOffsets, scrollToShow, shownMotion, sortRows, visibleRange } from './logic.ts';
 import { sortKey, tableSortOf, tableSortOptions, TABLE_OPTIONS } from './options.ts';
 import { resolveOptions, setOption } from '../../dashboard/options.ts';
 
@@ -120,4 +120,50 @@ test('a 5,000-row windowed redraw mounts only the rows in view and those sliding
     drawn = shownMotion(moving, start, end, true, row => retained.has(row.key)).length;
   }
   assert.ok(drawn <= 72);
+});
+
+test('fixed header choices keep their direction across repeated clicks and reversed restored sorts', () => {
+  for (const direction of ['ascending', 'descending'] as const) {
+    const sort = { column: 'date', direction };
+    assert.deepEqual(nextSort(sort, 'date', 'ascending', 'descending'), { column: 'date', direction: 'descending' });
+    assert.deepEqual(nextSort(sort, 'name', 'descending', 'ascending'), { column: 'name', direction: 'ascending' });
+  }
+  assert.deepEqual(nextSort({ column: 'name', direction: 'ascending' }, 'name'), { column: 'name', direction: 'descending' });
+});
+
+test('faction grouping keeps native identities separate and exact missing-last column order inside them', () => {
+  const rows = [
+    { id: 'none', tag: 'none', group: { key: 'none', label: 'No faction', order: 3 }, value: 99n },
+    { id: 'unknown', tag: 'unknown', group: { key: 'unknown', label: 'Faction not recorded', order: 2 }, value: 100n },
+    { id: 'native-a', tag: 'z', group: { key: 'faction:2', label: 'Same name', orderKey: 2n }, value: 9007199254740992n },
+    { id: 'native-b', tag: 'a', group: { key: 'faction:2', label: 'Same name', orderKey: 2n }, value: 9007199254740993n },
+    { id: 'native-c', tag: 'c', group: { key: 'faction:10', label: 'Same name', orderKey: 10n }, value: 9999999999999999n },
+    { id: 'missing', tag: 'missing', group: { key: 'faction:2', label: 'Same name', orderKey: 2n }, value: null },
+    { id: 'negative', tag: 'negative', group: { key: 'faction:2', label: 'Same name', orderKey: 2n }, value: -1n },
+    { id: 'unnamed', tag: 'unnamed', group: { key: 'faction:30', label: 'Faction name unavailable', order: 1, orderKey: 30n }, value: 1n },
+  ];
+  for (const input of [rows, [...rows].reverse()]) {
+    const order = (direction: 'ascending' | 'descending') => groupedRows(input, row => row.group,
+      row => row.value, direction, row => row.id, row => row.tag).map(row => row.id);
+    assert.deepEqual(order('descending'), ['native-b', 'native-a', 'negative', 'missing', 'native-c', 'unnamed', 'unknown', 'none']);
+    assert.deepEqual(order('ascending'), ['negative', 'native-a', 'native-b', 'missing', 'native-c', 'unnamed', 'unknown', 'none']);
+  }
+  const ties = rows.slice(2, 4).map(row => ({ ...row, value: 1n }));
+  assert.deepEqual(groupedRows(ties, row => row.group, row => row.value, 'descending', row => row.id, row => row.tag)
+    .map(row => row.id), ['native-b', 'native-a']);
+});
+
+test('dated faction changes move existing country keys through the shared row motion', () => {
+  const rows = [
+    { key: 'native-country-a', group: { key: 'faction:1', label: 'Z' }, value: 2n },
+    { key: 'native-country-b', group: { key: 'faction:2', label: 'A' }, value: 1n },
+  ];
+  const items = (input: typeof rows) => groupedRows(input, row => row.group, row => row.value,
+    'descending', row => row.key).map(row => ({ key: row.key, item: row }));
+  const initial = items(rows);
+  assert.deepEqual(initial.map(row => row.key), ['native-country-b', 'native-country-a']);
+  const history = commitRows(EMPTY_HISTORY, initial, 0, 450);
+  const changed = items([{ ...rows[0], group: rows[1].group }, rows[1]]);
+  assert.deepEqual(changed.map(row => row.key), ['native-country-a', 'native-country-b']);
+  assert.ok(shownRows(history, changed, 100, 450).every(row => row.phase === 'staying'));
 });

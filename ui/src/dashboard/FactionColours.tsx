@@ -106,12 +106,13 @@ export function useFactionColours(client: DashboardClient, source: DashboardSour
     Object.fromEntries(factions.map(faction => [faction.id, chosenColour(settings, campaignKey, faction.id, identities.get(faction.id) ?? null)])), surface),
   [factions, leaders, settings, campaignKey, identities, surface]);
   const names = useCallback((faction: FactionGroup, hour?: number) => factionNameAt(faction, hour, own[faction.id]?.name), [own]);
+  const displayNames = useMemo(() => new Map(Object.entries(own).flatMap(([id, style]) => style.name ? [[id, style.name] as const] : [])), [own]);
   const identity = (id: string) => identities.get(id) ?? null;
   /** The tag of the leader a faction had when first recorded, if known. */
   const founder = (id: string) => founders?.get(id) ?? null;
   const setColour = (id: string, hex: string | null, scope: ColourScope) =>
     saveCampaignSettings(setFactionColour(settings, scope, campaignKey, id, identity(id), hex));
-  return { factions, colours, names, identity, founder, setColour, loading: !campaign.factions && !campaign.error, warnings: campaign.warnings, error: campaign.error };
+  return { factions, colours, names, displayNames, identity, founder, setColour, loading: !campaign.factions && !campaign.error, warnings: campaign.warnings, error: campaign.error };
 }
 
 /** A campaign's faction colours, for every campaign or this one only, and its display

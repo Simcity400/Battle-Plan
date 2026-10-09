@@ -1,44 +1,44 @@
 # Battle Plan
 
-Record a Hearts of Iron IV campaign, replay it on an interactive map, and explore its statistics over time.
+Record a Hearts of Iron IV campaign, replay it on an interactive map, and explore its statistics over time. The recorder reads game state without controlling the game; the desktop app provides Campaign map and Overview views. Playback reads `.battleplan` files without live game memory.
 
-The recorder reads the game's state without controlling the game. The desktop app has a native **Campaign map** tab and an **Overview** [dashboard](crates/dashboard/README.md). Recordings use `.battleplan` files; playback does not need access to live game memory.
+This is a Windows project for a hash-verified game executable. Start with the [desktop guide](crates/desktop/README.md) to run the app or the [recorder guide](crates/recorder/README.md) to record a campaign. Shared development, validation and merge rules live in [AGENTS.md](AGENTS.md); read [publication guidance](docs/publication.md) before sharing source or artifacts.
 
-## Start here
+## Components
 
-This is a Windows project for a specific, hash-verified HOI4 build. Unsupported game executables are refused. Rust is pinned in [rust-toolchain.toml](rust-toolchain.toml); build settings are in [.cargo/config.toml](.cargo/config.toml). Development rules and validation commands live in [AGENTS.md](AGENTS.md).
+Each component's README describes its layout, concepts and local rules.
 
-Desktop development needs the pinned Rust toolchain, Windows MSVC build tools, `lld-link`, `sccache`, Node.js 22.12 or newer, and the Microsoft Edge WebView2 Runtime. Follow the [desktop guide](crates/desktop/README.md#develop) to start the app.
-
-Choose **+** beside **Campaigns** in the sidebar, set your replay folder when prompted (or in Settings), and load a campaign from the list. The map also needs the matching game and user folders; Overview widgets can read the recording without map assets.
-
-To make a recording, follow the [recorder guide](crates/recorder/README.md). For builds, launch arguments and desktop packaging, see the [desktop guide](crates/desktop/README.md).
-
-The [dashboard architecture](docs/dashboard.md) describes the crate groups, the data-product flow and the identity and time rules widgets follow.
-
-## Find your way around
-
-Each crate's README explains its responsibility, important rules and development entry points.
-
-| Component | What belongs here |
+| Component | Responsibility |
 |---|---|
-| [shader-pipeline](crates/shader-pipeline/README.md) | Executable native shader compiler, persistent cache and GPU pass binding. |
-| [engine](crates/engine/README.md) | Supported game build, native layouts and guarded memory reads. |
-| [collector](crates/collector/README.md) | Injected DLL, hourly acquisition and recording pipeline. |
+| [engine](crates/engine/README.md) | Supported executable, native layouts, guarded memory readers and hook site descriptors. |
+| [collector](crates/collector/README.md) | Injected DLL, native observation hooks, acquisition and recording pipeline. |
 | [recorder](crates/recorder/README.md) | Attach/detach, replay finalization, inspection and save comparison. |
-| [replay](crates/replay/README.md) | Shared recording format, tables, branches, cadence and sample history. |
-| [installed-content](crates/installed-content/README.md) | Game assets, text saves, content layers and identity verification. |
-| [viewer](crates/viewer/README.md) | The native map process: rendering, playback, game-derived visuals and image export. |
-| [dashboard](crates/dashboard/README.md) | Widget data products, the native data service, the host/viewer protocol and the generated frontend types. |
-| [desktop](crates/desktop/README.md) | Tauri host and the native viewer's lifecycle. |
-| [ui](ui/README.md) | React interface: shell, shared components, the widget framework and one folder per widget. |
+| [replay](crates/replay/README.md) | Recording format, tables, branches and sample history. |
+| [installed-content](crates/installed-content/README.md) | Recorded content stack, game assets, text saves and identity verification. |
+| [shader-pipeline](crates/shader-pipeline/README.md) | Native shader compiler, persistent cache and GPU pass binding. |
+| [viewer](crates/viewer/README.md) | Native map rendering, playback, game-derived visuals and image export. |
+| [dashboard](crates/dashboard/README.md) | Widget data products, data service, host/viewer protocol and frontend types. |
+| [desktop](crates/desktop/README.md) | Tauri host, application setup, packaging and native viewer lifecycle. |
+| [UI](ui/README.md) | React interface, navigation, layouts, playback and widgets. |
 
-## Working on the project
+The [dashboard architecture](docs/dashboard.md) explains how recordings become data products and widgets.
 
-Review [publication and third-party material](docs/publication.md) before sharing source, history or build artifacts.
+## UI areas
 
-Read [AGENTS.md](AGENTS.md) for development rules and validation commands. Detailed references stay beside their subject: [engine readers](crates/engine/README.md#source-map), [map rendering](crates/viewer/README.md#rendering-rules), [reverse-engineering tools](tools/re/README.md), and [reference captures](reference/).
+| Area | Responsibility |
+|---|---|
+| [Shell](ui/src/shell/) | Navigation, Settings, campaign views, native viewer glue and Tauri API wrappers. |
+| [Appearance](ui/src/shell/appearance/) | Themes, backdrops, fonts and appearance preferences. |
+| [Shared components](ui/src/components/) | Reusable controls, popovers, tooltips, country choices and flags. |
+| [Dashboard framework](ui/src/dashboard/) | Layout storage, shared playback clock, campaign sources, data client and product cache. |
+| [Charts](ui/src/charts/README.md) | Canvas charts, tables, axes, formatting and viewport windowing. |
+| [Widgets](ui/src/widgets/README.md) | Widget registration and individual widget guides, including the map widget. |
+| [Generated types](ui/src/generated/) | TypeScript contracts generated from Rust. |
 
-Preserve exact recorded values and distinguish missing data from zero. Show gaps, uncertainty and carried samples honestly. A passing build is not proof of capture correctness, map fidelity or game-speed performance.
+## Research and diagnostics
 
-These documents describe how the project works. Old plans and decisions remain in Git history; experiment logs and captures do not belong in the documentation or source control.
+| Area | Responsibility |
+|---|---|
+| [hoi4re](tools/re/README.md) | Native decompile, instruction and knowledge lookup tools. |
+| [Foreign-unwind fixture](tools/tap-foreign-unwind/README.md) | Out-of-game C++ and SEH checks for the production Tap. |
+| [Reference evidence](reference/README.md) | Comparison notes and guidance for private matched captures. |

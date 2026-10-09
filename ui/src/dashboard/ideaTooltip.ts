@@ -71,6 +71,13 @@ export interface IdeaTooltipSources {
   nameAt?: (tag: string, hour: number) => string;
 }
 
+/** Country targets used by an idea or its traits, for dated names and flags. */
+export function ideaTargetTags(info: IdeaInfo | null | undefined): string[] {
+  if (!info) return [];
+  return [...new Set([...info.targeted, ...info.traits.flatMap(trait => trait.targeted)]
+    .flatMap(group => group.target === null ? [] : [group.target]))];
+}
+
 export function ideaTooltipSources(reply: Pick<IdeaHistoryReply, 'modifiers' | 'texts'>, countryName: (tag: string) => string,
   nameAt?: (tag: string, hour: number) => string): IdeaTooltipSources {
   const formats = new Map(reply.modifiers.map(format => [format.key, format]));

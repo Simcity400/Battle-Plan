@@ -8,11 +8,13 @@ import './drill.css';
  * the view slides across to the breakdown and ← Back returns; beside it, the
  * breakdown opens in a panel next to the widget that closes with ×, Esc or a click
  * elsewhere. Both share the header: the day shown, Follow playback and Pin as widget. */
-export default function DrillHost({ mode, open, title, day, following, canFollow, onClose, onFollow, onPin, anchor, main, children }: {
+export default function DrillHost({ mode, open, title, day, following, canFollow, onClose, onFollow, onPin, anchor, returnFocus, main, children }: {
   mode: 'inline' | 'popout'; open: boolean; title: string; day: string; following: boolean; canFollow: boolean;
   onClose: () => void; onFollow: () => void; onPin?: () => void;
   /** The widget body the pop-out panel sits beside. */
   anchor: RefObject<HTMLElement | null>;
+  /** Return to this chart after close only while focus still belongs to this drill. */
+  returnFocus?: string;
   main: ReactNode; children: ReactNode;
 }) {
   const panel = usePopover('start');
@@ -21,9 +23,24 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
   const panelRef = useRef(panel);
   panelRef.current = panel;
   const back = useRef<HTMLButtonElement>(null);
-  const close = useRef(onClose);
-  close.current = onClose;
+  const close = useRef({ onClose, returnFocus, open });
+  close.current = { onClose, returnFocus, open };
   const popout = mode === 'popout';
+  const requestClose = () => {
+    const closingPanel = popout ? panelRef.current.popup.current : null;
+    const { onClose, returnFocus } = close.current;
+    if (returnFocus && !close.current.open) return;
+    if (returnFocus) close.current.open = false;
+    onClose();
+    if (!returnFocus) return;
+    requestAnimationFrame(() => {
+      if (!anchor.current?.isConnected) return;
+      const focused = document.activeElement;
+      if (focused && focused !== document.body && focused.isConnected !== false
+        && !anchor.current?.contains(focused) && !closingPanel?.contains(focused)) return;
+      anchor.current?.querySelector<HTMLElement>(returnFocus)?.focus({ preventScroll: true });
+    });
+  };
   useLayoutEffect(() => {
     if (!popout) return;
     const current = panelRef.current;
@@ -40,7 +57,7 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
       const target = event.target as Node;
       if (element?.contains(target) || anchor.current?.contains(target)) return;
       if (target instanceof Element && target.closest('[popover]')) return;
-      close.current();
+      requestClose();
     };
     document.addEventListener('pointerdown', outside, true);
     return () => document.removeEventListener('pointerdown', outside, true);
@@ -52,26 +69,26 @@ export default function DrillHost({ mode, open, title, day, following, canFollow
     if (!popout) back.current?.focus({ preventScroll: true });
     const key = (event: KeyboardEvent) => {
       const active = document.activeElement;
-      if (event.key === 'Escape' && (anchor.current?.contains(active) || (popout && panelRef.current.popup.current?.contains(active)))) close.current();
+      if (event.key === 'Escape' && (anchor.current?.contains(active) || (popout && panelRef.current.popup.current?.contains(active)))) requestClose();
     };
     window.addEventListener('keydown', key);
     return () => window.removeEventListener('keydown', key);
   }, [popout, open, anchor]);
 
   const header = <div className="drill-header">
-    {popout ? null : <button ref={back} type="button" className="button small quiet" onClick={onClose}><Icon name="chevron-left" />Back</button>}
+    {popout ? null : <button ref={back} type="button" className="button small quiet" onClick={requestClose}><Icon name="chevron-left" />Back</button>}
     <strong>{title}</strong>
     <span className="drill-day">{day}</span>
     {canFollow && (following
       ? <span className="pill drill-following" data-tooltip="The breakdown moves with playback">Following playback</span>
       : <button type="button" className="button small" onClick={onFollow}>Follow playback</button>)}
     {onPin && <button type="button" className="icon-button small" aria-label="Pin as widget" data-tooltip="Pin as widget" onClick={onPin}><Icon name="pin" /></button>}
-    {popout && <button type="button" className="icon-button small" aria-label="Close breakdown" onClick={onClose}><Icon name="close" /></button>}
+    {popout && <button type="button" className="icon-button small" aria-label="Close breakdown" onClick={requestClose}><Icon name="close" /></button>}
   </div>;
 
   if (popout) return <>
     {main}
-    <Popover menu={panel} manual className="drill-popout" aria-label={title} onToggle={event => { if (event.newState === 'closed' && open) onClose(); }}>
+    <Popover menu={panel} manual className="drill-popout" aria-label={title} onToggle={event => { if (event.newState === 'closed' && open) requestClose(); }}>
       {open && <>{header}<div className="drill-body">{children}</div></>}
     </Popover>
   </>;

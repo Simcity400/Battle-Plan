@@ -1,3 +1,4 @@
+import { ellipsise } from './labels.ts';
 import { formatDate, gameDate } from '../dashboard/calendar.ts';
 import { chartBottom } from './frame.ts';
 import type { PlotFrame } from './frame.ts';
@@ -26,12 +27,22 @@ export function tracePath(ctx: CanvasRenderingContext2D, commands: readonly Path
  * and the plot's height, so a chart can measure their labels before it settles its
  * left padding. */
 export function valueTicks(frame: PlotFrame, tokens: ChartTokens): number[] {
+  if (frame.valueTicks) return frame.valueTicks.filter(value => value >= frame.y[0] && value <= frame.y[1]);
   return frame.log ? thinLogTicks(logTicks(frame.y[0], frame.y[1]), frame.toY, tokens.fontSize.small + 6)
     : linearTicks(frame.y[0], frame.y[1], Math.max(2, Math.round(frame.plotHeight / 48)));
 }
 
 /** The gap between a value label and the plot, in pixels. */
 export const VALUE_LABEL_GAP = 6;
+
+/** A full-height recording gap on a time surface, distinct from zero activity. */
+export function drawRecordedGap(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens,
+  firstHour: number, lastHour: number, until: number | null = null): void {
+  const first = Math.max(firstHour, frame.x[0]), last = Math.min(lastHour + 1, frame.x[1], until == null ? Infinity : until + 1);
+  if (first >= last) return;
+  ctx.save(); ctx.fillStyle = tokens.error; ctx.globalAlpha = tokens.gapOpacity;
+  ctx.fillRect(frame.toX(first), frame.plotTop, frame.toX(last) - frame.toX(first), frame.plotHeight); ctx.restore();
+}
 
 /** The widest value label of a frame's axis, in pixels. */
 export function valueLabelWidth(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string): number {
@@ -46,14 +57,16 @@ export function valueLabelWidth(ctx: CanvasRenderingContext2D, frame: PlotFrame,
 /** Hairline value gridlines with their labels, and date labels under the plot (and
  * any strip under it).
  * `formatValue` also gets every tick drawn, so it can keep neighbouring labels apart. */
-export function drawAxes(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string): void {
+const rowLabels = new WeakMap<CanvasRenderingContext2D, { font: string; width: number; labels: Map<string, string> }>();
+export function drawAxes(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, formatValue: (value: number, ticks: readonly number[]) => string,
+  rows?: readonly string[]): void {
   const { plotLeft, plotTop, plotWidth, plotHeight } = frame;
   ctx.save();
   ctx.lineWidth = tokens.lineWidth.grid;
   ctx.font = font(tokens, tokens.fontSize.small);
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
-  const values = valueTicks(frame, tokens);
+  const values = rows ? [] : valueTicks(frame, tokens);
   for (const value of values) {
     const y = crisp(frame.toY(value));
     ctx.strokeStyle = tokens.grid;
@@ -61,12 +74,24 @@ export function drawAxes(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens
     ctx.fillStyle = tokens.muted;
     ctx.fillText(formatValue(value, values), plotLeft - VALUE_LABEL_GAP, y);
   }
+  if (rows) {
+    ctx.font = font(tokens, tokens.fontSize.small, 500);
+    const width = plotLeft - VALUE_LABEL_GAP * 2;
+    let cached = rowLabels.get(ctx);
+    if (!cached || cached.font !== ctx.font || cached.width !== width) { cached = { font: ctx.font, width, labels: new Map() }; rowLabels.set(ctx, cached); }
+    rows.forEach((label, index) => {
+      let fitted = cached.labels.get(label);
+      if (fitted === undefined) { fitted = ellipsise(label, width, text => ctx.measureText(text).width); cached.labels.set(label, fitted); }
+      ctx.fillStyle = tokens.text;
+      ctx.fillText(fitted, plotLeft - VALUE_LABEL_GAP, plotTop + (index + 0.5) / Math.max(1, rows.length) * plotHeight);
+    });
+  }
   const ticks = timeTicks(frame.x[0], frame.x[1], plotWidth, text => ctx.measureText(text).width);
-  const dates = chartBottom(frame);
+  const dates = frame.timeAxisTop ? plotTop - tokens.fontSize.small * 2 : chartBottom(frame);
   ctx.strokeStyle = tokens.grid;
   for (const hour of ticks.grid) {
     const x = crisp(frame.toX(hour));
-    ctx.beginPath(); ctx.moveTo(x, dates); ctx.lineTo(x, dates + 4); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, frame.timeAxisTop ? plotTop : dates); ctx.lineTo(x, frame.timeAxisTop ? plotTop + plotHeight : dates + 4); ctx.stroke();
   }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
@@ -151,7 +176,8 @@ export function drawGapFill(ctx: CanvasRenderingContext2D, frame: PlotFrame, fir
  * surface-coloured seam between layers. */
 /** Filled bands between explicit lower and upper edges (a diverging stack), each
  * with a thin surface outline so neighbouring bands stay apart. */
-export function drawBands(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], bands: readonly { low: readonly number[]; high: readonly number[] }[], colors: readonly string[]): void {
+export function drawBands(ctx: CanvasRenderingContext2D, frame: PlotFrame, tokens: ChartTokens, hours: readonly number[], bands: readonly { low: readonly number[]; high: readonly number[] }[], colors: readonly string[],
+  ends: { start?: boolean; end?: boolean } = {}): void {
   bands.forEach((band, layer) => {
     if (band.high.every((value, index) => value === band.low[index])) return;
     // A single sample (an hour between gaps) has no width: it is drawn as a thin bar.
@@ -166,6 +192,14 @@ export function drawBands(ctx: CanvasRenderingContext2D, frame: PlotFrame, token
     for (let index = hours.length - 1; index >= 0; index--) ctx.lineTo(frame.toX(hours[index]), frame.toY(band.low[index]));
     ctx.closePath();
     ctx.fillStyle = colors[layer]; ctx.fill();
+    if (ends.start === false || ends.end === false) {
+      ctx.beginPath();
+      traceBandEdge(ctx, frame, hours, band.high);
+      if (ends.end === false) ctx.moveTo(frame.toX(hours.at(-1)!), frame.toY(band.low.at(-1)!));
+      else ctx.lineTo(frame.toX(hours.at(-1)!), frame.toY(band.low.at(-1)!));
+      for (let index = hours.length - 2; index >= 0; index--) ctx.lineTo(frame.toX(hours[index]), frame.toY(band.low[index]));
+      if (ends.start !== false) ctx.lineTo(frame.toX(hours[0]), frame.toY(band.high[0]));
+    }
     ctx.lineWidth = 1; ctx.strokeStyle = tokens.surface; ctx.stroke();
   });
 }

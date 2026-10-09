@@ -349,8 +349,30 @@ fn put_string(bytes: &mut [u8], at: usize, text: &[u8]) {
     bytes[at + text.len()] = 0;
 }
 
-pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
-    SliceMemory { base: 0, bytes }
+// Map the distant image singleton without a dense image-sized allocation.
+pub(crate) const GUI_SINGLETON: usize = 0x7ff00;
+
+pub(crate) struct SyntheticMemory<'a> {
+    bytes: &'a [u8],
+}
+
+impl Memory for SyntheticMemory<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        let address = if address == engine::cgui::SINGLETON_RVA && output.len() == 8 {
+            GUI_SINGLETON
+        } else {
+            address
+        };
+        SliceMemory {
+            base: 0,
+            bytes: self.bytes,
+        }
+        .copy(address, output)
+    }
+}
+
+pub(crate) fn memory(bytes: &[u8]) -> SyntheticMemory<'_> {
+    SyntheticMemory { bytes }
 }
 
 pub(crate) struct Split {

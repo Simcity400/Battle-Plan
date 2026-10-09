@@ -33,12 +33,12 @@ pub trait Observation {
     fn drain(entries: &mut [Self::Entry]) -> Result<Drained, &'static str>;
 }
 
-pub struct Captured<O: Observation> {
+pub struct Captured<O: Observation, const N: usize = 1> {
     entries: Vec<O::Entry>,
     pub(super) drained: Option<Result<Drained, &'static str>>,
     observation: PhantomData<O>,
 }
-impl<O: Observation> Captured<O> {
+impl<O: Observation, const N: usize> Captured<O, N> {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             entries: owned_vec(default_vec(capacity.entries)),
@@ -58,13 +58,13 @@ impl<O: Observation> Captured<O> {
         }
         grow_vec(&mut self.entries, capacity.entries);
     }
-    pub fn outcomes(&self) -> [Outcome; 1] {
+    pub fn outcomes(&self) -> [Outcome; N] {
         [Outcome::Unavailable {
             reason: O::ASSEMBLED_BY_SPOOL,
-        }]
+        }; N]
     }
-    pub fn tables(&self) -> [TableView; 1] {
-        [unavailable(O::ASSEMBLED_BY_SPOOL)]
+    pub fn tables(&self) -> [TableView; N] {
+        std::array::from_fn(|_| unavailable(O::ASSEMBLED_BY_SPOOL))
     }
     /// Allocation-free hand-over at the clocked callback.
     pub fn drain(&mut self) {

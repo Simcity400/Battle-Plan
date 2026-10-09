@@ -172,6 +172,12 @@ impl Names for ScopeNames<'_> {
 }
 
 impl KeyNames {
+    /// The equipment database loaded with this registry. Consumers
+    /// share its native aliases, validity and category projection.
+    pub fn equipment_database(&self) -> Option<&std::sync::Arc<crate::equipment::Database>> {
+        self.effects.equipment_database.as_ref()
+    }
+
     /// The names every trigger body after the buildings is read against.
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let (ideologies, _) = crate::ideologies::read(layers)?;
@@ -231,6 +237,7 @@ impl KeyNames {
                 names.effects.terrains.clear();
                 names.effects.terrains_gap = None;
                 names.effects.equipment.clear();
+                names.effects.equipment_database = None;
                 names.effects.equipment_gap = None;
                 names.effects.equipment_upgrades.clear();
                 names.effects.equipment_upgrades_gap = None;

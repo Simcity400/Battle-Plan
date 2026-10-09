@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, battleFlagCount, battleShortDate, battleLogRows, battleMeasure, battleTooltip, battleValueText, battleWinner, isBattleRow } from './battleRows.ts';
+import { battleJumpHour, battleCountryRequests, battleDate, battleDateMoment, battleFlagCount, battleShortDate, battleLogRows, battleMeasure, battleTooltip, battleValueText, battleWinner, isBattleRow,
+  battlePlaceRequests, namedBattles } from './battleRows.ts';
+import { validatePlaceNamesReply } from '../../dashboard/placeNamesData.ts';
 import type { BattleLabels, BattleRow, BattleValue } from './battleRows';
+import { formatDateTime } from '../../dashboard/calendar.ts';
 
 const labels: BattleLabels = { place: 'Location', date: 'Date', start: 'Start', end: 'End', winner: 'Winner',
   ongoing: 'Ongoing', unknownPlace: 'Location unknown', unknownStart: 'Start not recorded' };
@@ -11,6 +14,21 @@ const row = (id = 'episode', end: BattleRow['end'] = { hour: 30, bound: 'by' }):
     { label: 'First side', countries: [{ tag: 'opaque tag/a', hour: 29 }], counts: [{ label: 'Ships', value: 3 }], losses: [{ label: 'Sunk', value: null, unknown: 'Losses not read' }] },
     { label: 'Other side', countries: [{ tag: 'opaque tag/a', hour: 10 }, { tag: 'opaque tag/b', hour: 29 }], counts: [{ label: 'Ships', value: 2 }], losses: [] },
   ], winner: { unknown: 'Result not recorded' } });
+
+test('later naming reads preserve battle dates, request stable hours and date the tooltip', () => {
+  const battle = { ...row(), provinceId: 17, place: { name: null, hour: 29, namedAt: 40 } };
+  assert.equal(isBattleRow(battle), true, 'end may precede a later naming read');
+  assert.equal(isBattleRow({ ...battle, place: { ...battle.place, namedAt: 28 } }), false);
+  assert.equal(isBattleRow({ ...battle, place: { ...battle.place, namedAt: 29 } }), false);
+  const ordinary = { ...battle, place: { name: null, hour: 29 } };
+  assert.deepEqual(battlePlaceRequests([battle, ordinary, battle]), [{ provinceId: 17, hour: 29 }, { provinceId: 17, hour: 40 }]);
+  const places = validatePlaceNamesReply({ places: [{ provinceId: 17, hour: 40, name: 'Mod sea zone', missing: null }], states: [], warnings: [] });
+  const named = namedBattles([battle, ordinary], places);
+  assert.equal(named[0].place.name, 'Mod sea zone'); assert.equal(named[0].place.hour, 29);
+  assert.equal(named[1], ordinary);
+  assert(battleTooltip(named[0], labels, tag => ({ name: tag })).rows.some(row => row.label.startsWith('named as of ')));
+  assert.throws(() => validatePlaceNamesReply({ ...places, places: [places.places[0], places.places[0]] }));
+});
 
 test('short table dates use the start bound; unrecorded starts use a known end', () => {
   const battle = row();
@@ -120,4 +138,21 @@ test('caller loss and measure tooltip formatters preserve the shared row shape',
   assert.ok(tip.rows.some(part => part.label === 'Caller loss' && part.value === '1.25 so far at 29; side 0; tooltip true'));
   assert.ok(tip.rows.some(part => part.label === 'Ships' && part.value === '3'));
   assert.equal(isBattleRow(battle), true);
+});
+
+test('dated known-country flag failures stay distinct from pending flags and an unknown native participant', () => {
+  const battle = row();
+  battle.sides[0].countriesUnknown = 'Participant reference was not recorded';
+  const reads: [string, number][] = [];
+  const completed = { name: '', flagReason: 'Synthetic flag definition was refused', flagPending: false };
+  const pending = { name: 'Pending country', flagPending: true };
+  const tip = battleTooltip(battle, labels, (tag, hour) => {
+    reads.push([tag, hour]);
+    return hour === 10 ? pending : completed;
+  });
+  assert.deepEqual(reads, [['opaque tag/a', 29], ['opaque tag/a', 10], ['opaque tag/b', 29]]);
+  assert.equal(tip.rows.find(part => part.value === formatDateTime(29) && part.countryFlag)?.countryFlag, completed);
+  assert.equal(tip.rows.find(part => part.label === pending.name)?.countryFlag, pending);
+  assert.equal(tip.rows.find(part => part.label === battle.sides[0].countriesUnknown)?.countryFlag, undefined);
+  assert.equal(tip.rows.find(part => part.countryFlag === completed)?.label, '', 'an authoritative empty name stays empty');
 });

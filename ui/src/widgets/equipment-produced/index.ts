@@ -4,6 +4,7 @@ import { setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
 import type { EquipmentProducedReply } from '../../generated/dashboard';
 import EquipmentProducedWidget from './EquipmentProducedWidget';
+import { PartsCountryChip } from '../../dashboard/CountryChip';
 import { typeLabel, validateProducedReply } from './producedData';
 
 /** The types to include: every type produced in the recording, named by its content
@@ -17,4 +18,4 @@ function useProducedTypes(widget: WidgetSpec, runtime: WidgetRuntime): OptionCho
   return { included: (data?.types ?? []).map(type => ({ value: setToken(type.key), label: typeLabel(type) })) };
 }
 
-export default { render: EquipmentProducedWidget, useOptionChoices: useProducedTypes } satisfies WidgetRenderer;
+export default { render: EquipmentProducedWidget, countryChip: PartsCountryChip, useOptionChoices: useProducedTypes } satisfies WidgetRenderer;

@@ -202,6 +202,13 @@ fn persistent_null_allocator_survives_prepared_buffers() {
     }
 }
 
+#[test]
+fn fuel_history_growth_writes_the_terminal_witness() {
+    let output = child("fuel-history", "extended", 1);
+    successful(&output, "fuel-history", "extended", 1);
+    assert_eq!(observed_allocations(&output), 1);
+}
+
 #[cfg(feature = "alloc-fault-injection")]
 #[test]
 fn allocation_fault_waits_for_committed_hours() {
@@ -274,6 +281,16 @@ fn allocation_safety_child() {
         .parse::<usize>()
         .unwrap();
     match mode.as_str() {
+        "fuel-history" => {
+            allocation::reset();
+            allocation::install_hooks();
+            prepared_null(
+                phase,
+                ordinal,
+                crate::extended::fuel_awards::allocation_failure_history_exercise,
+            )
+            .unwrap();
+        }
         "null" => prepared_buffers_null(phase, ordinal).unwrap(),
         "concurrent-watermark" => allocation::concurrent_watermark_exercise().unwrap(),
         #[cfg(feature = "alloc-fault-injection")]

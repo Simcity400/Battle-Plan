@@ -28,8 +28,10 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
-  const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
-  const at = playhead ?? extent[1];
+  const first = widget.time.mode === 'range' && window ? window.firstHour : track?.branch.firstHour ?? 0;
+  const last = widget.time.mode === 'range' && window ? window.lastHour : track?.branch.lastHour ?? 1;
+  const at = Math.floor(playhead ?? last);
+  const extent: [number, number] = [first, Math.max(first + 1, options.grow && playhead != null ? playhead : last + 1)];
   const list = useMemo(() => data ? spirits(data) : [], [data]);
   // The game's tooltip for each spirit: its effects formatted as the game does, then its description.
   const tooltips = useIdeaTooltips(data, track, runtime.client, active);
@@ -67,7 +69,7 @@ export default function SpiritHistoryWidget({ widget, runtime, active, onDiagnos
     : !heldNow.length && unclassified ? 'national spirits not known (some held ideas could not be classified)'
     : heldNow.length ? heldNow.join('. ') : 'no national spirits held'}.`;
   return <div className="spirit-history">
-    <Timeline label={`National spirits of ${tag}`} extent={extent} playhead={playhead} lanes={lanes} showIcons={false} showNames={false} description={description}
+    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}:${tag}`} label={`National spirits of ${tag}`} extent={extent} playhead={playhead} labelHour={at} preserveZoomOnExtentChange={options.grow === true} lanes={lanes} showIcons={false} showNames={false} description={description}
       hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} revision={data}
       tooltip={(lane, span, _hour, full) => {
         const spirit = byToken.get(lane.id);

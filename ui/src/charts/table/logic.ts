@@ -34,8 +34,31 @@ export function sortRows<T>(rows: readonly T[], value: (row: T) => SortValue, di
   return present.map(item => item.row).concat(absent.map(item => item.row));
 }
 
-export const nextSort = (sort: Sort, column: string, first: SortDirection = 'descending'): Sort => ({ column,
-  direction: column === sort.column ? (sort.direction === 'ascending' ? 'descending' : 'ascending') : first });
+/** A dated group key is its identity; equal labels do not merge groups. */
+export interface TableGroup { key: string; label: string; order?: number; orderKey?: bigint }
+
+/** Groups stay in label order while each uses the selected exact column sort. */
+export function groupedRows<T>(rows: readonly T[], groupBy: (row: T) => TableGroup,
+  value: (row: T) => SortValue, direction: SortDirection, rowKey: (row: T) => string,
+  tieKey: (row: T) => string = rowKey): T[] {
+  const groups = new Map<string, { group: TableGroup; rows: T[] }>();
+  for (const row of rows) {
+    const group = groupBy(row);
+    const present = groups.get(group.key);
+    if (present) present.rows.push(row);
+    else groups.set(group.key, { group, rows: [row] });
+  }
+  return [...groups.values()].sort(({ group: a }, { group: b }) => {
+    const order = (a.order ?? 0) - (b.order ?? 0) || valueCollator.compare(a.label, b.label);
+    if (order) return order;
+    const aKey = a.orderKey ?? 0n;
+    const bKey = b.orderKey ?? 0n;
+    return aKey < bKey ? -1 : aKey > bKey ? 1 : compareKey(a.key, b.key);
+  }).flatMap(group => sortRows(group.rows, value, direction, rowKey, tieKey));
+}
+
+export const nextSort = (sort: Sort, column: string, first: SortDirection = 'descending', fixed?: SortDirection): Sort => ({ column,
+  direction: fixed ?? (column === sort.column ? (sort.direction === 'ascending' ? 'descending' : 'ascending') : first) });
 
 /** A bar's fraction of a positive maximum. Only its width uses floating point. */
 export function barFraction(value: number | bigint | null | undefined, maximum: number | bigint): number {

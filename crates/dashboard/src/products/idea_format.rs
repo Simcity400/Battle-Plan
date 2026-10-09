@@ -15,7 +15,7 @@ use installed_content::localisation::Argument;
 use replay::{
     container::Replay,
     frame::{FrameDecoder, SharedView, TableView},
-    rows::{ModifierDefinitionRow, TableId, tables},
+    rows::{LexicalTokenRow, ModifierDefinitionRow, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -125,19 +125,27 @@ fn recorded(
         ) else {
             continue;
         };
-        let name = |token: u32| {
-            let at = lexical.binary_search_by_key(&token, |row| row.token).ok()?;
-            std::str::from_utf8(&lexical[at].literal)
-                .ok()
-                .map(str::to_ascii_lowercase)
-        };
-        return Ok(Some(
-            rows.iter()
-                .filter_map(|row| Some((name(row.token)?, row.clone())))
-                .collect(),
-        ));
+        return Ok(Some(index_recorded(rows, lexical)));
     }
     Ok(None)
+}
+
+/// Index one supplying read's definitions by its folded lexer names.
+pub(crate) fn index_recorded(
+    rows: &[ModifierDefinitionRow],
+    lexical: &[LexicalTokenRow],
+) -> BTreeMap<String, ModifierDefinitionRow> {
+    rows.iter()
+        .filter_map(|row| {
+            let at = lexical
+                .binary_search_by_key(&row.token, |row| row.token)
+                .ok()?;
+            let key = std::str::from_utf8(&lexical[at].literal)
+                .ok()?
+                .to_ascii_lowercase();
+            Some((key, row.clone()))
+        })
+        .collect()
 }
 
 /// `key` as `modifier_definition::GetLocalizedName` (1405505D0) localises
@@ -206,12 +214,25 @@ pub fn modifier_formats(
     content: &PoliticsContent,
     cancelled: &AtomicBool,
 ) -> io::Result<(Vec<ModifierFormat>, Vec<String>)> {
-    let mut warnings = Vec::new();
     let recorded = if keys.is_empty() {
         None
     } else {
         recorded(replay, branch, cancelled)?
     };
+    Ok(modifier_formats_from_recorded(
+        recorded.as_ref(),
+        keys,
+        content,
+    ))
+}
+
+/// Formats from a caller's already indexed supplying read, without rescanning.
+pub(crate) fn modifier_formats_from_recorded(
+    recorded: Option<&BTreeMap<String, ModifierDefinitionRow>>,
+    keys: &BTreeSet<String>,
+    content: &PoliticsContent,
+) -> (Vec<ModifierFormat>, Vec<String>) {
+    let mut warnings = Vec::new();
     if recorded.is_none() && !keys.is_empty() {
         warnings.push(
             "The game's modifier definitions were not recorded; built-in effects are shown as authored, unformatted."
@@ -221,7 +242,7 @@ pub fn modifier_formats(
     let mut arguments = false;
     let mut formats = Vec::new();
     for key in keys {
-        if let Some(row) = recorded.as_ref().and_then(|rows| rows.get(key)) {
+        if let Some(row) = recorded.and_then(|rows| rows.get(key)) {
             let argument = String::from_utf8_lossy(&row.argument);
             arguments |= !argument.is_empty();
             let postfix = String::from_utf8_lossy(&row.postfix_key);
@@ -254,7 +275,7 @@ pub fn modifier_formats(
                 .to_owned(),
         );
     }
-    Ok((formats, warnings))
+    (formats, warnings)
 }
 
 /// The texts of `keys` in the viewer's language.

@@ -7,17 +7,16 @@ import type { Run } from '../../charts/series';
 import { runAt, runIndexAt, stretchStarts } from '../../charts/series.ts';
 import { shownRuns } from '../../charts/race/lines.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
+import { validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
+import { readRunAt } from '../../dashboard/reads.ts';
+import { COUNT_MODES } from '../../dashboard/factoryMeasure.ts';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import type { CountryFactoriesReply, FactoriesParams, FactoryCount, FactoryGroupInfo, FactoryGroupKey, FactoryPart, FactoryRun, HourSpan } from '../../generated/dashboard';
+import type { CountryFactoriesReply, CountryIdentityRun, FactoriesParams, FactoryCount, FactoryGroupInfo, FactoryGroupKey, FactoryPart, FactoryReadRun, FactoryRun, HourSpan } from '../../generated/dashboard';
 
 /** Which count the widget shows (user decision, 29 Sep: free after withheld by default). */
 export type CountMode = FactoryCount;
 
-export const COUNT_MODES: readonly { value: CountMode; label: string; hint: string }[] = [
-  { value: 'free', label: 'Free after withheld', hint: 'Built less damaged, consumer goods, trade, national projects, licences, market contracts and factories given away' },
-  { value: 'built', label: 'Built', hint: 'The game’s Total: every factory counted, damaged ones included' },
-  { value: 'topBar', label: 'Top bar', hint: 'The top bar’s group total: built less damaged and factories given away' },
-];
+export { COUNT_MODES };
 
 /** The civilian consumers, in the order the game runs them, and the transfers out. */
 const CONSUMERS: readonly FactoryPart[] = ['consumerGoods', 'contractPayments', 'specialProjects', 'licenseImports', 'tradeImports'];
@@ -29,6 +28,11 @@ export function validateFactoriesReply(data: unknown): CountryFactoriesReply {
     && Array.isArray(reply.series) && Array.isArray(reply.warnings)
     && reply.groups.every(group => typeof group.key === 'string' && typeof group.flag === 'string' && Array.isArray(group.buildings))
     && reply.series.every(series => typeof series.tag === 'string' && Array.isArray(series.runs)
+      && validCountryIdentityRuns(series.identities)
+      && (series.reads === undefined || Array.isArray(series.reads) && series.reads.every((read, index) => read != null
+        && Number.isInteger(read.firstHour) && Number.isInteger(read.lastHour) && Number.isInteger(read.readHour)
+        && read.firstHour <= read.lastHour && read.readHour <= read.firstHour && typeof read.hourly === 'boolean'
+        && (!read.hourly || read.readHour === read.firstHour) && (index === 0 || series.reads![index - 1].lastHour < read.firstHour)))
       && Array.isArray(series.segments) && series.segments.every((span, index) =>
         Number.isInteger(span.firstHour) && Number.isInteger(span.lastHour) && span.firstHour <= span.lastHour
         && (index === 0 || series.segments[index - 1].lastHour < span.firstHour))
@@ -59,7 +63,8 @@ export function factoriesRequest(branchId: string, resolved: { tags: readonly st
 
 /** One country's runs, where each unbroken stretch of them starts, and for a top-N
  * reply the hours it was among the top N (its runs are cut to them). */
-export interface FactorySeriesModel { runs: readonly FactoryRun[]; starts: readonly number[]; segments: readonly HourSpan[]; membership: readonly HourSpan[] | null }
+export interface FactorySeriesModel { runs: readonly FactoryRun[]; starts: readonly number[]; segments: readonly HourSpan[];
+  reads: readonly FactoryReadRun[]; identities: readonly CountryIdentityRun[]; membership: readonly HourSpan[] | null }
 
 /** A reply ready for lookups, built once per reply. */
 export interface FactoryModel {
@@ -74,8 +79,14 @@ const fieldKey = (group: FactoryGroupKey, part: FactoryPart) => `${group}:${part
 
 export function factoryModel(reply: CountryFactoriesReply): FactoryModel {
   const index = new Map(reply.fields.map((field, position) => [fieldKey(field.group, field.part), position]));
-  const series = new Map(reply.series.map(item => [item.tag, { runs: item.runs, starts: stretchStarts(item.runs), segments: item.segments, membership: item.membership }]));
+  const series = new Map(reply.series.map(item => [item.tag, { runs: item.runs, starts: stretchStarts(item.runs), segments: item.segments,
+    reads: item.reads ?? [], identities: item.identities ?? [], membership: item.membership }]));
   return { reply, index, series, tags: reply.series.map(item => item.tag) };
+}
+
+/** Equal fresh values retain a fresh confirmation; carried values retain their read. */
+export function factoryReadAt(model: FactoryModel, tag: string, hour: number): number | null {
+  return readRunAt(model.series.get(tag)?.reads ?? [], Math.floor(hour));
 }
 
 /** A country's identity/data segment from the full scan, independent of whether

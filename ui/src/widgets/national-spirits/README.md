@@ -1,7 +1,27 @@
 # National spirits
 
-The country's national spirits at the playback moment as the game shows them: a grid of the game's spirit icons, in the order they were gained. A spirit taken on pops in; one that ends fades out. Whole campaign shows the end state.
+## What it shows
 
-Spirits are the ideas of any content category of `type = national_spirit` (vanilla's `country`; a mod's own categories too), from the `idea-history` product. `spiritsData.ts` is shared with [National spirits history](../spirit-history/README.md).
+The country’s current national spirits as game icons in acquisition order; campaign mode shows the branch-end state.
 
-**Settings:** spirit names on hover (default) or under the icons. **Hover:** name and since when ("held before" a day when it was already held as recording began or after an unrecorded stretch). The hover is the game's own idea tooltip (mock-up politics-4, `dashboard/ideaTooltip.ts`): icon, name and since when, then its effects formatted as the game formats them, then its description. Countries its targeted effects name are named as they were when the spirit was taken on (`dashboard/useIdeaTooltips.ts`, read on demand for the tooltips shown, each hour once). A tooltip shows as many effect rows as fit the window (at most 40) and counts the rest; each tile gives screen readers the whole text. Values are the engine's own reading of the authored text (`installed_content::fixed5`: five decimals, truncated), carried in the reply. When the grid would be empty but some held ideas cannot be classified from the content, it says the spirits are not known rather than that there are none.
+## Products it reads
+
+[`idea-history`](../../../../crates/dashboard/src/products/idea_history.rs) through [useIdeaHistory](../../dashboard/ideaHistory.ts), with [game-style idea tooltips](../../dashboard/useIdeaTooltips.ts).
+
+## Settings
+
+Spirit names on hover (default) or under icons; country and campaign/follow/pin. Follow is the default.
+
+## Notable behaviour
+
+- Spirits come from every content category whose type is national_spirit; do not select a fixed category token.
+- Held before means acquisition was not observed. Tooltip effects and targeted country names use the recorded acquisition context.
+- Exit fades/tooltips belong to source revision, branch, country and holder segment; changing context clears them.
+- Jump uses the acquisition’s first recorded hour, without claiming an exact start for Held before. Shared spiritsData also serves [Spirit history](../spirit-history/README.md).
+
+## Files
+
+| File | Responsibility |
+|---|---|
+| [NationalSpiritsWidget.tsx](NationalSpiritsWidget.tsx), [spiritsData.ts](spiritsData.ts) | Tiles, scoped exits and shared spirit spans; adjacent tests. |
+| [definition.ts](definition.ts), [index.ts](index.ts), [nationalSpirits.css](nationalSpirits.css) | Settings, registration and layout. |

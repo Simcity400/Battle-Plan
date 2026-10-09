@@ -1,56 +1,19 @@
 # Occupation trend
 
-The `occupation-trend` product reuses the Occupied states reader. This widget
-starts on all occupiers and lines over time, with resistance selected. Countries
-can be chosen or narrowed to any recorded smart group, including the top 10 by
-the selected measure. Every recorded country is eligible, independently of
-human/AI status. Tags remain opaque.
-Chosen countries and smart groups have no widget country cap; only the shared
-product reply budget can refuse an oversized response.
+**What it shows:** Mean resistance/compliance across each occupier's readable held states, as country lines, a race or one country's measure lines.
 
-The mean ports `140FE98F0`: unweighted recorded state values and the native
-wrapping signed fixed5 arithmetic. It extends that state mean across all of an
-occupier's occupied-country groups. The cached native group means are not
-recorded: `140FE1EC0` refreshes them before updating the state scalars. This
-widget therefore computes its mean from the scalars at their supplying read,
-without claiming the native cached country-row value. Active occupation membership
-follows the Occupied states product's native garrison/resistance rules. Neither
-legal ownership nor controller different from owner alone defines occupation.
-Only readable held state values contribute; a tooltip names the number covered
-out of the held-state count. An incomplete held inventory says the total is not
-recorded. An occupier with no readable held state has a gap, including after it
-ceases to exist. Nothing is interpolated or supplied as zero.
+**Product(s) it reads:** [`occupation-trend`](../../../../crates/dashboard/src/products/occupation_trend.rs) reuses the [`occupied-states`](../../../../crates/dashboard/src/products/occupied_states.rs) cached scan; optional collaboration uses its recorded country context.
 
-The shared [CountryRaceView](../../charts/race/CountryRaceView.tsx) draws the
-Style A clean lines, ringed end dots, labels and hairline grid from shared chart
-tokens. Its View setting also offers a race at the shown moment and one
-country's independent measure lines. Resistance is solid; in Both, compliance
-uses the shared secondary dash. A separate setting chooses which measure ranks
-Both. Chart labels default to two decimal places, configurable through five;
-tooltips retain the full fixed5 mean. Shared playback, end-label, axis and corner
-date settings remain available. Lines use smooth monotone curves and race bars
-ease within an unchanged recorded stretch; gaps still break the drawing. These
-presentation choices never change the recorded tooltip values. Right-click
-offers Jump to that moment.
+**Settings:** All occupiers, Lines and Resistance by default; manual countries/smart groups/top N, Compliance/Both and ranking measure, optional collaboration, label decimals and shared race/line controls; Campaign, Follow, Pin and Range.
 
-Race row names and flags use the shared sampled country looks, held within the
-same identity segment while the next read loads. Country names and flags in
-tooltips come from the hovered hour through the
-shared country-label hook, including renamed occupiers and occupied countries.
-Each average and collaboration value names its recorded supplying read directly.
-Read dates never become change dates.
+**Notable behaviour:**
 
-Country collaboration context is optional and off by default. It comes from
-`CountryCollaboration`, shown natively in Politics → Exiles & Collaborations,
-and is explicitly separate from state compliance. When enabled, each occupied
-country's stored ratio is shown as a percentage with its own read date. Missing
-collaboration says Not recorded. Content names, colours and flags resolve
-through the recording's own content stack; this widget defines no game content
-catalogue or asset names.
-The request ships collaboration context and its additional run boundaries only
-when the setting is enabled.
+- The mean uses unweighted state scalars and native signed fixed-point arithmetic at their supplying read. It is not the game's unrecorded cached occupied-country-group mean, nor an average of rounded UI values.
+- Membership uses active occupation/garrison rules, not owner/controller inequality. Covered/held counts remain explicit; incomplete inventory cannot establish the total. No readable held states means a gap, not zero.
+- Country collaboration is separate from state compliance, off by default and requested only when enabled. Each context value keeps its own read date and unknown reason.
+- Manual roots follow native holders/aliases; smart groups retain counted dates and unknown-roster gaps. One-country choices fix a native holder; absence does not silently select another. Looks never use a later holder to name old values.
+- Display decimals and smooth geometry do not alter exact tooltip means. Resistance/compliance remain independent measures; Both uses different line styles. The shared race view owns keyboard, zoom and Jump.
 
-Node tests cover gained/lost held states, partial coverage, unread hours,
-countries ceasing to exist, hovered identities, exact ranking before geometry,
-two independent measures, missing collaboration and 5,000 countries. Browser
-layout, paint and live comparison remain unverified.
+**Files:** [OccupationTrendWidget.tsx](OccupationTrendWidget.tsx) configures [CountryRaceView](../../charts/race/CountryRaceView.tsx); [occupationTrendData.ts](occupationTrendData.ts) validates and projects means/context, with adjacent tests. `definition.ts` and `index.ts` declare settings and registration; membership details are in [Occupied states](../occupied-states/README.md).
+
+Shared framework conventions: [widgets](../README.md).

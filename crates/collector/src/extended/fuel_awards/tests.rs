@@ -1,0 +1,387 @@
+use super::*;
+use engine::fuel_awards::{Recipient, Settled, Started};
+use replay::rows::CountryFuelRow;
+
+fn input(count: u32) -> Vec<TableInput> {
+    let mut tables = (0..replay::frame::TABLE_COUNT)
+        .map(|_| TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(Vec::new()))))
+        .collect::<Vec<_>>();
+    tables[TableId::CountryFuel.index()] =
+        TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(
+            (1..=count)
+                .map(|country| CountryFuelRow {
+                    country,
+                    current_raw: country as i64,
+                    country_instance: Recorded::Value(Some(1)),
+                    ..Default::default()
+                })
+                .collect(),
+        )));
+    tables
+}
+fn capture(first: u64, entries: Vec<Entry>) -> Captured {
+    let copied = entries.len();
+    Captured {
+        entries,
+        names: b"retained".to_vec(),
+        drained: Some(Ok((
+            Drained {
+                epoch: 1,
+                first,
+                cursor: first + copied as u64,
+                copied,
+                pending: copied,
+            },
+            8,
+            8,
+        ))),
+    }
+}
+fn entries(hour: i32, count: u32) -> Vec<Entry> {
+    (1..=count)
+        .flat_map(|country| {
+            let amount = if country == 1 { 0 } else { -(country as i64) };
+            let root = hour as u64 * 10000 + country as u64;
+            [
+                Entry {
+                    root,
+                    country,
+                    recipient: Some(Recipient {
+                        kind: 0,
+                        reference: (country as u64) << 32 | 29,
+                        owner: country + 100,
+                        host: 0,
+                    }),
+                    amount,
+                    name: Some((0, 8)),
+                    ..Default::default()
+                },
+                Entry {
+                    root,
+                    country,
+                    started: Started {
+                        country,
+                        status: country as usize * 0x1000,
+                        country_instance: 1,
+                        pending_gain: 91,
+                        remaining_hours: 7,
+                        ..Default::default()
+                    },
+                    settled: Settled {
+                        gains: [2, -3, 4, 0],
+                        own_gain: 3,
+                        received: [amount, 0, 0],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn same_pointer_and_zero_instance_reset_withdraws_only_its_old_window() {
+    let mut windows = Windows::default();
+    let mut tables = input(2);
+    let mut cursor = 0;
+    if let TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(rows))) =
+        &mut tables[TableId::CountryFuel.index()]
+    {
+        for row in rows {
+            row.country_instance = Recorded::Value(Some(0));
+        }
+    }
+    windows
+        .assemble(1, 0, &capture(0, Vec::new()), &mut tables)
+        .unwrap();
+    for hour in 1..=48 {
+        let mut events = entries(hour, 2);
+        events[1].started.country_instance = 0;
+        events[3].started.country_instance = 0;
+        if hour == 25 {
+            // Native dynamic reuse can leave both pointer and +0C at zero.
+            // Reset precedes the next ordinary update, without a branch/gap.
+            events.insert(
+                0,
+                Entry {
+                    reset: true,
+                    started: Started {
+                        status: 0x1000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+        }
+        let captured = capture(cursor, events);
+        cursor = captured.drained.unwrap().unwrap().0.cursor;
+        windows.assemble(1, hour, &captured, &mut tables).unwrap();
+        if hour == 25 {
+            let Recorded::Value(reset) = &rows(&tables)[0].awards else {
+                panic!()
+            };
+            assert!(!reset.reason.is_empty());
+            assert_eq!(reset.hours.len(), 1);
+            assert_eq!(reset.continuity_start_hour, Some(25));
+        }
+    }
+    let Recorded::Value(reset) = &rows(&tables)[0].awards else {
+        panic!()
+    };
+    let Recorded::Value(peer) = &rows(&tables)[1].awards else {
+        panic!()
+    };
+    assert!(reset.reason.is_empty());
+    assert_eq!(reset.hours.len(), 24);
+    assert_eq!(reset.hours[0].hour, 25);
+    assert_eq!(reset.continuity_start_hour, Some(25));
+    assert_eq!(peer.continuity_start_hour, Some(1));
+    assert!(peer.reason.is_empty());
+    assert_eq!(peer.hours.len(), 24);
+    assert_eq!(rows(&tables)[0].current_raw, 1);
+}
+
+#[test]
+fn repeated_roots_in_one_sample_cannot_certify_two_continuity_segments() {
+    let mut windows = Windows::default();
+    let mut tables = input(2);
+    let mut cursor = 0;
+    windows
+        .assemble(1, 0, &capture(0, Vec::new()), &mut tables)
+        .unwrap();
+    for hour in 1..=49 {
+        let mut events = entries(hour, 2);
+        if hour == 25 {
+            let mut repeated = events[..2].to_vec();
+            for event in &mut repeated {
+                event.root += 500;
+            }
+            repeated.insert(
+                0,
+                Entry {
+                    reset: true,
+                    started: Started {
+                        status: 0x1000,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            events.extend(repeated);
+        }
+        let captured = capture(cursor, events);
+        cursor = captured.drained.unwrap().unwrap().0.cursor;
+        windows.assemble(1, hour, &captured, &mut tables).unwrap();
+        if hour == 25 {
+            let Recorded::Value(first) = &rows(&tables)[0].awards else {
+                panic!()
+            };
+            assert!(first.continuity_start_hour.is_none());
+            assert!(!first.reason.is_empty());
+        }
+    }
+    let Recorded::Value(first) = &rows(&tables)[0].awards else {
+        panic!()
+    };
+    let Recorded::Value(peer) = &rows(&tables)[1].awards else {
+        panic!()
+    };
+    assert!(first.reason.is_empty());
+    assert_eq!(first.continuity_start_hour, Some(26));
+    assert_eq!(peer.continuity_start_hour, Some(1));
+}
+
+#[test]
+fn continuity_start_is_scoped_by_actual_branch_and_fresh_reattach_observation() {
+    let mut tracker = replay::branches::BranchTracker::new();
+    tracker.begin_session(7).unwrap();
+    let mut windows = Windows::default();
+    let mut tables = input(1);
+    let mut cursor = 0;
+    let first = tracker.observe(None, 0, Some(1), &[]).unwrap().branch;
+    tracker.record_hour(first, 0).unwrap();
+    windows
+        .assemble(first, 0, &capture(0, Vec::new()), &mut tables)
+        .unwrap();
+    for hour in 1..=24 {
+        let branch = tracker.observe(None, hour, Some(1), &[]).unwrap().branch;
+        tracker.record_hour(branch, hour).unwrap();
+        let captured = capture(cursor, entries(hour, 1));
+        cursor += 2;
+        windows
+            .assemble(branch, hour, &captured, &mut tables)
+            .unwrap();
+    }
+    let mut previous = first;
+    for (boundary, signal) in [(24, 1), (0, 1), (25, 2)] {
+        let observation = tracker.observe(None, boundary, Some(signal), &[]).unwrap();
+        assert_ne!(observation.branch, previous); // repeat, backward time, load
+        previous = observation.branch;
+        tracker.record_hour(previous, boundary).unwrap();
+        windows
+            .assemble(
+                previous,
+                boundary,
+                &capture(cursor, Vec::new()),
+                &mut tables,
+            )
+            .unwrap();
+        for hour in boundary + 1..=boundary + 24 {
+            assert_eq!(
+                tracker
+                    .observe(None, hour, Some(signal), &[])
+                    .unwrap()
+                    .branch,
+                previous
+            );
+            tracker.record_hour(previous, hour).unwrap();
+            let captured = capture(cursor, entries(hour, 1));
+            cursor += 2;
+            windows
+                .assemble(previous, hour, &captured, &mut tables)
+                .unwrap();
+        }
+        let Recorded::Value(window) = &rows(&tables)[0].awards else {
+            panic!()
+        };
+        assert!(window.reason.is_empty());
+        assert_eq!(window.continuity_start_hour, Some(boundary + 1));
+    }
+    // The container resumes the same process from its recovered last hour;
+    // Campaign opens fresh Windows even when that next hour keeps the branch.
+    let mut resumed = replay::branches::BranchTracker::new();
+    resumed
+        .seed_recorded_branch(
+            tracker.branch_start(previous).unwrap().clone(),
+            tracker.recorded_hours(previous).unwrap().iter().copied(),
+        )
+        .unwrap();
+    resumed.resume_session(7, previous, 49, Some(2)).unwrap();
+    let mut windows = Windows::default();
+    cursor = 0;
+    assert_eq!(
+        resumed.observe(None, 50, Some(2), &[]).unwrap().branch,
+        previous
+    );
+    windows
+        .assemble(previous, 50, &capture(0, Vec::new()), &mut tables)
+        .unwrap();
+    for hour in 51..=74 {
+        assert_eq!(
+            resumed.observe(None, hour, Some(2), &[]).unwrap().branch,
+            previous
+        );
+        let captured = capture(cursor, entries(hour, 1));
+        cursor += 2;
+        windows
+            .assemble(previous, hour, &captured, &mut tables)
+            .unwrap();
+    }
+    let Recorded::Value(window) = &rows(&tables)[0].awards else {
+        panic!()
+    };
+    assert!(window.reason.is_empty());
+    assert_eq!(window.continuity_start_hour, Some(51));
+}
+fn rows(tables: &[TableInput]) -> &[CountryFuelRow] {
+    let TableInput::Sampled(TableView::Complete(TableRows::CountryFuel(rows))) =
+        &tables[TableId::CountryFuel.index()]
+    else {
+        panic!()
+    };
+    rows
+}
+#[test]
+fn writer_window_at_5000_keeps_corrections_names_owner_and_local_refusals() {
+    let mut windows = Windows::default();
+    let mut tables = input(5000);
+    let mut cursor = 0;
+    windows
+        .assemble(1, 0, &capture(0, Vec::new()), &mut tables)
+        .unwrap();
+    for hour in 1..=24 {
+        let mut events = entries(hour, 5000);
+        if hour == 24 {
+            events[(7 - 1) * 2 + 1].refused = true;
+        }
+        let captured = capture(cursor, events);
+        cursor = captured.drained.unwrap().unwrap().0.cursor;
+        windows.assemble(1, hour, &captured, &mut tables).unwrap();
+    }
+    let rows = rows(&tables);
+    for row in rows {
+        let Recorded::Value(window) = &row.awards else {
+            panic!()
+        };
+        assert_eq!(row.current_raw, row.country as i64);
+        if row.country == 7 {
+            assert!(!window.reason.is_empty());
+            continue;
+        }
+        assert!(window.reason.is_empty());
+        assert_eq!(window.hours.len(), 24);
+        assert_eq!(window.hours[0].pending_raw[0], 94);
+        let part = &window.hours[0].recipients[0];
+        assert_eq!(part.name.as_deref(), Some(&b"retained"[..]));
+        assert_eq!(part.owner, row.country + 100);
+        assert_eq!(
+            part.amount_raw,
+            if row.country == 1 {
+                0
+            } else {
+                -(row.country as i64)
+            }
+        );
+    }
+}
+#[test]
+fn missing_interval_writer_epoch_and_country_replacement_do_not_fabricate_zero() {
+    let mut windows = Windows::default();
+    let mut tables = input(2);
+    let mut cursor = 0;
+    windows
+        .assemble(1, 0, &capture(0, Vec::new()), &mut tables)
+        .unwrap();
+    for hour in 1..=24 {
+        let captured = capture(cursor, entries(hour, 2));
+        cursor += 4;
+        windows.assemble(1, hour, &captured, &mut tables).unwrap();
+    }
+    let mut changed = entries(25, 2);
+    changed[1].started.country_instance = 2;
+    let captured = capture(cursor, changed);
+    cursor += 4;
+    windows.assemble(1, 25, &captured, &mut tables).unwrap();
+    let Recorded::Value(first) = &rows(&tables)[0].awards else {
+        panic!()
+    };
+    let Recorded::Value(second) = &rows(&tables)[1].awards else {
+        panic!()
+    };
+    assert!(!first.reason.is_empty());
+    assert!(second.reason.is_empty());
+    let captured = capture(cursor, entries(27, 2));
+    cursor += 4;
+    windows.assemble(1, 27, &captured, &mut tables).unwrap();
+    assert!(
+        rows(&tables)
+            .iter()
+            .all(|r| matches!(&r.awards,Recorded::Value(w) if !w.reason.is_empty()))
+    );
+    let mut restarted = capture(cursor, entries(28, 2));
+    restarted
+        .drained
+        .as_mut()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .0
+        .epoch = 2;
+    windows.assemble(1, 28, &restarted, &mut tables).unwrap();
+    assert!(
+        rows(&tables)
+            .iter()
+            .all(|r| matches!(&r.awards,Recorded::Value(w) if w.hours.is_empty()))
+    );
+}

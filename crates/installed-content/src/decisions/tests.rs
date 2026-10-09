@@ -215,3 +215,45 @@ fn content_stack_uses_effective_files_and_native_first_definitions() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn decision_icons_use_native_triggered_text_occurrence_and_unknown_rules() {
+    let mut database = Database::default();
+    append(
+        &mut database,
+        br#"category={
+        single={icon={text=ONLY trigger={always=no}}}
+        many={icon={text=FIRST trigger={always=no}} icon={text=SECOND trigger={always=yes}}}
+    }"#,
+        "synthetic/icons.txt",
+        &[b"category".to_vec()].into(),
+        &KeyNames::default(),
+    );
+    let one = database.decision(b"single").unwrap().unwrap();
+    assert_eq!(
+        one.select_icon(|_| panic!("one icon bypasses its trigger"))
+            .unwrap(),
+        Some("ONLY")
+    );
+    let many = database.decision(b"many").unwrap().unwrap();
+    assert_eq!(
+        many.select_icon(|trigger| Ok(trigger[0].value.scalar() == Some(b"yes".as_slice())))
+            .unwrap(),
+        Some("SECOND")
+    );
+    assert_eq!(many.select_icon(|_| Ok(false)).unwrap(), Some("FIRST"));
+    assert_eq!(
+        many.select_icon(|_| Err("unknown native operand".into()))
+            .unwrap_err(),
+        "unknown native operand"
+    );
+    assert_eq!(
+        many.sprite_candidates(Some("SECOND")).unwrap(),
+        [
+            "GFX_decision_many",
+            "GFX_decision_SECOND",
+            "SECOND",
+            "GFX_decision_unknown"
+        ]
+    );
+}

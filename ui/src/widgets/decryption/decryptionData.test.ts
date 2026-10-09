@@ -2,17 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import type { DecryptionPair, DecryptionReply, DecryptionRun } from '../../generated/dashboard';
-import { activeBonusDays, amountText, CIPHER_BROKEN, cipherStatus, decryptionTooltip, observationDate, NATIVE_PROGRESS_UNKNOWN, progressLabel, progressPercent, progressText, raceRows, validateDecryptionReply, valueAt, workingStatus } from './decryptionData.ts';
+import { activeBonusDays, amountText, CIPHER_BROKEN, cipherStatus, decryptionTooltip as flaggedDecryptionTooltip, observationDate, NATIVE_PROGRESS_UNKNOWN, progressLabel, progressPercent, progressText, raceRows, validateDecryptionReply, valueAt, workingStatus } from './decryptionData.ts';
 import { createWidget } from '../../dashboard/model.ts';
 import { parseTemplate } from '../../dashboard/storage.ts';
 import { defaultTemplate } from '../../dashboard/model.ts';
 import { visibleRange } from '../../components/countryList.ts';
-import { groupMembers, groupRuns } from '../../dashboard/groups.ts';
+import { countryMatch, groupMembers, groupRuns } from '../../dashboard/groups.ts';
 import type { CountryGroupReply } from '../../generated/dashboard';
 import { definition, OPTIONS } from './definition.ts';
 import { sectionFields, resolveOptions } from '../../dashboard/options.ts';
 import { nextRows } from '../../charts/rowMotion.ts';
 import '../definitions.ts';
+const decryptionTooltip = (row: Parameters<typeof flaggedDecryptionTooltip>[0], owner: string, target: string, height: number) =>
+  flaggedDecryptionTooltip(row, { name: owner }, { name: target }, height);
 
 function run(firstHour = 100, lastHour = 102, amountRaw = '400000'): DecryptionRun {
   return { firstHour, lastHour, startAmountRaw: amountRaw, stepRawPerDay: '0', thresholdRaw: '800000', thresholdUnknown: null,
@@ -25,6 +27,45 @@ function reply(runs = [run()]): DecryptionReply {
     pairs: [{ ownerId: '100', targetId: '200', runs, tagRuns: runs.map(({ firstHour, lastHour }) => ({ firstHour, lastHour,
       ownerTag: 'New decryptor|with spaces', targetTag: 'Renamed target' })), breaks: [] }] };
 }
+
+test('manual cipher selection follows all native holders and keeps the chosen endpoint role', () => {
+  const groups = { countryIdentities: [
+    { tag: 'X', identities: [{ firstHour: 100, lastHour: 101, slot: 2, countryId: 300 }, { firstHour: 103, lastHour: 104, slot: 1, countryId: 100 }] },
+    { tag: 'Y', identities: [{ firstHour: 100, lastHour: 101, slot: 1, countryId: 100 }, { firstHour: 103, lastHour: 104, slot: 3, countryId: 400 }] },
+    { tag: 'B_OTHER', identities: [{ firstHour: 103, lastHour: 104, slot: 2, countryId: 300 }] },
+  ] } as CountryGroupReply;
+  const data = reply([run(100, 104)]);
+  const pair = data.pairs[0];
+  data.pairs = [
+    { ...pair, ownerId: '100', tagRuns: [{ firstHour: 100, lastHour: 101, ownerTag: 'Y', targetTag: 'T' }, { firstHour: 103, lastHour: 104, ownerTag: 'X', targetTag: 'T' }] },
+    { ...pair, ownerId: '300', tagRuns: [{ firstHour: 100, lastHour: 101, ownerTag: 'X', targetTag: 'T' }, { firstHour: 103, lastHour: 104, ownerTag: 'B_OTHER', targetTag: 'T' }] },
+    { ...pair, ownerId: '400', tagRuns: [{ firstHour: 103, lastHour: 104, ownerTag: 'Y', targetTag: 'T' }] },
+    { ...pair, ownerId: '400', targetId: '100', tagRuns: [{ firstHour: 103, lastHour: 104, ownerTag: 'Y', targetTag: 'X' }] },
+  ];
+  const match = countryMatch({ kind: 'tags', tags: ['X'] }, [], groups, 104);
+  assert.deepEqual(raceRows(data, 100, 'progress', null, 'decryptor', match.matches).map(row => row.pair.ownerId).sort(), ['100', '300']);
+  assert.deepEqual(raceRows(data, 103, 'progress', null, 'decryptor', match.matches).map(row => row.pair.ownerId).sort(), ['100', '300']);
+  assert.equal(raceRows(data, 102, 'progress', null, 'decryptor', match.matches).length, 0);
+  assert.deepEqual(raceRows(data, 103, 'progress', null, 'target', match.matches).map(row => row.pair.ownerId), ['400']);
+});
+
+test('decryption native endpoints keep independent flag loading/refusal metadata without tagging numeric rows', () => {
+  const [row] = raceRows(reply(), 101, 'progress');
+  const tip = flaggedDecryptionTooltip(row, { name: 'Owner at 101', flagPending: true },
+    { name: 'Target at 101', flagReason: 'Target flag unreadable at 101' }, 800);
+  assert.equal(tip.title, 'Owner at 101 → Target at 101');
+  assert.equal(tip.rows.find(row => row.label === 'Decryptor')?.countryFlag?.flagPending, true);
+  assert.equal(tip.rows.find(row => row.label === 'Target')?.countryFlag?.flagReason, 'Target flag unreadable at 101');
+  assert.ok(tip.rows.filter(row => !['Decryptor', 'Target'].includes(row.label)).every(row => row.countryFlag === undefined));
+  const missing = flaggedDecryptionTooltip({ ...row, tags: { ...row.tags, ownerTag: null, targetTag: null } },
+    { name: 'Country 100', flag: 'must-not-use' }, { name: 'Country 200', flag: 'must-not-use' }, 800);
+  assert.ok(missing.rows.slice(0, 2).every(row => row.countryFlag === undefined));
+  const earlier = flaggedDecryptionTooltip(row, { name: 'Owner at 100', known: true, flagPending: false },
+    { name: 'Target at 100', known: true, flagPending: false }, 800, 100);
+  assert.match(earlier.note ?? '', /Country names and flags at Hour 100/);
+  assert.equal(earlier.rows.find(row => row.label === 'Started')?.value, observationDate(row.run.started, row.hour));
+  assert.equal(flaggedDecryptionTooltip(row, { name: 'Owner' }, { name: 'Target' }, 800, 102).note, undefined);
+});
 
 test('payload checks raw signed values, native bytes, ordered runs, coverage and dated observations', () => {
   assert.equal(validateDecryptionReply(reply()).pairs[0].runs[0].startAmountRaw, '400000');
@@ -189,7 +230,7 @@ test('a second break displays its own date and jump target after bonus expiry', 
   assert.notEqual(observationDate(first.broken, first.hour), observationDate(second.broken, second.hour));
   const tip = decryptionTooltip(second, 'Mod decryptor', 'Renamed target', 800);
   assert.equal(tip.rows.at(-1)?.value, `Cipher broken ${observationDate(data.pairs[0].breaks[1], 125)}`);
-  assert.equal(tip.rows[1].value, observationDate(second.run.started, 125));
+  assert.equal(tip.rows.find(row => row.label === 'Started')?.value, observationDate(second.run.started, 125));
   for (const breaks of [[...data.pairs[0].breaks].reverse(),
     [{ hour: 99, upperBound: false }], [{ hour: 131, upperBound: false }],
     [{ hour: 101, upperBound: false }, { hour: 101, upperBound: true }]]) {
@@ -229,7 +270,7 @@ test('Started belongs to the current attempt: paused zero persists, expiry and c
   for (const [at, start] of [[108, 108], [111, 111], [112, 111], [114, 114]]) {
     const row = raceRows(data, at, 'progress')[0];
     assert.equal(row.run.started?.hour, start);
-    assert.equal(decryptionTooltip(row, 'Recorded decryptor', 'Recorded target', 800).rows[1].value, observationDate(row.run.started, at));
+    assert.equal(decryptionTooltip(row, 'Recorded decryptor', 'Recorded target', 800).rows.find(row => row.label === 'Started')?.value, observationDate(row.run.started, at));
   }
   assert.match(observationDate(raceRows(data, 114, 'progress')[0].run.started, 114), /^by /);
 });
@@ -244,7 +285,7 @@ test('episode dates and certainty come from the product without UI re-derivation
   assert.deepEqual(row.run.started, { hour: 99, upperBound: false });
   assert.deepEqual(row.broken, { hour: 101, upperBound: true });
   const tip = decryptionTooltip(row, 'Owner', 'Target', 800);
-  assert.equal(tip.rows[1].value, observationDate(row.run.started, row.hour));
+  assert.equal(tip.rows.find(row => row.label === 'Started')?.value, observationDate(row.run.started, row.hour));
   assert.match(tip.rows.at(-1)!.value!, /Cipher broken by/);
 });
 
@@ -349,10 +390,10 @@ test('bonus badge requires a broken row and retains the native signed active cou
   validateDecryptionReply(data);
   const tip = decryptionTooltip(raceRows(data, 100, 'progress')[0], 'Custom owner', 'Custom target', 800);
   assert.equal(tip.title, 'Custom owner → Custom target');
-  assert.equal(tip.rows[0].value, 'Progress unknown · 4');
-  assert.equal(tip.rows[2].value, '23');
-  assert.equal(tip.rows[3].divider, true);
-  assert.match(tip.rows[3].value!, /Cipher broken by/);
+  assert.equal(tip.rows.find(row => row.label === 'Progress')?.value, 'Progress unknown · 4');
+  assert.equal(tip.rows.find(row => row.label === 'Bonus days')?.value, '23');
+  assert.equal(tip.rows.find(row => row.label === 'Status')?.divider, true);
+  assert.match(tip.rows.find(row => row.label === 'Status')?.value ?? '', /Cipher broken by/);
   assert.equal(activeBonusDays(decoded({ ...unknown, bonusDays: -1 })), -1);
   assert.equal(activeBonusDays(decoded({ ...unknown, stateFlags: 0 })), null);
   assert.equal(activeBonusDays({ ...decoded(unknown), broken: false }), null);

@@ -730,6 +730,13 @@ fn copy_economy_rest_pass(
         // Fuel status block (batched gather): one bulk covers the walk's
         // scattered status reads for both fuel tables, then its consumer
         // entries and history ring.
+        let _ = espan(
+            log,
+            memory,
+            pointer.checked_add(ccountry::ID_INSTANCE),
+            4,
+            M_E_FUEL_STATUS,
+        );
         if let Some(ptr_start) = espan(
             log,
             memory,

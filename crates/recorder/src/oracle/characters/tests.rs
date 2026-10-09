@@ -248,6 +248,7 @@ fn operative_codename_oracle_checks_both_hosts_and_saved_omissions() {
                 name: None,
                 created: false,
                 upgrade_progress: Decimal::parse(b"0").unwrap(),
+                upgrades: Vec::new(),
                 defense: Decimal::parse(b"0").unwrap(),
                 active_count: 1,
                 unknown_f0: 0,

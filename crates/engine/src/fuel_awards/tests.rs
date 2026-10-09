@@ -1,0 +1,216 @@
+use super::*;
+use std::{cell::Cell, collections::BTreeMap};
+
+#[derive(Default)]
+struct MemoryMap {
+    spans: BTreeMap<usize, Vec<u8>>,
+    reads: Cell<usize>,
+}
+impl Memory for MemoryMap {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.reads.set(self.reads.get() + 1);
+        let Some((&start, bytes)) = self.spans.range(..=address).next_back() else {
+            return false;
+        };
+        let Some(end) = (address - start).checked_add(destination.len()) else {
+            return false;
+        };
+        let Some(source) = bytes.get(address - start..end) else {
+            return false;
+        };
+        destination.copy_from_slice(source);
+        true
+    }
+}
+impl MemoryMap {
+    fn span(&mut self, address: usize, len: usize) {
+        self.spans.insert(address, vec![0; len]);
+    }
+    fn put(&mut self, address: usize, value: &[u8]) {
+        let (&start, bytes) = self.spans.range_mut(..=address).next_back().unwrap();
+        bytes[address - start..address - start + value.len()].copy_from_slice(value);
+    }
+    fn array(&mut self, address: usize, data: usize, count: u32) {
+        self.put(address, &(data as u64).to_le_bytes());
+        self.put(address + 8, &count.to_le_bytes());
+        self.put(address + 12, &count.to_le_bytes());
+    }
+}
+const STATE: usize = 0x100000;
+const COUNTRIES: usize = 0x200000;
+const LINKS: usize = 0x300000;
+const COUNTRY: usize = 0x10000000;
+const STATUS: usize = 0x20000000;
+const CONSUMERS: usize = 0x30000000;
+fn fixture(count: u32) -> MemoryMap {
+    let mut memory = MemoryMap::default();
+    memory.span(cgame_state::SINGLETON_RVA, 8);
+    memory.put(cgame_state::SINGLETON_RVA, &(STATE as u64).to_le_bytes());
+    memory.span(STATE, 0x800);
+    memory.span(COUNTRIES, (count as usize + 1) * 8);
+    memory.span(LINKS, (count as usize + 1) * 4);
+    memory.array(STATE + cgame_state::COUNTRIES, COUNTRIES, count + 1);
+    memory.array(STATE + cgame_state::COUNTRY_LINKS, LINKS, count + 1);
+    for slot in 1..=count {
+        let country = COUNTRY + slot as usize * 0x2000;
+        let status = STATUS + slot as usize * 0x1000;
+        let consumers = CONSUMERS + slot as usize * 0x100;
+        memory.span(country, 0x1590);
+        memory.span(status, 0xe8);
+        memory.span(consumers, 3 * crate::fuel_consumer_data::STRIDE);
+        memory.put(
+            COUNTRIES + slot as usize * 8,
+            &(country as u64).to_le_bytes(),
+        );
+        memory.put(LINKS + slot as usize * 4, &slot.to_le_bytes());
+        memory.put(country, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        memory.put(country + ccountry::ID, &slot.to_le_bytes());
+        memory.put(
+            country + ccountry::ID_INSTANCE,
+            &(slot + 9000).to_le_bytes(),
+        );
+        memory.put(
+            country + ccountry::FUEL_STATUS,
+            &(status as u64).to_le_bytes(),
+        );
+        memory.put(status, &(fuel::VTABLE_RVA as u64).to_le_bytes());
+        memory.put(status + fuel::COUNTRY, &(country as u64).to_le_bytes());
+        memory.put(status + fuel::GAIN, &(-17_i64).to_le_bytes());
+        memory.put(status + fuel::GAIN_FROM_STATES, &23_i64.to_le_bytes());
+        memory.put(status + fuel::COST, &(-5_i64).to_le_bytes());
+        memory.put(status + 0x68, &i64::MAX.to_le_bytes());
+        memory.put(status + fuel::REMAINING_HOURS, &7_i32.to_le_bytes());
+        memory.array(status + fuel::CONSUMERS, consumers, 3);
+    }
+    memory
+}
+#[test]
+fn applied_acquisition_at_5000_countries_preserves_wrap_zero_and_loaded_pending() {
+    let mut memory = fixture(5000);
+    let received = [11_i64, -23, 37];
+    for (index, value) in received.iter().enumerate() {
+        memory.put(
+            CONSUMERS
+                + 0x100
+                + index * crate::fuel_consumer_data::STRIDE
+                + crate::fuel_consumer_data::RECEIVED,
+            &value.to_le_bytes(),
+        );
+    }
+    for slot in 1..=5000 {
+        let status = STATUS + slot * 0x1000;
+        let begun = start(&memory, 0, status).unwrap();
+        let amount = if slot == 1 { 0 } else { 31_i64 };
+        memory.put(
+            status + 0x68,
+            &begun.pending_gain.wrapping_add(amount).to_le_bytes(),
+        );
+        let result = settle(&memory, 0, begun, status).unwrap();
+        assert_eq!(result.own_gain, amount);
+        assert_eq!(result.gains, [-17, 23, amount - 11, 5]);
+        assert_eq!(result.received, if slot == 1 { received } else { [0; 3] });
+        assert_eq!(begun.remaining_hours, 7);
+    }
+    assert!(memory.reads.get() < 5000 * 120);
+}
+#[test]
+fn country_replacement_and_changed_applied_fields_refuse_only_the_root() {
+    let mut memory = fixture(2);
+    let status = STATUS + 0x1000;
+    let begun = start(&memory, 0, status).unwrap();
+    memory.put(
+        COUNTRY + 0x2000 + ccountry::ID_INSTANCE,
+        &9002_u32.to_le_bytes(),
+    );
+    assert!(settle(&memory, 0, begun, status).is_err());
+    let other = start(&memory, 0, STATUS + 0x2000).unwrap();
+    assert!(settle(&memory, 0, other, STATUS + 0x2000).is_ok());
+    let changed = start(&memory, 0, status).unwrap();
+    memory.put(status + fuel::GAIN, &100_i64.to_le_bytes());
+    assert!(settle(&memory, 0, changed, status).is_err());
+}
+#[test]
+fn native_retained_name_supports_heap_length_without_a_chosen_limit() {
+    let mut memory = MemoryMap::default();
+    let army = 0x1000;
+    let member = 0x2000;
+    let payload = 0x4000;
+    memory.span(army, 0x348);
+    memory.span(member, 0x80);
+    memory.span(payload, 8193);
+    memory.put(
+        army + crate::carmy_combat_inputs::NAME_GROUP_MEMBER,
+        &(member as u64).to_le_bytes(),
+    );
+    memory.put(member + 0x60, &(payload as u64).to_le_bytes());
+    memory.put(member + 0x70, &8192_u64.to_le_bytes());
+    memory.put(member + 0x78, &8192_u64.to_le_bytes());
+    let name = stored_name(&memory, army, 0).unwrap();
+    let mut output = vec![1; 8192];
+    name.copy(&memory, &mut output).unwrap();
+    assert_eq!(output, vec![0; 8192]);
+    memory.put(payload + 8192, &[1]);
+    assert!(stored_name(&memory, army, 0).is_err());
+}
+
+#[test]
+fn live_census_at_5000_includes_null_air_countries_and_all_name_bytes() {
+    let mut memory = fixture(5000);
+    let manager = 0x600000;
+    let airs = 0x700000;
+    memory.span(manager, 0x50);
+    memory.span(airs, 5001 * 8);
+    memory.put(
+        STATE + cgame_state::STRATEGIC_AIR_MANAGER,
+        &(manager as u64).to_le_bytes(),
+    );
+    memory.put(
+        manager,
+        &(cstrategic_air_manager::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    memory.array(manager + cstrategic_air_manager::COUNTRY_AIR, airs, 5001);
+    for slot in 1..=5000 {
+        let country = COUNTRY + slot * 0x2000;
+        let roster = 0x60000000 + slot * 0x100;
+        let division = 0x70000000 + slot * 0x1000;
+        let member = 0x80000000 + slot * 0x1000;
+        memory.span(roster, 8);
+        memory.span(division, 0x348);
+        memory.span(member, 0x80);
+        memory.array(country + ccountry::DIVISIONS, roster, 1);
+        memory.put(roster, &(division as u64).to_le_bytes());
+        memory.put(
+            division + crate::carmy_combat_inputs::NAME_GROUP_MEMBER,
+            &(member as u64).to_le_bytes(),
+        );
+        memory.put(member + 0x60, b"recorded");
+        memory.put(member + 0x70, &8_u64.to_le_bytes());
+        memory.put(member + 0x78, &15_u64.to_le_bytes());
+    }
+    assert_eq!(
+        demand(&memory, 0, STATE).unwrap(),
+        Demand {
+            entries: 10000,
+            names: 40000
+        }
+    );
+    assert_eq!(demand(&memory, 0, 0).unwrap(), Demand::default());
+}
+
+#[test]
+fn native_quantity_conversion_preserves_signed_remainders_and_i64_extremes() {
+    for raw in [
+        i64::MIN,
+        -100_001,
+        -100_000,
+        -1,
+        0,
+        1,
+        99_999,
+        100_000,
+        100_001,
+        i64::MAX,
+    ] {
+        assert_eq!(i128::from(quantity(raw)), i128::from(raw) * 32768 / 100000);
+    }
+}

@@ -1,9 +1,11 @@
 import { runAt } from '../../charts/series.ts';
 import { entryAt } from '../../dashboard/reads.ts';
+import { campaignToken } from '../../dashboard/chosen.ts';
+import { contentKey, setToken } from '../../dashboard/options.ts';
 import type { BandStep, TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { TooltipContent, TooltipRow } from '../../charts/tooltip';
-import { formatAmount } from '../../charts/valueAxis.ts';
-import type { LineDetail, LineHistory, LineRun, LineStep, OrganisationName, OutputRun, ProductionLineDetailReply, ProductionLinesReply,
+import { formatAmount, formatFixed } from '../../charts/valueAxis.ts';
+import type { LineDetail, LineHistory, LineRun, LineStep, OrganisationName, OutputRun, ProductionLineDetailReply, ProductionLinesReply, ProductionLineBreakdownReply, ProductionModifierRun,
   VariantName } from '../../generated/dashboard';
 
 /** A country's production lines, from the recorded `ProductionLines`,
@@ -13,19 +15,37 @@ import type { LineDetail, LineHistory, LineRun, LineStep, OrganisationName, Outp
  * the game's weekly formula, efficiency is the recorded Q15 value rounded as the row
  * shows it, and a line's total is the units the collector counted it deliver.
  *
- * Two products, so no reply grows with the campaign: `production-lines` holds each
+ * `production-lines` holds each
  * line's life (its factory steps and final count) with the names, icons and hours
  * recorded; `production-line-detail` holds every value read in one window of
  * `detailHours`, which the live table and the history's tooltip ask for as they
- * need it. */
+ * need it. `production-line-breakdown` supplies one line's selected factor over
+ * the branch. Full histories grow with recorded changes; the transport bounds
+ * each reply. */
 
 const RAW = /^-?\d{1,20}$/;
+const PART_RAW = /^-?\d+$/;
 const HOUR = (value: unknown) => Number.isInteger(value);
 const KINDS = ['military', 'naval', 'shipRefit', 'railwayGun'];
 const NULLABLE = (value: unknown) => value === null || typeof value === 'string';
 
 const ordered = <T extends { firstHour: number; lastHour: number }>(runs: readonly T[]) =>
   runs.every((run, index) => run.firstHour <= run.lastHour && (index === 0 || runs[index - 1].lastHour < run.firstHour));
+
+/** Native line keys belong to one campaign branch and producing country. */
+export const productionLineToken = (campaign: string, branch: string, tag: string, key: string) =>
+  setToken(campaignToken(campaign, JSON.stringify([branch, tag, key])));
+
+export function productionLineKey(campaign: string, branch: string, tag: string, token: unknown): string | null {
+  if (typeof token !== 'string') return null;
+  const value = contentKey(token); const prefix = campaignToken(campaign, '');
+  if (!value.startsWith(prefix)) return null;
+  try {
+    const parts: unknown = JSON.parse(value.slice(prefix.length));
+    return Array.isArray(parts) && parts.length === 3 && parts[0] === branch && parts[1] === tag
+      && typeof parts[2] === 'string' && parts[2] !== '' ? parts[2] : null;
+  } catch { return null; }
+}
 
 const isStep = (step: LineStep) => HOUR(step.firstHour) && HOUR(step.lastHour) && typeof step.startsSegment === 'boolean'
   && RAW.test(step.variant) && HOUR(step.activeFactories) && HOUR(step.requestedFactories);
@@ -38,6 +58,25 @@ const isRun = (run: LineRun) => HOUR(run.firstHour) && HOUR(run.lastHour) && typ
 const isOutput = (run: OutputRun) => HOUR(run.firstHour) && HOUR(run.lastHour) && run.firstHour <= run.lastHour && HOUR(run.sinceHour)
   && typeof run.wholeLife === 'boolean' && Array.isArray(run.parts)
   && run.parts.every(part => RAW.test(part.variant) && RAW.test(part.mio) && RAW.test(part.units) && typeof part.exact === 'boolean');
+
+export const isModifierRun = (run: ProductionModifierRun) => HOUR(run.firstHour) && HOUR(run.lastHour)
+  && Array.isArray(run.warnings) && run.warnings.every(warning => typeof warning === 'string')
+  && Array.isArray(run.groups) && run.groups.every(group => typeof group.id === 'string' && typeof group.label === 'string'
+    && typeof group.note === 'string' && typeof group.unit === 'string' && group.decimals === 5
+    && (group.totalRaw === null || typeof group.totalRaw === 'string' && RAW.test(group.totalRaw)) && Array.isArray(group.parts)
+    && group.parts.every(part => typeof part.id === 'string' && NULLABLE(part.label) && typeof part.raw === 'string' && PART_RAW.test(part.raw) && NULLABLE(part.unknown))
+    && new Set(group.parts.map(part => part.id)).size === group.parts.length
+    && (group.totalRaw === null || group.parts.reduce((sum, part) => sum + BigInt(part.raw), 0n) === BigInt(group.totalRaw)));
+
+export function validateBreakdownReply(data: unknown): ProductionLineBreakdownReply {
+  const reply = data as ProductionLineBreakdownReply;
+  if (!reply || typeof reply.branchId !== 'string' || typeof reply.tag !== 'string' || typeof reply.key !== 'string'
+    || !Array.isArray(reply.groups) || !reply.groups.every(group => typeof group.id === 'string' && typeof group.label === 'string')
+    || !Array.isArray(reply.reads) || !reply.reads.every((hour, index) => HOUR(hour) && (index === 0 || reply.reads[index - 1] < hour))
+    || !Array.isArray(reply.runs) || !ordered(reply.runs) || !reply.runs.every(isModifierRun)
+    || !Array.isArray(reply.warnings) || !reply.warnings.every(warning => typeof warning === 'string')) throw new Error('The production modifier reply is malformed.');
+  return reply;
+}
 
 /** Checks the history's shape: each line's steps in hour order without overlaps,
  * exact raw values, names in id then hour order, and reads ascending. */
@@ -77,7 +116,8 @@ export function validateDetailReply(data: unknown): ProductionLineDetailReply {
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string')
     && Array.isArray(reply.lines) && reply.lines.every(line => typeof line.key === 'string'
       && Array.isArray(line.runs) && ordered(line.runs) && line.runs.every(isRun)
-      && Array.isArray(line.output) && ordered(line.output) && line.output.every(isOutput))
+      && Array.isArray(line.output) && ordered(line.output) && line.output.every(isOutput)
+      && Array.isArray(line.modifiers) && ordered(line.modifiers) && line.modifiers.every(isModifierRun))
     && new Set(reply.lines.map(line => line.key)).size === reply.lines.length;
   if (!ok) throw new Error('The production lines reply is malformed.');
   return reply;
@@ -273,6 +313,60 @@ function countRows(reply: ProductionLinesReply, output: OutputRun | null, hour: 
 
 /** Both forms of a tooltip whose rows hold counts. */
 const forms = (build: (parts: boolean) => TooltipContent): TooltipForms => [build(true), build(false)];
+
+/** Both hover forms retain the whole's status; the full form supplies speech. */
+export function modifierTooltip(group: ProductionModifierRun['groups'][number] | undefined, title: string,
+  color: (id: string) => string | undefined): TooltipForms {
+  if (!group) return [{ title, rows: [{ label: 'Breakdown', value: 'Not recorded', tone: 'muted' }], note: 'Click to show this day.' }];
+  const total: TooltipRow = { label: group.label, value: group.totalRaw == null ? 'Not recorded'
+    : `${formatFixed(group.totalRaw, group.decimals, group.decimals)} ${group.unit}`, strong: true };
+  const rows: TooltipRow[] = group.parts.map(part => ({ label: part.label ?? 'Other / not identified',
+    value: `${formatFixed(part.raw, group.decimals, group.decimals)} ${group.unit}`, swatch: color(part.id),
+    tone: part.unknown == null ? undefined : 'muted' }));
+  const note = withNote(group.note, ...new Set(group.parts.flatMap(part => part.unknown == null ? [] : [part.unknown])), 'Click to show this day.');
+  return [{ title, rows: [total, ...rows], note }, { title, rows: [total,
+    { label: `${group.parts.length} recorded source rows`, tone: 'muted' }], note: 'Click to show this day.' }];
+}
+
+/** Recorded line values stay alongside their supplying modifier parts. Older
+ * recordings without the supplement identify the missing attribution. */
+export function breakdownTooltip(reply: ProductionLinesReply, run: LineRun, hour: number, part: 'efficiency' | 'output',
+  head: Pick<TooltipContent, 'subtitle' | 'note'>, modifiers?: ProductionModifierRun | null): TooltipForms {
+  const variant = variantAt(reply, run.variant, hour);
+  const weekly = weeklyOutput(run);
+  const exact = (raw: string) => formatFixed(raw, reply.decimals, reply.decimals);
+  const rows: TooltipRow[] = part === 'efficiency' ? [
+    { label: 'Efficiency', value: `${efficiencyPercent(run)}%`, strong: true },
+    { label: 'Factories included in average', value: String(Math.max(0, Math.min(run.activeFactories, run.maxFactories))) },
+    { label: 'Other / not identified', value: 'Not recorded', divider: true, tone: 'muted' },
+  ] : [
+    { label: 'Output', value: weekly == null ? 'Not recorded' : `${weeklyText(weekly, reply.decimals)} per week`, strong: true },
+    { label: 'Factories', value: `${run.activeFactories} of ${run.requestedFactories} requested` },
+    { label: 'Efficiency', value: `${efficiencyPercent(run)}%` },
+    { label: 'Recorded output per tick', value: `${exact(run.speedRaw)} IC` },
+    { label: 'Cost per unit', value: `${exact(run.costRaw)} IC` },
+    { label: 'Other / not identified', value: 'Not recorded', divider: true, tone: 'muted' },
+  ];
+  const groups = modifiers?.groups.filter(group => part === 'output' ? group.id === 'output' : ['efficiency', 'start', 'cap', 'gain', 'daily'].includes(group.id) || group.id.startsWith('retention-'));
+  if (groups?.length) {
+    const sourceRows: TooltipRow[] = groups.flatMap(group => [{ label: group.label,
+      value: group.totalRaw == null ? 'Not recorded' : `${formatFixed(group.totalRaw, group.decimals, group.decimals)} ${group.unit}`, strong: true, divider: true },
+      ...group.parts.map(source => ({ label: source.label ?? 'Other / not identified',
+        value: `${formatFixed(source.raw, group.decimals, group.decimals)} ${group.unit}`, tone: source.unknown ? 'muted' as const : undefined }))]);
+      const title = variantName(variant, run.variant);
+      const note = withNote(head.note, 'Click for the full breakdown and its history.');
+      const recordedRows = rows.filter(row => row.label !== 'Other / not identified');
+      const icon = iconImage(reply, variant?.icon ?? null) ?? undefined;
+      return [{ title, icon, subtitle: head.subtitle, rows: [...recordedRows, ...sourceRows], note: withNote(note, ...groups.map(group => group.note)) },
+        { title, icon, subtitle: head.subtitle, rows: [...recordedRows, ...groups.map(group => ({ label: group.label, value: group.totalRaw == null ? 'Not recorded'
+          : `${formatFixed(group.totalRaw, group.decimals, group.decimals)} ${group.unit}`, strong: true }))], note }];
+  }
+  const why = part === 'efficiency'
+    ? 'The recording contains the line’s average efficiency, but not the contributions from growth, cap, retention or source modifiers.'
+    : 'The recording contains the final output rate and cost, but not the contributions from factory output modifiers. Cost includes the organisation’s recorded bonus.';
+  return [{ title: variantName(variant, run.variant), icon: iconImage(reply, variant?.icon ?? null) ?? undefined,
+    subtitle: head.subtitle, rows, note: withNote(head.note, variant ? undefined : UNNAMED, why) }];
+}
 
 /** The tooltip of a line at an hour after it ended, or of one made and deleted
  * between two reads: its final count, with each variant's part. */

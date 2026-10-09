@@ -81,6 +81,86 @@ fn saved_pack(text: &[u8]) -> saved::Pack {
 }
 
 #[test]
+fn garrison_equipment_oracle_compares_requirements_and_names_the_unsaved_allocation_cache() {
+    use replay::{
+        frame::TableView,
+        rows::{
+            GarrisonEquipment, GarrisonEquipmentInputs, Recorded, StateGarrisonRow, TableRows,
+            VariantDefinitionRow,
+        },
+    };
+    let a = CountryRow {
+        tag: b"A".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(1, &a)]);
+    let names = BTreeMap::from([(700, b"mod_weapon".as_slice())]);
+    let variant = (9_u64 << 32) | 70;
+    let mut frame = DecodedFrame {
+        branch: 1,
+        hour: 10,
+        metrics: Default::default(),
+        tables: std::array::from_fn(|index| {
+            TableView::Complete(TableRows::empty(TableId::ALL[index]))
+        })
+        .map(Into::into),
+    };
+    *frame.tables[TableId::StateGarrisons.index()] =
+        TableView::Complete(TableRows::StateGarrisons(vec![StateGarrisonRow {
+            controller: 1,
+            occupied: 1,
+            state: 1,
+            equipment: Recorded::Value(GarrisonEquipmentInputs {
+                rows: vec![GarrisonEquipment {
+                    equipment_token: 700,
+                    archetype_token: 700,
+                    required_raw: 100_000,
+                    allocated_raw: 50_000,
+                    ..Default::default()
+                }],
+                failure: None,
+            }),
+            ..Default::default()
+        }]));
+    *frame.tables[TableId::VariantDefinitions.index()] =
+        TableView::Complete(TableRows::VariantDefinitions(vec![VariantDefinitionRow {
+            id: variant,
+            archetype_token: 700,
+            ..Default::default()
+        }]));
+    for (requirements, allocation, missing, differences) in [
+        ("mod_weapon=1", "0.5", false, 0),
+        ("mod_weapon=2", "0.5", false, 1),
+        ("mod_weapon=1", "0.6", false, 0),
+        ("mod_weapon=1 extra_mod_weapon=1", "0.5", false, 1),
+        ("mod_weapon=1", "0.5", true, 0),
+    ] {
+        let pool = if missing {
+            String::new()
+        } else {
+            format!(
+                "equipment={{equipment={{id={{id=9 type=70}} amount={allocation}}} allow_zero_entries=no}}"
+            )
+        };
+        let saved = saved_pack(format!("countries={{A={{occupation_status={{occupation={{A={{state_garrison_data={{1={{{pool} equipment_need={{{requirements}}}}}}}}}}}}}}}}} states={{}} provinces={{}}").as_bytes());
+        let mut report = Report::default();
+        garrison_equipment(&frame, &saved, &links, &names, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{:?}",
+            report.differences
+        );
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("140FEB450"))
+        );
+    }
+}
+
+#[test]
 fn state_pools_and_modifiers_compare_names_order_and_scopes() {
     let saved = saved_pack(
         br#"countries={} provinces={} states={2={resources={steel=8} dynamic_modifier={
@@ -396,10 +476,12 @@ fn occupation_template_id_retains_full_handle_and_null_omission() {
             garrison_template: Some((u64::from(u32::MAX) << 32) | 52),
             default_law_present: 1,
             law: Vec::new(),
+            group_laws: replay::rows::Recorded::Value(Some(Vec::new())),
             ..Default::default()
         },
         replay::rows::OccupationSettingsRow {
             country: 22,
+            group_laws: replay::rows::Recorded::Value(Some(Vec::new())),
             ..Default::default()
         },
     ];
@@ -437,6 +519,15 @@ fn occupied_country_roster_oracle_checks_order_and_appended_availability() {
     let mut row = replay::rows::OccupationSettingsRow {
         country: 1,
         occupied: replay::rows::Recorded::Value(Some(vec![3, 2])),
+        group_laws: replay::rows::Recorded::Value(Some(
+            [3, 2]
+                .map(|occupied| replay::rows::OccupationGroupLaw {
+                    occupied,
+                    scope_country: Some(occupied),
+                    law: None,
+                })
+                .to_vec(),
+        )),
         ..Default::default()
     };
     let mut report = Report::default();
@@ -1087,4 +1178,85 @@ fn manpower_filter_retains_relative_order_and_resolves_country_aliases() {
         .is_err()
     );
     assert!(manpower(&mut report, "unresolved", [(0, 999, 7)], &saved, &links).is_err());
+}
+
+#[test]
+fn occupation_group_laws_compare_null_membership_aliases_and_missing_or_extra_groups() {
+    use replay::rows::{OccupationGroupLaw, OccupationSettingsRow, Recorded};
+    let saved = saved_pack(b"countries={A={occupation_status={occupation={B={occupation_law=mod_law} C={}}}} B={} C={}} states={} provinces={}");
+    let a = CountryRow {
+        tag: b"A".to_vec(),
+        ..Default::default()
+    };
+    let b = CountryRow {
+        tag: b"B".to_vec(),
+        ..Default::default()
+    };
+    let c = CountryRow {
+        tag: b"C".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(1, &a), (2, &b), (3, &c), (9002, &b)]);
+    let groups = vec![
+        OccupationGroupLaw {
+            occupied: 9002,
+            scope_country: Some(9002),
+            law: Some(b"mod_law".to_vec()),
+        },
+        OccupationGroupLaw {
+            occupied: 3,
+            scope_country: Some(3),
+            law: None,
+        },
+    ];
+    let mut row = OccupationSettingsRow {
+        country: 1,
+        group_laws: Recorded::Value(Some(groups)),
+        ..Default::default()
+    };
+    let mut report = Report::default();
+    occupation_settings(&[row.clone()], &saved, &links, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    for groups in [
+        vec![
+            OccupationGroupLaw {
+                occupied: 2,
+                scope_country: Some(2),
+                law: Some(b"wrong".to_vec()),
+            },
+            OccupationGroupLaw {
+                occupied: 3,
+                scope_country: Some(3),
+                law: None,
+            },
+        ],
+        vec![OccupationGroupLaw {
+            occupied: 2,
+            scope_country: Some(2),
+            law: Some(b"mod_law".to_vec()),
+        }],
+        vec![
+            OccupationGroupLaw {
+                occupied: 2,
+                scope_country: Some(2),
+                law: Some(b"mod_law".to_vec()),
+            },
+            OccupationGroupLaw {
+                occupied: 3,
+                scope_country: Some(3),
+                law: None,
+            },
+            OccupationGroupLaw {
+                occupied: 1,
+                scope_country: Some(1),
+                law: None,
+            },
+        ],
+    ] {
+        row.group_laws = Recorded::Value(Some(groups));
+        let mut report = Report::default();
+        occupation_settings(&[row.clone()], &saved, &links, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        assert!(report.differences[0].contains("group_laws"));
+    }
 }

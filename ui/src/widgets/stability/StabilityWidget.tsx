@@ -1,21 +1,26 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import DatedCountryChip from '../../dashboard/DatedCountryChip';
+import { countryDrillTagAt } from '../../dashboard/countryIdentity';
+import { chooseDrillCountry, drillCountrySpans, readDrillCountry } from '../country-measure/drillCountry';
 import DrillHost from '../../charts/drill/DrillHost';
-import { CLOSED, drillHour, pinnedBreakdown, reduceDrill } from '../../charts/drill/drillState';
+import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
 import type { StabilityPartsReply } from '../../generated/dashboard';
 import StabilityDrill, { MEASURE_NAMES } from './StabilityDrill';
 import { validateStabilityPartsReply } from './partsData';
-import { SourceFlag } from '../../components/CountryFlag';
+import CountryPicker from '../../components/CountryPicker';
+import { CountryFlagUrl } from '../../components/CountryFlag';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
 import { badgeRows } from '../../charts/badges';
 import { dayLabel, drawLine, END_LABEL_HEIGHT, placeEndLabels } from '../../charts/draw';
 import { jumpItem } from '../../charts/jump';
 import Legend from '../../charts/Legend';
-import { categoricalPalette, nudgeApart, SECONDARY_DASH } from '../../charts/palette';
+import type { LegendItem } from '../../charts/Legend';
+import { nudgeApart, SECONDARY_DASH } from '../../charts/palette';
 import { extentOf, lineEndHour } from '../../charts/series';
-import type { Run } from '../../charts/series';
 import TimeChart from '../../charts/TimeChart';
-import type { ChartLayer } from '../../charts/TimeChart';
+import type { ChartLayer, ChartPick } from '../../charts/TimeChart';
 import { useChartTokens, useViewportHeight } from '../../charts/useChartTokens';
 import { CHART_LAYOUT } from '../../charts/tokens';
 import { fitTooltip } from '../../charts/tooltip';
@@ -26,15 +31,19 @@ import { useCampaignSettings } from '../../dashboard/campaignSettings';
 import { factionNameAt } from '../../dashboard/factionNames';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { clipRuns, isMember, resolveCountries } from '../../dashboard/groups';
+import { isMember, resolveCountries } from '../../dashboard/groups';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { useProduct, useProducts } from '../../dashboard/products';
 import { readHourAt, validateStabilityReply } from '../../dashboard/stabilityReply';
 import { formatDateTime } from '../../dashboard/calendar';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
-import type { CountryGroupReply, CountryStabilityReply, CountryStyle, CountryStyleReply } from '../../generated/dashboard';
+import { NumericReply } from '../../dashboard/numericReply';
+import { groupNumbers } from '../../dashboard/groupsReply';
+import { useCountryLooks } from '../../dashboard/countryLooks';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import type { CountryGroupReply, CountryStabilityReply } from '../../generated/dashboard';
 import { parseColor, toHex } from '../../shell/appearance/color';
 import { STABILITY_BREAKDOWNS, STABILITY_OPTIONS } from './definition';
 import { stabilityMarkers } from './markers';
@@ -46,13 +55,14 @@ import { validateIdeaHistoryReply } from '../../dashboard/ideaHistoryReply';
 import type { IdeaHistoryReply } from '../../generated/dashboard';
 import { validatePartyHistoryReply } from '../ruling-party/partyData';
 import { validateFocusReply } from '../national-focus/focusData';
-import { breakdownRows, formatPercent, linesPerMeasure, percentRuns, rawAt, zoomRange } from './stabilityData';
+import { breakdownRows, formatPercent, linesPerMeasure, rawAt, zoomRange } from './stabilityData';
 import type { Measure } from './stabilityData';
+import { chooseStabilityActor, pickStabilityLine, pinStabilityDrill, stabilityNumbers, stabilityPartsNumbers, stabilityPickAction, stabilityPlotSeries, stabilityLookSegments, stabilityCountryParts } from './stabilityDrillData';
+import type { StabilityPick } from './stabilityDrillData';
 import './stability.css';
 
 const NO_WARNINGS: string[] = [];
-/** Country names and colours are read at most once per this many hours of playback. */
-const STYLE_STEP = 30 * 24;
+const NO_FLAGS: readonly string[] = [];
 /** A failed breakdown is asked for again after this delay, doubling each time, this many times. */
 const BREAKDOWN_RETRY_MS = 3000;
 const BREAKDOWN_RETRIES = 4;
@@ -69,40 +79,53 @@ const MEASURES: readonly { key: Measure; label: string; dash?: readonly number[]
  * map colour, stability solid and war support dashed, on a fixed 0–100% scale by
  * default. Hovering one country shows the game's own breakdown of both values for
  * the read behind that hour. */
-export default function StabilityWidget({ widget, runtime, active, onDiagnostics }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+export default function StabilityWidget({ widget, runtime, active, countrySlot, onDiagnostics }: WidgetProps) {
   const tokens = useChartTokens();
   const campaignSettings = useCampaignSettings();
   const viewport = useViewportHeight();
   const options = resolveOptions(STABILITY_OPTIONS, widget.options);
-  const shown = MEASURES.filter(measure => options[measure.key] !== false);
+  const pinnedMeasure = options.show === 'stability' || options.show === 'warSupport' ? options.show as Measure : null;
+  const [localPick, setLocalPick] = useState<{ owner: unknown; hour: number | null } | null>(null);
+  const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
+  const [drillMeasure, setDrillMeasure] = useState<Measure>(pinnedMeasure ?? 'stability');
+  const [visibleFlags, setVisibleFlags] = useState<readonly string[]>(NO_FLAGS);
+  const onVisibleItems = useCallback((items: readonly LegendItem[]) => {
+    const tags = [...new Set(items.map(item => item.id))].sort();
+    setVisibleFlags(before => before.length === tags.length && before.every((tag, index) => tag === tags[index]) ? before : tags);
+  }, []);
+  const [actorPick, setActorPick] = useState<{ owner: unknown; pick: StabilityPick } | null>(null);
+  useEffect(() => { if (pinnedMeasure) setDrillMeasure(pinnedMeasure); }, [pinnedMeasure]);
+  const shown = useMemo(() => MEASURES.filter(measure => options[measure.key] !== false), [options.stability, options.warSupport]);
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
+  const hasSavedCountry = Object.hasOwn(widget.options ?? {}, 'stabilityCountry');
+  const bindingKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries, hasSavedCountry, widget.options?.stabilityCountry, pinnedMeasure]);
+  const bindingOwner = useMemo(() => ({ client: runtime.client, key: bindingKey }), [runtime.client, bindingKey]);
+  const localHour = localPick?.owner === bindingOwner ? localPick.hour : undefined;
+  const setLocalHour = (hour: number | null) => setLocalPick({ owner: bindingOwner, hour });
+  const clockHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || pinnedMeasure !== null && localHour === null || (drill.breakdown !== null && drill.follow)));
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const lastHour = track?.branch.lastHour ?? 0;
-  const groups = useCountryGroups(runtime, track, active && widget.countries.kind === 'group');
+  const groups = useCountryGroups(runtime, track, active && (widget.countries.kind === 'group' || pinnedMeasure !== null || drill.breakdown !== null));
   const fallback = defaultCountryTag(track);
-  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groups.data, lastHour, Number.MAX_SAFE_INTEGER), [widget.countries, fallback, groups.data, lastHour]);
+  const groupStore = useMemo(() => new NumericReply<CountryGroupReply>(), [runtime.client]);
+  const groupData = groupStore.update(JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, widget.countries]), groups.data, groupNumbers);
+  const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], groupData, lastHour, Number.MAX_SAFE_INTEGER), [widget.countries, fallback, groupData, lastHour]);
   const request = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-stability',
     params: { branchId: track.branch.id, tags: resolved.tags, hour: null } } : null;
-  const { data, error, retry } = useProduct<CountryStabilityReply>(runtime.client, request, active, validateStabilityReply);
+  const product = useProduct<CountryStabilityReply>(runtime.client, request, active, validateStabilityReply);
+  const { error, retry } = product;
+  const numberStore = useMemo(() => new NumericReply<CountryStabilityReply>(), [runtime.client]);
+  const numbers = numberStore.update(JSON.stringify(request), product.data, stabilityNumbers);
+  const data = product.data ?? numbers;
 
   const following = widget.time.mode === 'follow';
   const pinned = widget.time.mode === 'pin';
   const playhead = window && (following || pinned) ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const styleAt = playhead ?? (widget.time.mode === 'range' && window ? window.lastHour : lastHour);
-  // During playback names and colours are read in steps; otherwise at the hour shown.
-  const styleHour = !track ? 0 : !following ? styleAt : Math.min(lastHour, track.branch.firstHour + Math.floor((styleAt - track.branch.firstHour) / STYLE_STEP) * STYLE_STEP);
-  const styleRequest = track && resolved.tags.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'country-styles',
-    params: { branchId: track.branch.id, hour: styleHour, tags: resolved.tags } } : null;
-  const styles = useProduct<CountryStyleReply>(runtime.client, styleRequest, active);
-  const [known, setKnown] = useState<ReadonlyMap<string, CountryStyle>>(new Map());
-  useEffect(() => setKnown(new Map()), [track?.source.id, track?.source.revision, track?.branch.id]);
-  useEffect(() => {
-    if (styles.data) setKnown(previous => new Map([...previous, ...styles.data!.styles.map(style => [style.tag, style] as const)]));
-  }, [styles.data]);
-  // Names and colours kept from another hour are not passed off as this hour's when its read fails.
-  useEffect(() => { if (styles.error) setKnown(new Map()); }, [styles.error]);
+  const segmentAt = useMemo(() => stabilityLookSegments(numbers), [numbers]);
+  const flagTags = active && !(drill.breakdown && options.drill !== 'popout') ? visibleFlags : NO_FLAGS;
+  const looks = useCountryLooks(runtime.client, track, resolved.tags, styleAt, active, segmentAt, undefined, false, flagTags);
 
   // The breakdown of the one country shown, for the read behind the hovered hour,
   // without the histories (breakdownOnly), each read fetched once and cached.
@@ -147,31 +170,25 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
   }, [breakdown.error, hover, active]);
 
 
-  const series = useMemo(() => {
-    if (!data) return [];
-    const palette = categoricalPalette(tokens.surface);
-    const raw = data.series.map((item, index) => {
-      const style = known.get(item.tag);
-      // A country without a recorded map colour is drawn in neutral grey, never a colour it lacks.
-      const recorded = style?.color ? { r: style.color[0], g: style.color[1], b: style.color[2] } : parseColor(tokens.muted) ?? parseColor(palette[index % palette.length])!;
-      const membership = resolved.membership?.get(item.tag);
-      // Only the hours the widget shows (its range, and the group's membership): an
-      // axis dragged past the range shows nothing beyond it.
-      const shownHours = [{ tag: item.tag, firstHour: extent[0], lastHour: extent[1] }];
-      const lines = Object.fromEntries(MEASURES.map(measure => {
-        const runs = clipRuns(percentRuns(item[measure.key], data.decimals), shownHours);
-        return [measure.key, membership ? clipRuns(runs, membership) : runs];
-      })) as Record<Measure, Run[]>;
-      const valueAt = (measure: Measure, hour: number) => hour >= extent[0] && hour <= extent[1] && isMember(membership, hour) ? rawAt(item[measure], hour) : null;
-      return { tag: item.tag, name: style?.name ?? track?.source.metadata.countries.find(country => country.tag === item.tag)?.name ?? item.tag,
-        color: recorded, recordedColour: Boolean(style?.color), lines, valueAt, carried: item.carried };
-    });
-    // Only recorded colours are adjusted; a country without one stays grey, as the diagnostic says.
-    const coloured = raw.filter(item => item.recordedColour);
+  const geometry = useMemo(() => stabilityPlotSeries(numbers, resolved.membership, extent),
+    [numbers, resolved.membership, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const colorKey = useMemo(() => JSON.stringify(geometry.map(item => looks.color(item.tag, styleAt))), [geometry, looks, styleAt]);
+  // Colour adjustment is repeated only when the actual colour operands change.
+  const colours = useMemo(() => {
+    const raw = JSON.parse(colorKey) as ([number, number, number] | null)[];
+    const recorded = raw.flatMap(color => color ? [{ r: color[0], g: color[1], b: color[2] }] : []);
     const adjusted = tokens.countryColours === 'fixed'
-      ? nudgeApart(coloured.map(item => item.color), parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : coloured.map(item => item.color);
-    return raw.map(item => ({ ...item, hex: toHex(item.recordedColour ? adjusted[coloured.indexOf(item)] : item.color) }));
-  }, [data, known, resolved.membership, tokens, track, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+      ? nudgeApart(recorded, parseColor(tokens.surface) ?? { r: 0, g: 0, b: 0 }) : recorded;
+    let at = 0;
+    return raw.map(color => ({ recordedColour: color !== null, hex: color ? toHex(adjusted[at++]) : tokens.muted }));
+  }, [colorKey, tokens.countryColours, tokens.surface, tokens.muted]);
+  const series = useMemo(() => geometry.map((item, index) => ({ ...item, ...colours[index], name: looks.name(item.tag, styleAt) })),
+    [geometry, colours, looks, styleAt]);
+
+  const legendItems = useMemo(() => series.map(item => ({ id: item.tag, label: item.name, color: item.hex,
+    flag: <CountryFlagUrl className="country-flag" url={looks.flag(item.tag, styleAt)}
+      pending={looks.flagPending(item.tag, styleAt)} reason={looks.flagReason(item.tag, styleAt)} /> })),
+    [series, looks, styleAt]);
 
   // Event markers (mock-up politics-2), for one country: each kind can be switched off.
   const kinds = useMemo(() => new Set(([['wars', 'markWars'], ['factions', 'markFactions'], ['government', 'markGovernment'], ['focus', 'markFocus']] as const)
@@ -212,32 +229,82 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
     const product = state as { error?: string; data?: { warnings: string[] } };
     return product.error ? [`Markers for ${what} could not be loaded: ${product.error}`] : product.data?.warnings ?? [];
   }) : [], [markerTag, kinds, markerGroups.data, markerGroups.error, markerIdeas.data, markerIdeas.error, markerParties.data, markerParties.error, markerFocus.data, markerFocus.error]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The drill-down (mock-up drill-1): one country's parts, opened by a click on the
-  // chart, or shown as the widget itself when pinned as a breakdown (the Show setting).
-  const pinnedMeasure = options.show === 'stability' || options.show === 'warSupport' ? options.show as Measure : null;
-  const [drill, dispatchDrill] = useReducer(reduceDrill, CLOSED);
-  const [drillMeasure, setDrillMeasure] = useState<Measure>(pinnedMeasure ?? 'stability');
-  // A changed Show setting shows its measure.
-  useEffect(() => { if (pinnedMeasure) setDrillMeasure(pinnedMeasure); }, [pinnedMeasure]);
   const drillAnchor = useRef<HTMLDivElement>(null);
-  // The one country the widget shows, known before its values load.
   const singleTag = resolved.tags.length === 1 ? resolved.tags[0] : null;
-  useEffect(() => dispatchDrill({ type: 'close' }), [track?.source.id, track?.source.revision, track?.branch.id, singleTag]);
-  const partsRequest = track && singleTag && (drill.breakdown || pinnedMeasure) ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'stability-parts', params: { branchId: track.branch.id, tag: singleTag } } : null;
-  const parts = useProduct<StabilityPartsReply>(runtime.client, partsRequest, active, validateStabilityPartsReply);
+  const choiceScope = useMemo(() => JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id,
+    widget.countries, widget.countries.kind === 'selected' ? fallback : null, widget.time, extent, resolved.tags, resolved.membership ? [...resolved.membership] : null,
+    options.stability, options.warSupport, options.scale, options.show, options.playback, options.afterPlayhead, options.windowDays]),
+  [track?.source.id, track?.source.revision, track?.branch.id, widget.countries, widget.countries.kind === 'selected' ? fallback : null, widget.time, extent[0], extent[1], resolved.tags, resolved.membership,
+    options.stability, options.warSupport, options.scale, options.show, options.playback, options.afterPlayhead, options.windowDays]);
+  const pickOwner = useMemo(() => ({ scope: choiceScope, numbers }), [choiceScope, numbers]);
+  const chosen = actorPick?.owner === pickOwner ? actorPick.pick : null;
+  const drillOpen = drill.breakdown !== null && chosen !== null;
+  const drillTag = chosen ? chosen.tag : singleTag;
+  const choosingActor = chosen !== null && chosen.tag === null;
+  useEffect(() => { dispatchDrill({ type: 'close' }); setActorPick(null); }, [pickOwner]);
+  const origin = useRef<{ owner: typeof bindingOwner; hour: number } | null>(null);
+  if (origin.current?.owner !== bindingOwner) origin.current = null;
+  if (pinnedMeasure && window && !origin.current) origin.current = { owner: bindingOwner, hour: window.lastHour };
+  useEffect(() => setLocalPick(null), [bindingOwner]);
+  const savedCountry = useMemo(() => readDrillCountry(widget.options?.stabilityCountry, track, widget.countries),
+    [widget.options?.stabilityCountry, track, widget.countries]);
+  const selectedCountry = useMemo(() => savedCountry ?? (hasSavedCountry ? null
+    : groupData && track && drillTag ? chooseDrillCountry(groupData.countryIdentities, track, drillTag,
+      chosen?.hour ?? origin.current?.hour ?? window?.lastHour ?? lastHour) : null),
+    [savedCountry, hasSavedCountry, groupData, track, drillTag, chosen?.hour, bindingOwner]);
+  const actorSpans = useMemo(() => selectedCountry && groupData && track ? drillCountrySpans(groupData.countryIdentities, selectedCountry, track, resolved.membership) : null,
+    [selectedCountry, groupData, track, resolved.membership]);
+  const aliasTags = useMemo(() => actorSpans ? [...actorSpans.keys()] : [], [actorSpans]);
+  const partsRequests = track && (drillOpen || pinnedMeasure) ? aliasTags.map(tag => ({ sourceId: track.source.id, revision: track.source.revision,
+    product: 'stability-parts', params: { branchId: track.branch.id, tag } })) : [];
+  const parts = useProducts<StabilityPartsReply>(runtime.client, partsRequests, active, validateStabilityPartsReply);
+  const joinedParts = useMemo(() => parts.data && actorSpans && drillTag ? stabilityCountryParts(parts.data, actorSpans, drillTag) : undefined,
+    [parts.data, actorSpans, drillTag]);
+  const partsStore = useMemo(() => new NumericReply<StabilityPartsReply>(), [runtime.client]);
+  const partsKey = JSON.stringify([partsRequests, selectedCountry, actorSpans ? [...actorSpans] : null]);
+  const partNumbers = partsStore.update(partsKey, joinedParts, stabilityPartsNumbers);
+  const partsData = joinedParts ?? partNumbers;
+  const detailPickOwner = useMemo(() => ({ parent: pickOwner, actor: selectedCountry, measure: drillMeasure, parts: partNumbers }),
+    [pickOwner, selectedCountry, drillMeasure, partNumbers]);
+  const aliasRequest = track && aliasTags.length ? { sourceId: track.source.id, revision: track.source.revision,
+    product: 'country-stability', params: { branchId: track.branch.id, tags: aliasTags, hour: null } } : null;
+  const aliasValues = useProduct<CountryStabilityReply>(runtime.client, aliasRequest, active, validateStabilityReply);
+  const aliasStore = useMemo(() => new NumericReply<CountryStabilityReply>(), [runtime.client]);
+  const aliasNumbers = aliasStore.update(JSON.stringify(aliasRequest), aliasValues.data, stabilityNumbers);
+  const aliasData = aliasValues.data ?? aliasNumbers;
+  const liveHour = track ? Math.floor(clockHour) + track.axisOffset : null;
+  const pinnedFollowing = localHour === null || localHour === undefined && following;
+  const pinnedAt = localHour === undefined ? playhead ?? extent[1] : localHour === null ? liveHour : localHour;
+  const drillAt = pinnedMeasure ? pinnedAt : drillOpen ? drillHour(drill, liveHour) : null;
+  const drillPlayhead = pinnedMeasure ? pinnedAt : drillOpen && drill.follow ? liveHour : playhead;
+  const shownTag = actorSpans && drillAt !== null ? countryDrillTagAt(actorSpans, Math.floor(drillAt)) : null;
+  const drillLabels = useCountryLabelsAt(runtime.client, track,
+    (drillOpen || pinnedMeasure && savedCountry) && shownTag && drillAt !== null ? [{ tag: shownTag, hour: Math.floor(drillAt) }] : [], active);
+  const drillReadAt = (hour: number) => {
+    const tag = actorSpans ? countryDrillTagAt(actorSpans, hour) : null;
+    const carried = (aliasData ?? data)?.series.find(item => item.tag === tag)?.carried;
+    return carried ? readHourAt(carried, hour) : null;
+  };
+  const actorReason = hasSavedCountry && !savedCountry ? 'The saved native country selection is invalid.'
+    : !groupData ? 'The selected native country identity is loading.'
+      : !selectedCountry || !actorSpans ? 'The selected native country identity is unavailable at its origin.'
+        : !shownTag ? 'The selected native country identity is not recorded at this moment.' : null;
+  const countryHeader = pinnedMeasure && countrySlot ? createPortal(<DatedCountryChip hour={drillAt === null ? null : Math.floor(drillAt)}
+    label={savedCountry && shownTag && drillAt !== null ? drillLabels.labelAt(Math.floor(drillAt))(shownTag) : null}
+    reason={hasSavedCountry ? actorReason : 'This breakdown has no saved native country selection.'} />, countrySlot) : null;
   // Every diagnostic in one place, so no source's warning replaces another's.
   useEffect(() => {
     const uncoloured = series.filter(item => !item.recordedColour).map(item => item.name);
-    const warnings = [...(data?.warnings ?? []), ...(styles.data?.warnings ?? []), ...(groups.data?.warnings ?? []),
-      ...(styles.error ? [`Country names and colours could not be loaded: ${styles.error}`] : []),
-      ...(uncoloured.length ? [`No map colour was recorded for ${uncoloured.join(', ')}; shown in grey.`] : []),
+    const warnings = [...(data?.warnings ?? []),
+      ...(error ? [`Stability values could not be refreshed: ${error}`] : []), ...(groups.data?.warnings ?? []),
+      ...(groups.error ? [`Country membership could not be loaded: ${groups.error}`] : []),
+      ...(uncoloured.length ? [`Map colours unavailable for ${uncoloured.join(', ')}; shown in grey.`] : []),
       ...(breakdown.data?.warnings ?? []), ...(breakdown.error ? [`The breakdown could not be loaded: ${breakdown.error}`] : []),
       ...markerNotes,
-      ...(partsRequest ? [...(parts.data?.warnings ?? []), ...(parts.error ? [`The parts could not be loaded: ${parts.error}`] : [])] : [])];
+      ...(partsRequests.length ? [...(joinedParts?.warnings ?? []), ...(parts.error ? [`The parts could not be loaded: ${parts.error}`] : [])] : [])];
     onDiagnostics(warnings.length ? warnings : NO_WARNINGS);
     return () => onDiagnostics(NO_WARNINGS);
-  }, [data, styles.data, styles.error, series, groups.data, breakdown.data, breakdown.error, markerNotes, partsRequest != null, parts.data, parts.error, onDiagnostics]);
+  }, [data, error, series, groups.data, groups.error, breakdown.data, breakdown.error, markerNotes, partsRequests.length, joinedParts, parts.error, onDiagnostics]);
   const menu = useContextMenu('Chart actions');
   const head = playhead ?? extent[1];
   // With the keyboard: while focus is in the widget, the breakdown of the read behind
@@ -274,32 +341,38 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
 
   if (!track) return <WidgetState kind="empty" icon="sliders" message="Load a campaign to see stability and war support." />;
   if ((pinned || widget.time.mode === 'range') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (widget.countries.kind === 'group' && groups.error) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
+  if (widget.countries.kind === 'group' && groups.error && !groupData) return <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />;
   if (resolved.reason) return <WidgetState kind="empty" message={resolved.reason} />;
   // A pinned breakdown is the widget itself: the main chart's settings do not apply.
   if (pinnedMeasure) {
-    if (!singleTag) return <WidgetState kind="empty" message="Choose one country to see what makes up its values." />;
-    if (parts.error) return <WidgetState kind="error" message={parts.error} onRetry={parts.retry} />;
-    // The values' reads say which parts were carried from an earlier read: needed too.
-    if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-    if (!parts.data || !data) return <WidgetState kind="loading" label="Loading what makes up the values…" />;
-    const carried = data.series.find(item => item.tag === singleTag)?.carried;
+    const body = !singleTag ? <WidgetState kind="empty" message="Choose one country to see what makes up its values." />
+      : (hasSavedCountry && !savedCountry) || (groupData && (!selectedCountry || !actorSpans))
+        ? <WidgetState kind="unavailable" message={actorReason!} />
+        : groups.error && !groupData ? <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />
+          : parts.error && !partsData ? <WidgetState kind="error" message={parts.error} onRetry={parts.retry} />
+            : error && !data ? <WidgetState kind="error" message={error} onRetry={retry} />
+              : !partsData || !data ? <WidgetState kind="loading" label="Loading what makes up the values…" />
+                : <StabilityDrill reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={pinnedMeasure}
+                  playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} extent={extent}
+                  within={null} readAt={drillReadAt} onPick={hour => setLocalHour(Math.floor(hour))}
+                  onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
+                  branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens} />;
     return <div className="stability is-pinned">
-      <StabilityDrill reply={parts.data} measure={pinnedMeasure} playback={{ playhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={Math.floor(head)} extent={extent}
-        within={resolved.membership?.get(singleTag) ?? null} readAt={carried ? hour => readHourAt(carried, hour) : undefined}
-        onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
-        branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens} />
+      {countryHeader}
+      {drillAt !== null && <p className="chart-line-key">{formatDateTime(Math.floor(drillAt))} {!pinnedFollowing && <button type="button" className="button small"
+        onClick={() => setLocalHour(null)}>Follow playback</button>}</p>}
+      {body}
+      {parts.error && <button type="button" onClick={parts.retry}>Retry parts</button>}
+      {error && <button type="button" onClick={retry}>Retry values</button>}
       {menu.menu}
     </div>;
   }
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (!data || (widget.countries.kind === 'group' && !groups.data)) return <WidgetState kind="loading" label="Loading stability and war support…" />;
+  if (error && !data) return <WidgetState kind="error" message={error} onRetry={retry} />;
+  if (!data || (widget.countries.kind === 'group' && !groupData)) return <WidgetState kind="loading" label="Loading stability and war support…" />;
   if (!shown.length) return <WidgetState kind="empty" message="Both lines are switched off in the settings." />;
   if (series.every(item => shown.every(measure => !item.lines[measure.key].length))) return <WidgetState kind="unavailable" message="No stability or war support was recorded for these countries in this branch." />;
 
   const decimals = data.decimals;
-  // Following with Live off, the breakdown shows the moment shown: the end of the view.
-  const drillAt = drillHour(drill, playhead ?? extent[1]);
   // Zoom fits the values drawn in view (both bounds, as the view moves); the fixed scale is 0-100%.
   const zoom = options.scale === 'zoom';
   // The breakdown of the moment shown, every line, when it has been loaded for the keyboard.
@@ -311,8 +384,7 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
       : spoken.error && spokenAt?.read === headRead ? 'The breakdown could not be loaded.'
         : spokenEmpty && spokenAt?.read === headRead && spokenAt.hour === Math.floor(head) ? `No breakdown was recorded for ${dayLabel(Math.floor(head))}.` : '';
   const main = <div className="stability-main">
-    <Legend label="Countries" items={series.map(item => ({ id: item.tag, label: item.name, color: item.hex,
-      flag: <SourceFlag client={runtime.client} source={track.source} tag={item.tag} size="shield" /> }))} />
+    <Legend label="Countries" items={legendItems} windowed onVisibleItems={onVisibleItems} />
     {/* The line styles are named, as signed off: never the dash pattern alone. */}
     <p className="stability-key">{shown.map(measure => <span key={measure.key}><i aria-hidden="true" className={measure.dash ? 'is-dashed' : undefined} />{measure.dash ? 'Dashed' : 'Solid'}: {measure.label.toLowerCase()}</span>)}</p>
     {/* The current values as text, for keyboard and screen-reader users. */}
@@ -334,8 +406,8 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} branchStart={track.branch.firstHour}
         axes={{ xFrom: null, xTo: null, yMin: zoom ? null : 0, yMax: zoom ? null : 100, log: false }} fitValues={zoom ? zoomRange : undefined}
-        padding={{ right: options.endLabels ? CHART_LAYOUT.countryEndLabels : CHART_LAYOUT.right }} layers={layers} active={active && !(drill.breakdown && options.drill !== 'popout')}
-        revision={`${head}:${data.branchId}:${series.length}:${shown.length}:${viewport}:${breakdown.data ? breakdownFor?.readHour ?? 'empty' : breakdown.error ? 'failed' : 'none'}`}
+        padding={{ right: options.endLabels ? CHART_LAYOUT.countryEndLabels : CHART_LAYOUT.right }} layers={layers} active={active && !(drillOpen && options.drill !== 'popout')}
+        pickOwner={pickOwner} revision={`${head}:${looks.revision}:${drillLabels.revision}:${data.branchId}:${series.length}:${shown.length}:${breakdown.data ? breakdownFor?.readHour ?? 'empty' : breakdown.error ? 'failed' : 'none'}`}
         formatValue={value => `${Number.isInteger(value) ? value : value.toFixed(1)}%`}
         badges={badges.length ? badges : undefined}
         tooltip={(hour, _frame, hovered) => {
@@ -386,9 +458,9 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
               ...(recorded && ready ? [`Grey lines are the game's own text (${ready.language}); their source is not identified.`] : []),
               'Click for the full breakdown.',
             ];
-            return { title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined };
+            return fitTooltip([{ title: dayLabel(hour), rows, note: notes.length ? notes.join(' ') : undefined }], viewport);
           }
-          // One row per country with both values; shared fitting keeps the full read-out.
+          // All actors remain in the full tooltip; the shared fitter counts rows hidden visually.
           const carried: number[] = [];
           for (const item of series) {
             const values = shown.map(measure => {
@@ -402,11 +474,11 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
             rows.push({ label: item.name, swatch: item.hex, value: none ? 'Not recorded' : `${values.join(' · ')}${early ? ' †' : ''}`, tone: none ? 'muted' : undefined, short: true });
           }
           // Values carried from an earlier read are marked; the note stays one line however many there are.
-          const first = Math.min(...carried);
-          const last = Math.max(...carried);
+          const first = carried.reduce((minimum, read) => Math.min(minimum, read), Infinity);
+          const last = carried.reduce((maximum, read) => Math.max(maximum, read), -Infinity);
           const note = [`${shown.map(measure => `${measure.dash ? 'WS' : 'S'}: ${measure.label.toLowerCase()}`).join(', ')}.`,
             ...(carried.length ? [first === last ? `† As read at ${formatDateTime(first)}.` : `† As read earlier, between ${formatDateTime(first)} and ${formatDateTime(last)}.`] : []),
-            'Choose one country to see what makes up its values.'];
+            'Click a line for its country and measure; overlapping lines offer a country chooser.'];
           return fitTooltip([{ title: dayLabel(hour), rows, note: note.join(' ') }], viewport);
         }}
         overlay={(ctx, frame, chartTokens) => {
@@ -431,38 +503,50 @@ export default function StabilityWidget({ widget, runtime, active, onDiagnostics
           ends.splice(0, ends.length, ...fitted);
           placeEndLabels(ctx, frame, chartTokens, ends, END_LABEL_GAP);
         }}
-        onPick={single ? hour => {
-          // Opening with one line shown opens that line's parts.
-          if (!drill.breakdown && shown.length === 1) setDrillMeasure(shown[0].key);
-          dispatchDrill(drill.breakdown ? { type: 'pick', hour }
-            : { type: 'open', breakdown: 'parts', hour, playing: runtime.clock.getSnapshot().playing, playhead });
-        } : undefined}
+        onPick={(hour, context?: ChartPick) => {
+          const picked = pickStabilityLine(series.flatMap(item => shown.map(measure => ({ tag: item.tag, measure: measure.key,
+            runs: item.lines[measure.key] }))), hour, context, drillMeasure);
+          if (!picked) return;
+          setActorPick({ owner: pickOwner, pick: picked });
+          setDrillMeasure(picked.measure);
+          dispatchDrill(stabilityPickAction(picked, drillOpen, widget.time.mode, runtime.clock.getSnapshot().playing, playhead));
+        }}
         onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])} />
     </div>
+    {error && <button type="button" onClick={retry}>Retry values</button>}
   </div>;
   const breakdownOf = STABILITY_BREAKDOWNS.find(item => item.id === drillMeasure) ?? STABILITY_BREAKDOWNS[0];
   return <div className="stability" ref={drillAnchor} onFocus={() => setFocused(true)}
     onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false); }}>
-    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drill.breakdown != null} anchor={drillAnchor}
-      title={`What makes up ${MEASURE_NAMES[drillMeasure].toLowerCase()}`} day={drillAt == null ? '' : dayLabel(Math.floor(drillAt))}
-      following={drill.follow} canFollow={playhead != null} onClose={() => {
+    <DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'} open={drillOpen} anchor={drillAnchor}
+      title={`${shownTag && drillAt !== null ? `${drillLabels.labelAt(Math.floor(drillAt))(shownTag).name}: ` : ''}What makes up ${MEASURE_NAMES[drillMeasure].toLowerCase()}`} day={drillAt == null ? '' : dayLabel(Math.floor(drillAt))}
+      following={drill.follow} canFollow={!choosingActor && drillTag !== null && liveHour !== null && liveHour >= track.branch.firstHour && liveHour <= track.branch.lastHour}
+      returnFocus=".stability-chart canvas" onClose={() => {
         dispatchDrill({ type: 'close' });
-        // Focus goes back to the chart (once it is no longer inert) when the breakdown's own
-        // controls closed it, so the keyboard keeps its place; a click elsewhere keeps its focus.
-        requestAnimationFrame(() => {
-          const focused = document.activeElement;
-          const lost = !focused || focused === document.body;
-          if (!lost && !drillAnchor.current?.contains(focused) && !focused.closest('.drill-popout')) return;
-          drillAnchor.current?.querySelector<HTMLCanvasElement>('.stability-chart canvas')?.focus({ preventScroll: true });
-        });
-      }} onFollow={() => dispatchDrill({ type: 'follow' })}
-      onPin={() => runtime.addWidgetBelow(widget.id, pinnedBreakdown(widget, breakdownOf, track.id))} main={main}>
-      {parts.error ? <WidgetState kind="error" message={parts.error} onRetry={parts.retry} />
-        : !parts.data ? <WidgetState kind="loading" label="Loading what makes up the values…" />
-          : <StabilityDrill reply={parts.data} measure={drillMeasure} onMeasure={setDrillMeasure} playback={{ playhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} onPick={hour => dispatchDrill({ type: 'pick', hour })}
-            within={single ? resolved.membership?.get(single.tag) ?? null : null} readAt={single ? hour => readHourAt(single.carried, hour) : undefined}
+        setActorPick(null);
+      }} onFollow={() => { if (!choosingActor && drillTag) dispatchDrill({ type: 'follow' }); }}
+      onPin={selectedCountry && actorSpans && drillAt !== null ? () => runtime.addWidgetBelow(widget.id,
+        pinStabilityDrill({ ...widget, options: { ...widget.options, stabilityCountry: JSON.stringify(selectedCountry) } }, breakdownOf, track.id, track.branch.firstHour, selectedCountry!.tag, drillAt!, drill.follow)) : undefined} main={main}>
+      {choosingActor && chosen && <CountryPicker countries={track.source.metadata.countries} playerCountryId={null}
+        selectedTag={null} source={track.source} client={runtime.client} allowedTags={chosen.candidates}
+        flagAt={{ branchId: track.branch.id, hour: chosen.hour }} onChange={tag => {
+          const next = chooseStabilityActor(chosen, tag);
+          if (next === chosen) return;
+          setActorPick({ owner: pickOwner, pick: next });
+          setDrillMeasure(next.measure);
+          dispatchDrill({ type: 'pick', hour: next.hour });
+        }} />}
+      {choosingActor ? <p className="drill-empty">Choose a country from the drawn lines for this moment.</p>
+        : hasSavedCountry && !savedCountry ? <WidgetState kind="unavailable" message={actorReason!} />
+        : groupData && (!selectedCountry || !actorSpans) ? <WidgetState kind="unavailable" message={actorReason!} />
+        : groups.error && !groupData ? <WidgetState kind="error" message={groups.error} onRetry={groups.retry} />
+        : parts.error && !partsData ? <WidgetState kind="error" message={parts.error} onRetry={parts.retry} />
+        : !partsData ? <WidgetState kind="loading" label="Loading what makes up the values…" />
+          : <StabilityDrill reply={partsData} numbers={partNumbers!} pickOwner={detailPickOwner} presentationReady={parts.data !== undefined} measure={drillMeasure} onMeasure={setDrillMeasure} playback={{ playhead: drillPlayhead, mode: playback, afterPlayhead: options.afterPlayhead === true, windowHours: Number(options.windowDays ?? 365) * 24 }} hour={drillAt} onPick={hour => dispatchDrill({ type: 'pick', hour })}
+            within={null} readAt={drillReadAt}
             onContextMenu={(hour, x, y) => menu.open(x, y, [jumpItem(runtime, track.id, hour)])}
             extent={extent} branchStart={track.branch.firstHour} hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active} tokens={tokens} />}
+      {parts.error && partsData && <button type="button" onClick={parts.retry}>Retry parts</button>}
     </DrillHost>
     {menu.menu}
   </div>;

@@ -1,5 +1,6 @@
 import type { CountryGroupReply } from '../generated/dashboard';
 import { isOrderedSpans, isSpan } from '../charts/series.ts';
+import { validCountryIdentityHistories } from './countryIdentity.ts';
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value != null;
 const isHour = (value: unknown) => Number.isInteger(value);
@@ -7,6 +8,10 @@ const isRun = (value: unknown) => isSpan(value) && typeof (value as Record<strin
 const isName = (value: unknown) => isObject(value) && ((typeof value.name === 'string' && value.reason === null)
   || (value.name === null && typeof value.reason === 'string'));
 const listOf = (value: unknown, check: (item: unknown) => boolean) => Array.isArray(value) && value.every(check);
+
+/** Group comparison geometry depends on recorded membership, never display names. */
+export const groupNumbers = (reply: CountryGroupReply): CountryGroupReply => ({ ...reply, warnings: [],
+  factions: reply.factions.map(faction => ({ ...faction, name: null, nameReason: null, names: [] })) });
 
 /** Checks a `country-groups` reply's shape: every membership, war, war start and
  * capitulation list, and the unobserved spans, so a reply from another version is
@@ -24,6 +29,7 @@ export function validateCountryGroupReply(data: unknown): CountryGroupReply {
     && listOf(reply.warStarts, start => isObject(start) && isHour(start.hour) && typeof start.attacking === 'string' && typeof start.defending === 'string')
     && listOf(reply.capitulations, event => isObject(event) && isHour(event.hour) && typeof event.tag === 'string')
     && listOf(reply.identityChanges, change => isObject(change) && isHour(change.hour) && typeof change.from === 'string' && typeof change.to === 'string')
+    && validCountryIdentityHistories(reply.countryIdentities)
     && isObject(unobserved) && listOf(unobserved.humans, isSpan) && listOf(unobserved.factions, isSpan) && listOf(unobserved.wars, isSpan);
   if (!ok) throw new Error('The country groups reply is malformed.');
   return data as CountryGroupReply;

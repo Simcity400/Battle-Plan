@@ -7,14 +7,14 @@ use crate::{
     sampling::qpc,
     slicing::{SliceFingerprints, SliceSelection},
     spooling::{table, unavailable},
-    table_capture::{Arena, CaptureRows, bounded, grow_vec},
+    table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
 };
 use engine::allocation::{copy_vec, default_vec, map_slice, owned_vec, reserve, reserve_exact};
 use engine::{
-    Memory, ccharacter, ccharacter_manager, ccountry, ccountry_intel, ccountry_intel_network,
-    ccountry_operation_manager, ccountry_operation_token_manager, ccryptology,
-    ccurrent_autonomy_status, cdiplomacy_status, cflag_manager, cgame_state, cintelligence_agency,
-    coperation_instance, coperative_leader,
+    Memory, agency_upgrade_levels, ccharacter, ccharacter_manager, ccountry, ccountry_intel,
+    ccountry_intel_network, ccountry_operation_manager, ccountry_operation_token_manager,
+    ccryptology, ccurrent_autonomy_status, cdiplomacy_status, cflag_manager, cgame_state,
+    cintelligence_agency, coperation_instance, coperative_leader,
     cpdx_array::Array,
     crelation_status, cscript_flag, cstate,
     csubject_relation::{self, Name},
@@ -30,7 +30,117 @@ use replay::{
 use std::mem::size_of;
 use std::sync::Arc;
 
-pub const N: usize = 17;
+struct OperativeRefusals {
+    rows: std::sync::atomic::AtomicU64,
+    samples: std::sync::atomic::AtomicU64,
+    first_state: std::sync::atomic::AtomicU64,
+    id: std::sync::atomic::AtomicU64,
+    roster: std::sync::atomic::AtomicU64,
+    kind: std::sync::atomic::AtomicU64,
+    reason: std::sync::atomic::AtomicU64,
+}
+
+impl OperativeRefusals {
+    const fn new() -> Self {
+        Self {
+            rows: std::sync::atomic::AtomicU64::new(0),
+            samples: std::sync::atomic::AtomicU64::new(0),
+            first_state: std::sync::atomic::AtomicU64::new(0),
+            id: std::sync::atomic::AtomicU64::new(0),
+            roster: std::sync::atomic::AtomicU64::new(0),
+            kind: std::sync::atomic::AtomicU64::new(0),
+            reason: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn observe(&self, count: u32, first: Option<coperative_leader::Refusal>) {
+        use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+        if count == 0 {
+            return;
+        }
+        self.rows.fetch_add(u64::from(count), Relaxed);
+        self.samples.fetch_add(1, Relaxed);
+        if let Some(first) = first
+            && self
+                .first_state
+                .compare_exchange(0, 1, Acquire, Relaxed)
+                .is_ok()
+        {
+            self.id.store(first.id, Relaxed);
+            self.roster.store(u64::from(first.roster_country), Relaxed);
+            self.kind.store(u64::from(first.roster_kind), Relaxed);
+            self.reason.store(
+                if first.reason == "active operative operation reference is null" {
+                    1
+                } else {
+                    2
+                },
+                Relaxed,
+            );
+            self.first_state.store(2, Release);
+        }
+    }
+
+    fn diagnostics(&self) -> impl serde::Serialize {
+        use std::sync::atomic::Ordering::{Acquire, Relaxed};
+        let first = (self.first_state.load(Acquire) == 2).then(|| crate::status::status!({
+            "operative": self.id.load(Relaxed),
+            "roster": self.roster.load(Relaxed),
+            "kind": self.kind.load(Relaxed),
+            "reason": if self.reason.load(Relaxed) == 1 { "active operative operation reference is null" } else { "active operative operation reference is stale" },
+        }));
+        crate::status::status!({
+            "scope": "cumulative refused membership observations; repeated samples count again; healthy rows retained in truncated table",
+            "refused_rows": self.rows.load(Relaxed),
+            "samples_with_refusals": self.samples.load(Relaxed),
+            "first_refusal": first,
+        })
+    }
+}
+
+static OPERATIVE_REFUSALS: OperativeRefusals = OperativeRefusals::new();
+
+pub(crate) fn operative_capture_diagnostics() -> impl serde::Serialize {
+    OPERATIVE_REFUSALS.diagnostics()
+}
+
+static AGENCY_UPGRADE_REFUSALS: [std::sync::atomic::AtomicU64;
+    agency_upgrade_levels::STATUS_COUNT] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; agency_upgrade_levels::STATUS_COUNT];
+static AGENCY_UPGRADE_STORAGE_OMISSIONS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static AGENCY_UPGRADE_PEAK_DEMAND: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+pub(crate) fn agency_upgrade_capture_diagnostics() -> impl serde::Serialize {
+    use std::sync::atomic::Ordering::Relaxed;
+    let counts = AGENCY_UPGRADE_REFUSALS
+        .each_ref()
+        .map(|count| count.load(Relaxed));
+    crate::status::status!({
+        "scope": "cumulative refused acquired-entry identities; repeated samples count again; raw entries retained; census truncation counts only storage omissions",
+        "refusals_by_name": crate::status::map(counts.into_iter().enumerate().skip(1).map(|(status, count)| (
+            agency_upgrade_levels::status_name(status as u8), count,
+        ))),
+        "agency upgrade row capacity omitted entries": AGENCY_UPGRADE_STORAGE_OMISSIONS.load(Relaxed),
+        "peak_required_rows": AGENCY_UPGRADE_PEAK_DEMAND.load(Relaxed),
+    })
+}
+
+fn operative_storage_outcome(outcome: Outcome, refused: u32) -> Outcome {
+    match outcome {
+        Outcome::Truncated { len, unread_rows } => match unread_rows.checked_sub(refused) {
+            Some(0) => Outcome::Rows { len },
+            Some(unread_rows) => Outcome::Truncated { len, unread_rows },
+            None => Outcome::Unavailable {
+                reason: "operative refusal count exceeds missing rows",
+            },
+        },
+        outcome => outcome,
+    }
+}
+
+pub const N: usize = 18;
 pub const TABLES: [TableId; N] = [
     TableId::Capitulation,
     TableId::Subjects,
@@ -49,6 +159,7 @@ pub const TABLES: [TableId; N] = [
     TableId::RelationTuples,
     TableId::CountryIntel,
     TableId::CapturedOperativeReferences,
+    TableId::AgencyUpgradeLevels,
 ];
 
 const UNCAPTURED: Outcome = Outcome::Unavailable {
@@ -72,6 +183,7 @@ pub(crate) struct CaptureReport {
 /// matrix pass supplies the cached opinions and the typed tuples. Each group's
 /// entire cost is charged once to its anchor.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
+    ("agency scalars and acquired upgrade levels", 3, &[3, 17]),
     ("operations and assigned slots", 9, &[9, 10]),
     ("relation opinions and typed tuples", 14, &[13, 14]),
 ];
@@ -139,6 +251,9 @@ pub struct Capacities {
     pub subject_names: usize,
     pub autonomy_names: usize,
     pub agency_names: usize,
+    pub agency_upgrade_definitions: usize,
+    pub operation_descriptions: usize,
+    pub operative_names: usize,
     pub variable_entries: usize,
     pub variable_names: usize,
     pub tokens: usize,
@@ -149,12 +264,15 @@ impl Default for Capacities {
         Self {
             rows: [
                 512, 256, 256, 512, 4096, 4096, 16_384, 8192, 2048, 2048, 8192, 4096, 512, 16_384,
-                4096, 65_536, 0,
+                4096, 65_536, 0, 0,
             ],
             intel_scratch: 16_384,
             subject_names: 16_384,
             autonomy_names: 32_768,
             agency_names: 32_768,
+            agency_upgrade_definitions: 0,
+            operation_descriptions: 0,
+            operative_names: 32_768,
             variable_entries: 16_384,
             variable_names: 512 * 1024,
             tokens: 32_768,
@@ -382,8 +500,14 @@ pub struct Captured {
     subjects: CaptureRows<csubject_relation::Row>,
     autonomy: CaptureRows<ccurrent_autonomy_status::Row>,
     agencies: CaptureRows<cintelligence_agency::Row>,
+    agency_upgrades: CaptureRows<agency_upgrade_levels::Row>,
+    agency_upgrade_catalog: agency_upgrade_levels::Catalog,
+    agency_upgrade_required: usize,
     operatives: CaptureRows<coperative_leader::Row>,
     captured_operatives: CaptureRows<cintelligence_agency::CapturedOperativeRow>,
+    operative_failure: Option<(u64, u32, u8)>,
+    operative_refused_rows: u32,
+    operative_first_refused: Option<coperative_leader::Refusal>,
     cryptology: CaptureRows<ccryptology::Row>,
     networks: CaptureRows<ccountry_intel_network::Row>,
     flags: CaptureRows<ScopedFlag>,
@@ -407,6 +531,8 @@ pub struct Captured {
     subject_names: Arena<u8>,
     autonomy_names: Arena<u8>,
     agency_names: Arena<u8>,
+    operative_names: Arena<u8>,
+    operation_descriptions: Arena<u8>,
     variable_entries: Arena<cvariables::Row>,
     variable_names: Arena<u8>,
     tokens: Arena<u32>,
@@ -445,6 +571,9 @@ impl Captured {
                 subject_names: 0,
                 autonomy_names: 0,
                 agency_names: 0,
+                agency_upgrade_definitions: 0,
+                operation_descriptions: 0,
+                operative_names: 0,
                 variable_entries: 0,
                 variable_names: 0,
                 tokens: 0,
@@ -480,8 +609,16 @@ impl Captured {
             subjects: CaptureRows::new(capacity.rows[1]),
             autonomy: CaptureRows::new(capacity.rows[2]),
             agencies: CaptureRows::new(capacity.rows[3]),
+            agency_upgrades: CaptureRows::new(capacity.rows[17]),
+            agency_upgrade_catalog: agency_upgrade_levels::Catalog::new(
+                capacity.agency_upgrade_definitions,
+            ),
+            agency_upgrade_required: 0,
             operatives: CaptureRows::new(capacity.rows[4]),
             captured_operatives: CaptureRows::new(capacity.rows[16]),
+            operative_failure: None,
+            operative_refused_rows: 0,
+            operative_first_refused: None,
             cryptology: CaptureRows::new(capacity.rows[5]),
             networks: CaptureRows::new(capacity.rows[6]),
             flags: CaptureRows::new(capacity.rows[7]),
@@ -499,6 +636,8 @@ impl Captured {
             subject_names: Arena::new(capacity.subject_names),
             autonomy_names: Arena::new(capacity.autonomy_names),
             agency_names: Arena::new(capacity.agency_names),
+            operative_names: Arena::new(capacity.operative_names),
+            operation_descriptions: Arena::new(capacity.operation_descriptions),
             variable_entries: Arena::new(capacity.variable_entries),
             variable_names: Arena::new(capacity.variable_names),
             tokens: Arena::new(capacity.tokens),
@@ -617,8 +756,13 @@ impl Captured {
         self.subjects.reset();
         self.autonomy.reset();
         self.agencies.reset();
+        self.agency_upgrades.reset();
+        self.agency_upgrade_required = 0;
         self.operatives.reset();
         self.captured_operatives.reset();
+        self.operative_failure = None;
+        self.operative_refused_rows = 0;
+        self.operative_first_refused = None;
         self.cryptology.reset();
         self.networks.reset();
         self.flags.reset();
@@ -632,6 +776,8 @@ impl Captured {
         self.subject_names.reset();
         self.autonomy_names.reset();
         self.agency_names.reset();
+        self.operative_names.reset();
+        self.operation_descriptions.reset();
         self.variable_entries.reset();
         self.variable_names.reset();
         self.tokens.reset();
@@ -642,6 +788,8 @@ impl Captured {
             + self.subjects.allocated_bytes()
             + self.autonomy.allocated_bytes()
             + self.agencies.allocated_bytes()
+            + self.agency_upgrades.allocated_bytes()
+            + self.agency_upgrade_catalog.allocated_bytes()
             + self.operatives.allocated_bytes()
             + self.captured_operatives.allocated_bytes()
             + self.cryptology.allocated_bytes()
@@ -659,6 +807,8 @@ impl Captured {
             + self.subject_names.allocated_bytes()
             + self.autonomy_names.allocated_bytes()
             + self.agency_names.allocated_bytes()
+            + self.operative_names.allocated_bytes()
+            + self.operation_descriptions.allocated_bytes()
             + self.variable_entries.allocated_bytes()
             + self.variable_names.allocated_bytes()
             + self.tokens.allocated_bytes()
@@ -670,8 +820,22 @@ impl Captured {
         self.subjects.grow(&mut capacity.rows[1]);
         self.autonomy.grow(&mut capacity.rows[2]);
         self.agencies.grow(&mut capacity.rows[3]);
+        // Identity refusals retain raw rows; they are not additional storage demand.
+        grow_capacity(&mut capacity.rows[17], self.agency_upgrade_required);
+        grow_vec(&mut self.agency_upgrades.rows, capacity.rows[17]);
+        grow_capacity(
+            &mut capacity.agency_upgrade_definitions,
+            self.agency_upgrade_catalog.required_capacity(),
+        );
+        self.agency_upgrade_catalog
+            .resize(capacity.agency_upgrade_definitions);
+        // Permanent native-null targets are missing rows, not storage demand.
+        let operative_outcome = self.operatives.outcome;
+        self.operatives.outcome =
+            operative_storage_outcome(operative_outcome, self.operative_refused_rows);
         self.operatives.grow(&mut capacity.rows[4]);
         self.captured_operatives.grow(&mut capacity.rows[16]);
+        self.operatives.outcome = operative_outcome;
         self.cryptology.grow(&mut capacity.rows[5]);
         self.networks.grow(&mut capacity.rows[6]);
         self.flags.grow(&mut capacity.rows[7]);
@@ -706,6 +870,9 @@ impl Captured {
         self.subject_names.grow(&mut capacity.subject_names);
         self.autonomy_names.grow(&mut capacity.autonomy_names);
         self.agency_names.grow(&mut capacity.agency_names);
+        self.operative_names.grow(&mut capacity.operative_names);
+        self.operation_descriptions
+            .grow(&mut capacity.operation_descriptions);
         self.variable_entries.grow(&mut capacity.variable_entries);
         self.variable_names.grow(&mut capacity.variable_names);
         self.tokens.grow(&mut capacity.tokens);
@@ -787,6 +954,8 @@ impl Captured {
             10 => assignments,
             11 => operation_tokens,
             12 => incoming_actions,
+            16 => captured_operatives,
+            17 => agency_upgrades,
         );
         self.country_intel_outcome = Outcome::Unavailable {
             reason: if replay::cadence::should_walk(TABLES[15], context.hour, context.force_full) {
@@ -850,6 +1019,7 @@ impl Captured {
                 operation_tokens = 11,
                 incoming_actions = 12,
                 captured_operatives = 16,
+                agency_upgrades = 17,
             );
         }
         if include_delegated {
@@ -904,12 +1074,61 @@ impl Captured {
             );
             ticks[2] = elapsed(begin);
             let begin = qpc();
-            capture_named(&mut self.agencies, &mut self.agency_names, |rows, names| {
-                let _reads = read_accounting::table(TABLES[3]);
-                ArenaRead::from(cintelligence_agency::walk(memory, base, state, rows, names))
+            let result = read_accounting::with_table(TABLES[3], || {
+                cintelligence_agency::walk_with_upgrades(
+                    memory,
+                    base,
+                    state,
+                    &mut self.agencies.rows,
+                    &mut self.agency_names.first,
+                    &mut self.agency_upgrades.rows,
+                    &mut self.agency_upgrade_catalog,
+                )
             });
+            first_named(
+                &mut self.agencies,
+                &mut self.agency_names,
+                ArenaRead::from(result.agencies),
+            );
+            self.agency_upgrades.outcome =
+                bounded(result.upgrades.outcome, self.agency_upgrades.rows.len());
+            self.agency_upgrade_required = result.upgrades.required_rows;
+            AGENCY_UPGRADE_PEAK_DEMAND.fetch_max(
+                result.upgrades.required_rows,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            AGENCY_UPGRADE_STORAGE_OMISSIONS.fetch_add(
+                u64::from(result.upgrades.omitted_rows),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            for (counter, count) in AGENCY_UPGRADE_REFUSALS
+                .iter()
+                .zip(result.upgrades.refusal_counts)
+            {
+                counter.fetch_add(u64::from(count), std::sync::atomic::Ordering::Relaxed);
+            }
             ticks[3] = elapsed(begin);
-            plain!(4, operatives, coperative_leader::walk);
+            if active[4] {
+                let begin = qpc();
+                capture_named(
+                    &mut self.operatives,
+                    &mut self.operative_names,
+                    |rows, names| {
+                        let _reads = read_accounting::table(TABLES[4]);
+                        let read = coperative_leader::walk(memory, base, state, rows, names);
+                        self.operative_failure = read.failed_membership;
+                        self.operative_refused_rows = read.refused_rows;
+                        self.operative_first_refused = read.first_refused;
+                        OPERATIVE_REFUSALS.observe(read.refused_rows, read.first_refused);
+                        ArenaRead {
+                            outcome: read.outcome,
+                            len: read.bytes_len,
+                            required: read.required_bytes,
+                        }
+                    },
+                );
+                ticks[4] = elapsed(begin);
+            }
             plain!(
                 16,
                 captured_operatives,
@@ -947,9 +1166,18 @@ impl Captured {
                         state,
                         &mut self.operations.rows,
                         &mut self.assignments.rows,
+                        &mut self.operation_descriptions.first,
                     )
                 });
-                self.operations.outcome = bounded(result.outcome, self.operations.rows.len());
+                first_named(
+                    &mut self.operations,
+                    &mut self.operation_descriptions,
+                    ArenaRead {
+                        outcome: result.outcome,
+                        len: result.bytes_len,
+                        required: result.required_bytes,
+                    },
+                );
                 self.assignments.outcome = bounded(result.assignments, self.assignments.rows.len());
                 ticks[9] = elapsed(begin);
             }
@@ -1042,6 +1270,7 @@ impl Captured {
             self.relation_tuples.outcome,
             self.country_intel_outcome,
             self.captured_operatives.outcome,
+            self.agency_upgrades.outcome,
         ]
     }
 
@@ -1112,24 +1341,7 @@ impl Captured {
             sample(self.subjects_table(outcomes[1])),
             sample(self.autonomy_table(outcomes[2])),
             sample(self.agencies_table(outcomes[3])),
-            sample(table::<tables::OperativeMemberships, _>(
-                outcomes[4],
-                &self.operatives.rows,
-                |r| rows::OperativeMembershipRow {
-                    id: r.id,
-                    owner_country: r.owner_country,
-                    roster_country: r.roster_country,
-                    roster_kind: r.roster_kind,
-                    detected: r.detected,
-                    assignment: r.assignment,
-                    experience_raw: r.experience_raw,
-                    skill: r.skill,
-                    capturer_country: r.capturer_country,
-                    captured_hour: r.captured_hour,
-                    action_variant: r.action_variant,
-                    ordinal: rows::Recorded::Value(r.ordinal),
-                },
-            )),
+            sample(self.operatives_table(outcomes[4])),
             sample(table::<tables::Cryptology, _>(
                 outcomes[5],
                 &self.cryptology.rows,
@@ -1206,6 +1418,7 @@ impl Captured {
                     owner: r.owner,
                 },
             )),
+            sample(self.agency_upgrades_table(outcomes[17])),
         ]
     }
 }
@@ -1241,6 +1454,74 @@ impl Captured {
             cancel: r.cancel,
             autonomy_ratio: r.autonomy_ratio,
             state: owned_vec(copy_vec(literal(&self.subject_names.first, r.state))),
+        })
+    }
+
+    fn operatives_table(&self, outcome: Outcome) -> TableView {
+        if let Outcome::Unavailable { reason } = outcome
+            && let Some((id, roster, kind)) = self.operative_failure
+        {
+            let mut detail = String::new();
+            if crate::roster::add_reason(
+                &mut detail,
+                format_args!(
+                    "{reason}; operative={id} roster={roster} kind={kind} refused_reads=1"
+                ),
+            )
+            .is_err()
+            {
+                return unavailable("operative refusal description allocation failed");
+            }
+            return TableView::Unavailable { reason: detail };
+        }
+        if !valid_arena(
+            outcome,
+            &self.operatives.rows,
+            &self.operative_names.first,
+            self.operative_names.len,
+            self.operative_names.required,
+        ) {
+            return unavailable("operative name lies outside captured arena");
+        }
+        table::<tables::OperativeMemberships, _>(outcome, &self.operatives.rows, |r| {
+            rows::OperativeMembershipRow {
+                id: r.id,
+                owner_country: r.owner_country,
+                roster_country: r.roster_country,
+                roster_kind: r.roster_kind,
+                legacy_description_length: 0,
+                assignment: r.assignment,
+                experience_raw: r.experience_raw,
+                skill: r.skill,
+                capturer_country: r.capturer_country,
+                captured_hour: r.captured_hour,
+                action_variant: r.action_variant,
+                ordinal: rows::Recorded::Value(r.ordinal),
+                target_country: rows::Recorded::Value(r.target_country),
+                operation: rows::Recorded::Value(r.operation),
+                name: rows::Recorded::Value(owned_vec(copy_vec(literal(
+                    &self.operative_names.first,
+                    r.name,
+                )))),
+                cooldown_kind: rows::Recorded::Value(r.cooldown_kind),
+                cooldown_start_hour: rows::Recorded::Value(r.cooldown_start_hour),
+                cooldown_end_hour: rows::Recorded::Value(r.cooldown_end_hour),
+            }
+        })
+    }
+
+    fn agency_upgrades_table(&self, outcome: Outcome) -> TableView {
+        table::<tables::AgencyUpgradeLevels, _>(outcome, &self.agency_upgrades.rows, |r| {
+            rows::AgencyUpgradeLevelRow {
+                country: r.country,
+                ordinal: r.ordinal,
+                definition_pointer: r.definition_pointer,
+                branch_pointer: r.branch_pointer,
+                upgrade_token: r.upgrade_token,
+                branch_token: r.branch_token,
+                level: r.level,
+                identity_status: r.identity_status,
+            }
         })
     }
 
@@ -1450,6 +1731,15 @@ impl Captured {
     }
 
     fn operations_table(&self, outcome: Outcome) -> TableView {
+        if !valid_arena(
+            outcome,
+            &self.operations.rows,
+            &self.operation_descriptions.first,
+            self.operation_descriptions.len,
+            self.operation_descriptions.required,
+        ) {
+            return unavailable("operation description lies outside captured arena");
+        }
         table::<tables::Operations, _>(outcome, &self.operations.rows, |r| rows::OperationRow {
             id: r.id,
             owner: r.owner,
@@ -1465,6 +1755,12 @@ impl Captured {
             duration_days: r.duration_days,
             phase_count: r.phase_count,
             assigned_slots: r.assigned_slots,
+            bonus: rows::Recorded::Value(r.bonus),
+            detected: rows::Recorded::Value(r.detected),
+            effect_description: rows::Recorded::Value(owned_vec(copy_vec(literal(
+                &self.operation_descriptions.first,
+                r.effect_description,
+            )))),
         })
     }
 
@@ -1564,7 +1860,19 @@ impl ArenaRow<u8> for csubject_relation::Row {
     }
 }
 
+impl ArenaRow<u8> for coperation_instance::Row {
+    fn valid(&self, len: usize) -> bool {
+        name_fits(self.effect_description, len)
+    }
+}
+
 impl ArenaRow<u8> for cintelligence_agency::Row {
+    fn valid(&self, len: usize) -> bool {
+        name_fits(self.name, len)
+    }
+}
+
+impl ArenaRow<u8> for coperative_leader::Row {
     fn valid(&self, len: usize) -> bool {
         name_fits(self.name, len)
     }
@@ -2837,6 +3145,9 @@ pub(crate) fn intel_shadow_fixture(value: i64) -> Captured {
         subject_names: 0,
         autonomy_names: 0,
         agency_names: 0,
+        agency_upgrade_definitions: 0,
+        operation_descriptions: 0,
+        operative_names: 0,
         variable_entries: 0,
         variable_names: 0,
         tokens: 0,
@@ -2875,6 +3186,21 @@ pub(crate) fn intel_shadow_fixture(value: i64) -> Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn intel_catalog_growth_and_refusal_projection_handle_allocator_denial() {
+        let mut catalog = agency_upgrade_levels::Catalog::new(1);
+        crate::allocation_failure_tests::with_allocations_denied(|| catalog.resize(5000));
+        assert_eq!(catalog.capacity(), 1);
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        captured.operative_failure = Some((u64::MAX, 5000, 3));
+        let view = crate::allocation_failure_tests::with_allocations_denied(|| {
+            captured.operatives_table(Outcome::Unavailable {
+                reason: "synthetic operative read failed",
+            })
+        });
+        assert!(matches!(view, TableView::Unavailable { .. }));
+    }
 
     #[test]
     fn delegated_capture_preserves_residual_results_and_obeys_raw_gates_and_cadence() {
@@ -2967,6 +3293,9 @@ mod tests {
             subject_names: 0,
             autonomy_names: 0,
             agency_names: 0,
+            agency_upgrade_definitions: 0,
+            operation_descriptions: 0,
+            operative_names: 0,
             variable_entries: 0,
             variable_names: 0,
             tokens: 0,
@@ -3297,12 +3626,216 @@ mod tests {
             subject_names: 8,
             autonomy_names: 8,
             agency_names: 8,
+            agency_upgrade_definitions: 0,
+            operation_descriptions: 0,
+            operative_names: 0,
             variable_entries: 4,
             variable_names: 8,
             tokens: 8,
         };
         let captured = Captured::with_capacities(&capacities);
         (capacities, captured)
+    }
+
+    #[test]
+    fn intel_outcomes_preserve_raw_refused_entries_and_description_bytes() {
+        let mut capacity = Capacities {
+            rows: [2; N],
+            operation_descriptions: 8,
+            ..Capacities::default()
+        };
+        let mut capture = Captured::with_capacities(&capacity);
+        capture.agency_upgrades.rows[0] = agency_upgrade_levels::Row {
+            country: 5000,
+            ordinal: 0,
+            definition_pointer: 0x1234,
+            branch_pointer: 0x5678,
+            upgrade_token: Some(90001),
+            branch_token: Some(90002),
+            level: -7,
+            identity_status: agency_upgrade_levels::AUTHENTICATED,
+        };
+        capture.agency_upgrades.rows[1] = agency_upgrade_levels::Row {
+            country: 5000,
+            ordinal: 1,
+            definition_pointer: 0x9999,
+            level: i32::MIN,
+            identity_status: agency_upgrade_levels::DEFINITION_NOT_REGISTERED,
+            ..Default::default()
+        };
+        capture.agency_upgrades.outcome = Outcome::Rows { len: 2 };
+        capture.agency_upgrade_required = 2;
+        capture.operations.rows[0] = coperation_instance::Row {
+            id: 44,
+            terminal: 1,
+            bonus: 0xfe,
+            detected: 0xfd,
+            effect_description: Name { start: 0, len: 4 },
+            ..Default::default()
+        };
+        capture.operations.outcome = Outcome::Rows { len: 1 };
+        capture.operation_descriptions.first[..4].copy_from_slice(b"a\r\xffz");
+        capture.operation_descriptions.len = 4;
+        capture.operation_descriptions.required = 4;
+        let views = capture.tables();
+        let TableView::Complete(rows) = &views[17] else {
+            panic!("complete raw acquired census must retain identity refusals")
+        };
+        let upgrades = rows.rows::<tables::AgencyUpgradeLevels>().unwrap();
+        assert_eq!(upgrades.len(), 2);
+        assert_eq!(upgrades[0].level, -7);
+        assert_eq!(upgrades[1].level, i32::MIN);
+        assert_eq!(upgrades[1].definition_pointer, 0x9999);
+        assert_eq!(upgrades[1].upgrade_token, None);
+        let operations = complete::<tables::Operations>(&views[9]);
+        assert_eq!(
+            (&operations[0].bonus, &operations[0].detected),
+            (&rows::Recorded::Value(0xfe), &rows::Recorded::Value(0xfd))
+        );
+        assert_eq!(
+            operations[0].effect_description,
+            rows::Recorded::Value(b"a\r\xffz".to_vec())
+        );
+        // Retained refusal rows do not constitute extra storage demand.
+        capture.grow(&mut capacity);
+        assert_eq!(capacity.rows[17], 2);
+        capture.operations.rows[0].effect_description.len = 9;
+        assert!(matches!(capture.tables()[9], TableView::Unavailable { .. }));
+    }
+
+    #[test]
+    fn agency_upgrade_capture_retains_refused_raw_rows_and_counts_only_omissions() {
+        const AGENCY: usize = 0xc000;
+        const ENTRIES: usize = 0xc200;
+        let mut bytes = flag_scopes();
+        bytes.resize(0xd000, 0);
+        put(
+            &mut bytes,
+            0x4000 + ccountry::INTELLIGENCE_AGENCY,
+            &(AGENCY as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            AGENCY,
+            &((BASE + cintelligence_agency::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            AGENCY + cintelligence_agency::OWNER_COUNTRY,
+            &0x4000_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            AGENCY + cintelligence_agency::NAME + engine::msvc_string::CAPACITY,
+            &engine::msvc_string::INLINE_CAPACITY.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            AGENCY + agency_upgrade_levels::ACQUIRED,
+            &(ENTRIES as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            AGENCY + agency_upgrade_levels::ACQUIRED + 8,
+            &2_u32.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            AGENCY + agency_upgrade_levels::ACQUIRED + 12,
+            &2_u32.to_le_bytes(),
+        );
+        put(&mut bytes, ENTRIES + 8, &i32::MIN.to_le_bytes());
+        put(
+            &mut bytes,
+            ENTRIES + agency_upgrade_levels::ENTRY_STRIDE,
+            &0xfeed_cafe_u64.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            ENTRIES + agency_upgrade_levels::ENTRY_STRIDE + 8,
+            &i32::MAX.to_le_bytes(),
+        );
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+
+        for capacity in [1, 2] {
+            let (mut capacities, _) = small();
+            capacities.rows[17] = capacity;
+            let mut captured = Captured::with_capacities(&capacities);
+            captured.capture_residual(
+                &memory,
+                CaptureContext {
+                    base: BASE,
+                    game_state: GAME,
+                    hour: 0,
+                    force_full: true,
+                },
+            );
+            let tables = captured.tables();
+            let (rows, missing) = match &tables[17] {
+                TableView::Complete(rows) => (rows, 0),
+                TableView::Truncated { rows, missing } => (rows, *missing),
+                other => panic!("raw refused entries must survive acquisition: {other:?}"),
+            };
+            let upgrades = rows.rows::<tables::AgencyUpgradeLevels>().unwrap();
+            assert_eq!(upgrades.len(), capacity);
+            assert_eq!(upgrades.len() + missing as usize, 2);
+            assert_eq!(captured.agency_upgrade_required, 2);
+            assert_eq!(
+                upgrades[0].identity_status,
+                agency_upgrade_levels::NULL_DEFINITION
+            );
+            assert_eq!(upgrades[0].level, i32::MIN);
+            if capacity == 2 {
+                assert!(matches!(tables[17], TableView::Complete(_)));
+                assert_eq!(missing, 0);
+                assert_eq!(upgrades[1].definition_pointer, 0xfeed_cafe);
+                assert_eq!(
+                    upgrades[1].identity_status,
+                    agency_upgrade_levels::DATABASE_UNAVAILABLE
+                );
+                assert_eq!(upgrades[1].level, i32::MAX);
+            }
+
+            let mut encoder = replay::frame::FrameEncoder::new();
+            let first = encoder
+                .encode(
+                    replay::frame::DecodedFrame {
+                        branch: 1,
+                        hour: 0,
+                        tables: std::array::from_fn(|_| {
+                            unavailable("fixture table not acquired").into()
+                        }),
+                        metrics: replay::frame::Metrics::default(),
+                    },
+                    false,
+                )
+                .unwrap();
+            let mut views = std::array::from_fn(|_| unavailable("fixture table not acquired"));
+            views[TableId::AgencyUpgradeLevels.index()] = tables[17].clone();
+            let source = replay::frame::DecodedFrame {
+                branch: 1,
+                hour: 1,
+                tables: views.map(Into::into),
+                metrics: replay::frame::Metrics::default(),
+            };
+            let decoded_wire = encoder
+                .encode(source.clone(), false)
+                .unwrap()
+                .encoded()
+                .unwrap()
+                .decode()
+                .unwrap();
+            let mut decoder = replay::frame::FrameDecoder::new();
+            decoder.advance(&first).unwrap();
+            let round_trip = decoder.advance(&decoded_wire).unwrap();
+            assert_eq!(
+                round_trip.tables[TableId::AgencyUpgradeLevels.index()],
+                source.tables[TableId::AgencyUpgradeLevels.index()]
+            );
+        }
     }
 
     fn complete<S: TableSchema>(view: &TableView) -> &[S::Row] {
@@ -3434,14 +3967,22 @@ mod tests {
             roster_country: u32::MAX - 1,
             roster_kind: u8::MAX,
             ordinal: u32::MAX,
-            detected: 0xfe,
             assignment: u32::MAX,
             experience_raw: i64::MIN,
             skill: Some(i32::MIN),
             capturer_country: 0,
             captured_hour: i32::MAX,
             action_variant: None,
+            target_country: Some(2),
+            operation: Some(u64::MAX),
+            name: Name { start: 0, len: 3 },
+            cooldown_kind: Some(u32::MAX),
+            cooldown_start_hour: Some(i32::MIN),
+            cooldown_end_hour: Some(i32::MAX),
         };
+        capture.operative_names.first = vec![0xff, 0, b'x'];
+        capture.operative_names.len = 3;
+        capture.operative_names.required = 3;
         capture.networks.outcome = Outcome::Rows { len: 2 };
         capture.networks.rows[0] = ccountry_intel_network::Row {
             owner_country: 1,
@@ -3566,6 +4107,21 @@ mod tests {
             (operative.skill, operative.action_variant),
             (Some(i32::MIN), None)
         );
+        assert_eq!(operative.target_country, rows::Recorded::Value(Some(2)));
+        assert_eq!(operative.operation, rows::Recorded::Value(Some(u64::MAX)));
+        assert_eq!(operative.name, rows::Recorded::Value(vec![0xff, 0, b'x']));
+        assert_eq!(
+            operative.cooldown_kind,
+            rows::Recorded::Value(Some(u32::MAX))
+        );
+        assert_eq!(
+            operative.cooldown_start_hour,
+            rows::Recorded::Value(Some(i32::MIN))
+        );
+        assert_eq!(
+            operative.cooldown_end_hour,
+            rows::Recorded::Value(Some(i32::MAX))
+        );
         let autonomy = &complete::<tables::Autonomy>(&views[2])[0];
         assert_eq!(
             (autonomy.previous.as_deref(), autonomy.next.as_deref()),
@@ -3582,11 +4138,38 @@ mod tests {
             (variables[0].value_raw, variables[1].value_raw),
             (i64::MAX, i64::MIN)
         );
+        capture.operatives.rows[0].cooldown_kind = None;
+        capture.operatives.rows[0].cooldown_start_hour = None;
+        capture.operatives.rows[0].cooldown_end_hour = None;
+        let views = capture.tables();
+        let operative = &complete::<tables::OperativeMemberships>(&views[4])[0];
+        assert_eq!(operative.cooldown_kind, rows::Recorded::Value(None));
+        assert_eq!(operative.cooldown_start_hour, rows::Recorded::Value(None));
+        assert_eq!(operative.cooldown_end_hour, rows::Recorded::Value(None));
     }
 
     #[test]
     fn invalid_arenas_duplicate_literal_keys_and_unavailable_scopes_never_become_empty_tables() {
         let (_, mut capture) = small();
+        capture.operatives.outcome = Outcome::Rows { len: 1 };
+        capture.operatives.rows[0].name = Name {
+            start: usize::MAX,
+            len: 1,
+        };
+        assert!(matches!(capture.tables()[4], TableView::Unavailable { .. }));
+        capture.operative_failure = Some((99, 7, 2));
+        capture.operatives.outcome = Outcome::Unavailable {
+            reason: "operative saved name unreadable or invalid",
+        };
+        let TableView::Unavailable { reason } = &capture.tables()[4] else {
+            panic!()
+        };
+        assert!(reason.contains("operative=99 roster=7 kind=2 refused_reads=1"));
+        capture.operative_failure = None;
+        capture.operative_names.required = 40_000;
+        let mut capacity = Capacities::default();
+        capture.grow(&mut capacity);
+        assert!(capacity.operative_names >= 40_000);
         capture.operation_tokens.outcome = Outcome::Rows { len: 1 };
         capture.operation_tokens.rows[0].tokens_start = usize::MAX;
         capture.operation_tokens.rows[0].tokens_len = 2;
@@ -3620,6 +4203,61 @@ mod tests {
         assert!(matches!(capture.tables()[8], TableView::Unavailable { .. }));
         capture.reset();
         assert_eq!(capture.tokens.len, 0);
+    }
+
+    #[test]
+    fn operative_refusals_keep_rows_and_count_named_diagnostics_without_storage_growth() {
+        let (_, mut capture) = small();
+        capture.operatives.outcome = Outcome::Truncated {
+            len: 1,
+            unread_rows: 2,
+        };
+        capture.operatives.rows[0].id = 88;
+        capture.operative_refused_rows = 2;
+        let refusal = coperative_leader::Refusal {
+            id: 99,
+            roster_country: 7,
+            roster_kind: 2,
+            reason: "active operative operation reference is stale",
+        };
+        capture.operative_first_refused = Some(refusal);
+        let TableView::Truncated {
+            rows: TableRows::OperativeMemberships(rows),
+            missing,
+        } = &capture.tables()[4]
+        else {
+            panic!()
+        };
+        assert_eq!(*missing, 2);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, 88);
+        assert_eq!(
+            operative_storage_outcome(capture.operatives.outcome, 2),
+            Outcome::Rows { len: 1 }
+        );
+        let diagnostics = OperativeRefusals::new();
+        diagnostics.observe(2, Some(refusal));
+        diagnostics.observe(2, Some(refusal));
+        let value = serde_json::to_value(diagnostics.diagnostics()).unwrap();
+        assert_eq!(value["refused_rows"], 4);
+        assert_eq!(value["samples_with_refusals"], 2);
+        assert_eq!(value["first_refusal"]["operative"], 99);
+        assert_eq!(value["first_refusal"]["roster"], 7);
+        assert_eq!(value["first_refusal"]["kind"], 2);
+        assert_eq!(value["first_refusal"]["reason"], refusal.reason);
+        let mut capacity = Capacities {
+            rows: [8; N],
+            ..Capacities::default()
+        };
+        capture.grow(&mut capacity);
+        assert_eq!(capacity.rows[4], 8);
+        assert_eq!(
+            capture.operatives.outcome,
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 2
+            }
+        );
     }
 
     fn variable_comparison_fixture() -> (Captured, Vec<rows::ScriptVariablesRow>) {
@@ -5451,6 +6089,9 @@ mod tests {
             subject_names: 8,
             autonomy_names: 8,
             agency_names: 8,
+            agency_upgrade_definitions: 0,
+            operation_descriptions: 0,
+            operative_names: 0,
             variable_entries: 4,
             variable_names: 8,
             tokens: 8,

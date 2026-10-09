@@ -19,10 +19,10 @@ export function butterflyLayout(width: number, height: number, count: number, fo
   return { left, right, half, labelWidth, ratioX: width - edge, top, slot, barHeight: Math.min(20, slot * 0.7) };
 }
 
-/** One fitted symmetric scale. Missing and unsupported negative values do not fit it. */
+/** One fitted symmetric scale. Signed corrections use magnitude for geometry. */
 export function butterflyScale(items: readonly ButterflyValue[]): number {
   let maximum = 0;
-  for (const item of items) for (const value of [item.left, item.right]) if (value != null && Number.isFinite(value)) maximum = Math.max(maximum, value);
+  for (const item of items) for (const value of [item.left, item.right]) if (value != null && Number.isFinite(value)) maximum = Math.max(maximum, Math.abs(value));
   return maximum > 0 ? maximum * 1.05 : 1;
 }
 

@@ -1,0 +1,51 @@
+import { clipToSpans, runAt } from '../charts/series.ts';
+import type { Span } from '../charts/series';
+import { pinPartsRace } from '../charts/race/partsRaceDrill.ts';
+import type { BoundTrack, WidgetSpec } from './model';
+import { airCauseName, ledgerRuns, ledgerScale, ledgerTotals } from './militaryAirLedger.ts';
+import type { LedgerIndex } from './militaryAirLedger';
+import type { MilitaryAirLeaf } from '../generated/dashboard';
+
+/** A drawn tag is bound to its native holder at the picked, recorded hour. */
+export function airLossDrillActors(index: LedgerIndex, hour: number, tags: readonly string[]): string[] {
+  if (!runAt(index.reply.observed, hour)) return [];
+  return [...new Set(tags)].flatMap(tag => {
+    const series = index.byTag.get(tag)?.find(series => runAt(series.country.present, hour));
+    return series ? [JSON.stringify([tag, series.country.identity])] : [];
+  });
+}
+
+/** These keys are made only by airLossDrillActors, never restored from a layout. */
+export function airLossDrillActor(key: string): { tag: string; identity: string } {
+  const [tag, identity] = JSON.parse(key) as [string, string];
+  return { tag, identity };
+}
+
+/** The same native causes as airLossParts, with full holder history outside top N. */
+export function airLossDrillHistory(index: LedgerIndex, identity: string, from: number, end: number, dealt: boolean) {
+  const aliases = index.series.filter(series => series.country.identity === identity);
+  if (!aliases.length) return [];
+  const present: Span[] = [];
+  for (const span of clipToSpans([{ firstHour: from, lastHour: end }], aliases.flatMap(series => series.country.present))) {
+    const previous = present.at(-1);
+    if (previous && previous.lastHour + 1 === span.firstHour) previous.lastHour = span.lastHour;
+    else present.push({ ...span });
+  }
+  const country = { ...aliases[0].country, present };
+  const causes = new Map<number, MilitaryAirLeaf[]>();
+  for (const leaf of aliases[0].leaves) {
+    const leaves = causes.get(leaf.cause) ?? [];
+    leaves.push(leaf); causes.set(leaf.cause, leaves);
+  }
+  return [...causes].sort(([a], [b]) => a - b).map(([cause, leaves]) => ({ id: String(cause), cause, label: airCauseName(cause), leaves,
+    runs: ledgerRuns({ country, leaves, points: ledgerTotals(leaves) }, from, end, dealt, ledgerScale('airLosses')) }));
+}
+
+/** A range retains its native-date lower bound; a held moment uses branch offsets. */
+export function pinAirLossDrill(source: WidgetSpec, track: BoundTrack, tag: string, identity: string, from: number, hour: number,
+  follow: boolean): WidgetSpec {
+  const pinned = pinPartsRace(follow ? { ...source, time: { mode: 'follow' } } : source, track, tag, hour, follow, 'Loss causes');
+  return { ...pinned, time: source.time.mode === 'range' ? { mode: 'range', firstOffset: from - track.branch.firstHour,
+    lastOffset: Math.floor(hour) - track.branch.firstHour } : pinned.time,
+    options: { ...pinned.options, holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, tag, identity]) } };
+}

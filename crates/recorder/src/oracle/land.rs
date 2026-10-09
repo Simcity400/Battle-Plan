@@ -1,0 +1,1053 @@
+//! Save serializers: combat manager 140BABDA0/history 140BABC50/entry 140BABCC0,
+//! army 140C80E00/manpower 140C5B5D0/values 140C5B610. No inferred deletion causes.
+use super::*;
+use installed_content::parser::{Item, Value};
+use replay::frame::FrameDecoder;
+
+fn equal<T: std::fmt::Debug + PartialEq>(
+    report: &mut Report,
+    label: impl AsRef<str>,
+    actual: T,
+    expected: T,
+) {
+    if actual != expected {
+        report.difference(label, actual, expected);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct History {
+    hour: i32,
+    province: u32,
+    attacker: Vec<u8>,
+    defender: Vec<u8>,
+    kind: i32,
+}
+#[derive(Default)]
+struct Division {
+    manpower: Vec<(Vec<u8>, i32)>,
+    maximum: i64,
+    remaining: i64,
+}
+#[derive(Default)]
+pub(super) struct Saved {
+    history: Vec<History>,
+    divisions: BTreeMap<u64, Division>,
+    losses: BTreeMap<u64, [replay::rows::LandSideLosses; 2]>,
+    allow_zero: BTreeMap<u64, [Option<bool>; 2]>,
+}
+fn field<'a>(items: &'a [Item], key: &[u8]) -> io::Result<Option<&'a Value>> {
+    let mut found = items.iter().filter(|i| i.key.as_deref() == Some(key));
+    let result = found.next().map(|i| &i.value);
+    if found.next().is_some() {
+        return Err(invalid(format!(
+            "duplicate land save field {}",
+            String::from_utf8_lossy(key)
+        )));
+    }
+    Ok(result)
+}
+fn required<'a>(items: &'a [Item], key: &[u8]) -> io::Result<&'a Value> {
+    field(items, key)?.ok_or_else(|| {
+        invalid(format!(
+            "missing land save field {}",
+            String::from_utf8_lossy(key)
+        ))
+    })
+}
+fn block(v: &Value) -> io::Result<&[Item]> {
+    v.items().ok_or_else(|| invalid("land save block expected"))
+}
+fn scalar(v: &Value) -> io::Result<&[u8]> {
+    v.scalar()
+        .ok_or_else(|| invalid("land save scalar expected"))
+}
+fn number<T: std::str::FromStr>(v: &Value) -> io::Result<T> {
+    std::str::from_utf8(scalar(v)?)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| invalid("land save integer invalid"))
+}
+fn handle(v: &Value) -> io::Result<u64> {
+    let i = block(v)?;
+    let id: u32 = number(required(i, b"id")?)?;
+    let kind: u32 = number(required(i, b"type")?)?;
+    Ok(u64::from(id) << 32 | u64::from(kind))
+}
+/// CUnit and CArmy both serialize this identity at division depth (the second
+/// copy follows seed). Keep the first, authenticate every later copy.
+fn division_handle(items: &[Item]) -> io::Result<u64> {
+    let mut copies = items.iter().filter(|i| i.key.as_deref() == Some(b"id"));
+    let first = handle(
+        &copies
+            .next()
+            .ok_or_else(|| invalid("missing land save division id"))?
+            .value,
+    )?;
+    for copy in copies {
+        if handle(&copy.value)? != first {
+            return Err(invalid("land save division id copies differ"));
+        }
+    }
+    Ok(first)
+}
+
+// CLandCombatant serializer token29B4 is `log`; CD1240 token3754 is
+// `combat_side_data`; CD15D0 tokens3750/3753 are `manpower_lost`/`equipment_lost`.
+// FFDB00 writes equipment{id,amount}, omitting zero unless allow_zero_entries.
+fn saved_losses(side: &[Item]) -> io::Result<(replay::rows::LandSideLosses, Option<bool>)> {
+    let log = block(required(side, b"log")?)?;
+    let stats = block(required(log, b"combat_side_data")?)?;
+    let manpower = field(stats, b"manpower_lost")?
+        .map(number::<i32>)
+        .transpose()?
+        .unwrap_or(0);
+    if manpower < 0 {
+        return Err(invalid("saved manpower loss is not positive"));
+    }
+    let mut equipment = Vec::new();
+    let mut allow_zero = None;
+    if let Some(pool) = field(stats, b"equipment_lost")? {
+        let pool = block(pool)?;
+        allow_zero = Some(match scalar(required(pool, b"allow_zero_entries")?)? {
+            b"yes" => true,
+            b"no" => false,
+            _ => return Err(invalid("invalid loss pool allow_zero_entries")),
+        });
+        for entry in pool
+            .iter()
+            .filter(|i| i.key.as_deref() == Some(b"equipment"))
+        {
+            let entry = block(&entry.value)?;
+            equipment.push(replay::rows::LandEquipmentLoss {
+                variant: handle(required(entry, b"id")?)?,
+                amount_raw: Decimal::parse(scalar(required(entry, b"amount")?)?)?.raw,
+            });
+        }
+    }
+    Ok((
+        replay::rows::LandSideLosses {
+            manpower,
+            equipment,
+        },
+        allow_zero,
+    ))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Comparison {
+    Divisions,
+    Losses,
+    History,
+    #[cfg(test)]
+    All,
+}
+pub(super) fn read(items: &[Item], comparison: Comparison) -> io::Result<Saved> {
+    let mut out = Saved::default();
+    if comparison != Comparison::Divisions {
+        let combats = block(required(items, b"combat")?)?;
+        if comparison != Comparison::History {
+            for entry in combats.iter().filter(|i| {
+                matches!(
+                    i.key.as_deref(),
+                    Some(b"land_combat" | b"border_war_combat")
+                )
+            }) {
+                let fields = block(&entry.value)?;
+                let id = handle(required(fields, b"id")?)?;
+                let attacker = saved_losses(block(required(fields, b"attacker")?)?)?;
+                let defender = saved_losses(block(required(fields, b"defender")?)?)?;
+                if out.losses.insert(id, [attacker.0, defender.0]).is_some() {
+                    return Err(invalid("duplicate saved combat losses"));
+                }
+                out.allow_zero.insert(id, [attacker.1, defender.1]);
+            }
+        }
+        // BABC50 may omit empty history; the manager parent is unconditional.
+        if comparison != Comparison::Losses
+            && let Some(history) = field(combats, b"history")?
+            && let Some(entries) = field(block(history)?, b"history")?
+        {
+            for entry in block(entries)? {
+                if entry.key.is_some() {
+                    return Err(invalid("keyed combat history entry"));
+                }
+                let i = block(&entry.value)?;
+                out.history.push(History {
+                    hour: save::GameDate::parse(scalar(required(i, b"end_date")?)?)?
+                        .engine_hour()?,
+                    province: number(required(i, b"location")?)?,
+                    attacker: scalar(required(i, b"attacker")?)?.to_vec(),
+                    defender: scalar(required(i, b"defender")?)?.to_vec(),
+                    kind: number(required(i, b"type")?)?,
+                });
+            }
+        }
+    }
+    if comparison != Comparison::Losses
+        && comparison != Comparison::History
+        && let Some(countries) = field(items, b"countries")?
+    {
+        for country in block(countries)? {
+            if let Some(units) = field(block(&country.value)?, b"units")? {
+                for army in block(units)?
+                    .iter()
+                    .filter(|i| i.key.as_deref() == Some(b"division"))
+                {
+                    let i = block(&army.value)?;
+                    let id = division_handle(i)?;
+                    let mut division = Division {
+                        maximum: Decimal::parse(scalar(required(i, b"max_supply")?)?)?.raw,
+                        // 140C80E00 receives primary+10. Token4CED at 140C810CA
+                        // reads secondary+600 (primary+610), including zero.
+                        // Optional secondary+610 fuel is a different operand.
+                        remaining: Decimal::parse(scalar(required(
+                            i,
+                            b"army_current_supply_ratio",
+                        )?)?)?
+                        .raw,
+                        ..Default::default()
+                    };
+                    let manpower = block(required(i, b"army_manpower")?)?;
+                    let values = block(required(manpower, b"army_manpower_value")?)?;
+                    for v in values.iter().filter(|i| i.key.as_deref() == Some(b"value")) {
+                        let v = block(&v.value)?;
+                        division.manpower.push((
+                            scalar(required(v, b"tag")?)?.to_vec(),
+                            number(required(v, b"value")?)?,
+                        ));
+                    }
+                    if out.divisions.insert(id, division).is_some() {
+                        return Err(invalid("duplicate land save division"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Compare the same hour's live counters, never a later terminal value with
+/// an earlier live save. Ended history does not serialize these side pools.
+pub(super) fn compare_losses(
+    frame: &DecodedFrame,
+    saved: &Saved,
+    report: &mut Report,
+) -> io::Result<()> {
+    let rows = frame.complete::<tables::LandCombatProgress>()?;
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if !seen.insert(row.combat) {
+            return Err(invalid("duplicate hourly combat losses"));
+        }
+        let Some(expected) = saved.losses.get(&row.combat) else {
+            report.difference(
+                format!("LandCombatProgress losses {}", row.combat),
+                "present",
+                "absent",
+            );
+            continue;
+        };
+        let manpower = [
+            report.recorded(
+                &row.attacker_manpower_loss,
+                "LandCombatProgress.attacker_manpower_loss",
+                row.combat.to_string(),
+            ),
+            report.recorded(
+                &row.defender_manpower_loss,
+                "LandCombatProgress.defender_manpower_loss",
+                row.combat.to_string(),
+            ),
+        ];
+        let pools = [
+            report.recorded(
+                &row.attacker_equipment_losses,
+                "LandCombatProgress.attacker_equipment_losses",
+                row.combat.to_string(),
+            ),
+            report.recorded(
+                &row.defender_equipment_losses,
+                "LandCombatProgress.defender_equipment_losses",
+                row.combat.to_string(),
+            ),
+        ];
+        for side in 0..2 {
+            if let Some(&manpower) = manpower[side] {
+                equal(
+                    report,
+                    format!("combat {} side {side} manpower_lost", row.combat),
+                    manpower.max(0),
+                    expected[side].manpower,
+                );
+                if manpower < 0 {
+                    report.limitation("140CD15D0 omits nonpositive manpower; the save cannot certify its negative magnitude", format!("combat {} side {side}", row.combat));
+                }
+            }
+            if let Some(pool) = pools[side] {
+                if let Some(allow_zero) = saved.allow_zero[&row.combat][side] {
+                    let projected = pool
+                        .iter()
+                        .filter(|e| allow_zero || e.amount_raw != 0)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    equal(
+                        report,
+                        format!("combat {} side {side} equipment_lost", row.combat),
+                        &projected,
+                        &expected[side].equipment,
+                    );
+                } else {
+                    report.limitation("140CD15D0 gates equipment_lost via 140FFB8F0 on archetype allocations (+8), not variant entries; an omitted wrapper cannot certify an empty variant pool", format!("combat {} side {side}", row.combat));
+                }
+            }
+        }
+    }
+    for id in saved.losses.keys().filter(|id| !seen.contains(id)) {
+        report.difference(
+            format!("LandCombatProgress losses {id}"),
+            "absent",
+            "present",
+        );
+    }
+    report.compared("LandCombatProgress casualties", rows.len());
+    report.limitation("140CD1240 -> 140CD15D0 certifies counters of combats live at the save hour through LandCombatProgress; ended history omits casualty pools, so a later save cannot certify LandCombatResults terminal amounts or flush/deletion coverage", "terminal losses require matched final combat-window evidence and hook tests");
+    Ok(())
+}
+
+pub(super) fn compare_divisions(
+    frame: &DecodedFrame,
+    saved: &Saved,
+    report: &mut Report,
+) -> io::Result<()> {
+    let countries = country_context(frame)?;
+    let rows = frame.complete::<tables::DivisionLandInputs>()?;
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if !seen.insert(row.division) {
+            return Err(invalid("duplicate DivisionLandInputs"));
+        }
+        let Some(expected) = saved.divisions.get(&row.division) else {
+            report.difference(
+                format!("DivisionLandInputs {}", row.division),
+                "present",
+                "absent",
+            );
+            continue;
+        };
+        let mut manpower = Vec::new();
+        for entry in &row.manpower {
+            // C5B610 intentionally omits nonpositive amounts; retain them in
+            // the recording but compare only the serializer's projection.
+            if entry.amount > 0 {
+                // 140C5B610 calls 140BA5C20: raw-indexed strings, not the
+                // canonical country's tag. Countries records its own raw id
+                // only; CountryLinks does not preserve an alias's spelling.
+                let tag = if entry.country == 0 {
+                    None
+                } else {
+                    let country = countries
+                        .links
+                        .get(&entry.country)
+                        .ok_or_else(|| invalid("unknown division manpower country reference"))?;
+                    (country.id == entry.country).then(|| country.tag.clone())
+                };
+                if tag.is_none() {
+                    report.limitation(
+                        "140C5B610 saves the raw tag string; an alias/null contributor's spelling is not captured by Countries or CountryLinks. Amount and position are still compared",
+                        format!("division {} positive contributor {} raw country {}", row.division, manpower.len(), entry.country),
+                    );
+                }
+                manpower.push((tag, entry.amount));
+            }
+        }
+        let saved_manpower = expected
+            .manpower
+            .iter()
+            .enumerate()
+            .map(|(n, (tag, amount))| {
+                let tag = if manpower.get(n).is_some_and(|(tag, _)| tag.is_none()) {
+                    None
+                } else {
+                    Some(tag.clone())
+                };
+                (tag, *amount)
+            })
+            .collect::<Vec<_>>();
+        equal(
+            report,
+            format!("division {} manpower", row.division),
+            &manpower,
+            &saved_manpower,
+        );
+        equal(
+            report,
+            format!("division {} maximum grace", row.division),
+            row.maximum_grace,
+            expected.maximum,
+        );
+        equal(
+            report,
+            format!("division {} remaining grace", row.division),
+            row.remaining_grace,
+            expected.remaining,
+        );
+    }
+    equal(
+        report,
+        "DivisionLandInputs census",
+        seen,
+        saved.divisions.keys().copied().collect::<BTreeSet<_>>(),
+    );
+    report.compared("DivisionLandInputs", rows.len());
+    report.limitation("CArmyManpower serializer 140C5B610 omits nonpositive contributors; their values and positions cannot be certified","DivisionLandInputs.manpower");
+    report.limitation("CUnit 140BF7010 and supply consumer 140EBB270 do not serialize received supply or naval-transfer membership; those hourly operands are unverified","DivisionLandInputs.received_supply/naval_transfer");
+    Ok(())
+}
+
+fn multiset(values: impl IntoIterator<Item = History>) -> BTreeMap<History, usize> {
+    let mut out = BTreeMap::new();
+    for v in values {
+        *out.entry(v).or_default() += 1;
+    }
+    out
+}
+fn retained_span_count(spans: &[(i32, i32)], manager_hour: i32) -> usize {
+    let oldest = i64::from(manager_hour) - i64::from(engine::ccombat_history::RETENTION_HOURS);
+    spans
+        .iter()
+        .filter(|&&(from, to)| {
+            // Coverage is (from,to], while retention is [oldest,H_u].
+            i64::from(to) >= oldest && from < manager_hour
+        })
+        .count()
+}
+fn compare_certified_history(
+    captured: Vec<History>,
+    spans: &[(i32, i32)],
+    saved: &[History],
+    manager_hour: i32,
+    report: &mut Report,
+) -> io::Result<usize> {
+    if spans.iter().any(|&(from, to)| from >= to) || spans.windows(2).any(|w| w[0].1 > w[1].0) {
+        return Err(invalid("land event coverage overlaps or is invalid"));
+    }
+    if captured.iter().any(|e| {
+        !spans
+            .iter()
+            .any(|&(from, to)| e.hour > from && e.hour <= to)
+    }) {
+        return Err(invalid("land event outside certified history span"));
+    }
+    // PruneHistory 140BA96C0, called at the beginning of manager update
+    // 140BA9890, drops head entries dated < now - 0xA8 (equality survives),
+    // and future head entries. HourlyUpdate advances +0x468 before that call:
+    // for a settled fresh save at H, last manager update H_u = H, NOT H - 1.
+    // The inclusive lower bound is H - 168; event coverage remains (from,to].
+    let oldest = i64::from(manager_hour) - i64::from(engine::ccombat_history::RETENTION_HOURS);
+    let retained = |e: &History| i64::from(e.hour) >= oldest;
+    let outside = captured.iter().filter(|e| !retained(e)).count();
+    if outside != 0 {
+        report.limitation(
+            "combat history retention: 140BA96C0 prunes results older than H_u - 168 (engine literal 0xA8); the save cannot certify these recorded results",
+            format!("{outside} results before hour {oldest}; last manager update H_u={manager_hour}"),
+        );
+    }
+    if captured.iter().any(|e| e.hour > manager_hour) {
+        return Err(invalid("land result after last manager update"));
+    }
+    let saved = multiset(
+        saved
+            .iter()
+            .filter(|e| {
+                e.kind == 1
+                    && retained(e)
+                    && e.hour <= manager_hour
+                    && spans
+                        .iter()
+                        .any(|&(from, to)| e.hour > from && e.hour <= to)
+            })
+            .cloned(),
+    );
+    let recorded = multiset(captured.into_iter().filter(retained));
+    let count = recorded.values().sum();
+    equal(
+        report,
+        "LandCombatResults saved history multiset",
+        &recorded,
+        &saved,
+    );
+    Ok(count)
+}
+pub(super) fn compare_events(
+    replay: &Replay,
+    frame: &DecodedFrame,
+    saved: &Saved,
+    report: &mut Report,
+) -> io::Result<()> {
+    const SELECTED: [TableId; 3] = [
+        TableId::LandCombatResults,
+        TableId::DestroyedDivisions,
+        TableId::LandEventCoverage,
+    ];
+    let mut captured = Vec::new();
+    let mut spans = Vec::new();
+    let mut destroyed = 0;
+    let mut blocks = replay
+        .index
+        .iter()
+        .filter(|b| b.branch == frame.branch && b.first_hour <= frame.hour)
+        .collect::<Vec<_>>();
+    blocks.sort_by_key(|b| b.first_hour);
+    for b in blocks {
+        let mut decoder = FrameDecoder::for_tables(&SELECTED);
+        for encoded in replay.read_block_selected(b, &SELECTED)? {
+            if encoded.hour > frame.hour {
+                break;
+            }
+            let decoded = decoder.advance(&encoded)?;
+            let coverage = decoded.complete::<tables::LandEventCoverage>()?;
+            let [c] = coverage else {
+                return Err(invalid("land event coverage must have one row"));
+            };
+            if !c.complete {
+                report.limitation("land events before attachment, across loads/gaps/recovery or failed observation are unknown",format!("hours {}..{} epoch {}",c.from_hour,c.to_hour,c.epoch));
+                continue;
+            }
+            if c.to_hour != decoded.hour || c.from_hour >= c.to_hour {
+                return Err(invalid("land event coverage bounds invalid"));
+            }
+            spans.push((c.from_hour, c.to_hour));
+            for result in decoded.complete::<tables::LandCombatResults>()? {
+                if result.end_hour <= c.from_hour || result.end_hour > c.to_hour {
+                    return Err(invalid("land event outside its observed interval"));
+                }
+                captured.push(History {
+                    hour: result.end_hour,
+                    province: result.province,
+                    attacker: result.history_tags[0].clone(),
+                    defender: result.history_tags[1].clone(),
+                    kind: 1,
+                });
+            }
+            destroyed += decoded.complete::<tables::DestroyedDivisions>()?.len();
+        }
+    }
+    // Only timestamps wholly within a certified interval participate in the
+    // reverse comparison. A missing interval is unknown, never zero events.
+    let compared = compare_certified_history(captured, &spans, &saved.history, frame.hour, report)?;
+    for w in spans.windows(2).filter(|w| w[0].1 < w[1].0) {
+        report.limitation(
+            "no certified land event observations across this recording gap",
+            format!("hours {}..{}", w[0].1, w[1].0),
+        );
+    }
+    report.compared("LandCombatResults", compared);
+    report.compared("LandEventCoverage", retained_span_count(&spans, frame.hour));
+    report.limitation("CCombatHistoryEntry 140BABCC0 saves location, attacker, defender, end_date and type, but no winner, commander, full country sets, start date, duration or raw outcome inputs","LandCombatResults");
+    report.limitation("140C79E70 writes UNIT_KILL_HISTORY on the dying army+638, gated by 14143A800/141435880; it deletes that army. No corresponding surviving killer-unit entry is proved; this event has no certified save comparator",format!("DestroyedDivisions: {destroyed} observed events, unverified"));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn read(bytes: &[u8]) -> io::Result<Saved> {
+        super::read(&installed_content::parser::parse(bytes)?.items, Comparison::All)
+    }
+    #[test]
+    fn land_save_comparisons_refuse_only_their_own_missing_fields() {
+        let bytes = br#"combat={land_combat={id={id=7 type=62} attacker={} defender={}}
+            history={history={{location=9 attacker=A defender=B end_date=1936.1.2.1 type=1}}}}
+            countries={A={units={division={id={id=9 type=4713} max_supply=2
+                army_current_supply_ratio=1 army_manpower={army_manpower_value={}}}}}}"#;
+        let doc = installed_content::parser::parse(bytes).unwrap();
+        assert_eq!(
+            super::read(&doc.items, Comparison::Divisions)
+                .unwrap()
+                .divisions
+                .len(),
+            1
+        );
+        assert_eq!(
+            super::read(&doc.items, Comparison::History)
+                .unwrap()
+                .history
+                .len(),
+            1
+        );
+        assert!(
+            super::read(&doc.items, Comparison::Losses)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("missing land save field log")
+        );
+        let bytes = br#"combat={land_combat={id={id=7 type=62}
+            attacker={log={combat_side_data={}}} defender={log={combat_side_data={}}}}}
+            countries={A={units={division={id={id=9 type=4713}}}}}"#;
+        let doc = installed_content::parser::parse(bytes).unwrap();
+        assert!(
+            super::read(&doc.items, Comparison::Divisions)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("missing land save field max_supply")
+        );
+        assert_eq!(
+            super::read(&doc.items, Comparison::Losses)
+                .unwrap()
+                .losses
+                .len(),
+            1
+        );
+        assert!(
+            super::read(&doc.items, Comparison::History)
+                .unwrap()
+                .history
+                .is_empty()
+        );
+        let doc = installed_content::parser::parse(b"countries={}").unwrap();
+        assert!(super::read(&doc.items, Comparison::Divisions).is_ok());
+        assert!(super::read(&doc.items, Comparison::History).is_err());
+        assert!(super::read(&doc.items, Comparison::Losses).is_err());
+    }
+    fn loss_frame(row: Option<replay::rows::LandCombatProgressRow>) -> DecodedFrame {
+        let mut tables = std::array::from_fn(|_| {
+            TableView::Unavailable {
+                reason: "fixture omitted".into(),
+            }
+            .into()
+        });
+        tables[TableId::LandCombatProgress.index()] =
+            TableView::Complete(TableRows::LandCombatProgress(row.into_iter().collect())).into();
+        DecodedFrame {
+            branch: 1,
+            hour: 80,
+            tables,
+            metrics: Default::default(),
+        }
+    }
+    #[test]
+    fn casualty_save_oracle_compares_live_manpower_and_native_variant_pool_projection() {
+        let bytes = br#"combat={land_combat={id={id=7 type=62}
+            attacker={log={combat_side_data={manpower_lost=83 equipment_lost={equipment={id={id=9 type=70} amount=1.23456} allow_zero_entries=no}}}}
+            defender={log={combat_side_data={equipment_lost={equipment={id={id=10 type=70} amount=0} allow_zero_entries=yes}}}}
+        }}"#;
+        let saved = read(bytes).unwrap();
+        let mut row = replay::rows::LandCombatProgressRow {
+            combat: 7 << 32 | 62,
+            attacker_manpower_loss: 83.into(),
+            attacker_equipment_losses: vec![
+                replay::rows::LandEquipmentLoss {
+                    variant: 9 << 32 | 70,
+                    amount_raw: 123_456,
+                },
+                replay::rows::LandEquipmentLoss {
+                    variant: 10 << 32 | 70,
+                    amount_raw: 0,
+                },
+            ]
+            .into(),
+            defender_equipment_losses: vec![replay::rows::LandEquipmentLoss {
+                variant: 10 << 32 | 70,
+                amount_raw: 0,
+            }]
+            .into(),
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        compare_losses(&loss_frame(Some(row.clone())), &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        *row.attacker_manpower_loss.require_mut("fixture").unwrap() += 1;
+        row.attacker_equipment_losses
+            .require_mut("fixture")
+            .unwrap()[0]
+            .amount_raw -= 1;
+        let mut mismatch = Report::default();
+        compare_losses(&loss_frame(Some(row)), &saved, &mut mismatch).unwrap();
+        assert_eq!(mismatch.differences.len(), 2);
+        let mut absent = Report::default();
+        compare_losses(&loss_frame(None), &saved, &mut absent).unwrap();
+        assert_eq!(absent.differences.len(), 1);
+        assert!(read(b"combat={land_combat={id={id=7 type=62} attacker={} defender={}}}").is_err());
+    }
+    #[test]
+    fn casualty_save_oracle_keeps_not_recorded_fields_separate_from_zero() {
+        use replay::rows::{LandCombatProgressRow, Recorded};
+        let saved = read(b"combat={land_combat={id={id=7 type=62} attacker={log={combat_side_data={manpower_lost=83}}} defender={log={combat_side_data={}}}}}").unwrap();
+        let mut row = LandCombatProgressRow {
+            combat: 7 << 32 | 62,
+            attacker_manpower_loss: Recorded::NotRecorded,
+            defender_manpower_loss: Recorded::NotRecorded,
+            attacker_equipment_losses: Recorded::NotRecorded,
+            defender_equipment_losses: Recorded::NotRecorded,
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        compare_losses(&loss_frame(Some(row.clone())), &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(
+            report
+                .limitations
+                .keys()
+                .filter(|name| name.ends_with("not recorded"))
+                .count(),
+            4
+        );
+        row.defender_manpower_loss = 1.into();
+        let mut mismatch = Report::default();
+        compare_losses(&loss_frame(Some(row)), &saved, &mut mismatch).unwrap();
+        assert_eq!(
+            mismatch.differences.len(),
+            1,
+            "available fields still compare"
+        );
+    }
+    #[test]
+    fn casualty_save_omissions_and_ended_history_are_explicit_limitations() {
+        let saved = read(b"combat={border_war_combat={id={id=7 type=62} attacker={log={combat_side_data={}}} defender={log={combat_side_data={}}}}}").unwrap();
+        let row = replay::rows::LandCombatProgressRow {
+            combat: 7 << 32 | 62,
+            attacker_manpower_loss: (-7).into(),
+            attacker_equipment_losses: vec![replay::rows::LandEquipmentLoss {
+                variant: 9 << 32 | 70,
+                amount_raw: 123_456,
+            }]
+            .into(),
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        compare_losses(&loss_frame(Some(row)), &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|k| k.contains("negative magnitude"))
+        );
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|k| k.contains("omitted wrapper"))
+        );
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|k| k.contains("ended history"))
+        );
+        let ended = read(b"combat={history={history={{location=9 attacker=A defender=B end_date=1936.1.2.1 type=1}}}}").unwrap();
+        let mut report = Report::default();
+        compare_losses(&loss_frame(None), &ended, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert!(
+            ended.losses.is_empty(),
+            "ended history is not zero terminal losses"
+        );
+    }
+    #[test]
+    fn history_and_manpower_parse_native_structure_and_keep_duplicates() {
+        let bytes=br#"combat={ history={ history={ { location=7 attacker=AAA defender=BBB end_date=1936.1.2.1 type=1 } { location=7 attacker=AAA defender=BBB end_date=1936.1.2.1 type=1 } } } } countries={ AAA={ units={ division={ id={id=9 type=4713} max_supply=2.00000 army_current_supply_ratio=1.23456 army_manpower={ army_manpower_value={ value={tag=AAA value=12} value={tag=BBB value=19} } } } } } }"#;
+        let saved = read(bytes).unwrap();
+        assert_eq!(saved.history.len(), 2);
+        assert_eq!(*multiset(saved.history).values().next().unwrap(), 2);
+        let division = &saved.divisions[&(9 << 32 | 4713)];
+        assert_eq!(division.remaining, 123456);
+        assert_eq!(
+            division.manpower,
+            [(b"AAA".to_vec(), 12), (b"BBB".to_vec(), 19)]
+        );
+        assert!(read(b"countries={AAA={units={division={id={id=9 type=4713}}}}}").is_err());
+    }
+    #[test]
+    fn zero_remaining_grace_is_required_by_the_native_writer() {
+        let division = br#"combat={} countries={ opaque={ units={ division={
+            id={id=9 type=4713} max_supply=2.00000 army_current_supply_ratio=0.00000
+            army_manpower={army_manpower_value={}}
+        } } } }"#;
+        let saved = read(division).unwrap();
+        assert_eq!(saved.divisions[&(9 << 32 | 4713)].remaining, 0);
+        assert!(saved.divisions[&(9 << 32 | 4713)].manpower.is_empty());
+        let malformed = String::from_utf8(division.to_vec()).unwrap().replace(
+            "army_current_supply_ratio=0.00000",
+            "army_current_supply_ratio=bad",
+        );
+        assert!(read(malformed.as_bytes()).is_err());
+        let missing_maximum = String::from_utf8(division.to_vec())
+            .unwrap()
+            .replace("max_supply=2.00000", "");
+        assert!(read(missing_maximum.as_bytes()).is_err());
+        let missing_remaining = String::from_utf8(division.to_vec())
+            .unwrap()
+            .replace("army_current_supply_ratio=0.00000", "");
+        assert!(read(missing_remaining.as_bytes()).is_err());
+    }
+    #[test]
+    fn history_is_two_way_duplicate_sensitive_and_excludes_unknown_hours() {
+        let event = History {
+            hour: 100,
+            province: 9,
+            attacker: b"opaque-A".to_vec(),
+            defender: b"opaque-B".to_vec(),
+            kind: 1,
+        };
+        let mut later = event.clone();
+        later.hour = 102;
+        let saved = vec![event.clone(), event.clone(), later];
+        let mut report = Report::default();
+        assert_eq!(
+            compare_certified_history(
+                vec![event.clone(), event.clone()],
+                &[(99, 100)],
+                &saved,
+                100,
+                &mut report
+            )
+            .unwrap(),
+            2
+        );
+        assert!(report.differences.is_empty());
+        for (recorded, saved) in [
+            (vec![event.clone()], vec![event.clone(), event.clone()]),
+            (vec![event.clone(), event.clone()], vec![event.clone()]),
+        ] {
+            let mut report = Report::default();
+            compare_certified_history(recorded, &[(99, 100)], &saved, 100, &mut report).unwrap();
+            assert_eq!(report.differences.len(), 1);
+        }
+        assert!(
+            compare_certified_history(vec![event], &[], &saved, 100, &mut Report::default())
+                .is_err()
+        );
+        assert!(
+            compare_certified_history(
+                vec![],
+                &[(99, 100), (99, 101)],
+                &saved,
+                100,
+                &mut Report::default()
+            )
+            .is_err()
+        );
+        assert!(
+            read(b"countries={}").is_err(),
+            "absent combat root cannot certify zero events"
+        );
+    }
+    #[test]
+    fn native_duplicate_division_ids_must_all_agree() {
+        let bytes = br#"combat={} countries={ opaque={ units={ division={
+            id={id=81188 type=4713} seed=266256362 id={id=81188 type=4713}
+            max_supply=108 army_current_supply_ratio=108
+            army_manpower={army_manpower_value={value={tag=opaque value=12000}}}
+        } } } }"#;
+        assert_eq!(read(bytes).unwrap().divisions.len(), 1);
+        let unequal = String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .replace("seed=266256362 id={id=81188", "seed=266256362 id={id=81189");
+        assert!(read(unequal.as_bytes()).is_err());
+        let duplicate_supply = String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .replace("max_supply=108", "max_supply=108 max_supply=108");
+        assert!(read(duplicate_supply.as_bytes()).is_err());
+    }
+    #[test]
+    fn retained_real_save_divisions_and_history_parse_when_available() {
+        let path = std::path::Path::new(
+            r"captures\pr132_smoke_20260928\boundary-save.hoi4",
+        );
+        if !path.exists() {
+            eprintln!("SKIP retained real land save: {}", path.display());
+            return;
+        }
+        // Exercises every production key over ALL division and history blocks,
+        // including the native repeated id and lexical fixed5 representations.
+        let saved = read(&std::fs::read(path).unwrap()).unwrap();
+        assert!(!saved.divisions.is_empty());
+        let division = &saved.divisions[&(81188u64 << 32 | 4713)];
+        assert_eq!(division.manpower, [(b"ENG".to_vec(), 15_620)]);
+        assert_eq!(division.maximum, 10_800_000);
+        assert_eq!(division.remaining, 5_793_156);
+        assert_eq!(saved.history.len(), 89);
+        let hour = |date: &[u8]| save::GameDate::parse(date).unwrap().engine_hour().unwrap();
+        assert_eq!(
+            saved.history.iter().map(|e| e.hour).min(),
+            Some(hour(b"1943.10.22.12"))
+        );
+        assert_eq!(
+            saved.history.iter().map(|e| e.hour).max(),
+            Some(hour(b"1943.10.29.9"))
+        );
+        println!(
+            "REAL_LAND_SAVE divisions={} history={} first={} last={} save_hour={}",
+            saved.divisions.len(),
+            saved.history.len(),
+            hour(b"1943.10.22.12"),
+            hour(b"1943.10.29.9"),
+            hour(b"1943.10.29.12")
+        );
+    }
+    #[test]
+    fn retention_lower_bound_is_inclusive_and_old_results_are_a_limitation() {
+        let event = |hour| History {
+            hour,
+            province: 9,
+            attacker: b"A".to_vec(),
+            defender: b"B".to_vec(),
+            kind: 1,
+        };
+        let mut report = Report::default();
+        assert_eq!(
+            compare_certified_history(
+                vec![event(831), event(832), event(1000)],
+                &[(830, 1000)],
+                &[event(832), event(1000)],
+                1000,
+                &mut report
+            )
+            .unwrap(),
+            2
+        );
+        assert!(report.differences.is_empty());
+        assert_eq!(report.limitations.len(), 1);
+        // Equality must still fail in either direction, even when the run is
+        // longer than retention; using H-1 would incorrectly include 831.
+        for (captured, saved) in [(vec![], vec![event(832)]), (vec![event(832)], vec![])] {
+            let mut report = Report::default();
+            compare_certified_history(captured, &[(830, 1000)], &saved, 1000, &mut report).unwrap();
+            assert_eq!(report.differences.len(), 1);
+        }
+    }
+    #[test]
+    fn coverage_count_includes_only_spans_intersecting_retention() {
+        assert_eq!(retained_span_count(&[(800, 831)], 1000), 0);
+        assert_eq!(retained_span_count(&[(831, 832)], 1000), 1);
+        assert_eq!(retained_span_count(&[(832, 833)], 1000), 1);
+        assert_eq!(retained_span_count(&[(830, 1000)], 1000), 1);
+        assert_eq!(retained_span_count(&[(1000, 1001)], 1000), 0);
+        assert_eq!(
+            retained_span_count(&[(800, 831), (831, 832), (832, 1000)], 1000),
+            2
+        );
+    }
+    #[test]
+    fn division_projection_keeps_positive_order_and_reports_grace_difference() {
+        let (mut frame, _, _, _) = super::super::tests::fixture();
+        let id = 9 << 32 | 4713;
+        let row = replay::rows::DivisionLandInputsRow {
+            division: id,
+            manpower: vec![
+                replay::rows::DivisionManpowerContributor {
+                    country: 101,
+                    amount: 2,
+                },
+                replay::rows::DivisionManpowerContributor {
+                    country: 102,
+                    amount: -7,
+                },
+                replay::rows::DivisionManpowerContributor {
+                    country: 101,
+                    amount: 9,
+                },
+            ],
+            maximum_grace: 100_000,
+            remaining_grace: 12345,
+            ..Default::default()
+        };
+        *frame.tables[TableId::DivisionLandInputs.index()] =
+            TableView::Complete(TableRows::DivisionLandInputs(vec![row.clone()]));
+        let saved = Saved {
+            divisions: BTreeMap::from([(
+                id,
+                Division {
+                    manpower: vec![(b"GER".to_vec(), 2), (b"GER".to_vec(), 9)],
+                    maximum: 100_000,
+                    remaining: 12345,
+                },
+            )]),
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        compare_divisions(&frame, &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert!(!report.limitations.is_empty());
+        let mut changed = row;
+        changed.manpower.reverse();
+        changed.remaining_grace += 1;
+        *frame.tables[TableId::DivisionLandInputs.index()] =
+            TableView::Complete(TableRows::DivisionLandInputs(vec![changed]));
+        let mut report = Report::default();
+        compare_divisions(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 2);
+        *frame.tables[TableId::DivisionLandInputs.index()] = TableView::Unavailable {
+            reason: "native read failed".into(),
+        };
+        assert!(compare_divisions(&frame, &saved, &mut Report::default()).is_err());
+    }
+    #[test]
+    fn manpower_alias_spellings_are_limits_but_ordered_amounts_still_compare() {
+        let (mut frame, _, _, _) = super::super::tests::fixture();
+        let id = 9 << 32 | 4713;
+        let mut row = replay::rows::DivisionLandInputsRow {
+            division: id,
+            manpower: vec![
+                replay::rows::DivisionManpowerContributor {
+                    country: 102,
+                    amount: 7,
+                },
+                replay::rows::DivisionManpowerContributor {
+                    country: 0,
+                    amount: 9,
+                },
+            ],
+            ..Default::default()
+        };
+        let saved = Saved {
+            divisions: BTreeMap::from([(
+                id,
+                Division {
+                    manpower: vec![
+                        (b"old-opaque-tag".to_vec(), 7),
+                        (b"null-opaque-tag".to_vec(), 9),
+                    ],
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        let put = |frame: &mut DecodedFrame, row| {
+            *frame.tables[TableId::DivisionLandInputs.index()] =
+                TableView::Complete(TableRows::DivisionLandInputs(vec![row]));
+        };
+        put(&mut frame, row.clone());
+        let mut report = Report::default();
+        compare_divisions(&frame, &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|s| s.contains("alias/null contributor"))
+        );
+        row.manpower.swap(0, 1);
+        put(&mut frame, row.clone());
+        let mut report = Report::default();
+        compare_divisions(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1);
+        row.manpower[0].country = 101;
+        row.manpower.swap(0, 1);
+        put(&mut frame, row.clone());
+        let mut report = Report::default();
+        compare_divisions(&frame, &saved, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            1,
+            "a known raw tag must compare exactly"
+        );
+        row.manpower[0].country = 777;
+        put(&mut frame, row);
+        assert!(compare_divisions(&frame, &saved, &mut Report::default()).is_err());
+    }
+}

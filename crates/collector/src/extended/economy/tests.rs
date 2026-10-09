@@ -120,6 +120,64 @@ mod resource_fixture {
     }
 }
 
+#[test]
+fn fuel_suffix_assembly_materializes_before_an_equal_scalar_projection() {
+    use crate::projection::{Projection, ProjectionScratch};
+    use replay::frame::{FrameEncoder, FrameInput, Metrics};
+    let source = |hour, row| {
+        let mut input = FrameInput {
+            branch: 1,
+            hour,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|_| unavailable("synthetic unused").into()),
+        };
+        input.tables[TableId::CountryFuel.index()] =
+            TableView::Complete(rows::TableRows::CountryFuel(vec![row])).into();
+        input
+    };
+    let mut captured = Captured::with_capacities(&Capacities {
+        rows: [1; N],
+        foreign_sources: 0,
+        demand: Default::default(),
+    });
+    captured.fuel.rows[0] = ccountry_fuel_status::Row {
+        country: 1,
+        current_raw: 99,
+        country_instance: Some(7),
+        ..Default::default()
+    };
+    captured.fuel.outcome = Outcome::Rows { len: 1 };
+    let mut encoder = FrameEncoder::new();
+    encoder
+        .encode_input(
+            source(
+                0,
+                rows::CountryFuelRow {
+                    country: 1,
+                    current_raw: 99,
+                    country_instance: rows::Recorded::Value(Some(7)),
+                    ..Default::default()
+                },
+            ),
+            true,
+        )
+        .unwrap();
+    assert!(
+        encoder
+            .comparison_baseline::<tables::CountryFuel>(1, 1, false)
+            .is_some()
+    );
+    let mut scratch = ProjectionScratch::default();
+    let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+    let inputs = captured.table_inputs(Some(&mut projection));
+    let TableInput::Sampled(TableView::Complete(rows::TableRows::CountryFuel(rows))) = &inputs[0]
+    else {
+        panic!("owned suffixes require the materialized supplying rows");
+    };
+    assert_eq!(rows[0].current_raw, 99);
+    assert!(matches!(&rows[0].demand, rows::Recorded::Value(pack) if !pack.reason.is_empty()));
+}
+
 fn resource_job() -> EconomyRestJob {
     EconomyRestJob {
         log: RawLog::new(256, 8192),
@@ -492,6 +550,7 @@ fn small() -> (Capacities, Captured) {
     let capacities = Capacities {
         rows: [2; N],
         foreign_sources: 4,
+        demand: Default::default(),
     };
     let captured = Captured::with_capacities(&capacities);
     (capacities, captured)
@@ -509,6 +568,28 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
     use crate::projection::ProjectionScratch;
     use replay::frame::{FrameEncoder, FrameInput, Metrics};
 
+    fn with_award_refusal(mut inputs: [TableInput; N]) -> [TableInput; N] {
+        let fuel = match &mut inputs[0] {
+            TableInput::Sampled(TableView::Complete(rows::TableRows::CountryFuel(fuel)))
+            | TableInput::Sampled(TableView::Truncated {
+                rows: rows::TableRows::CountryFuel(fuel),
+                ..
+            }) => fuel,
+            _ => return inputs,
+        };
+        for row in fuel {
+            let rows::Recorded::Value(Some(country_instance)) = &row.country_instance else {
+                panic!("projection fixture must supply the country instance")
+            };
+            row.awards = rows::Recorded::Value(rows::FuelAwardWindow {
+                country_instance: *country_instance,
+                reason: b"fuel awards not provided by projection fixture".to_vec(),
+                ..Default::default()
+            });
+        }
+        inputs
+    }
+
     let (_, mut captured) = small();
     macro_rules! sampled {
         ($field:ident, $row:expr) => {
@@ -520,6 +601,7 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
         fuel,
         ccountry_fuel_status::Row {
             country: u32::MAX,
+            country_instance: Some(u32::MAX - 1),
             current_raw: i64::MIN,
             ..Default::default()
         }
@@ -624,7 +706,7 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
         tables: std::array::from_fn(|_| unavailable("outside economy fixture").into()),
         metrics: Metrics::default(),
     };
-    let original_inputs = captured.table_inputs(None);
+    let original_inputs = with_award_refusal(captured.table_inputs(None));
     for (table, input) in TABLES.into_iter().zip(original_inputs.iter().cloned()) {
         baseline.tables[table.index()] = input;
     }
@@ -643,17 +725,21 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
             assert_eq!(inputs[index], original_inputs[index], "table {index}");
         }
     };
-    assert_unchanged(captured.table_inputs(Some(&mut projection)));
+    assert_unchanged(with_award_refusal(
+        captured.table_inputs(Some(&mut projection)),
+    ));
     // A native census permutation keeps the same replay keys and payloads,
     // including unsigned replay ordering of signed province/node fields.
     captured.hubs.rows.swap(0, 1);
-    assert_unchanged(captured.table_inputs(Some(&mut projection)));
+    assert_unchanged(with_award_refusal(
+        captured.table_inputs(Some(&mut projection)),
+    ));
 
     captured.supply.rows[0].flags -= 1;
     captured.resources.rows[0].exported += 1;
     captured.exchanges.rows[0].delivered -= 1;
-    let changed = captured.table_inputs(Some(&mut projection));
-    let converted = captured.table_inputs(None);
+    let changed = with_award_refusal(captured.table_inputs(Some(&mut projection)));
+    let converted = with_award_refusal(captured.table_inputs(None));
     for index in [2, 7, 8] {
         match &changed[index] {
             TableInput::ComparedChanges { indices, rows, .. } => {
@@ -719,8 +805,8 @@ fn projection_matches_full_conversion_after_reordering_changes_and_faults() {
         len: 2,
         unread_rows: 1,
     };
-    let faulted = captured.table_inputs(Some(&mut projection));
-    let converted = captured.table_inputs(None);
+    let faulted = with_award_refusal(captured.table_inputs(Some(&mut projection)));
+    let converted = with_award_refusal(captured.table_inputs(None));
     for index in [0, 3, 5] {
         assert_eq!(faulted[index], converted[index]);
     }
@@ -740,6 +826,7 @@ fn conversion_preserves_raw_quantities_full_hub_identity_and_literal_source_byte
     captured.fuel.outcome = Outcome::Rows { len: 1 };
     captured.fuel.rows[0] = ccountry_fuel_status::Row {
         country: u32::MAX,
+        country_instance: Some(u32::MAX - 1),
         current_raw: i64::MIN,
         maximum_raw: i64::MAX,
         gain_raw: -4_294_967_303,
@@ -790,6 +877,10 @@ fn conversion_preserves_raw_quantities_full_hub_identity_and_literal_source_byte
     captured.sources.required = 4;
     let views = captured.tables();
     let fuel = &complete::<tables::CountryFuel>(&views[0])[0];
+    assert_eq!(
+        fuel.country_instance,
+        replay::rows::Recorded::Value(Some(u32::MAX - 1))
+    );
     assert_eq!(
         (
             fuel.current_raw,
@@ -974,6 +1065,7 @@ fn e_capacities() -> Capacities {
     Capacities {
         rows: [4, 4, 8, 4, 4, 4, 4, 8, 4, 4, 8],
         foreign_sources: 64,
+        demand: Default::default(),
     }
 }
 
@@ -1527,6 +1619,7 @@ fn economy_truncation_matrix_matches_direct_with_same_caps() {
         let cap = Capacities {
             rows: [rows, 4, 8, 4, 4, 4, 4, 8, 4, 4, 8],
             foreign_sources: 64,
+            demand: Default::default(),
         };
         let direct = e_direct(&memory, &cap);
         let (split, _) = e_split(&memory, &cap);
@@ -1559,16 +1652,38 @@ fn economy_staging_overflow_falls_back_to_typed_walk() {
 #[test]
 fn economy_gate_skips_typed_walks_when_raw_mode_set() {
     use engine::memory::SliceMemory;
+    use std::cell::RefCell;
+    struct Traced<'a> {
+        source: SliceMemory<'a>,
+        reads: RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, output.len()));
+            self.source.copy(address, output)
+        }
+    }
     let bytes = vec![0; 0x8000];
-    let memory = SliceMemory {
-        base: E_GAME,
-        bytes: &bytes,
+    let traced = || Traced {
+        source: SliceMemory {
+            base: E_GAME,
+            bytes: &bytes,
+        },
+        reads: RefCell::new(Vec::new()),
     };
+    let memory = traced();
+    let reference = traced();
     let cap = e_capacities();
     let mut captured = Captured::with_capacities(&cap);
+    let mut demand = crate::extended::fuel_demand::Captured::with_capacities(&cap.demand);
+    let pending = captured.outcomes();
     captured.rest_raw_mode = true;
     let ticks = captured.capture(&memory, E_BASE, E_GAME, 0, true);
-    assert_eq!(ticks, [0; N]);
+    demand.capture(&reference, E_BASE, E_GAME, 0);
+    assert_eq!(*memory.reads.borrow(), *reference.reads.borrow());
+    assert!(!memory.reads.borrow().is_empty());
+    assert_eq!(captured.outcomes(), pending);
+    assert_eq!(ticks[1..], [0; N - 1]);
 }
 
 #[test]

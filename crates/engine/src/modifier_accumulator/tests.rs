@@ -3,6 +3,75 @@ use crate::memory::SliceMemory;
 use std::cell::{Cell, RefCell};
 
 #[test]
+fn requested_operand_keeps_lazy_disabled_presence_separate_from_raw_and_clamped_zero() {
+    use crate::modifier_definition as definition;
+    use std::collections::BTreeMap;
+    struct Bytes(BTreeMap<usize, u8>);
+    impl Bytes {
+        fn put(&mut self, address: usize, bytes: &[u8]) {
+            self.0.extend(
+                bytes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, byte)| (address + index, *byte)),
+            );
+        }
+    }
+    impl Memory for Bytes {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            for (index, byte) in output.iter_mut().enumerate() {
+                let Some(value) = self.0.get(&(address + index)) else {
+                    return false;
+                };
+                *byte = *value;
+            }
+            true
+        }
+    }
+    let mut memory = Bytes(BTreeMap::new());
+    memory.put(0x1000, &0x2000_u64.to_le_bytes());
+    memory.put(0x1000 + COUNT, &1_i32.to_le_bytes());
+    memory.put(0x2000, &1_u32.to_le_bytes());
+    memory.put(definition::TABLE_RVA, &0x4000_u64.to_le_bytes());
+    let metadata = 0x4000 + definition::STRIDE;
+    memory.put(
+        metadata + definition::FEATURE_SELECTOR,
+        &4_u32.to_le_bytes(),
+    );
+    memory.put(definition::ELIGIBILITY_CALLBACK_RVA, &0_u64.to_le_bytes());
+    // No raw payload or clamp word exists: a disabled present key must not read it.
+    assert_eq!(
+        requested_operand_at(&memory, 0, 0x1000, 1),
+        Ok(RequestedOperand {
+            raw: None,
+            present: true,
+            effective: 0
+        })
+    );
+    memory.put(
+        metadata + definition::FEATURE_SELECTOR,
+        &0_u32.to_le_bytes(),
+    );
+    memory.put(
+        metadata + definition::FLAGS,
+        &definition::CLAMP_MAXIMUM.to_le_bytes(),
+    );
+    memory.put(0x2000 + modifier_entry::VALUE, &(-1_i64).to_le_bytes());
+    assert_eq!(
+        requested_operand_at(&memory, 0, 0x1000, 1),
+        Ok(RequestedOperand {
+            raw: Some(-1),
+            present: true,
+            effective: 0
+        })
+    );
+    assert_eq!(
+        requested_operand_at(&memory, 0, 0x1000, 2),
+        Ok(RequestedOperand::default())
+    );
+}
+
+#[test]
 fn checked_snapshot_growth_reports_oom_and_preserves_previous_storage() {
     let capacity = SnapshotCapacity {
         nodes: 1,

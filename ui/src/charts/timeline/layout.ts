@@ -2,6 +2,7 @@
  * span holds a lane at an hour, and where a span's bar runs. */
 
 import { keyStops } from '../frame.ts';
+import type { CountryFlagLook } from '../../components/CountryFlag';
 import type { ChartTokens } from '../tokens.ts';
 
 export interface TimelineSpan {
@@ -12,10 +13,25 @@ export interface TimelineSpan {
   label: string;
   /** A PNG data URL of the holder's icon or portrait. */
   icon?: string;
+  /** Multiple icons sharing one observed date; undefined entries draw a placeholder. */
+  icons?: readonly (string | undefined)[];
+  /** Present only for native country flags, including missing flag reads. */
+  countryFlag?: CountryFlagLook;
   /** 0..1 along a sequential ramp (a law's escalation); none draws the neutral fill. */
   shade?: number;
   /** Drawn in the accent colour, such as a spirit still active at the playhead. */
   emphasis?: boolean;
+  /** A dated icon with a pixel-sized hit target even at campaign zoom. */
+  marker?: boolean;
+  /** An observed value on the lane's step or period-bar scale. */
+  value?: number;
+  /** Period outcomes, above and below the axis; absent until results exist. */
+  positiveCount?: number;
+  negativeCount?: number;
+  /** Marks an observed step change, not an initial holding. */
+  dot?: boolean;
+  /** One of the lane's overlapping command rows, starting at zero. */
+  stack?: number;
   /** A successfully completed interval, using the theme's positive colour. */
   positive?: boolean;
   /** A mark at the actual end, such as a completion tick. */
@@ -26,6 +42,18 @@ export interface TimelineSpan {
   /** A short mark drawn at the start of the bar where it fits (such as a star for
    * a faction's leader); the tooltip says what it means. */
   glyph?: string;
+  /** An observed event hour for the glyph; absent keeps its mark at the bar's start. */
+  glyphHour?: number;
+  /** Several observed event marks on one continuous bar, in hour order. */
+  glyphHours?: readonly number[];
+  /** A stroked cross instead of a font glyph. */
+  glyphShape?: 'cross';
+  /** Leave the trailing edge open when Live cuts this span at the playhead. */
+  openEnd?: boolean;
+  /** A stable sub-row within the lane, for simultaneous bars. */
+  subrow?: number;
+  /** Bar thickness overriding its lane, in layout pixels. */
+  barHeight?: number;
   /** A band instead of a bar: its thickness follows a value over the span's hours
    * (such as a production line's factories each day), on the timeline's `bandMax`.
    * Hours no step covers are not drawn. */
@@ -50,15 +78,37 @@ export interface TimelineLane {
   names?: boolean;
   /** A lane about one thing (a spirit) names it in the left column whatever the
    * playhead holds, with `label` beneath. */
-  identity?: { label: string; icon?: string; tile?: 'blueprint' };
+  identity?: { label: string; icon?: string; countryFlag?: CountryFlagLook; tile?: 'blueprint' };
   /** Faded in the left column, such as a line that has ended. */
   muted?: boolean;
+  /** Observed values as a step line, rather than spans. */
+  stepMax?: number;
+  /** Period counts as bars rising from a shared baseline. */
+  barMax?: number;
+  /** Just the lane label, without a holder portrait column. */
+  compact?: boolean;
   /** How far the left column indents the lane, in levels, for a tree such as an
    * overlord's subjects beneath it. */
   depth?: number;
   /** A lane heading the lanes after it (a faction above its members): its name is
    * bold, and it has no icon placeholder when it names no icon. */
   heading?: boolean;
+  /** Present for an expandable lane; the chart calls onLaneActivate to change it. */
+  expanded?: boolean;
+  /** One centred label instead of a holder above a slot name. */
+  singleLine?: boolean;
+  /** Height of each sub-row, in layout pixels; ordinary lanes keep ROW_HEIGHT. */
+  rowHeight?: number;
+  /** Number of stable sub-rows reserved for this lane; ordinary lanes have one. */
+  subrows?: number;
+  /** Bar thickness in layout pixels; ordinary lanes keep 24. */
+  barHeight?: number;
+  /** Side headings use the compact muted uppercase style. */
+  labelStyle?: 'side';
+  /** Disable the ordinary separator above this lane. */
+  separator?: false;
+  /** A strong separator below this lane. */
+  separatorAfter?: boolean;
   /** A coloured pill under the lane's name in the left column, in place of `label`
    * (such as a subject's level at the playhead). */
   pill?: { text: string; color: string };
@@ -75,13 +125,146 @@ export const ROW_HEIGHT = 40;
 /** The left column's indent per `depth` level. */
 export const INDENT = 18;
 
+/** Prefix positions built once when lanes change, never by a frame or pointer move. */
+export interface TimelineRows { offsets: Float64Array; rowHeights: Float64Array; height: number }
+
+export function laneRows(lanes: readonly TimelineLane[], defaultHeight = ROW_HEIGHT): TimelineRows {
+  const offsets = new Float64Array(lanes.length + 1);
+  const rowHeights = new Float64Array(lanes.length);
+  for (let index = 0; index < lanes.length; index++) {
+    rowHeights[index] = Math.max(1, lanes[index].rowHeight ?? defaultHeight);
+    const height = rowHeights[index] * Math.max(1, Math.floor(lanes[index].subrows ?? 1));
+    const stacks = stackCount(lanes[index].spans);
+    offsets[index + 1] = offsets[index] + Math.max(height, stacks ? stacks * 16 + 8 : 0);
+  }
+  return { offsets, rowHeights, height: offsets[lanes.length] };
+}
+
+/** The first prefix at or beyond a position; strict asks for the first after it. */
+function rowBoundary(offsets: Float64Array, position: number, strict = false): number {
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (offsets[middle] < position || (strict && offsets[middle] === position)) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/** Top of a lane, including the sticky dates. */
+export function laneTop(index: number, rows?: TimelineRows): number {
+  return AXIS_HEIGHT + (rows ? rows.offsets[index] : index * ROW_HEIGHT);
+}
+
+/** Keep a tall lane's label beside its visible sub-rows, even far from its centre. */
+export function laneLabelY(index: number, rows: TimelineRows, offset: number, viewportHeight: number): number {
+  const top = laneTop(index, rows) - offset;
+  const height = rows.offsets[index + 1] - rows.offsets[index];
+  const middle = top + height / 2;
+  const rowHeight = rows.rowHeights[index];
+  if (height <= rowHeight) return middle;
+  const from = Math.max(AXIS_HEIGHT, top);
+  const to = Math.min(viewportHeight, top + height);
+  return to - from < rowHeight ? (from + to) / 2 : Math.max(from + rowHeight / 2, Math.min(middle, to - rowHeight / 2));
+}
+
+/** The sub-row under a point in a lane; none outside that lane. */
+export function laneRowAt(y: number, index: number, rows: TimelineRows): number | null {
+  const relative = y - laneTop(index, rows);
+  return relative >= 0 && relative < rows.offsets[index + 1] - rows.offsets[index]
+    ? Math.floor(relative / rows.rowHeights[index]) : null;
+}
+
+/** Greedy interval colouring: a command row is free only after its last hour. */
+export function stackedSpans(spans: readonly TimelineSpan[]): TimelineSpan[] {
+  const ends: number[] = [];
+  return [...spans].sort((a, b) => a.firstHour - b.firstHour || a.lastHour - b.lastHour || (a.id < b.id ? -1 : 1)).map(span => {
+    let stack = ends.findIndex(end => end < span.firstHour);
+    if (stack < 0) stack = ends.length;
+    ends[stack] = span.lastHour;
+    return { ...span, stack };
+  });
+}
+
+const stackCounts = new WeakMap<readonly TimelineSpan[], number>();
+
+export function stackCount(spans: readonly TimelineSpan[]): number {
+  let count = stackCounts.get(spans);
+  if (count == null) {
+    count = spans.reduce((largest, span) => Math.max(largest, (span.stack ?? -1) + 1), 0);
+    stackCounts.set(spans, count);
+  }
+  return count;
+}
+
+export function stackCentre(count: number, stack: number): number {
+  return 16 * (stack - (count - 1) / 2);
+}
+
+/** Drawing, keyboard placement and reveal use the same row centre. */
+export function spanY(span: TimelineSpan, index: number, rows: TimelineRows, spans: readonly TimelineSpan[]): number {
+  const top = laneTop(index, rows);
+  return span.stack == null ? top + ((span.subrow ?? 0) + 0.5) * rows.rowHeights[index]
+    : top + (rows.offsets[index + 1] - rows.offsets[index]) / 2 + stackCentre(stackCount(spans), span.stack);
+}
+
+/** Resolve the command row actually drawn, never the first overlapping command. */
+export function stackedSpanAt(spans: readonly TimelineSpan[], hour: number, offsetFromCentre: number): TimelineSpan | null {
+  const count = stackCount(spans);
+  return spans.find(span => span.stack != null && span.firstHour <= hour && hour < span.lastHour + 1
+    && Math.abs(offsetFromCentre - stackCentre(count, span.stack)) <= 6) ?? null;
+}
+
+const pointerBars = new WeakMap<readonly TimelineSpan[], { bars: readonly TimelineSpan[]; stacked: boolean }>();
+
+/** Ordinary lanes reuse their spans directly; marker/stack filtering is exceptional. */
+export function pointerBarSpans(spans: readonly TimelineSpan[], offset: number): readonly TimelineSpan[] {
+  let cached = pointerBars.get(spans);
+  if (!cached) {
+    cached = { bars: spans.some(span => span.marker) ? spans.filter(span => !span.marker) : spans,
+      stacked: stackCount(spans) > 0 };
+    pointerBars.set(spans, cached);
+  }
+  if (!cached.stacked) return cached.bars;
+  const count = stackCount(spans);
+  return cached.bars.filter(span => span.stack == null || Math.abs(offset - stackCentre(count, span.stack)) <= 6);
+}
+
+/** A marker's pixel hit target; equal distances keep the first marker. */
+export function markerAt(spans: readonly TimelineSpan[], x: number, toX: (hour: number) => number, from: number, to: number, row?: number): TimelineSpan | null {
+  let best: TimelineSpan | null = null, distance = Infinity;
+  for (const span of spans) {
+    if (!span.marker || span.firstHour < from || span.firstHour >= to || (row != null && (span.subrow ?? 0) !== row)) continue;
+    const delta = Math.abs(toX(span.firstHour) - x);
+    if (delta <= Math.max(12, (span.icons?.length ?? 1) * 11) && delta < distance) { best = span; distance = delta; }
+  }
+  return best;
+}
+
+/** Consecutive observed steps join; missing hours break the line. */
+export function joinedStep(previous: TimelineSpan | undefined, current: TimelineSpan): boolean {
+  return previous?.value != null && current.value != null && previous.lastHour + 1 === current.firstHour;
+}
+
+/** Missing counts draw nothing; zero remains a recorded zero-height bar. */
+export function periodBarHeight(value: number | null, maximum: number, height = 24): number | null {
+  if (value == null || !Number.isFinite(value) || value < 0 || !Number.isFinite(maximum) || maximum <= 0) return null;
+  return height * Math.min(value / maximum, 1);
+}
+
+export function escapeDismissesTooltip(keyboard: boolean, dismissPointer = false): boolean {
+  return keyboard || dismissPointer;
+}
+
 /** The lanes a view shows, first and last (inclusive): the view is `height` pixels
  * tall, the time axis stays at its top, and it starts `offset` pixels down the
  * lanes. Last is below first when no lane is in view. So a timeline of any number
  * of lanes draws, and asks about, only what can be seen. */
-export function lanesInView(offset: number, height: number, count: number, rowHeight = ROW_HEIGHT): [number, number] {
+export function lanesInView(offset: number, height: number, count: number, rowHeight: number | TimelineRows = ROW_HEIGHT): [number, number] {
   const top = Math.max(0, offset);
   const bottom = offset + Math.max(0, height - AXIS_HEIGHT);
+  if (typeof rowHeight !== 'number') return [Math.max(0, rowBoundary(rowHeight.offsets, top, true) - 1), Math.min(count - 1, rowBoundary(rowHeight.offsets, bottom) - 1)];
   return [Math.max(0, Math.floor(top / rowHeight)), Math.min(count - 1, Math.ceil(bottom / rowHeight) - 1)];
 }
 
@@ -94,22 +277,45 @@ export function laneOffset(viewTop: number, contentTop: number, height: number, 
 }
 
 /** The lane under a y position, or null above the lanes or below the last. */
-export function laneAt(y: number, count: number, rowHeight = ROW_HEIGHT): number | null {
+export function laneAt(y: number, count: number, rowHeight: number | TimelineRows = ROW_HEIGHT): number | null {
   if (y < AXIS_HEIGHT) return null;
-  const index = Math.floor((y - AXIS_HEIGHT) / rowHeight);
+  const index = typeof rowHeight === 'number' ? Math.floor((y - AXIS_HEIGHT) / rowHeight) : rowBoundary(rowHeight.offsets, y - AXIS_HEIGHT, true) - 1;
   return index >= 0 && index < count ? index : null;
 }
 
-/** The span holding a lane at an hour. A span covers its last observed hour up to
- * the next one, so a daily-sampled holder has no gaps between its samples. */
+/** The span holding a lane at an hour; dated markers never act as holders. A span
+ * covers its last observed hour up to the next one, so daily holders have no gaps. */
 export function spanAt(spans: readonly TimelineSpan[], hour: number): TimelineSpan | null {
-  return spans.find(span => span.firstHour <= hour && hour < span.lastHour + 1) ?? null;
+  return spans.find(span => !span.marker && span.firstHour <= hour && hour < span.lastHour + 1) ?? null;
+}
+
+/** Resolve the same stable sub-row drawn under the pointer. */
+export function spanAtRow(spans: readonly TimelineSpan[], hour: number, row: number): TimelineSpan | null {
+  return spans.find(span => !span.marker && span.stack == null && (span.subrow ?? 0) === row && span.firstHour <= hour && hour < span.lastHour + 1) ?? null;
 }
 
 /** The hours a span's bar covers: never past the playhead, none when it starts after it. */
 export function barHours(span: TimelineSpan, playhead: number | null): [number, number] | null {
   const end = Math.min(span.lastHour + 1, playhead ?? Infinity);
   return span.firstHour < end ? [span.firstHour, end] : null;
+}
+
+/** Open ends mark a Live cut through recorded hours, never an extension into a gap. */
+export function barOpenEnd(span: TimelineSpan, playhead: number | null): boolean {
+  return !!span.openEnd && playhead != null && span.firstHour < playhead && playhead < span.lastHour + 1;
+}
+
+/** Positioned marks inside recorded hours, never past Live. */
+export function barGlyphHours(span: TimelineSpan, playhead: number | null): readonly number[] {
+  return span.glyph || span.glyphShape ? (span.glyphHours ?? [span.glyphHour ?? span.firstHour])
+    .filter(hour => hour >= span.firstHour && hour <= span.lastHour && hour <= (playhead ?? Infinity)) : [];
+}
+
+/** Pointer and keyboard activation share the expandable-lane rule. */
+export function activateLane(lane: TimelineLane | undefined, key: string, activate?: (lane: TimelineLane) => void): boolean {
+  if (!lane || lane.expanded == null || !activate || !['click', 'Enter', ' '].includes(key)) return false;
+  activate(lane);
+  return true;
 }
 
 /** Whether an hour falls in one of the given spans (such as the unobserved hours). */
@@ -460,10 +666,10 @@ export function barExtent(x0: number, x1: number, left: number, right: number): 
  * widened bars share a column the one drawn on top answers. Null where no plain bar
  * is drawn. */
 export function barHitAt(spans: readonly TimelineSpan[], px: number, playhead: number | null, toX: (hour: number) => number,
-  hourAt: (px: number) => number, left: number, right: number): { span: TimelineSpan; hour: number } | null {
+  hourAt: (px: number) => number, left: number, right: number, row?: number): { span: TimelineSpan; hour: number } | null {
   for (let index = spans.length - 1; index >= 0; index--) {
     const span = spans[index];
-    if (span.band) continue;
+    if (span.band || span.marker || (row != null && span.stack == null && (span.subrow ?? 0) !== row)) continue;
     const hours = barHours(span, playhead);
     const extent = hours && barExtent(toX(hours[0]), toX(hours[1]), left, right);
     if (!hours || !extent || px < extent[0] || px >= extent[1]) continue;
@@ -494,12 +700,20 @@ export interface LaneStop {
 export function laneStops(spans: readonly TimelineSpan[], from: number, to: number, playhead: number | null): LaneStop[] {
   const end = Math.min(playhead ?? to, to);
   const stops: LaneStop[] = [];
+  let order = false;
   for (const span of spans) {
+    if (span.marker && (span.firstHour < from || span.firstHour >= end)) continue;
     // A bar is drawn from its first hour to its end, cut at the playhead.
     if (span.firstHour > end || Math.min(span.lastHour + 1, playhead ?? Infinity) <= from) continue;
     // A span whose last hour is the view's first, partial hour reaches up to the view's
     // start: hover there shows that hour, so its carried stop is the view's start.
     const last = Math.max(Math.min(end, span.lastHour), Math.floor(from) <= span.lastHour ? Math.min(from, end) : -Infinity);
+    if (span.subrow != null || span.stack != null) order = true;
+    const events = span.glyphHour == null && !span.glyphHours ? [] : barGlyphHours(span, playhead);
+    for (const event of events) if (event >= from && event <= end && event !== span.firstHour) {
+      stops.push({ id: `${span.id}@glyph:${event}`, hour: event, span });
+      order = true;
+    }
     // Steps cut to the span's hours, as its band is drawn (`laneBands`).
     const band = span.band?.flatMap(step => {
       const firstHour = Math.max(step.firstHour, span.firstHour);
@@ -524,6 +738,7 @@ export function laneStops(spans: readonly TimelineSpan[], from: number, to: numb
       stops.push({ id: `${span.id}@${all[source]}`, hour, span });
     }
   }
+  if (order) stops.sort((a, b) => a.hour - b.hour || (a.span.subrow ?? a.span.stack ?? 0) - (b.span.subrow ?? b.span.stack ?? 0) || a.id.localeCompare(b.id));
   return stops;
 }
 
@@ -545,7 +760,7 @@ export interface HolderState { key: string | null; previous: TimelineSpan | null
 /** What the left column draws of a holder: its id, name and picture. A lane about
  * one thing keeps its id while its name or picture changes (such as a production
  * line naming its variant at the hour shown), so all three decide. */
-const holderKey = (span: TimelineSpan | null) => span ? `${span.id}\u0000${span.label}\u0000${span.icon ?? ''}` : null;
+const holderKey = (span: TimelineSpan | null) => span ? `${span.id}\u0000${span.label}\u0000${span.icon ?? span.countryFlag?.flag ?? ''}` : null;
 
 /** The left column's state for this frame: unchanged while the same holder is drawn,
  * else a fade from the one drawn to `current`. A lane's first holder shows at once.
@@ -558,7 +773,7 @@ export function nextHolder(state: HolderState | undefined, current: TimelineSpan
     state.current = current;
     return state;
   }
-  if (state.key === key) return state;
+  if (state.key === key) { state.current = current; return state; }
   return { key, previous: state.current, current, t: 0 };
 }
 

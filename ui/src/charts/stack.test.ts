@@ -5,6 +5,16 @@ import { clipToSpans, curveSegments, segments, stretchAt, stretchStarts } from '
 
 const highs = (segment: { bands: { high: number[] }[] }) => segment.bands.map(band => band.high);
 
+test('internal band extrema are opt-in when the outer total stays constant', () => {
+  const model = { hours: [0, 1, 2, 3], breakBefore: [false, false, false, false],
+    edges: [[20, 30, 50], [80, 10, 10], [5, 25, 70], [20, 30, 50]].map(stackEdges) };
+  assert.deepEqual(stackedSegments(model, 0, 3, 10)[0].hours, [0, 3]);
+  const [internal] = stackedSegments(model, 0, 3, 10, true);
+  assert.deepEqual(internal.hours, [0, 1, 2, 3]);
+  assert.deepEqual(internal.bands[0].high, [20, 80, 5, 20]);
+  assert.deepEqual(internal.bands[2].low, [50, 90, 30, 50]);
+});
+
 test('bands stack in order, an unrecorded band breaks the whole stack, and a new line starts a new segment', () => {
   const first = [{ firstHour: 100, lastHour: 104, value: 2 }, { firstHour: 106, lastHour: 110, value: 3, startsSegment: true }];
   const second = [{ firstHour: 100, lastHour: 110, value: 5 }];

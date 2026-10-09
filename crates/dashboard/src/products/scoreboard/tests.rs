@@ -85,6 +85,171 @@ fn request(
 }
 
 #[test]
+fn explicit_casualty_columns_share_exact_signed_subtotals_and_reads() {
+    use replay::rows::WarRelationRow;
+    let source = opened(
+        (100..=145)
+            .filter(|hour| !(127..130).contains(hour))
+            .map(|hour| {
+                let mut out = countries(hour, 3);
+                *out.tables[TableId::WarRelations.index()] =
+                    TableView::Complete(TableRows::WarRelations(if hour < 130 {
+                        (2..=3)
+                            .map(|second_country| WarRelationRow {
+                                first_country: 1,
+                                second_country,
+                                start_hour: 90,
+                                first_casualties: i64::MAX,
+                                second_casualties: if hour == 126 { -3 } else { 7 },
+                                ..Default::default()
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }));
+                out
+            })
+            .collect(),
+    );
+    let cancelled = AtomicBool::new(false);
+    let tag = "country-00001".to_owned();
+    let shared = war_casualties::scanned_branch(&source, 1, &cancelled).unwrap();
+    let reply = Scoreboard::load(
+        &source,
+        &request(
+            vec![
+                ScoreboardColumnKey::CasualtiesDealt,
+                ScoreboardColumnKey::CasualtiesTaken,
+            ],
+            vec![tag.clone()],
+            None,
+        ),
+        &LoadContext { content: None },
+        &cancelled,
+    )
+    .unwrap();
+    let columns = &reply.series[0].columns;
+    for hour in 100..=145 {
+        let expected = shared.country_at(&tag, hour);
+        for (key, dealt) in [
+            (ScoreboardColumnKey::CasualtiesDealt, true),
+            (ScoreboardColumnKey::CasualtiesTaken, false),
+        ] {
+            let column = columns.iter().find(|column| column.key == key).unwrap();
+            let value = column
+                .runs
+                .iter()
+                .find(|run| run.first_hour <= hour && hour <= run.last_hour);
+            let read = column
+                .read_runs
+                .iter()
+                .find(|run| run.first_hour <= hour && hour <= run.last_hour);
+            assert_eq!(
+                value
+                    .and_then(|run| run.amount.as_ref())
+                    .map(|raw| raw.parse::<i128>().unwrap()),
+                expected
+                    .as_ref()
+                    .map(|measure| if dealt { measure.dealt } else { measure.taken })
+            );
+            assert_eq!(
+                read.map(|run| run.read_hour),
+                expected.as_ref().map(|measure| measure.read_hour)
+            );
+            if let (Some(value), Some(expected)) = (value, &expected) {
+                assert_eq!(value.at_least, expected.at_least);
+            }
+        }
+    }
+    assert_eq!(
+        columns
+            .iter()
+            .find(|column| column.key == ScoreboardColumnKey::CasualtiesTaken)
+            .unwrap()
+            .runs[0]
+            .amount
+            .as_deref(),
+        Some((i128::from(i64::MAX) * 2).to_string().as_str())
+    );
+    assert!(
+        columns
+            .iter()
+            .flat_map(|column| &column.runs)
+            .any(|run| run.at_least)
+    );
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("entirely inside a gap"))
+    );
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("negative corrections"))
+    );
+    assert!(
+        columns
+            .iter()
+            .find(|column| column.key == ScoreboardColumnKey::CasualtiesDealt)
+            .unwrap()
+            .runs
+            .iter()
+            .any(|run| run.at_least && run.amount.as_deref() == Some("-6"))
+    );
+    for key in [
+        ScoreboardColumnKey::CasualtiesDealt,
+        ScoreboardColumnKey::CasualtiesTaken,
+    ] {
+        let column = reply
+            .columns
+            .iter()
+            .find(|column| column.key == key)
+            .unwrap();
+        assert!(column.available);
+        let note = column.note.as_deref().unwrap();
+        assert!(note.contains("across land, naval and air"));
+        assert!(note.contains("† marks a partial recorded subtotal"));
+        assert!(
+            Scoreboard::validate(&request(
+                vec![key],
+                vec![],
+                Some(ScoreboardTop {
+                    count: 5000,
+                    sort: key,
+                    descending: true,
+                })
+            ))
+            .is_ok()
+        );
+    }
+    let ranked = Scoreboard::load(
+        &source,
+        &request(
+            vec![ScoreboardColumnKey::CasualtiesTaken],
+            vec![],
+            Some(ScoreboardTop {
+                count: 1,
+                sort: ScoreboardColumnKey::CasualtiesTaken,
+                descending: true,
+            }),
+        ),
+        &LoadContext { content: None },
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(ranked.series.len(), 1);
+    assert_eq!(ranked.series[0].tag, tag);
+    assert!(
+        ranked.series[0].columns[0]
+            .runs
+            .iter()
+            .any(|run| run.at_least)
+    );
+}
+
+#[test]
 fn scoreboard_columns_agree_with_single_stat_shared_products() {
     use super::super::country_measure::{CountryMeasure, Measure, MeasureParams};
     let source = opened(vec![countries(100, 3), countries(101, 3)]);
@@ -294,7 +459,7 @@ fn scoreboard_reranks_all_5000_countries_and_fills_missing_last() {
 }
 
 #[test]
-fn scoreboard_military_adapters_are_one_visible_refusal_each_and_registry_needs_no_scan() {
+fn scoreboard_registry_needs_no_scan_and_force_columns_allow_ranking() {
     let source = opened(vec![countries(100, 3)]);
     let reply = Scoreboard::load(
         &source,
@@ -306,30 +471,44 @@ fn scoreboard_military_adapters_are_one_visible_refusal_each_and_registry_needs_
     assert!(reply.series.is_empty());
     assert_eq!(reply.columns.len(), ScoreboardColumnKey::ALL.len());
     assert_eq!(reply.default_sort, ScoreboardColumnKey::Factories);
+    assert!(
+        reply
+            .default_columns
+            .contains(&ScoreboardColumnKey::CasualtiesDealt)
+    );
+    assert!(
+        reply
+            .default_columns
+            .contains(&ScoreboardColumnKey::CasualtiesTaken)
+    );
+    assert!(
+        !reply
+            .default_columns
+            .contains(&ScoreboardColumnKey::Casualties)
+    );
     for key in [
         ScoreboardColumnKey::ArmySize,
         ScoreboardColumnKey::Planes,
         ScoreboardColumnKey::Ships,
-        ScoreboardColumnKey::Casualties,
     ] {
         let column = reply
             .columns
             .iter()
             .find(|column| column.key == key)
             .unwrap();
-        assert!(!column.available);
-        assert!(
-            column
-                .reason
-                .as_ref()
-                .unwrap()
-                .starts_with("Not available yet:")
-        );
+        assert!(column.available);
+        assert!(column.reason.is_none());
     }
+    let singular = reply
+        .columns
+        .iter()
+        .find(|column| column.key == ScoreboardColumnKey::Casualties)
+        .unwrap();
+    assert!(!singular.available);
+    assert!(singular.reason.as_ref().unwrap().contains("dealt"));
     assert_eq!(country_factories::scans_run(&source), 0);
     for key in [
         ScoreboardColumnKey::ArmySize,
-        ScoreboardColumnKey::Casualties,
         ScoreboardColumnKey::Planes,
         ScoreboardColumnKey::Ships,
     ] {
@@ -343,7 +522,7 @@ fn scoreboard_military_adapters_are_one_visible_refusal_each_and_registry_needs_
                     descending: true,
                 })
             ))
-            .is_err()
+            .is_ok()
         );
     }
     let reply = Scoreboard::load(
@@ -362,8 +541,251 @@ fn scoreboard_military_adapters_are_one_visible_refusal_each_and_registry_needs_
         reply
             .series
             .iter()
-            .all(|row| row.columns[0].runs.is_empty())
+            .all(|row| row.columns[0].runs.iter().all(|run| run.amount.is_none()))
     );
+}
+
+#[test]
+fn scoreboard_force_columns_share_roster_counts_zero_and_hourly_reads_at_scale() {
+    use replay::rows::{AirWingRow, ShipRow, TaskForceRow, WingEquipmentRow};
+    let force_frame = |hour, planes| {
+        let mut out = countries(hour, 5000);
+        *out.tables[TableId::AirWings.index()] =
+            TableView::Complete(TableRows::AirWings(vec![AirWingRow {
+                id: 1,
+                owner: 1,
+                country_override: 2,
+                planes,
+                ..Default::default()
+            }]));
+        *out.tables[TableId::WingEquipment.index()] =
+            TableView::Complete(TableRows::WingEquipment(vec![WingEquipmentRow {
+                wing: 1,
+                ordinal: 0,
+                variant: 1,
+                amount_raw: i64::from(planes) * 100_000,
+            }]));
+        *out.tables[TableId::TaskForces.index()] =
+            TableView::Complete(TableRows::TaskForces(vec![TaskForceRow {
+                id: 1,
+                roster_owner: 1,
+                logical_owner: 2,
+                ..Default::default()
+            }]));
+        *out.tables[TableId::Ships.index()] =
+            TableView::Complete(TableRows::Ships(vec![ShipRow {
+                id: 1,
+                task_force: 1,
+                ..Default::default()
+            }]));
+        out
+    };
+    let mut missing = force_frame(101, 5);
+    *missing.tables[TableId::AirWings.index()] = TableView::Unavailable {
+        reason: "unread census".into(),
+    };
+    *missing.tables[TableId::Ships.index()] = TableView::Unavailable {
+        reason: "unread census".into(),
+    };
+    let source = opened(vec![force_frame(100, 5), missing, force_frame(103, 10)]);
+    let cancelled = AtomicBool::new(false);
+    let keys = vec![ScoreboardColumnKey::Planes, ScoreboardColumnKey::Ships];
+    let tags: Vec<_> = (1..=5000).map(|id| format!("country-{id:05}")).collect();
+    let reply = Scoreboard::load(
+        &source,
+        &request(keys.clone(), tags, None),
+        &LoadContext { content: None },
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(reply.series.len(), 5000);
+    for hour in [100, 101, 102, 103] {
+        let planes = air_force::planes_at(&source, 1, hour, &cancelled).unwrap();
+        let ships = navy::ships_at(&source, 1, hour, &cancelled).unwrap();
+        for series in &reply.series {
+            for (key, expected) in [
+                (ScoreboardColumnKey::Planes, &planes),
+                (ScoreboardColumnKey::Ships, &ships),
+            ] {
+                let column = series
+                    .columns
+                    .iter()
+                    .find(|column| column.key == key)
+                    .unwrap();
+                let run = column
+                    .runs
+                    .iter()
+                    .find(|run| run.first_hour <= hour && hour <= run.last_hour);
+                assert_eq!(
+                    run.and_then(|run| run.amount.as_ref())
+                        .map(|amount| amount.parse::<i64>().unwrap()),
+                    expected.get(&series.tag).copied().flatten()
+                );
+                let read = column
+                    .read_runs
+                    .iter()
+                    .find(|run| run.first_hour <= hour && hour <= run.last_hour);
+                assert_eq!(read.is_some(), run.is_some());
+                if let Some(read) = read {
+                    assert!(read.hourly);
+                    assert_eq!(read.read_hour, read.first_hour);
+                }
+                if matches!(hour, 100 | 103) {
+                    assert!(read.is_some());
+                    assert_eq!(read.unwrap().read_hour, hour);
+                }
+                if hour == 102 {
+                    assert!(read.is_none());
+                }
+            }
+        }
+    }
+    let first = &reply.series[0];
+    assert_eq!(first.columns[0].runs[0].amount.as_deref(), Some("5"));
+    assert_eq!(
+        reply.series[1].columns[0].runs[0].amount.as_deref(),
+        Some("0")
+    );
+    assert!(
+        first
+            .columns
+            .iter()
+            .flat_map(|column| &column.runs)
+            .all(|run| !(run.first_hour <= 102 && 102 <= run.last_hour))
+    );
+    let ranked = Scoreboard::load(
+        &source,
+        &request(
+            keys,
+            vec![],
+            Some(ScoreboardTop {
+                count: 1,
+                sort: ScoreboardColumnKey::Planes,
+                descending: true,
+            }),
+        ),
+        &LoadContext { content: None },
+        &cancelled,
+    )
+    .unwrap();
+    assert_eq!(ranked.series[0].tag, "country-00001");
+}
+
+#[test]
+fn scoreboard_army_size_uses_exact_owner_manpower_and_preserves_missing_input() {
+    use replay::rows::{
+        DivisionCensusRow, DivisionLandInputsRow, DivisionManpowerContributor, DivisionRow,
+    };
+    let mut first = countries(100, 2);
+    *first.tables[TableId::Divisions.index()] =
+        TableView::Complete(TableRows::Divisions(vec![DivisionRow {
+            id: 1,
+            roster_owner: 2,
+            logical_owner: 2,
+            expeditionary_owner: 1,
+            ..Default::default()
+        }]));
+    *first.tables[TableId::DivisionCensus.index()] =
+        TableView::Complete(TableRows::DivisionCensus(vec![
+            DivisionCensusRow {
+                country: 1,
+                grouped: 1,
+                ungrouped: 0,
+            },
+            DivisionCensusRow {
+                country: 2,
+                grouped: 0,
+                ungrouped: 0,
+            },
+        ]));
+    *first.tables[TableId::DivisionLandInputs.index()] =
+        TableView::Complete(TableRows::DivisionLandInputs(vec![DivisionLandInputsRow {
+            division: 1,
+            manpower: vec![
+                DivisionManpowerContributor {
+                    country: 2,
+                    amount: i32::MAX,
+                },
+                DivisionManpowerContributor {
+                    country: 1,
+                    amount: 1,
+                },
+            ],
+            ..Default::default()
+        }]));
+    let mut missing = first.clone();
+    missing.hour = 101;
+    *missing.tables[TableId::DivisionLandInputs.index()] =
+        TableView::Complete(TableRows::DivisionLandInputs(vec![]));
+    let source = opened(vec![first, missing]);
+    let cancelled = AtomicBool::new(false);
+    let reply = Scoreboard::load(
+        &source,
+        &request(
+            vec![ScoreboardColumnKey::ArmySize],
+            vec!["country-00001".into(), "country-00002".into()],
+            None,
+        ),
+        &LoadContext { content: None },
+        &cancelled,
+    )
+    .unwrap();
+    for series in &reply.series {
+        for hour in [100, 101] {
+            let expected = army_size::army_value_at(
+                &source,
+                1,
+                &series.tag,
+                hour,
+                army_size::ArmyMeasure::Manpower,
+                army_size::ArmyAttribution::Owner,
+                &cancelled,
+            )
+            .unwrap();
+            let run = series.columns[0]
+                .runs
+                .iter()
+                .find(|run| run.first_hour <= hour && hour <= run.last_hour);
+            assert_eq!(
+                run.and_then(|run| run.amount.as_ref())
+                    .map(|amount| amount.parse::<i128>().unwrap()),
+                expected.map(|value| value.raw)
+            );
+        }
+    }
+    assert_eq!(
+        reply.series[0].columns[0].runs[0].amount.as_deref(),
+        Some(i32::MIN.to_string().as_str())
+    );
+    assert!(
+        reply.series[0].columns[0]
+            .runs
+            .iter()
+            .any(|run| run.first_hour == 101 && run.amount.is_none())
+    );
+    assert_eq!(
+        reply.series[1].columns[0].runs[0].amount.as_deref(),
+        Some("0")
+    );
+    let column = reply
+        .columns
+        .iter()
+        .find(|column| column.key == ScoreboardColumnKey::ArmySize)
+        .unwrap();
+    assert_eq!(column.unit, "people");
+    assert!(column.note.as_ref().unwrap().contains("owner"));
+    let absent = Scoreboard::load(
+        &source,
+        &request(
+            vec![ScoreboardColumnKey::ArmySize],
+            vec!["absent-country".into()],
+            None,
+        ),
+        &LoadContext { content: None },
+        &cancelled,
+    )
+    .unwrap();
+    assert!(absent.series.is_empty());
 }
 
 #[test]
@@ -586,7 +1008,8 @@ fn scoreboard_held_stability_read_at_maximum_hour_stays_disjoint() {
 
 fn multi_measure_frame(hour: i32, read: i32, delivered: Option<i64>) -> DecodedFrame {
     use replay::rows::{
-        LexicalTokenRow, NukeRow, ProductionLineOutputRow, ProductionLineRow, VariantDefinitionRow,
+        LexicalTokenRow, NukeRow, ProductionLineOutputRow, ProductionLineRow,
+        RocketProductionOutputRow, VariantDefinitionRow,
     };
     let mut out = crate::test_fixtures::stability_frame(
         hour,
@@ -637,7 +1060,30 @@ fn multi_measure_frame(hour: i32, read: i32, delivered: Option<i64>) -> DecodedF
             reason: "synthetic missing output".into(),
         },
     };
+    let deliveries = if hour < 102 { 1 } else { 2 };
+    let rocket = RocketProductionOutputRow {
+        since_hour: 100,
+        exact: true,
+        units_exact: true,
+        deliveries,
+        ..Default::default()
+    };
+    *out.tables[TableId::RocketProductionOutput.index()] =
+        TableView::Complete(TableRows::RocketProductionOutput(vec![
+            rocket.clone(),
+            RocketProductionOutputRow {
+                country: 11,
+                ..rocket.clone()
+            },
+            RocketProductionOutputRow {
+                country: 11,
+                variant: 10,
+                units: if hour < 102 { 2 } else { 4 },
+                ..rocket
+            },
+        ]));
     if hour == 100 || hour == 102 || delivered.is_none() {
+        out.metrics.table_ns[TableId::RocketProductionOutput.index()] = 1;
         out.metrics.table_ns[TableId::ProductionLines.index()] = 1;
         out.metrics.table_ns[TableId::VariantDefinitions.index()] = 1;
     }
@@ -722,6 +1168,7 @@ fn scoreboard_stability_war_support_nukes_and_equipment_match_public_products_an
             branch_id: "1".into(),
             tags: vec!["GER".into()],
             top: None,
+            origin_hour: None,
         },
         &context,
         &cancel,
@@ -811,6 +1258,14 @@ fn scoreboard_stability_war_support_nukes_and_equipment_match_public_products_an
             decode(sample)
         );
     }
+    for (hour, amount) in [(100, "5"), (102, "9")] {
+        let run = column(ScoreboardColumnKey::EquipmentProduced)
+            .runs
+            .iter()
+            .find(|run| run.first_hour <= hour && run.last_hour >= hour)
+            .unwrap();
+        assert_eq!(run.amount.as_deref(), Some(amount));
+    }
     let carried = column(ScoreboardColumnKey::EquipmentProduced)
         .read_runs
         .iter()
@@ -834,6 +1289,7 @@ fn fixed_runs(runs: &[FixedRun]) -> Vec<ScoreboardRun> {
             last_hour: run.last_hour,
             amount: Some(run.value_raw.clone()),
             starts_segment: run.starts_segment,
+            at_least: false,
         })
         .collect()
 }
@@ -893,8 +1349,9 @@ fn scoreboard_stability_read_merge_preserves_many_runs_and_held_intersections() 
         .map(|i| ValueRun {
             first_hour: i * 2,
             last_hour: i * 2,
-            amount: Some(i64::from(i)),
+            amount: Some(i128::from(i)),
             starts_segment: true,
+            at_least: false,
         })
         .collect();
     let carried: Vec<_> = (0..2500)

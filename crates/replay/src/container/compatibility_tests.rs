@@ -3,12 +3,24 @@ use crate::{
     format::FormatVersion,
     rows::{
         self, RowCodec,
-        compatibility::{HISTORY, LastChange, PROVEN_FROM},
+        compatibility::{HISTORY, LastChange, PROVEN_FROM, RECORDER_INPUTS_FORMAT},
     },
 };
 
-fn legacy_rows(table: TableId, hour: Hour) -> TableRows {
+fn legacy_rows(table: TableId, hour: Hour, format: FormatVersion) -> TableRows {
     match table {
+        TableId::Fleets => TableRows::Fleets(vec![rows::FleetRow {
+            id: 7,
+            owner: 3,
+            home_base: 11,
+            name: Some(b"synthetic fleet".to_vec()).into(),
+            leader: Some(0).into(),
+        }]),
+        TableId::OrdersGroups => TableRows::OrdersGroups(vec![rows::OrdersGroupRow {
+            handle: 9,
+            name: Some(b"synthetic command".to_vec()).into(),
+            ..Default::default()
+        }]),
         TableId::CountryAppearance => {
             TableRows::CountryAppearance(vec![rows::CountryAppearanceRow {
                 country: 1,
@@ -33,12 +45,79 @@ fn legacy_rows(table: TableId, hour: Hour) -> TableRows {
             target: 8,
             ..Default::default()
         }]),
+        TableId::OccupationSettings => {
+            TableRows::OccupationSettings(vec![rows::OccupationSettingsRow {
+                country: 1,
+                default_law_present: 1,
+                law: b"synthetic_law".to_vec(),
+                ..Default::default()
+            }])
+        }
+        TableId::StateGarrisons => TableRows::StateGarrisons(vec![rows::StateGarrisonRow {
+            controller: 1,
+            occupied: 2,
+            state: 3,
+            required_manpower: 100,
+            strength_ratio: 7,
+            garrison_required: 100000,
+            serialized_flag: 0,
+            ..Default::default()
+        }]),
         TableId::Countries => TableRows::Countries(vec![rows::CountryRow {
             id: 1,
             tag: b"AAA".to_vec(),
             ..Default::default()
         }]),
+        TableId::States => TableRows::States(vec![Default::default()]),
+        TableId::AirAces => TableRows::AirAces(vec![Default::default()]),
+        TableId::Operations => TableRows::Operations(vec![Default::default()]),
+        TableId::ConstructionLineOutput => {
+            TableRows::ConstructionLineOutput(vec![Default::default()])
+        }
+        TableId::ProductionLineOutput => TableRows::ProductionLineOutput(vec![Default::default()]),
+        TableId::CountryFuel => TableRows::CountryFuel(vec![rows::CountryFuelRow {
+            country: 1,
+            current_raw: 17,
+            ..Default::default()
+        }]),
+        TableId::LogisticsEquipment => {
+            TableRows::LogisticsEquipment(vec![rows::LogisticsEquipmentRow {
+                country: 1,
+                archetype: 2,
+                token: 3,
+                balance_raw: -7,
+                stock_raw: 11,
+                ..Default::default()
+            }])
+        }
+        TableId::LandCombatDetails if format.version() >= RECORDER_INPUTS_FORMAT => {
+            TableRows::LandCombatDetails(vec![rows::LandCombatDetailsRow {
+                combat: 1,
+                border_war: rows::Recorded::Value(Some(rows::LandBorderWarInputs {
+                    combat_width: rows::Recorded::Value(1_234_567),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }])
+        }
         TableId::LandCombatDetails => TableRows::LandCombatDetails(vec![Default::default()]),
+        TableId::NavalCombatDetails if format.version() >= RECORDER_INPUTS_FORMAT => {
+            TableRows::NavalCombatDetails(vec![rows::NavalCombatDetailsRow {
+                combat: 1,
+                sides: std::array::from_fn(|_| rows::NavalCombatSideDetails {
+                    commander_inputs: Some(rows::NavalCommanderInputs {
+                        timed_traits: rows::Recorded::Value(vec![
+                            rows::LandCombatCommanderTimedTrait::default(),
+                        ]),
+                        ..Default::default()
+                    }),
+                    units: vec![7, 8],
+                    ..Default::default()
+                }),
+                custom_sea: Some(Vec::new()),
+                ..Default::default()
+            }])
+        }
         TableId::NavalCombatDetails => {
             TableRows::NavalCombatDetails(vec![rows::NavalCombatDetailsRow {
                 custom_sea: Some(Vec::new()),
@@ -51,6 +130,27 @@ fn legacy_rows(table: TableId, hour: Hour) -> TableRows {
         TableId::AdvisorRoles => TableRows::AdvisorRoles(vec![rows::AdvisorRoleRow {
             character: 1,
             country: 1,
+            modifier_cache: rows::Recorded::Value(Some(rows::AdvisorModifierCache {
+                entries: vec![rows::CachedModifier {
+                    definition: 7,
+                    value: -12,
+                }],
+            })),
+            ..Default::default()
+        }]),
+        TableId::AvailableAdvisors => {
+            TableRows::AvailableAdvisors(vec![rows::AvailableAdvisorRow {
+                country: 1,
+                character: 7,
+                idea: b"synthetic_advisor".to_vec(),
+                ..Default::default()
+            }])
+        }
+        TableId::OwnedWargoals => TableRows::OwnedWargoals(vec![rows::OwnedWargoalRow {
+            country: 1,
+            recipient: 2,
+            goal_type: -3,
+            states: vec![4, 0, 8],
             ..Default::default()
         }]),
         TableId::CharacterOperatives => {
@@ -73,9 +173,19 @@ fn legacy_rows(table: TableId, hour: Hour) -> TableRows {
                 ..Default::default()
             }])
         }
+        TableId::EquipmentDestruction => {
+            TableRows::EquipmentDestruction(vec![rows::EquipmentDestructionRow {
+                country: 1,
+                cause: rows::EquipmentDestructionCause::LandCombat,
+                variant: (1_u64 << 32) | 70,
+                amount_raw: 123_456,
+                ..Default::default()
+            }])
+        }
         TableId::VariantDefinitions => {
             TableRows::VariantDefinitions(vec![rows::VariantDefinitionRow {
                 id: 1,
+                version: rows::Recorded::Value(7),
                 ..Default::default()
             }])
         }
@@ -88,6 +198,16 @@ fn legacy_rows(table: TableId, hour: Hour) -> TableRows {
             country: 1,
             ..Default::default()
         }]),
+        TableId::LandCombatProgress => {
+            TableRows::LandCombatProgress(vec![rows::LandCombatProgressRow {
+                combat: 7 << 32 | 62,
+                attacker_progress: 33_333,
+                defender_progress: 66_667,
+                direction_attacker: 9 << 32 | 4713,
+                direction_province: 7,
+                ..Default::default()
+            }])
+        }
         TableId::UnitLeaders => TableRows::UnitLeaders(vec![Default::default()]),
         TableId::AirWings => TableRows::AirWings(vec![Default::default()]),
         TableId::OrdersGroupCounterInputs => {
@@ -96,7 +216,6 @@ fn legacy_rows(table: TableId, hour: Hour) -> TableRows {
         TableId::DivisionTemplateIcons => {
             TableRows::DivisionTemplateIcons(vec![Default::default()])
         }
-        TableId::OccupationSettings => TableRows::OccupationSettings(vec![Default::default()]),
         TableId::Scientists => TableRows::Scientists(vec![Default::default()]),
         TableId::CountryLeaderRoles => TableRows::CountryLeaderRoles(vec![Default::default()]),
         TableId::RailwayGunCounterInputs => {
@@ -120,8 +239,114 @@ fn legacy_rows(table: TableId, hour: Hour) -> TableRows {
     }
 }
 
+#[test]
+fn fuel_award_suffix_keeps_the_previous_prefix_readable_and_signed_receipts_exact() {
+    let prior = rows::compatibility::ECONOMY_INPUTS_FORMAT - 1;
+    let format = FormatVersion::read(prior).unwrap();
+    assert_eq!(format.fields(TableId::CountryFuel), 19);
+    let payload = legacy_frame(format, 1000, true);
+    let decoded = FrameDecoder::new()
+        .apply(&Frame::decode_version(&mut Decoder::new(&payload), None, format).unwrap())
+        .unwrap();
+    let old = &decoded.complete::<rows::tables::CountryFuel>().unwrap()[0];
+    assert_eq!(old.current_raw, 17);
+    assert_eq!(old.country_instance, rows::Recorded::NotRecorded);
+    assert_eq!(old.awards, rows::Recorded::NotRecorded);
+    assert_eq!(old.demand, rows::Recorded::NotRecorded);
+
+    let row = rows::CountryFuelRow {
+        country: 1,
+        current_raw: 17,
+        country_instance: rows::Recorded::Value(Some(7)),
+        awards: rows::Recorded::Value(rows::FuelAwardWindow {
+            country_instance: 7,
+            continuity_start_hour: Some(977),
+            reason: Vec::new(),
+            hours: vec![rows::FuelAwardHour {
+                hour: 1000,
+                gains_raw: [i64::MIN, 0, 1, -1],
+                own_gain_raw: 0,
+                recipients: (0..5000)
+                    .map(|index| rows::FuelAwardRecipient {
+                        reference: index << 32 | 29,
+                        owner: 8,
+                        kind: 0,
+                        amount_raw: if index == 0 { 0 } else { -1 },
+                        name: Some(b"synthetic retained name".to_vec()),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }],
+        }),
+        ..Default::default()
+    };
+    let delta = row.delta(None).unwrap().unwrap();
+    assert_eq!(delta.apply::<rows::CountryFuelRow>(None).unwrap(), row);
+    let mut corrected = row.clone();
+    let rows::Recorded::Value(window) = &mut corrected.awards else {
+        panic!()
+    };
+    window.hours[0].recipients[4999].amount_raw = i64::MIN;
+    assert_eq!(
+        corrected
+            .delta(Some(&row))
+            .unwrap()
+            .unwrap()
+            .apply(Some(row))
+            .unwrap(),
+        corrected
+    );
+}
+
+#[test]
+fn logistics_available_suffix_preserves_the_previous_prefix_and_unknown_zero_distinction() {
+    let format = FormatVersion::read(rows::compatibility::ECONOMY_INPUTS_FORMAT - 1).unwrap();
+    assert_eq!(format.fields(TableId::LogisticsEquipment), 3);
+    let payload = legacy_frame(format, 1000, true);
+    let decoded = FrameDecoder::new()
+        .apply(&Frame::decode_version(&mut Decoder::new(&payload), None, format).unwrap())
+        .unwrap();
+    let old = &decoded
+        .complete::<rows::tables::LogisticsEquipment>()
+        .unwrap()[0];
+    assert_eq!((old.balance_raw, old.stock_raw), (-7, 11));
+    assert_eq!(old.available_raw, rows::Recorded::NotRecorded);
+
+    let unknown = rows::LogisticsEquipmentRow {
+        available_raw: rows::Recorded::Value(None),
+        ..old.clone()
+    };
+    let zero = rows::LogisticsEquipmentRow {
+        available_raw: rows::Recorded::Value(Some(0)),
+        ..unknown.clone()
+    };
+    assert_eq!(
+        unknown
+            .delta(Some(old))
+            .unwrap()
+            .unwrap()
+            .apply(Some(old.clone()))
+            .unwrap(),
+        unknown
+    );
+    assert_eq!(
+        zero.delta(Some(&unknown))
+            .unwrap()
+            .unwrap()
+            .apply(Some(unknown))
+            .unwrap(),
+        zero
+    );
+    let negative = rows::LogisticsEquipmentRow {
+        available_raw: rows::Recorded::Value(Some(-1)),
+        ..zero
+    };
+    assert!(negative.delta(None).is_err());
+}
+
 // The fixtures contain synthetic rows in the proven historical field prefixes,
-// not old row decoders. Appended fields are absent; unchanged prefixes decode.
+// not old row decoders. Only fields absent from that history are omitted.
 fn legacy_frame(format: FormatVersion, hour: Hour, first: bool) -> Vec<u8> {
     legacy_frame_with_history(format, hour, first, &HISTORY)
 }
@@ -148,7 +373,7 @@ fn legacy_frame_with_history(
         if !history[table.index()].present(format.version()) {
             continue;
         }
-        let rows = legacy_rows(table, hour);
+        let rows = legacy_rows(table, hour, format);
         bytes.push(0);
         bytes.extend_from_slice(&(rows.len() as u32).to_le_bytes());
         bytes.extend(rows.fixture_prefix(history[table.index()].fields(table, format.version())));
@@ -234,6 +459,16 @@ fn compatibility_format94_policy3_reads_appended_tables_with_absent_fields() {
         frame.complete::<rows::tables::Decisions>().unwrap()[0].description_seed,
         rows::Recorded::NotRecorded
     );
+    let garrison = &frame.complete::<rows::tables::StateGarrisons>().unwrap()[0];
+    assert_eq!(garrison.required_manpower, 100);
+    assert_eq!(garrison.equipment, rows::Recorded::NotRecorded);
+    let settings = frame
+        .complete::<rows::tables::OccupationSettings>()
+        .unwrap();
+    assert_eq!(settings.len(), 1);
+    assert_eq!(settings[0].law, b"synthetic_law");
+    assert_eq!(settings[0].group_laws, rows::Recorded::NotRecorded);
+    assert_eq!(settings[0].fallback_law, rows::Recorded::NotRecorded);
     assert!(
         replay
             .append(&[])
@@ -242,6 +477,249 @@ fn compatibility_format94_policy3_reads_appended_tables_with_absent_fields() {
             .to_string()
             .contains(&format!("Replay append requires format {FORMAT_VERSION}"))
     );
+}
+
+#[test]
+fn compatibility_garrison_old_prefix_retains_values_without_equipment() {
+    let format = FormatVersion::read(rows::compatibility::WIDGET_CAPTURE_FORMAT - 1).unwrap();
+    let payload = legacy_frame(format, 1000, true);
+    let frame = Frame::decode_version(&mut Decoder::new(&payload), None, format).unwrap();
+    let decoded = FrameDecoder::new().apply(&frame).unwrap();
+    let row = &decoded.complete::<rows::tables::StateGarrisons>().unwrap()[0];
+    assert_eq!((row.controller, row.occupied, row.state), (1, 2, 3));
+    assert_eq!(
+        (
+            row.required_manpower,
+            row.strength_ratio,
+            row.garrison_required,
+            row.serialized_flag
+        ),
+        (100, 7, 100_000, 0)
+    );
+    assert_eq!(row.equipment, rows::Recorded::NotRecorded);
+    assert_eq!(row.not_recorded_fields(), 1 << 5);
+}
+
+#[test]
+fn historical_positive_equipment_removals_decode_with_absent_supplemental_columns() {
+    for version in [91, 94, 96, 97, 98, 99] {
+        let replay = legacy_replay(version);
+        let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
+            panic!("missing historical hour")
+        };
+        let amounts = frame
+            .complete::<rows::tables::EquipmentDestruction>()
+            .unwrap();
+        assert_eq!(amounts[0].amount_raw, 123_456);
+        assert_eq!(amounts[0].variant, (1_u64 << 32) | 70);
+        assert_eq!(amounts[0].coverage, rows::Recorded::NotRecorded);
+        assert_eq!(amounts[0].unavailable_reason, rows::Recorded::NotRecorded);
+        assert_eq!(amounts[0].not_recorded_fields(), (1 << 1) | (1 << 2));
+        assert_eq!(
+            amounts[0].cause,
+            rows::EquipmentDestructionCause::LandCombat
+        );
+        assert_eq!(
+            replay
+                .format
+                .field_gaps(TableId::EquipmentDestruction)
+                .count(),
+            2
+        );
+        assert!(
+            frame
+                .complete::<rows::tables::DivisionEquipmentDeletions>()
+                .is_err()
+        );
+        for table in [TableId::EventFeedHistory, TableId::RocketProductionOutput] {
+            let TableView::Unavailable { reason } = &*frame.tables[table.index()] else {
+                panic!("{table:?} was invented for format {version}")
+            };
+            assert_eq!(reason, &replay.format.table_refusal(table).unwrap());
+            assert!(reason.contains("not recorded"));
+        }
+        assert!(frame.complete::<rows::tables::Clock>().is_ok());
+        let selected = replay
+            .read_block_selected(&replay.index[0], &[TableId::EquipmentDestruction])
+            .unwrap();
+        assert!(
+            matches!(&selected[0].tables[TableId::EquipmentDestruction.index()], TableUpdate::Snapshot(rows) if rows.rows::<rows::tables::EquipmentDestruction>().unwrap()[0].amount_raw == 123_456)
+        );
+    }
+}
+
+#[test]
+fn equipment_destruction_format98_keeps_main_tables_fields_and_selected_framing() {
+    let replay = legacy_replay(RECORDER_INPUTS_FORMAT);
+    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
+        panic!("missing historical hour");
+    };
+    let tables = TableId::ALL
+        .into_iter()
+        .filter(|table| {
+            [
+                TableId::AvailableAdvisors,
+                TableId::OwnedWargoals,
+                TableId::LandCombatDetails,
+                TableId::NavalCombatDetails,
+            ]
+            .contains(table)
+                || table
+                    .last_change()
+                    .appended
+                    .iter()
+                    .any(|field| field.introduced == RECORDER_INPUTS_FORMAT)
+        })
+        .collect::<Vec<_>>();
+    let selected = replay
+        .read_block_selected(&replay.index[0], &tables)
+        .unwrap();
+    for table in tables {
+        let mut expected = legacy_rows(table, 1000, replay.format);
+        // The fixture writes the historical prefix, not today's appended operands.
+        match &mut expected {
+            TableRows::AdvisorRoles(rows) => {
+                for row in rows {
+                    row.tooltip_keys = rows::Recorded::NotRecorded;
+                }
+            }
+            TableRows::UnitLeaders(rows) => {
+                for row in rows {
+                    row.formation_reference = rows::Recorded::NotRecorded;
+                }
+            }
+            TableRows::OperativeMemberships(rows) => {
+                for row in rows {
+                    row.target_country = rows::Recorded::NotRecorded;
+                    row.operation = rows::Recorded::NotRecorded;
+                    row.name = rows::Recorded::NotRecorded;
+                    row.cooldown_kind = rows::Recorded::NotRecorded;
+                    row.cooldown_start_hour = rows::Recorded::NotRecorded;
+                    row.cooldown_end_hour = rows::Recorded::NotRecorded;
+                }
+            }
+            TableRows::DivisionStatus(rows) => {
+                for row in rows {
+                    row.country_ordinal = rows::Recorded::NotRecorded;
+                    row.invalid_orders_reason = rows::Recorded::NotRecorded;
+                    row.supply = rows::Recorded::NotRecorded;
+                    row.attrition_inputs = rows::Recorded::NotRecorded;
+                    row.dig_in_factor = rows::Recorded::NotRecorded;
+                    row.name = rows::Recorded::NotRecorded;
+                }
+            }
+            TableRows::CountryCounterInputs(rows) => {
+                for row in rows {
+                    row.mio_policies = rows::Recorded::NotRecorded;
+                    row.neighbors = rows::Recorded::NotRecorded;
+                }
+            }
+            _ => {}
+        }
+        assert!(!expected.is_empty(), "{table:?}");
+        let missing_fields = table
+            .last_change()
+            .appended
+            .iter()
+            .filter(|field| field.introduced > replay.format.version())
+            .fold(0u64, |mask, field| mask | (1u64 << field.index));
+        for row in expected.iter() {
+            assert_eq!(row.not_recorded_fields(), missing_fields, "{table:?}");
+        }
+        assert_eq!(
+            replay.format.field_gaps(table).count(),
+            missing_fields.count_ones() as usize,
+            "{table:?}"
+        );
+        assert_eq!(
+            *frame.tables[table.index()],
+            TableView::Complete(expected.clone()),
+            "{table:?}"
+        );
+        assert_eq!(
+            selected[0].tables[table.index()],
+            TableUpdate::Snapshot(expected),
+            "{table:?}"
+        );
+    }
+    assert!(replay.format.nested_field_gaps().next().is_none());
+    // Existing prefixes remain readable; additions are named field/table gaps.
+    assert_eq!(
+        replay.compatibility_gaps().len(),
+        TableId::ALL
+            .into_iter()
+            .map(|table| {
+                usize::from(replay.format.table_refusal(table).is_some())
+                    + replay.format.field_gaps(table).count()
+            })
+            .sum::<usize>()
+            + replay.format.nested_field_gaps().count()
+    );
+}
+
+#[test]
+fn compatibility_land_appends_preserve_old_progress_and_mark_casualties_absent() {
+    for version in [91, 94, 96, 97, 98, 99] {
+        let replay = legacy_replay(version);
+        let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
+            panic!("missing hour")
+        };
+        let [progress] = frame
+            .complete::<rows::tables::LandCombatProgress>()
+            .unwrap()
+        else {
+            panic!("missing progress")
+        };
+        assert_eq!(progress.attacker_progress, 33_333);
+        assert_eq!(progress.defender_progress, 66_667);
+        assert_eq!(progress.direction_attacker, 9 << 32 | 4713);
+        assert_eq!(progress.direction_province, 7);
+        assert_eq!(progress.attacker_manpower_loss, rows::Recorded::NotRecorded);
+        assert_eq!(progress.defender_manpower_loss, rows::Recorded::NotRecorded);
+        assert_eq!(
+            progress.attacker_equipment_losses,
+            rows::Recorded::NotRecorded
+        );
+        assert_eq!(
+            progress.defender_equipment_losses,
+            rows::Recorded::NotRecorded
+        );
+        for table in [
+            TableId::DivisionLandInputs,
+            TableId::LandCombatResults,
+            TableId::DestroyedDivisions,
+            TableId::LandEventCoverage,
+        ] {
+            let TableView::Unavailable { reason } = &*frame.tables[table.index()] else {
+                panic!("{table:?} was invented for format {version}")
+            };
+            assert!(reason.contains("not recorded"), "{reason}");
+        }
+    }
+    // Historical inserts and changes keep the four-field prefix too.
+    let mut delta = rows::DeltaRow {
+        key: 7 << 32 | 62,
+        format: 98,
+        mask: 0xf,
+        values: Vec::new(),
+        recorded_fields: 4,
+    };
+    // Numeric changes use zigzag varints, with zero as the insertion baseline.
+    for value in [33_333_u128, 66_667, 9 << 32 | 4713, 7] {
+        crate::codec::put_varint(&mut delta.values, value * 2);
+    }
+    let first = delta.apply::<rows::LandCombatProgressRow>(None).unwrap();
+    assert_eq!(first.attacker_manpower_loss, rows::Recorded::NotRecorded);
+    assert_eq!(first.attacker_equipment_losses, rows::Recorded::NotRecorded);
+    delta.mask = 1;
+    delta.values.clear();
+    crate::codec::put_varint(&mut delta.values, (50_000 - 33_333) * 2);
+    let next = delta
+        .apply::<rows::LandCombatProgressRow>(Some(first))
+        .unwrap();
+    assert_eq!(next.attacker_progress, 50_000);
+    assert_eq!(next.defender_manpower_loss, rows::Recorded::NotRecorded);
+    assert_eq!(next.defender_equipment_losses, rows::Recorded::NotRecorded);
 }
 
 #[test]
@@ -268,7 +746,7 @@ fn compatibility_format91_framing_survives_snapshot_delta_truncation_and_unchang
             2 => update.extend_from_slice(&(hour - 1).to_le_bytes()),
             3 => {
                 update.extend_from_slice(&5_u32.to_le_bytes());
-                let rows = legacy_rows(table, hour);
+                let rows = legacy_rows(table, hour, format);
                 update.extend_from_slice(&(rows.len() as u32).to_le_bytes());
                 update.extend(rows.fixture_prefix(format.fields(table)));
             }
@@ -383,7 +861,7 @@ fn compatibility_every_appended_field_is_explicitly_not_recorded() {
     let decoded = FrameDecoder::new().apply(&frame).unwrap();
     for table in TableId::ALL {
         let appended = table.last_change().appended;
-        if appended.is_empty() {
+        if appended.is_empty() || format.table_refusal(table).is_some() {
             continue;
         }
         if !table.last_change().present(format.version()) {
@@ -613,5 +1091,55 @@ fn compatibility_real_recordings() {
                 reasons.into_iter().collect::<Vec<_>>().join(" | ")
             );
         }
+    }
+}
+
+#[test]
+fn command_name_suffixes_preserve_old_prefix_and_explicit_absence() {
+    let format = FormatVersion::read(98).unwrap();
+    let payload = legacy_frame(format, 1000, true);
+    let frame = Frame::decode_version(&mut Decoder::new(&payload), None, format).unwrap();
+    let mut decoder = FrameDecoder::new();
+    let decoded = decoder.advance(&frame).unwrap();
+    let fleet = &decoded.complete::<rows::tables::Fleets>().unwrap()[0];
+    assert_eq!((fleet.id, fleet.owner, fleet.home_base), (7, 3, 11));
+    assert_eq!(fleet.name, rows::Recorded::NotRecorded);
+    assert_eq!(fleet.leader, rows::Recorded::NotRecorded);
+    let group = &decoded.complete::<rows::tables::OrdersGroups>().unwrap()[0];
+    assert_eq!(group.handle, 9);
+    assert_eq!(group.name, rows::Recorded::NotRecorded);
+}
+
+#[test]
+fn compatibility_previous_format_keeps_positive_destruction_and_refuses_only_new_air_ledgers() {
+    let replay = legacy_replay(rows::compatibility::AIR_LEDGER_FORMAT - 1);
+    let SeekResult::Frame(frame) = replay.seek(1, 1000).unwrap() else {
+        panic!("missing previous-format hour")
+    };
+    assert_eq!(
+        frame.complete::<rows::tables::Clock>().unwrap()[0].hour,
+        1000
+    );
+    assert_eq!(
+        frame.complete::<rows::tables::Countries>().unwrap()[0].tag,
+        b"AAA"
+    );
+    assert_eq!(
+        frame
+            .complete::<rows::tables::EquipmentDestruction>()
+            .unwrap()[0]
+            .amount_raw,
+        123_456
+    );
+    for table in [
+        TableId::AirLossEvents,
+        TableId::BuildingBombingDamage,
+        TableId::AirDailyRoster,
+        TableId::RocketProductionOutput,
+    ] {
+        let TableView::Unavailable { reason } = &*frame.tables[table.index()] else {
+            panic!("an unrecorded ledger is not a complete empty interval")
+        };
+        assert!(reason.contains("not recorded"));
     }
 }

@@ -1674,6 +1674,8 @@ fn peace_turn_reconstruction_never_picks_arbitrary_tag_order() {
         ordinal: 0,
         finalized: false,
         history_turns: BTreeMap::new(),
+        bids: BTreeMap::new(),
+        bid_countries: Vec::new(),
     };
     assert_eq!(reconstructed_turn(&conference), Some(0));
     conference.history_turns.insert(b"GER".to_vec(), 4);

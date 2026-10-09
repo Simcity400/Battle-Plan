@@ -19,8 +19,8 @@ use replay::{
     BranchId,
     frame::{TableInput, TableView},
     rows::{
-        BuildingConstructionRow, ConstructionLineOutputRow, RailwayConstructionRow, TableId,
-        TableRows,
+        BuildingConstructionRow, ConstructionCompletion, ConstructionLineOutputRow,
+        RailwayConstructionRow, Recorded, TableId, TableRows,
     },
 };
 use std::io;
@@ -63,6 +63,7 @@ struct Line {
     unknown_share: bool,
     /// Published as ended; dropped at the next written publication.
     ended: bool,
+    completion: Option<ConstructionCompletion>,
 }
 
 /// The branch's per-line totals, owned by the spool for one campaign.
@@ -246,6 +247,7 @@ impl Totals {
                 observed_since_creation,
                 linked: line.linked,
                 ended: line.ended,
+                completion: Recorded::Value(line.completion),
             }
         }))?;
         rows.sort_unstable_by_key(|row| row.line);
@@ -262,29 +264,38 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) -> Result<(), &'st
     if line.railway != entry.railway {
         return Err("construction output line changed kind");
     }
+    if let Some(completion) = entry.completion {
+        if completion.hour > hour
+            || (completion.cancelled && !entry.railway)
+            || line
+                .completion
+                .is_some_and(|previous| previous != completion)
+        {
+            return Err("construction completion outcome inconsistent");
+        }
+        line.completion = Some(completion);
+        line.linked |= entry.linked_completion;
+        line.unknown_share |= entry.linked_completion;
+        return Ok(());
+    }
+    if line.completion.is_some() {
+        return Err("construction output after native completion");
+    }
     let sum = |a: i64, b: i64| a.checked_add(b).ok_or("construction output total overflow");
     if entry.instant {
         line.instant = sum(line.instant, entry.amount)?;
         line.instant_seen = true;
     } else if entry.carry {
         line.carry = sum(line.carry, entry.amount)?;
-    } else if entry.repair {
-        line.repair = sum(
-            line.repair,
-            entry
-                .amount
-                .checked_sub(entry.bank)
-                .ok_or("construction output factory amount overflow")?,
-        )?;
-        line.bank = sum(line.bank, entry.bank)?;
     } else {
-        line.construction = sum(
-            line.construction,
-            entry
-                .amount
-                .checked_sub(entry.bank)
-                .ok_or("construction output factory amount overflow")?,
-        )?;
+        let total = if entry.repair {
+            &mut line.repair
+        } else {
+            &mut line.construction
+        };
+        // Inverse of the native speed+bank qword ADD at 140F59453.
+        // Restore the original signed factory operand even if it wrapped.
+        *total = sum(*total, entry.amount.wrapping_sub(entry.bank))?;
         line.bank = sum(line.bank, entry.bank)?;
     }
     line.ticks = line
@@ -318,6 +329,133 @@ mod tests {
     const LINE_A: u64 = 0x10_0000_003b;
     const LINE_B: u64 = 0x11_0000_003b;
     const RAIL: u64 = 0x12_0000_1269;
+
+    #[test]
+    fn native_completion_survives_deletion_without_spending_or_tick_changes() {
+        let mut lines = OutputMap::default();
+        add(&mut lines, &entry(LINE_A, 35), 100).unwrap();
+        let outcome = ConstructionCompletion {
+            hour: 120,
+            cancelled: false,
+        };
+        add(
+            &mut lines,
+            &Entry {
+                line: LINE_A,
+                completion: Some(outcome),
+                ..Entry::default()
+            },
+            124,
+        )
+        .unwrap();
+        let line = &lines[&LINE_A];
+        assert_eq!(
+            (line.construction, line.ticks, line.repair_ticks),
+            (35, 1, 0)
+        );
+        let mut totals = Totals::default();
+        totals.shared.lines = lines;
+        let rows = totals.rows(124, 100, &[], &[]).unwrap();
+        assert_eq!(rows[0].completion, Recorded::Value(Some(outcome)));
+        assert!(rows[0].ended);
+        assert_eq!(rows[0].construction_raw, 35);
+    }
+
+    #[test]
+    fn linked_partner_completion_retains_its_own_outcome_and_unknown_output_share() {
+        let mut lines = OutputMap::default();
+        add(
+            &mut lines,
+            &Entry {
+                partner: Some(LINE_B),
+                ..entry(LINE_A, 35)
+            },
+            100,
+        )
+        .unwrap();
+        let outcome = ConstructionCompletion {
+            hour: 120,
+            cancelled: false,
+        };
+        // Partner removed inside AdvanceProduction; its daily getter is never
+        // reached. The primary's ordinary getter completes separately.
+        for line in [LINE_B, LINE_A] {
+            add(
+                &mut lines,
+                &Entry {
+                    line,
+                    completion: Some(outcome),
+                    linked_completion: line == LINE_B,
+                    ..Entry::default()
+                },
+                124,
+            )
+            .unwrap();
+        }
+        let mut totals = Totals::default();
+        totals.shared.lines = lines;
+        let rows = totals.rows(124, 100, &[], &[]).unwrap();
+        assert!(rows.iter().all(|row| row.linked
+            && row.ended
+            && row.completion == Recorded::Value(Some(outcome))));
+        let partner = rows.iter().find(|row| row.line == LINE_B).unwrap();
+        assert!(!partner.exact);
+        assert_eq!((partner.construction_raw, partner.ticks), (0, 0));
+        // Attaching after the primary's spend must not make its completed
+        // partner's output look like an exact unlinked zero.
+        let mut after_spend = Totals::default();
+        add(
+            &mut after_spend.shared.lines,
+            &Entry {
+                line: LINE_B,
+                completion: Some(outcome),
+                linked_completion: true,
+                ..Entry::default()
+            },
+            124,
+        )
+        .unwrap();
+        let row = after_spend.rows(124, 120, &[], &[]).unwrap().remove(0);
+        assert!(row.linked && !row.exact && row.completion == Recorded::Value(Some(outcome)));
+    }
+
+    #[test]
+    fn signed_factory_output_and_wrapped_bank_add_keep_separate_channels() {
+        let mut lines = OutputMap::default();
+        add(&mut lines, &entry(LINE_A, 50), 100).unwrap();
+        add(&mut lines, &entry(LINE_A, -25), 124).unwrap();
+        add(
+            &mut lines,
+            &Entry {
+                repair: true,
+                ..entry(LINE_A, -10)
+            },
+            148,
+        )
+        .unwrap();
+        let line = &lines[&LINE_A];
+        assert_eq!(
+            (
+                line.construction,
+                line.repair,
+                line.bank,
+                line.ticks,
+                line.repair_ticks
+            ),
+            (25, -10, 0, 3, 1)
+        );
+        add(
+            &mut lines,
+            &Entry {
+                bank: 1,
+                ..entry(LINE_B, i64::MIN)
+            },
+            124,
+        )
+        .unwrap();
+        let line = &lines[&LINE_B];
+        assert_eq!((line.construction, line.bank, line.ticks), (i64::MAX, 1, 1));
+    }
 
     fn census_of(buildings: &[u64], railways: &[u64]) -> Vec<TableInput> {
         let mut tables: Vec<TableInput> = (0..TABLE_COUNT)

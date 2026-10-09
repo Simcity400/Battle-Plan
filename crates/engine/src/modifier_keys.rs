@@ -105,6 +105,16 @@ keys! {
     POWER_BALANCE_DAILY = 0x98;
     /// Register@140562747 (token global 0x1427c0528).
     POWER_BALANCE_WEEKLY = 0x99;
+    /// Register@14057BD59; switch retention140E53EC0.
+    LINE_CHANGE_PRODUCTION_EFFICIENCY_FACTOR = 0xa5;
+    /// Register@140578778; powered fraction1415B7D10.
+    OUT_OF_POWER_IMPACT_FACTOR = 0xa8;
+    /// Register@140578B9D; production cap141922A00.
+    PRODUCTION_FACTORY_MAX_EFFICIENCY_FACTOR = 0xa9;
+    /// Register@1405793E7; factory growth141921EE0.
+    PRODUCTION_FACTORY_EFFICIENCY_GAIN_FACTOR = 0xaa;
+    /// Register@140578FC2; starting efficiency141924820.
+    PRODUCTION_FACTORY_START_EFFICIENCY_FACTOR = 0xab;
     /// Register@1405c3932 (token global 0x1427c001c).
     NAVY_SUBMARINE_ATTACK_FACTOR = 0xc2;
     /// Register@1405c3d57 (token global 0x1427c0020).
@@ -123,6 +133,16 @@ keys! {
     RESEARCH_SPEED_FACTOR = 0xcd;
     /// Register@140553c9f (token global 0x1427c0168).
     RESEARCH_SHARING_PER_COUNTRY_BONUS_FACTOR = 0xcf;
+    /// Register@14057C17E; military output1415B79B0.
+    INDUSTRIAL_CAPACITY_FACTORY = 0xd4;
+    /// Register@14057C5A3; powered military output1415B79B0.
+    INDUSTRIAL_CAPACITY_FACTORY_POWERED = 0xd5;
+    /// Register@14057C9C8; naval output1415B7B60.
+    INDUSTRIAL_CAPACITY_DOCKYARD = 0xd6;
+    /// Register@14057CDED; powered naval output1415B7B60.
+    INDUSTRIAL_CAPACITY_DOCKYARD_POWERED = 0xd7;
+    /// Register@14057E2A6; conversion speed141920D40.
+    EQUIPMENT_CONVERSION_SPEED = 0xdc;
     /// Register@14056c4b9 (token global 0x1427c0678).
     LAND_REINFORCE_RATE = 0xfb;
     /// Register@14058F196 (token global 0x1427c00e8).
@@ -187,6 +207,8 @@ keys! {
     NAVAL_HAS_POTF_IN_COMBAT_ATTACK = 0x1d1;
     /// Register@1405db67e (token global 0x1427c0314).
     NAVAL_HAS_POTF_IN_COMBAT_DEFENSE = 0x1d2;
+    /// Register@140581462; refit output141922160.
+    REFIT_SPEED = 0x1d5;
     /// Register@1405accaa (token global 0x1427c03e0).
     ARMY_SPEED_FACTOR_FOR_CONTROLLER = 0x1e7;
     /// Register@1405ad0cf (token global 0x1427c0530).

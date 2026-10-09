@@ -2,13 +2,17 @@
  * not HTML, so every tooltip looks the same and no recorded text is ever parsed
  * as markup. The layer renders it above every widget. */
 
+import { countryFlagUnavailable } from '../components/countryFlagPresentation.ts';
+
 export interface TooltipRow {
   label: string;
   value?: string;
   /** A colour square identifying the series. */
   swatch?: string;
-  /** A small image before the label, such as a country's flag (an image URL). */
+  /** A small artwork image before the label. */
   icon?: string;
+  /** Present for a recorded country, including a missing flag at its supplying hour. */
+  countryFlag?: { flag?: string; flagReason?: string; flagPending?: boolean };
   /** Indents the row under the one above, as a part of it. */
   indent?: boolean;
   /** `neutral` is the game's yellow, for a value neither good nor bad. */
@@ -19,24 +23,33 @@ export interface TooltipRow {
   strong?: boolean;
   /** Keeps the label on one line, shortened, where a long list must fit the window. */
   short?: boolean;
+  /** Positive exact count on the fitter's summary, so a later fit never counts it as data. */
+  omittedRows?: number;
 }
 export interface TooltipContent {
   title: string; rows: readonly TooltipRow[]; note?: string;
+  /** Keep every row reachable through the measured scrolling layer. */
+  scrollable?: boolean;
+  /** Stable hovered item, so arriving facts preserve its scroll position. */
+  scrollId?: string;
   /** A game-style header (mock-up politics-4): the thing's icon and a line under its name. */
   icon?: string; subtitle?: string;
+  countryFlag?: TooltipRow['countryFlag'];
   /** Running text after the rows, such as an idea's description. */
   description?: string;
   /** What assistive technology reads, when the rows shown were trimmed to fit the
    * window (`fitTooltip`): the content in full. Else the content itself is read. */
   spoken?: string;
 }
-export interface TooltipState { owner: string; content: TooltipContent; x: number; y: number }
+export interface TooltipState { owner: string; content: TooltipContent; x: number; y: number; scrollTop?: number; scrollViewport?: number }
 
 /** The content as one line of text, for assistive technology (the tooltip layer is
  * not read out). */
 export function tooltipText(content: TooltipContent): string {
   if (content.spoken) return content.spoken;
-  return [content.title, content.subtitle, ...content.rows.map(row => row.value ? `${row.label} ${row.value}` : row.label), content.description, content.note]
+  return [content.title, content.subtitle, content.countryFlag && !content.countryFlag.flag && countryFlagUnavailable(content.countryFlag.flagReason, content.countryFlag.flagPending).text,
+    ...content.rows.map(row => [row.label, row.value, row.countryFlag && !row.countryFlag.flag && countryFlagUnavailable(row.countryFlag.flagReason, row.countryFlag.flagPending).text].filter(Boolean).join(' ')),
+    content.description, content.note]
     .filter(Boolean).join('; ');
 }
 
@@ -49,6 +62,7 @@ const SMALL_LINE = 16; // 11 px text at line-height 1.4
 const DIVIDER = 9; // 4 px margin, 4 px padding and the rule
 const GAP = 4; // under the header, and above a note or description
 const ICON = 40;
+const FLAG = 26;
 const TITLE_LINE = 19; // the 13 px title
 /** Characters of a row (label and value) to a line, and of small text, at the
  * tooltip's 320 px in a wide font (the interface font is the user's choice); a
@@ -60,13 +74,16 @@ const lines = (text: string, perLine: number) => Math.max(1, Math.ceil(text.leng
 
 /** One row's height in pixels: a short row keeps to one line, a long one wraps. */
 export function tooltipRowHeight(row: TooltipRow): number {
-  return (row.short ? 1 : lines(`${row.label}  ${row.value ?? ''}`, ROW_CHARS)) * LINE + (row.divider ? DIVIDER : 0);
+  const status = row.countryFlag && !row.countryFlag.flag ? countryFlagUnavailable(row.countryFlag.flagReason, row.countryFlag.flagPending).text : undefined;
+  return (row.short ? 1 : lines(`${row.label}  ${row.value ?? ''}${status ? ` ${status}` : ''}`, ROW_CHARS)) * LINE + (row.divider ? DIVIDER : 0);
 }
 
 /** About how tall a tooltip is, in pixels, as the layer draws it. */
 export function tooltipHeight(content: TooltipContent): number {
-  const title = lines(content.title, ROW_CHARS) * TITLE_LINE + (content.subtitle ? lines(content.subtitle, SMALL_CHARS) * SMALL_LINE : 0);
-  const header = (content.icon ? Math.max(ICON, title) : title) + GAP;
+  const status = content.countryFlag && !content.countryFlag.flag ? countryFlagUnavailable(content.countryFlag.flagReason, content.countryFlag.flagPending).text : undefined;
+  const title = lines(content.title, ROW_CHARS) * TITLE_LINE + (content.subtitle ? lines(content.subtitle, SMALL_CHARS) * SMALL_LINE : 0)
+    + (status ? lines(status, SMALL_CHARS) * SMALL_LINE : 0);
+  const header = (content.countryFlag ? Math.max(FLAG, title) : content.icon ? Math.max(ICON, title) : title) + GAP;
   const rows = content.rows.reduce((sum, row) => sum + tooltipRowHeight(row), 0);
   const description = content.description ? GAP * 2 + 1 + content.description.split('\n').reduce((sum, part) => sum + lines(part, SMALL_CHARS), 0) * SMALL_LINE : 0;
   const note = content.note ? GAP + lines(content.note, SMALL_CHARS) * SMALL_LINE : 0;
@@ -104,18 +121,22 @@ export function fitTooltip(forms: Iterable<TooltipContent>, height: number, opti
     if (tooltipHeight(form) <= room) return form === first && !options.full ? form : { ...form, spoken: tooltipText(options.full ?? first) };
   }
   if (!first || !last) return { title: '', rows: [] };
-  const keep = Math.min(Math.max(0, options.keep ?? 0), last.rows.length);
-  const top = last.rows.slice(0, last.rows.length - keep);
-  const kept = last.rows.slice(last.rows.length - keep);
-  const more = (hidden: number): TooltipRow => ({ label: (options.more ?? moreRows)(hidden), tone: 'muted' });
+  const summary = last.rows.findIndex(row => Number.isSafeInteger(row.omittedRows) && (row.omittedRows ?? 0) > 0);
+  const omitted = summary < 0 ? 0 : last.rows[summary].omittedRows!;
+  const realRows = summary < 0 ? last.rows : [...last.rows.slice(0, summary), ...last.rows.slice(summary + 1)];
+  const inheritedKeep = summary < 0 ? 0 : last.rows.length - summary - 1;
+  const keep = Math.min(Math.max(0, options.keep ?? inheritedKeep), realRows.length);
+  const top = realRows.slice(0, realRows.length - keep);
+  const kept = realRows.slice(realRows.length - keep);
+  const more = (hidden: number): TooltipRow => ({ label: (options.more ?? moreRows)(hidden), tone: 'muted', omittedRows: hidden });
   let cut: TooltipContent = last;
-  const needs = (content: TooltipContent) => tooltipHeight({ ...content, rows: [more(top.length), ...kept] });
+  const needs = (content: TooltipContent) => tooltipHeight({ ...content, rows: [more(omitted + top.length), ...kept] });
   if (needs(cut) > room && cut.description) cut = { ...cut, description: undefined };
   if (needs(cut) > room && cut.note) cut = { ...cut, note: undefined };
   let used = needs(cut);
   let shown = 0;
   while (shown < top.length && used + tooltipRowHeight(top[shown]) <= room) used += tooltipRowHeight(top[shown++]);
-  const rows = shown === top.length ? last.rows : [...top.slice(0, shown), more(top.length - shown), ...kept];
+  const rows = shown === top.length ? last.rows : [...top.slice(0, shown), more(omitted + top.length - shown), ...kept];
   return { ...cut, rows, spoken: tooltipText(options.full ?? first) };
 }
 
@@ -132,9 +153,30 @@ const emit = () => { for (const listener of listeners) listener(); };
 export function showTooltip(owner: string, content: TooltipContent, x: number, y: number, contentKey?: string): void {
   const nextKey = `${owner}\u0000${contentKey ?? JSON.stringify(content)}`;
   if (nextKey === key && state && state.x === x && state.y === y && (contentKey == null || state.content === content)) return;
+  const sameScroll = state?.owner === owner && content.scrollable && state.content.scrollable
+    && (content.scrollId != null ? content.scrollId === state.content.scrollId : nextKey === key);
+  const scrollTop = sameScroll ? state?.scrollTop ?? 0 : 0;
+  const scrollViewport = sameScroll ? state?.scrollViewport ?? 0 : 0;
   key = nextKey;
-  state = { owner, content, x, y };
+  state = content.scrollable ? { owner, content, x, y, scrollTop, scrollViewport } : { owner, content, x, y };
   emit();
+}
+
+/** Wheel and page keys stay with the chart that owns a scrollable tooltip. The
+ * layer clamps this position to its measured row viewport. */
+export function scrollTooltip(owner: string, delta: number, pages = false): boolean {
+  if (state?.owner !== owner || !state.content.scrollable) return false;
+  const scrollTop = Math.max(0, (state.scrollTop ?? 0) + delta * (pages ? state.scrollViewport ?? 0 : 1));
+  if (scrollTop !== state.scrollTop) { state = { ...state, scrollTop }; emit(); }
+  return true;
+}
+
+/** Page keys move by the actual row viewport, without skipping unseen rows. */
+export function measureTooltipScroll(owner: string, height: number): void {
+  if (state?.owner === owner && state.content.scrollable && state.scrollViewport !== height) {
+    state = { ...state, scrollViewport: height };
+    emit();
+  }
 }
 
 /** Refreshes current content without taking the layer from another owner. The

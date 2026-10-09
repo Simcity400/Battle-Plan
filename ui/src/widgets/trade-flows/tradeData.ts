@@ -2,8 +2,13 @@ import { runAt } from '../../charts/series.ts';
 import type { Span } from '../../charts/series';
 import type { TooltipRow } from '../../charts/tooltip';
 import { formatAmount, rescale, rescaleSum } from '../../charts/valueAxis.ts';
-import type { HourSpan, PartialSpan, ResourceInfo, TradeFlowsReply } from '../../generated/dashboard';
+import type { CountryGroupReply, HourSpan, PartialSpan, ResourceInfo, TradeFlowsReply } from '../../generated/dashboard';
+import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
+import { signed32, signed64, unsigned32 } from '../../dashboard/validation.ts';
+import { groupRuns, groupUnobserved } from '../../dashboard/groups.ts';
+import type { ResolvedCountries } from '../../dashboard/groups';
+import type { CountrySelection } from '../../dashboard/model';
 
 /** Who sells what to whom, from the `trade-flows` product: each flow is one seller's
  * deals for one resource with one buyer (see `crates/dashboard/src/products/
@@ -11,9 +16,11 @@ import { compareTags } from '../../dashboard/tagOrder.ts';
  * fixed-point integers; the diagram draws with numbers and every label and tooltip
  * reads the exact integers. */
 
-const RAW = /^-?\d{1,20}$/;
-const HOUR = (value: unknown) => Number.isInteger(value);
-const COUNT = (value: unknown) => Number.isInteger(value) && (value as number) >= 0;
+const HOUR = signed32;
+const COUNT = unsigned32;
+const IDENTITY = /^\[(0|[1-9]\d*),(0|[1-9]\d*)\]$/;
+const nativeIdentity = (value: unknown): value is string => typeof value === 'string' && IDENTITY.test(value)
+  && (JSON.parse(value) as unknown[]).every(unsigned32);
 const ordered = (spans: readonly { firstHour: number; lastHour: number }[]) =>
   spans.every((span, index) => span.firstHour <= span.lastHour && (index === 0 || spans[index - 1].lastHour < span.firstHour));
 
@@ -29,26 +36,42 @@ export function validateTradeFlowsReply(data: unknown): TradeFlowsReply {
       && Number.isInteger(item.ordinal) && item.ordinal >= 1 && (index === 0 || reply.resources[index - 1].id < item.id)
       && (item.name === null || typeof item.name === 'string') && (item.icon === null || (typeof item.icon === 'string' && item.icon.startsWith('data:image/png;base64,'))))
     && Array.isArray(reply.countries) && reply.countries.every((tag, index) => typeof tag === 'string' && tag.length > 0 && (index === 0 || compareTags(reply.countries[index - 1], tag) < 0))
+    && Array.isArray(reply.countryIdentities) && reply.countryIdentities.every((country, index) => typeof country.tag === 'string' && country.tag.length > 0
+      && (index === 0 || compareTags(reply.countryIdentities[index - 1].tag, country.tag) < 0)
+      && Array.isArray(country.runs) && country.runs.every(run => run != null && HOUR(run.firstHour) && HOUR(run.lastHour)
+        && COUNT(run.slot) && COUNT(run.countryId)) && ordered(country.runs))
     && Array.isArray(reply.reads) && reply.reads.every((hour, index) => HOUR(hour) && (index === 0 || reply.reads[index - 1] < hour))
     && Array.isArray(reply.known) && reply.known.every(span => HOUR(span.firstHour) && HOUR(span.lastHour)) && ordered(reply.known)
     && Array.isArray(reply.partial) && reply.partial.every(span => HOUR(span.firstHour) && HOUR(span.lastHour) && COUNT(span.deals) && span.deals > 0) && ordered(reply.partial)
     && Array.isArray(reply.flows) && reply.flows.every(flow => {
       const runs = flow.firstHours?.length;
       return Number.isInteger(runs) && runs > 0 && COUNT(flow.seller) && flow.seller < reply.countries.length && COUNT(flow.buyer) && flow.buyer < reply.countries.length
+        && nativeIdentity(flow.sellerIdentity) && nativeIdentity(flow.buyerIdentity)
         && reply.resources.some(item => item.id === flow.resource)
-        && [flow.lastHours, flow.deliveredRaw, flow.factories, flow.convoysAssigned, flow.convoysRequired, flow.deals].every(list => Array.isArray(list) && list.length === runs)
+        && [flow.sellerTags, flow.buyerTags, flow.lastHours, flow.deliveredRaw, flow.factories, flow.convoysAssigned, flow.convoysRequired, flow.deals].every(list => Array.isArray(list) && list.length === runs)
         && flow.firstHours.every((first, index) => HOUR(first) && HOUR(flow.lastHours[index]) && first <= flow.lastHours[index] && (index === 0 || flow.lastHours[index - 1] < first))
-        && flow.deliveredRaw.every(raw => typeof raw === 'string' && RAW.test(raw))
+        && flow.deliveredRaw.every(raw => signed64(raw))
+        && flow.sellerTags.every(tag => COUNT(tag) && tag < reply.countries.length) && flow.buyerTags.every(tag => COUNT(tag) && tag < reply.countries.length)
         && flow.factories.every(HOUR) && flow.convoysAssigned.every(HOUR) && flow.convoysRequired.every(HOUR) && flow.deals.every(COUNT);
     })
     && Array.isArray(reply.warnings) && reply.warnings.every(warning => typeof warning === 'string');
   if (!ok) throw new Error('The trade flows reply is malformed.');
+  // Indexing also refuses contradictory holder aliases. Every numeric run must
+  // name the same exact native holder in the shared census at its supplying read.
+  const trade = decodeTrade(reply);
+  for (const flow of trade.flows) for (const run of flow.runs) {
+    for (const side of ['seller', 'buyer'] as const) {
+      const fact = runAt(flow[side === 'seller' ? 'sellerFacts' : 'buyerFacts'], run.firstHour);
+      if (!fact || fact.tag !== run[side === 'seller' ? 'sellerTag' : 'buyerTag'] || fact.lastHour < run.lastHour)
+        throw new Error('The trade flow names a holder outside its recorded identity.');
+    }
+  }
   return reply;
 }
 
 /** One stretch of a flow's recorded terms. */
 export interface FlowRun {
-  firstHour: number; lastHour: number;
+  firstHour: number; lastHour: number; sellerTag: string; buyerTag: string;
   /** The daily amount, exact, and as a number for drawing. */
   raw: bigint; amount: number;
   factories: number; convoysAssigned: number; convoysRequired: number; deals: number;
@@ -58,14 +81,17 @@ export interface FlowRun {
  * any hour's total is a binary search. */
 export interface Flow {
   key: string;
+  /** Initial aliases; use flowCountryAt for a dated presentation. */
   seller: string; buyer: string;
+  sellerIdentity: string; buyerIdentity: string;
+  sellerFacts: readonly TradeCountrySpan[]; buyerFacts: readonly TradeCountrySpan[];
   resource: ResourceInfo;
   runs: FlowRun[];
   /** Amount × hours and hours before each run, for totals. */
   amountBefore: Float64Array; hoursBefore: Float64Array;
 }
 
-function withSums(key: string, seller: string, buyer: string, resource: ResourceInfo, runs: FlowRun[]): Flow {
+function withSums(flow: Omit<Flow, 'runs' | 'amountBefore' | 'hoursBefore'>, runs: FlowRun[]): Flow {
   const amountBefore = new Float64Array(runs.length);
   const hoursBefore = new Float64Array(runs.length);
   let amount = 0;
@@ -77,15 +103,36 @@ function withSums(key: string, seller: string, buyer: string, resource: Resource
     amount += run.amount * length;
     hours += length;
   });
-  return { key, seller, buyer, resource, runs, amountBefore, hoursBefore };
+  return { ...flow, runs, amountBefore, hoursBefore };
 }
 
 export interface TradeData {
   reply: TradeFlowsReply;
   flows: Flow[];
+  countryFacts: ReadonlyMap<string, readonly TradeCountrySpan[]>;
+  identitiesByTag: ReadonlyMap<string, readonly TradeCountrySpan[]>;
   /** Each resource's place in the game's order, for its colour. */
   resourceOrder: ReadonlyMap<number, number>;
 }
+
+export interface TradeCountrySpan extends Span { identity: string; tag: string }
+export interface TradeCountryFact { identity: string; tag: string; hour: number; firstHour: number; lastHour: number }
+
+/** Exact holder key; tags and separators in mod content cannot change it. */
+export const flowKey = (sellerIdentity: string, buyerIdentity: string, resource: number) => JSON.stringify([sellerIdentity, buyerIdentity, resource]);
+
+function countryAt(facts: readonly TradeCountrySpan[], hour: number): TradeCountryFact | null {
+  let low = 0, high = facts.length - 1, found = -1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    if (facts[middle].firstHour <= hour) { found = middle; low = middle + 1; } else high = middle - 1;
+  }
+  const fact = facts[found];
+  // When absent now, show the latest supplying census date, never a future alias.
+  return fact ? { ...fact, hour: Math.min(hour, fact.lastHour) } : null;
+}
+export const identityCountryAt = (data: TradeData, identity: string, hour: number): TradeCountryFact | null => countryAt(data.countryFacts.get(identity) ?? [], hour);
+export const flowCountryAt = (flow: Flow, side: 'seller' | 'buyer', hour: number): TradeCountryFact | null => countryAt(side === 'seller' ? flow.sellerFacts : flow.buyerFacts, hour);
 
 const decoded = new WeakMap<TradeFlowsReply, TradeData>();
 
@@ -93,6 +140,20 @@ const decoded = new WeakMap<TradeFlowsReply, TradeData>();
 export function decodeTrade(reply: TradeFlowsReply): TradeData {
   let data = decoded.get(reply);
   if (data) return data;
+  const countryFacts = new Map<string, TradeCountrySpan[]>();
+  const identitiesByTag = new Map<string, TradeCountrySpan[]>();
+  for (const country of reply.countryIdentities) for (const run of country.runs) {
+    const identity = countryIdentityKey(run);
+    const fact = { identity, tag: country.tag, firstHour: run.firstHour, lastHour: run.lastHour };
+    const facts = countryFacts.get(identity) ?? [];
+    facts.push(fact); countryFacts.set(identity, facts);
+    const aliases = identitiesByTag.get(country.tag) ?? [];
+    aliases.push(fact); identitiesByTag.set(country.tag, aliases);
+  }
+  for (const facts of countryFacts.values()) {
+    facts.sort((a, b) => a.firstHour - b.firstHour);
+    if (!ordered(facts)) throw new Error('The trade holder has contradictory recorded aliases.');
+  }
   const resources = new Map(reply.resources.map(item => [item.id, item]));
   const scale = 10 ** reply.decimals;
   const flows = reply.flows.map(flow => {
@@ -100,12 +161,14 @@ export function decodeTrade(reply: TradeFlowsReply): TradeData {
     const buyer = reply.countries[flow.buyer];
     const runs = flow.firstHours.map((firstHour, index): FlowRun => {
       const raw = BigInt(flow.deliveredRaw[index]);
-      return { firstHour, lastHour: flow.lastHours[index], raw, amount: Number(raw) / scale, factories: flow.factories[index],
+      return { firstHour, lastHour: flow.lastHours[index], sellerTag: reply.countries[flow.sellerTags[index]], buyerTag: reply.countries[flow.buyerTags[index]], raw, amount: Number(raw) / scale, factories: flow.factories[index],
         convoysAssigned: flow.convoysAssigned[index], convoysRequired: flow.convoysRequired[index], deals: flow.deals[index] };
     });
-    return withSums(JSON.stringify([seller, buyer, flow.resource]), seller, buyer, resources.get(flow.resource)!, runs);
+    return withSums({ key: flowKey(flow.sellerIdentity, flow.buyerIdentity, flow.resource), seller, buyer,
+      sellerIdentity: flow.sellerIdentity, buyerIdentity: flow.buyerIdentity,
+      sellerFacts: countryFacts.get(flow.sellerIdentity) ?? [], buyerFacts: countryFacts.get(flow.buyerIdentity) ?? [], resource: resources.get(flow.resource)! }, runs);
   });
-  data = { reply, flows, resourceOrder: new Map(reply.resources.map((item, index) => [item.id, index])) };
+  data = { reply, flows, countryFacts, identitiesByTag, resourceOrder: new Map(reply.resources.map((item, index) => [item.id, index])) };
   decoded.set(reply, data);
   return data;
 }
@@ -115,7 +178,7 @@ export function decodeTrade(reply: TradeFlowsReply): TradeData {
  * is chosen or, with `between`, only when both are. A group counted at each hour
  * counts nothing in the hours its membership was not recorded (`unobserved`). */
 export type TradeScope = { kind: 'all' } | { kind: 'countries'; tags: readonly string[]; membership: ReadonlyMap<string, readonly Span[]> | null;
-  unobserved?: readonly Span[]; between: boolean };
+  unobserved?: readonly Span[]; countryIds?: ReadonlySet<string>; identityNote?: string; between: boolean };
 
 /** Spans with `holes` cut out, in hour order. */
 function without(spans: readonly Span[], holes: readonly Span[]): Span[] {
@@ -172,24 +235,61 @@ function clip(runs: readonly FlowRun[], spans: readonly Span[]): FlowRun[] {
 export function selectFlows(data: TradeData, scope: TradeScope, resources: ReadonlySet<number> | null): Flow[] {
   const wantedResource = (flow: Flow) => !resources || resources.has(flow.resource.id);
   if (scope.kind === 'all') return data.flows.filter(wantedResource);
-  const chosen = new Set(scope.tags);
+  const chosen = scope.countryIds ?? new Set(scope.tags.flatMap(tag => (data.identitiesByTag.get(tag) ?? []).map(fact => fact.identity)));
+  const membership = new Map<string, Span[]>();
+  if (scope.membership) {
+    for (const tag of scope.tags) for (const fact of data.identitiesByTag.get(tag) ?? []) {
+      const spans = combine([fact], scope.membership.get(tag) ?? [], true);
+      membership.set(fact.identity, [...(membership.get(fact.identity) ?? []), ...spans]);
+    }
+    for (const [identity, spans] of membership) membership.set(identity, without(combine(spans, [], false), scope.unobserved ?? []));
+  }
   const selected: Flow[] = [];
   for (const flow of data.flows) {
     if (!wantedResource(flow)) continue;
-    const [seller, buyer] = [chosen.has(flow.seller), chosen.has(flow.buyer)];
+    const [seller, buyer] = [chosen.has(flow.sellerIdentity), chosen.has(flow.buyerIdentity)];
     if (scope.between ? !(seller && buyer) : !(seller || buyer)) continue;
     if (!scope.membership) { selected.push(flow); continue; }
-    const spans = (tag: string) => scope.membership!.get(tag) ?? [];
-    const runs = clip(flow.runs, without(combine(spans(flow.seller), spans(flow.buyer), scope.between), scope.unobserved ?? []));
-    if (runs.length) selected.push(withSums(flow.key, flow.seller, flow.buyer, flow.resource, runs));
+    const runs = clip(flow.runs, combine(membership.get(flow.sellerIdentity) ?? [], membership.get(flow.buyerIdentity) ?? [], scope.between));
+    if (runs.length) selected.push(withSums(flow, runs));
   }
   return selected;
+}
+
+/** End/ever membership chooses native holders at the dates it counts, before
+ * including those holders' whole histories. Hour membership still clips each read. */
+export function tradeScope(data: TradeData, selection: CountrySelection, resolved: ResolvedCountries | null,
+  groups: CountryGroupReply | undefined, lastHour: number, between: boolean): TradeScope {
+  if (selection.kind === 'all') return { kind: 'all' };
+  const tags = resolved?.tags ?? [];
+  const base = { kind: 'countries' as const, tags, membership: resolved?.membership ?? null, unobserved: resolved?.unobserved, between };
+  if (selection.kind !== 'group' || selection.membership === 'hour') return base;
+  const countryIds = new Set<string>();
+  let missing = false;
+  if (selection.membership === 'end') {
+    for (const tag of tags) {
+      const fact = runAt(data.identitiesByTag.get(tag) ?? [], lastHour);
+      if (fact) countryIds.add(fact.identity); else missing = true;
+    }
+  } else if (groups) {
+    const wanted = new Set(tags);
+    const holes = groupUnobserved(groups, selection.group);
+    for (const member of groupRuns(groups, selection.group) ?? []) {
+      if (!wanted.has(member.tag)) continue;
+      const facts = data.identitiesByTag.get(member.tag) ?? [];
+      for (const fact of facts) {
+        if (without(combine([fact], [member], true), holes).length) countryIds.add(fact.identity);
+      }
+      if (without(without([member], holes), facts).length) missing = true;
+    }
+  }
+  return { ...base, countryIds, ...(missing ? { identityNote: 'Some native country identities were not recorded at the membership dates counted; their unidentified trade is omitted.' } : {}) };
 }
 
 export type Measure = 'current' | 'total' | 'average';
 
 /** Amount × hours and hours of a flow up to and including `hour`. */
-function partial(flow: Flow, hour: number): [number, number] {
+export function flowPrefix(flow: Flow, hour: number): [number, number] {
   const runs = flow.runs;
   let low = 0;
   let high = runs.length - 1;
@@ -207,11 +307,11 @@ function partial(flow: Flow, hour: number): [number, number] {
 /** A flow's size in the diagram at `hour`: its daily amount then (current), what it
  * delivered from `from` to then (total), or its average daily amount over the hours
  * it traded in that time (average). Zero when it did not trade. For drawing only:
- * `exactFlow` gives the numbers shown. */
-export function flowValue(flow: Flow, measure: Measure, from: number, hour: number): number {
+ * `exactFlow` gives the numbers shown. `basis` may reuse flowPrefix(flow, from - 1). */
+export function flowValue(flow: Flow, measure: Measure, from: number, hour: number, basis?: readonly [number, number]): number {
   if (measure === 'current') return runAt(flow.runs, hour)?.amount ?? 0;
-  const [amountEnd, hoursEnd] = partial(flow, hour);
-  const [amountStart, hoursStart] = partial(flow, from - 1);
+  const [amountEnd, hoursEnd] = flowPrefix(flow, hour);
+  const [amountStart, hoursStart] = basis ?? flowPrefix(flow, from - 1);
   const amount = amountEnd - amountStart;
   const hours = hoursEnd - hoursStart;
   if (hours <= 0) return 0;
@@ -353,42 +453,48 @@ export function selectionMessage(resolved: { reason: string | null } | null, atM
   return atMoment.reason ?? resolved.reason;
 }
 
-/** A node of the diagram: a country (by tag) or the rest of a side, with what each
- * country in it carries, largest first once built. */
-export interface SideNode { id: string; side: 'source' | 'target'; tag: string | null; members: string[]; memberValues: Map<string, number>; value: number }
+/** A native holder or the rest of one side, with exact supplying label dates. */
+export interface SideNode {
+  id: string; side: 'source' | 'target'; identity: string | null; tag: string | null; factHour: number | null;
+  members: string[]; memberValues: Map<string, number>; memberFacts: Map<string, TradeCountryFact>; value: number;
+}
 /** A ribbon of the diagram: the flows between two nodes for one resource. */
 export interface SideLink { id: string; source: string; target: string; resource: ResourceInfo; flows: Flow[]; value: number }
 export interface Diagram { nodes: SideNode[]; links: SideLink[]; total: number }
 
-const nodeId = (side: 'source' | 'target', tag: string | null) => `${side === 'source' ? 's' : 't'}:${tag ?? OTHER}`;
+const nodeId = (side: 'source' | 'target', identity: string | null) => `${side === 'source' ? 's' : 't'}:${identity ?? OTHER}`;
+const factOrder = (facts: ReadonlyMap<string, TradeCountryFact>, a: string, b: string) => compareTags(facts.get(a)?.tag ?? '', facts.get(b)?.tag ?? '') || compareTags(a, b);
 
-/** The diagram at an hour: each flow's value by `measure`, sellers on the left and
- * buyers on the right, the `perSide` largest countries on each side by what they
- * sell or buy and the rest summed into one node a side, so nothing is left out. */
+/** Positive amounts draw geometry. Exact signed/zero rows retain their flow keys. */
 export function buildDiagram(flows: readonly Flow[], measure: Measure, from: number, hour: number, perSide: number): Diagram {
   const valued = flows.map(flow => ({ flow, value: flowValue(flow, measure, from, hour) })).filter(item => item.value > 0);
+  const facts = new Map<string, TradeCountryFact>();
+  for (const { flow } of valued) for (const side of ['seller', 'buyer'] as const) {
+    const fact = flowCountryAt(flow, side, hour);
+    if (fact) facts.set(fact.identity, fact);
+  }
   const totals = (pick: (flow: Flow) => string) => {
     const sums = new Map<string, number>();
     for (const { flow, value } of valued) sums.set(pick(flow), (sums.get(pick(flow)) ?? 0) + value);
     return sums;
   };
   const kept = (sums: Map<string, number>) => {
-    const ranked = [...sums].sort((a, b) => b[1] - a[1] || compareTags(a[0], b[0]));
-    // A side with just one country past the limit shows it rather than "1 other".
+    const ranked = [...sums].sort((a, b) => b[1] - a[1] || factOrder(facts, a[0], b[0]));
     const limit = ranked.length <= perSide + 1 ? ranked.length : perSide;
-    return new Set(ranked.slice(0, limit).map(([tag]) => tag));
+    return new Set(ranked.slice(0, limit).map(([identity]) => identity));
   };
-  const sellers = totals(flow => flow.seller);
-  const buyers = totals(flow => flow.buyer);
-  const keptSellers = kept(sellers);
-  const keptBuyers = kept(buyers);
+  const keptSellers = kept(totals(flow => flow.sellerIdentity));
+  const keptBuyers = kept(totals(flow => flow.buyerIdentity));
   const nodes = new Map<string, SideNode>();
   const links = new Map<string, SideLink>();
-  const node = (side: 'source' | 'target', tag: string, value: number, keep: Set<string>) => {
-    const own = keep.has(tag) ? tag : null;
+  const node = (side: 'source' | 'target', identity: string, value: number, keep: Set<string>) => {
+    const own = keep.has(identity) ? identity : null;
+    const fact = facts.get(identity);
     const id = nodeId(side, own);
-    const entry = nodes.get(id) ?? { id, side, tag: own, members: [], memberValues: new Map<string, number>(), value: 0 };
-    entry.memberValues.set(tag, (entry.memberValues.get(tag) ?? 0) + value);
+    const entry: SideNode = nodes.get(id) ?? { id, side, identity: own, tag: own ? fact?.tag ?? null : null, factHour: own ? fact?.hour ?? null : null,
+      members: [], memberValues: new Map(), memberFacts: new Map(), value: 0 };
+    entry.memberValues.set(identity, (entry.memberValues.get(identity) ?? 0) + value);
+    if (fact) entry.memberFacts.set(identity, fact);
     entry.value += value;
     nodes.set(id, entry);
     return id;
@@ -396,31 +502,30 @@ export function buildDiagram(flows: readonly Flow[], measure: Measure, from: num
   let total = 0;
   for (const { flow, value } of valued) {
     total += value;
-    const source = node('source', flow.seller, value, keptSellers);
-    const target = node('target', flow.buyer, value, keptBuyers);
-    // Structured, so no tag (a mod's may hold any character) can blur two ribbons.
+    const source = node('source', flow.sellerIdentity, value, keptSellers);
+    const target = node('target', flow.buyerIdentity, value, keptBuyers);
     const id = JSON.stringify([source, target, flow.resource.id]);
     const link = links.get(id) ?? { id, source, target, resource: flow.resource, flows: [], value: 0 };
-    link.flows.push(flow);
-    link.value += value;
-    links.set(id, link);
+    link.flows.push(flow); link.value += value; links.set(id, link);
   }
-  for (const entry of nodes.values()) entry.members = [...entry.memberValues].sort((a, b) => b[1] - a[1] || compareTags(a[0], b[0])).map(([tag]) => tag);
+  for (const entry of nodes.values()) entry.members = [...entry.memberValues].sort((a, b) => b[1] - a[1] || factOrder(facts, a[0], b[0])).map(([identity]) => identity);
   return { nodes: [...nodes.values()], links: [...links.values()], total };
 }
 
-/** Each country's fixed place on each side, by everything it sold or bought over
- * [from, to], largest first (ties by tag): ribbons inside a node keep this order all
- * through playback, so nothing jumps, and it follows the usual sizes, so few cross. */
+/** Fixed native-holder order, ranked by whole-window totals and dated aliases. */
 export function sideRanks(flows: readonly Flow[], from: number, to: number): { source: Map<string, number>; target: Map<string, number> } {
-  const sellers = new Map<string, number>();
-  const buyers = new Map<string, number>();
+  const sellers = new Map<string, number>(), buyers = new Map<string, number>();
+  const facts = new Map<string, TradeCountryFact>();
   for (const flow of flows) {
     const total = flowValue(flow, 'total', from, to);
-    sellers.set(flow.seller, (sellers.get(flow.seller) ?? 0) + total);
-    buyers.set(flow.buyer, (buyers.get(flow.buyer) ?? 0) + total);
+    sellers.set(flow.sellerIdentity, (sellers.get(flow.sellerIdentity) ?? 0) + total);
+    buyers.set(flow.buyerIdentity, (buyers.get(flow.buyerIdentity) ?? 0) + total);
+    for (const side of ['seller', 'buyer'] as const) {
+      const fact = flowCountryAt(flow, side, to);
+      if (fact) facts.set(fact.identity, fact);
+    }
   }
-  const rank = (sums: Map<string, number>) => new Map([...sums].sort((a, b) => b[1] - a[1] || compareTags(a[0], b[0])).map(([tag], index) => [tag, index]));
+  const rank = (sums: Map<string, number>) => new Map([...sums].sort((a, b) => b[1] - a[1] || factOrder(facts, a[0], b[0])).map(([identity], index) => [identity, index]));
   return { source: rank(sellers), target: rank(buyers) };
 }
 

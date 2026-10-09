@@ -52,6 +52,7 @@
   --type-xs: 11px; --type-sm: 12px; --type-md: 13px; --type-lg: 14px;
   --chart-grid: color-mix(in srgb, var(--border) 55%, var(--surface));
   --chart-axis: color-mix(in srgb, var(--border) 88%, var(--text));
+  --chart-hatch-spacing: 8px;
 
   font-family: var(--font-ui); font-size: 14px; line-height: 1.45;
   color: var(--text); background: var(--canvas); color-scheme: dark;

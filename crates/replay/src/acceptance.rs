@@ -36,8 +36,17 @@ const DIVISION_EDGE_KEYS: [u64; 2] = [0, u64::MAX];
 const OPTIONAL_SCALAR_CASES: [Option<i64>; 4] = [None, Some(0), Some(i64::MIN), Some(i64::MAX)];
 // Every ordered pair of scalar cases occurs once per cycle, including the wraparound.
 const OPTIONAL_SCALAR_ORDER: [usize; 16] = [0, 0, 1, 0, 2, 0, 3, 1, 1, 2, 1, 3, 2, 2, 3, 3];
-const DOMAIN_TABLES: [TableId; 271] = [
+const DOMAIN_TABLES: [TableId; TableId::ALL.len() - DIRECT_TABLES.len()] = [
+    TableId::CountryPowerDaily,
+    TableId::CountryPowerChanges,
+    TableId::CountryPowerDailyCosts,
+    TableId::GovernmentChanges,
+    TableId::PoliticsCaptureCoverage,
     TableId::WarRelations,
+    TableId::WarOwnedRelations,
+    TableId::WarRelationGoals,
+    TableId::WarOverviewCountries,
+    TableId::WarNameRules,
     TableId::Factions,
     TableId::FactionMembers,
     TableId::Players,
@@ -70,6 +79,8 @@ const DOMAIN_TABLES: [TableId; 271] = [
     TableId::PowerBalanceRanges,
     TableId::PowerBalanceOverrides,
     TableId::ProductionLines,
+    TableId::CountryProductionModifiers,
+    TableId::ProductionLineModifiers,
     TableId::Stockpiles,
     TableId::DivisionEquipment,
     TableId::VariantDefinitions,
@@ -92,6 +103,8 @@ const DOMAIN_TABLES: [TableId; 271] = [
     TableId::DisruptedSupply,
     TableId::ForeignHomebases,
     TableId::CountryExperience,
+    TableId::CountryExperienceGains,
+    TableId::EventFeedHistory,
     TableId::StateBuildings,
     TableId::ProvinceBuildings,
     TableId::StateBaseResources,
@@ -125,6 +138,8 @@ const DOMAIN_TABLES: [TableId; 271] = [
     TableId::ReserveModifierBreakdowns,
     TableId::PowerBalanceModifierBreakdowns,
     TableId::Operations,
+    TableId::AgencyUpgradeLevels,
+    TableId::OperationCompletions,
     TableId::OperationAssignments,
     TableId::WingEquipment,
     TableId::AirBases,
@@ -154,6 +169,18 @@ const DOMAIN_TABLES: [TableId; 271] = [
     TableId::RaidCountries,
     TableId::Raids,
     TableId::PeaceConferences,
+    TableId::PeaceSettlements,
+    TableId::PeaceBids,
+    TableId::DivisionEquipmentDeletions,
+    TableId::DivisionLandInputs,
+    TableId::LandCombatResults,
+    TableId::DestroyedDivisions,
+    TableId::LandEventCoverage,
+    TableId::NavalResultSources,
+    TableId::AirLossEvents,
+    TableId::BuildingBombingDamage,
+    TableId::AirDailyRoster,
+    TableId::RocketProductionOutput,
     TableId::WeatherRegions,
     TableId::WeatherProvinces,
     TableId::OperationTokens,
@@ -301,6 +328,9 @@ const DOMAIN_TABLES: [TableId; 271] = [
     TableId::NavalCombatShips,
     TableId::NavalModifierBreakdowns,
     TableId::AttritionModifierBreakdowns,
+    TableId::CountryGameScoreInputs,
+    TableId::AirWingGameScoreStats,
+    TableId::GameScoreMultipliers,
     TableId::NavalCombatResultDetails,
     TableId::DivisionEtaInputs,
     TableId::FactionTheatres,
@@ -309,8 +339,8 @@ const DOMAIN_TABLES: [TableId; 271] = [
     TableId::NavalMissionCountries,
     TableId::NavalMissionCommanders,
 ];
-/// The fault campaign drives every table except the six the clock, campaign,
-/// country, province and state fixtures build directly, so a new table cannot
+/// The fault campaign drives every table except those the clock, campaign,
+/// country, province, state and division fixtures build directly, so a new table cannot
 /// be added without being exercised here.
 const DIRECT_TABLES: [TableId; 7] = [
     TableId::Clock,
@@ -515,6 +545,12 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 id,
                 owner: country,
                 home_base: [0, u32::MAX, tick as u32][tick % 3],
+                name: Recorded::Value(match (tick / 5) % 3 {
+                    0 => None,
+                    1 => Some(Vec::new()),
+                    _ => Some(vec![0, 0xff, (tick % 251) as u8]),
+                }),
+                leader: Recorded::Value([None, Some(0), Some(u64::MAX)][tick % 3]),
             },
         );
         push_map::<tables::TaskForces>(
@@ -704,6 +740,7 @@ fn source_with_faults(
             controller: [0, 7, 19][(index / 5 + id as usize) % 3],
             movement_infrastructure: [i64::MIN, 0, 100_000, i64::MAX][(index + id as usize) % 4],
             manpower_available: [i32::MIN, 0, i32::MAX][(index + id as usize) % 3],
+            continent: crate::rows::Recorded::Value(Some((index + id as usize) as u32)),
             // Empty, ASCII and non-UTF-8 names, changing on their own cadence.
             custom_name: match (index / 11 + id as usize) % 3 {
                 0 => Vec::new(),
@@ -958,6 +995,7 @@ struct Coverage {
     division_edge_insertions: [bool; 2],
     division_edge_deletions: [bool; 2],
     country_optional_transitions: [[bool; 4]; 4],
+    equipment_coverage_values: [bool; 2],
     domains: Vec<DomainCoverage>,
     war_field_changes: u64,
     war_flag_values: [[bool; RAW_FLAG_CASES.len()]; 2],
@@ -1091,6 +1129,16 @@ fn synthesize() -> Campaign {
         coverage.periodic_keyframes += usize::from(periodic);
         for (table, update) in TableId::ALL.into_iter().zip(&frame.tables) {
             let domain_index = DOMAIN_TABLES.iter().position(|id| *id == table);
+            if let TableView::Complete(TableRows::EquipmentDestruction(rows)) =
+                &*source.tables[table.index()]
+            {
+                for row in rows {
+                    let Recorded::Value(value) = row.coverage else {
+                        panic!("current equipment coverage was not recorded");
+                    };
+                    coverage.equipment_coverage_values[value as usize] = true;
+                }
+            }
             if table == TableId::WarRelations
                 && let TableView::Complete(rows) = &*source.tables[table.index()]
             {
@@ -1552,11 +1600,22 @@ fn two_thousand_hours_survive_faults_and_append_with_exact_direct_state() {
             );
         }
     }
+    assert!(
+        coverage
+            .equipment_coverage_values
+            .into_iter()
+            .all(|seen| seen)
+    );
     for (table, covered) in DOMAIN_TABLES.into_iter().zip(&coverage.domains) {
+        // Equipment coverage is fixed by key: amount rows and the key-zero marker.
+        let mutable_fields = if table == TableId::EquipmentDestruction {
+            table.full_mask() & !(1 << 1)
+        } else {
+            table.full_mask()
+        };
         assert_eq!(
-            covered.changed_fields,
-            table.full_mask(),
-            "{table:?} field coverage"
+            covered.changed_fields, mutable_fields,
+            "{table:?} mutable field coverage"
         );
         assert!(
             covered.changes > 10,

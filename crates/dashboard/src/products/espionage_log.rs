@@ -3,20 +3,22 @@
 //! only that an absent operation ended *by* that read.
 //!
 //! COperationInstance completion 1413EE390 writes terminal +0x42 and the
-//! generated outcome description +0xA0. OperationRow captures the former, not
-//! the latter or bonus-result +0xC0. The +0xC1 detection result is also
-//! absent. Terminal state never establishes success or operative capture.
+//! generated outcome description +0xA0 and independent +0xC0/+0xC1 results.
+//! Completion hooks retain outcomes even when the manager deletes an AI instance.
+//! Terminal state never establishes success or operative capture.
 //! OperationTokens is an independent owner-target token set, added/removed by
 //! authored effects (1413F10D0/1413F22B0, 14034AD00/14035E450), without an
 //! operation handle. It is therefore no outcome source and is not decoded here.
 
 use super::{
-    BranchParams, LoadContext, MAX_PRODUCT_REPLY_BYTES, Product, country_groups::HourSpan,
+    BranchParams, LoadContext, MAX_PRODUCT_REPLY_BYTES, Product,
+    country_groups::HourSpan,
     intelligence_content::intelligence_content,
+    operative_rows::{membership_read, operations_read},
 };
 use crate::{
     Source,
-    metadata::{LinkTags, branch_bounds, slot_read, validate_campaign},
+    metadata::{LinkTags, branch_bounds, validate_campaign},
     transport::json_len,
 };
 use replay::{
@@ -24,7 +26,7 @@ use replay::{
     frame::{DecodedFrame, FrameDecoder},
     rows::{OperationRow, TableId, tables},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -37,6 +39,21 @@ use ts_rs::TS;
 
 pub struct EspionageLog;
 
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EspionageLogParams {
+    pub branch_id: String,
+    /// None requests the manifest; a detail supplies one daily transport window.
+    pub window: Option<usize>,
+}
+impl EspionageLogParams {
+    fn branch_params(&self) -> BranchParams {
+        BranchParams {
+            branch_id: self.branch_id.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EspionageOperationType {
@@ -44,6 +61,14 @@ pub struct EspionageOperationType {
     pub name: Option<String>,
     pub icon: Option<String>,
     pub icon_missing: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct EspionageOperativeName {
+    pub id: String,
+    pub name: Option<String>,
+    pub unavailable: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, TS)]
@@ -77,6 +102,8 @@ pub struct EspionageOperationRun {
     pub start_hour: Option<i32>,
     /// Non-null handles in native slot order; null means assignments unread.
     pub operatives: Option<Vec<String>>,
+    /// Names from this operation read; another daily read is never backfilled.
+    pub operative_names: Option<Vec<EspionageOperativeName>>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, TS)]
@@ -94,7 +121,7 @@ pub struct EspionageOutcome {
     pub detected: bool,
     /// Language of the stored +0xA0 text, not the viewer's display language.
     pub recorded_language: String,
-    pub description: Option<String>,
+    pub description_ref: Option<super::operation_description::OperationDescriptionRef>,
     pub description_unrecorded: Option<String>,
     /// Exact native byte length, including when capture refused the text.
     pub description_required_bytes: String,
@@ -136,6 +163,9 @@ pub struct EspionageOperation {
 #[serde(rename_all = "camelCase")]
 pub struct EspionageLogReply {
     pub branch_id: String,
+    pub window: Option<usize>,
+    /// Only the manifest lists windows; details preserve actual supplying reads.
+    pub windows: Vec<HourSpan>,
     pub first_hour: i32,
     pub last_hour: i32,
     pub available: Vec<HourSpan>,
@@ -149,24 +179,171 @@ pub struct EspionageLogReply {
     pub unavailable: Option<String>,
 }
 
+type OperationInstance = (usize, (u32, u32, u32));
+
 #[derive(Default)]
 struct Builder {
     operations: Vec<EspionageOperation>,
-    open: HashMap<u64, (usize, (u32, u32, u32))>,
+    open: HashMap<u64, OperationInstance>,
     available: Vec<HourSpan>,
     reads: Vec<i32>,
     types: BTreeSet<String>,
     warnings: BTreeMap<String, usize>,
     links: LinkTags,
+    language: String,
+    instances: HashMap<u64, Vec<OperationInstance>>,
+    completions: Vec<HourSpan>,
+    seen_completions: HashMap<(u32, u64), super::operation_description::OperationDescriptionRef>,
 }
 
 fn budget_error() -> io::Error {
-    io::Error::other("Espionage history exceeds the complete-response byte budget")
+    io::Error::other("Espionage metadata window exceeds the complete-response byte budget")
 }
 
 impl Builder {
     fn warn(&mut self, reason: impl Into<String>) {
         *self.warnings.entry(reason.into()).or_default() += 1;
+    }
+
+    fn observe_completions(
+        &mut self,
+        frame: &DecodedFrame,
+        replay: &Replay,
+        branch: u64,
+    ) -> io::Result<()> {
+        if !TableId::OperationCompletions
+            .last_change()
+            .present(replay.format.version())
+        {
+            return Ok(());
+        }
+        let rows = match frame.complete::<tables::OperationCompletions>() {
+            Ok(rows) => rows,
+            Err(_) => {
+                self.warn(
+                    "OperationCompletions unavailable or incomplete; completion coverage unknown",
+                );
+                return Ok(());
+            }
+        };
+        let hour = frame.hour;
+        if let Some(span) = self
+            .completions
+            .last_mut()
+            .filter(|span| span.last_hour.checked_add(1) == Some(hour))
+        {
+            span.last_hour = hour;
+        } else {
+            self.completions.push(HourSpan {
+                first_hour: hour,
+                last_hour: hour,
+            });
+        }
+        let labels = self.links.update(frame).is_ok();
+        let language = replay
+            .identity
+            .language
+            .strip_prefix("l_")
+            .unwrap_or(&replay.identity.language);
+        let mut repeated: BTreeMap<i32, Vec<&replay::rows::OperationCompletionRow>> =
+            BTreeMap::new();
+        for row in rows {
+            let reference = super::operation_description::OperationDescriptionRef {
+                hour,
+                id: row.id.to_string(),
+                owner: row.owner,
+                sequence: Some(row.sequence.to_string()),
+            };
+            if let Some(previous) = self.seen_completions.get(&(row.owner, row.sequence)) {
+                repeated.entry(previous.hour).or_default().push(row);
+                continue;
+            }
+            if row.completion_hour > hour {
+                return Err(crate::invalid(
+                    "Operation completion occurs after its drain hour",
+                ));
+            }
+            self.seen_completions
+                .insert((row.owner, row.sequence), reference.clone());
+            let key = super::intelligence_capture::literal(frame, Some(row.definition_token));
+            if let Some(key) = &key {
+                self.types.insert(key.clone());
+            }
+            let fingerprint = (row.owner, row.target, row.definition_token);
+            let matched = self.instances.get(&row.id).and_then(|instances| {
+                instances
+                    .iter()
+                    .rev()
+                    .find(|(index, identity)| {
+                        *identity == fingerprint
+                            && self.operations[*index].first_read <= row.completion_hour
+                            && self.operations[*index]
+                                .end
+                                .as_ref()
+                                .is_none_or(|end| end.completion_sequence.is_none())
+                    })
+                    .map(|(index, _)| *index)
+            });
+            let index = match matched {
+                Some(index) => index,
+                None => {
+                    let index = self.operations.len();
+                    self.operations.push(EspionageOperation {
+                        id: format!("{}:completion:{}", row.id, row.sequence),
+                        first_read: hour,
+                        start_hour: None,
+                        start_known_at: None,
+                        definition_token: row.definition_token,
+                        runs: Vec::new(),
+                        end: None,
+                    });
+                    self.instances
+                        .entry(row.id)
+                        .or_default()
+                        .push((index, fingerprint));
+                    index
+                }
+            };
+            let (outcome, outcome_unrecorded) = outcome_at_end(
+                Some(row.bonus),
+                Some(row.detected),
+                Some(reference),
+                row.description_refusal(),
+                Some(row.description_required),
+                Some(language),
+                &mut self.warnings,
+            );
+            let operation = &mut self.operations[index];
+            let last_seen = operation
+                .runs
+                .last()
+                .map_or(hour, |run| supplying_read(&self.reads, run.last_hour));
+            operation.end = Some(EspionageOperationEnd {
+                by_hour: hour,
+                last_seen,
+                completion_hour: Some(row.completion_hour),
+                completion_sequence: Some(row.sequence.to_string()),
+                type_key: key,
+                reason: EspionageEndReason::Completed,
+                outcome,
+                outcome_unrecorded,
+                owner_tag: labels.then(|| self.links.get(row.owner).cloned()).flatten(),
+                target_tag: labels
+                    .then(|| self.links.get(row.target).cloned())
+                    .flatten(),
+            });
+        }
+        for (witness_hour, rows) in repeated {
+            if !super::operation_description::completions_match(
+                replay,
+                witness_hour,
+                &rows,
+                branch,
+            )? {
+                return Err(crate::invalid("Operation completion immutable key changed"));
+            }
+        }
+        Ok(())
     }
 
     fn mark_available(&mut self, hour: i32) {
@@ -190,7 +367,7 @@ impl Builder {
             return;
         };
         let hour = frame.hour;
-        if !slot_read(&frame.metrics, TableId::Operations, hour) {
+        if !operations_read(frame) {
             // Decoder carries the successful daily census on skipped hours.
             // Extend only consecutive recorded hours; do not recompute phases,
             // dates or progress and never resume a carry after a gap/failed read.
@@ -240,6 +417,23 @@ impl Builder {
         }
         for slots in assigned.values_mut() {
             slots.sort_unstable_by_key(|slot| slot.ordinal);
+        }
+        let mut named: HashMap<u64, Option<&replay::rows::OperativeMembershipRow>> = HashMap::new();
+        let names_read = frame
+            .complete::<tables::OperativeMemberships>()
+            .ok()
+            .filter(|_| membership_read(frame));
+        if let Some(rows) = names_read {
+            for row in rows {
+                named
+                    .entry(row.id)
+                    .and_modify(|previous| {
+                        if previous.is_some_and(|previous| previous.name != row.name) {
+                            *previous = None;
+                        }
+                    })
+                    .or_insert(Some(row));
+            }
         }
         let absent: Vec<_> = self
             .open
@@ -319,8 +513,43 @@ impl Builder {
                         .iter()
                         .filter(|slot| slot.operative != 0)
                         .map(|slot| slot.operative.to_string())
-                        .collect()
+                        .collect::<Vec<_>>()
                 })
+            });
+            let operative_names = names_read.and(operatives.as_ref()).map(|operatives| {
+                operatives
+                    .iter()
+                    .map(|id| {
+                        let bytes = named
+                            .get(&id.parse::<u64>().expect("recorded handle"))
+                            .copied()
+                            .flatten()
+                            .ok_or_else(|| {
+                                "Assigned operative name missing or contradictory at this read"
+                                    .to_owned()
+                            })
+                            .and_then(|row| row.name.require("OperativeMemberships.name"))
+                            .and_then(|bytes| {
+                                std::str::from_utf8(installed_content::parser::c_string(bytes))
+                                    .map(str::to_owned)
+                                    .map_err(|_| {
+                                        "Assigned operative name has non-text bytes".to_owned()
+                                    })
+                            });
+                        match bytes {
+                            Ok(name) => EspionageOperativeName {
+                                id: id.clone(),
+                                name: Some(name),
+                                unavailable: None,
+                            },
+                            Err(reason) => EspionageOperativeName {
+                                id: id.clone(),
+                                name: None,
+                                unavailable: Some(reason),
+                            },
+                        }
+                    })
+                    .collect()
             });
             let owner_tag = labels.then(|| self.links.get(row.owner).cloned()).flatten();
             let target_tag = labels
@@ -344,6 +573,7 @@ impl Builder {
                 auto_commence: row.flag_40 != 0,
                 start_hour: (row.duration_days != 0).then_some(row.start_hour),
                 operatives,
+                operative_names,
             };
             let fingerprint = (row.owner, row.target, row.definition_token);
             let continuing = self
@@ -357,7 +587,12 @@ impl Builder {
                     let previous = operation.runs.last().expect("open operation");
                     // The raw identity survives launch, toggles and unread names.
                     // Only a finished instance reopening creates another episode.
-                    !previous.terminal || run.terminal
+                    run.terminal
+                        || !previous.terminal
+                            && operation
+                                .end
+                                .as_ref()
+                                .is_none_or(|end| end.completion_sequence.is_none())
                 })
                 .map(|(index, _)| *index);
             let index = match continuing {
@@ -406,6 +641,10 @@ impl Builder {
                         runs: Vec::new(),
                         end: None,
                     });
+                    self.instances
+                        .entry(row.id)
+                        .or_default()
+                        .push((index, fingerprint));
                     self.open.insert(row.id, (index, fingerprint));
                     index
                 }
@@ -420,8 +659,24 @@ impl Builder {
                 operation.start_known_at = Some(hour);
             }
             if run.terminal && operation.end.is_none() {
-                let (outcome, outcome_unrecorded) =
-                    outcome_at_end(None, None, None, None, None, None, &mut self.warnings);
+                let description = row
+                    .effect_description
+                    .require("Operations.effect_description")
+                    .ok();
+                let (outcome, outcome_unrecorded) = outcome_at_end(
+                    row.bonus.require("Operations.bonus").ok().copied(),
+                    row.detected.require("Operations.detected").ok().copied(),
+                    description.map(|_| super::operation_description::OperationDescriptionRef {
+                        hour,
+                        id: row.id.to_string(),
+                        owner: row.owner,
+                        sequence: None,
+                    }),
+                    None,
+                    description.map(|bytes| bytes.len() as u64),
+                    Some(&self.language),
+                    &mut self.warnings,
+                );
                 operation.end = Some(EspionageOperationEnd {
                     by_hour: hour,
                     last_seen: hour,
@@ -464,6 +719,7 @@ impl EspionageOperationRun {
             && self.auto_commence == other.auto_commence
             && self.start_hour == other.start_hour
             && self.operatives == other.operatives
+            && self.operative_names == other.operative_names
     }
 }
 
@@ -520,15 +776,15 @@ fn current_phase(row: &OperationRow, hour: i32) -> Option<u32> {
         .filter(|phase| *phase < row.phase_count)
 }
 
-/// Completion 1413EE390 writes +0xA0 text and independent +0xC0/+0xC1
-/// results; 141819FF0 displays those client-language bytes without relocalising.
+/// Completion1413EE390 writes independent +0xC0/+0xC1 results. Exact
+/// client-language +0xA0 text is fetched separately for the active tooltip.
 fn outcome_at_end(
     bonus: Option<u8>,
     detected: Option<u8>,
-    description: Option<&[u8]>,
+    reference: Option<super::operation_description::OperationDescriptionRef>,
     description_reason: Option<&str>,
-    description_required_bytes: Option<u64>,
-    recorded_language: Option<&str>,
+    required: Option<u64>,
+    language: Option<&str>,
     warnings: &mut BTreeMap<String, usize>,
 ) -> (Option<EspionageOutcome>, Option<String>) {
     let mut refusals = Vec::new();
@@ -543,36 +799,22 @@ fn outcome_at_end(
     if !refusals.is_empty() {
         return (None, Some(refusals.join("; ")));
     }
-    let (Some(bonus), Some(detected), Some(description), Some(required_bytes), Some(language)) = (
-        bonus,
-        detected,
-        description,
-        description_required_bytes,
-        recorded_language,
-    ) else {
+    let (Some(bonus), Some(detected), Some(reference), Some(required), Some(language)) =
+        (bonus, detected, reference, required, language)
+    else {
         return (None, Some("Outcome not recorded: stored bonus, detection and effect description were not captured".into()));
     };
-    let text = match description_reason {
-        Some(reason) => Err(reason.to_owned()),
-        None => std::str::from_utf8(description)
-            .map(str::to_owned)
-            .map_err(|_| "Stored operation description refused: non-UTF-8 recorded bytes".into()),
-    };
-    let (description, description_unrecorded) = match text {
-        Ok(description) => (Some(description), None),
-        Err(reason) => {
-            *warnings.entry(reason.clone()).or_default() += 1;
-            (None, Some(reason))
-        }
-    };
+    if let Some(reason) = description_reason {
+        *warnings.entry(reason.to_owned()).or_default() += 1;
+    }
     (
         Some(EspionageOutcome {
             bonus: bonus == 1,
             detected: detected == 1,
             recorded_language: language.to_owned(),
-            description,
-            description_unrecorded,
-            description_required_bytes: required_bytes.to_string(),
+            description_ref: description_reason.is_none().then_some(reference),
+            description_unrecorded: description_reason.map(str::to_owned),
+            description_required_bytes: required.to_string(),
         }),
         None,
     )
@@ -594,10 +836,20 @@ fn scan(
         TableId::Countries,
         TableId::CountryLinks,
         TableId::Operations,
+        TableId::OperationCompletions,
         TableId::OperationAssignments,
+        TableId::OperativeMemberships,
         TableId::LexicalTokens,
     ];
-    let mut builder = Builder::default();
+    let mut builder = Builder {
+        language: replay
+            .identity
+            .language
+            .strip_prefix("l_")
+            .unwrap_or(&replay.identity.language)
+            .to_owned(),
+        ..Builder::default()
+    };
     for block in replay
         .index
         .iter()
@@ -623,6 +875,7 @@ fn scan(
                 break;
             }
             builder.observe(decoded);
+            builder.observe_completions(decoded, replay, params.branch())?;
         }
     }
     let unavailable = builder
@@ -631,15 +884,17 @@ fn scan(
         .then(|| "Operations was unavailable, incomplete or never read in this recording.".into());
     let reply = EspionageLogReply {
         branch_id: params.branch_id.clone(),
+        window: None,
+        windows: Vec::new(),
         first_hour,
         last_hour,
         available: builder.available,
         read_hours: builder.reads,
-        completions_available: Vec::new(),
-        completions_unrecorded: Some(
-            "Operation completions not recorded: this product does not read OperationCompletions"
-                .into(),
-        ),
+        completions_available: builder.completions,
+        completions_unrecorded: (!TableId::OperationCompletions
+            .last_change()
+            .present(replay.format.version()))
+        .then(|| "Operation completion events not recorded in this format".into()),
         types: builder
             .types
             .into_iter()
@@ -658,24 +913,24 @@ fn scan(
             .collect(),
         unavailable,
     };
-    check_reply_budget(&reply)?;
     Ok(reply)
 }
 
 impl Product for EspionageLog {
     const KEY: &'static str = "espionage-log";
     const CONTENT_DEPENDENT: bool = true;
-    type Params = BranchParams;
+    type Params = EspionageLogParams;
     type Reply = EspionageLogReply;
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
-        params.validate()
+        params.branch_params().validate()
     }
     fn types() -> Vec<String> {
         vec![
-            BranchParams::decl(),
+            EspionageLogParams::decl(),
             HourSpan::decl(),
             EspionageOperationType::decl(),
             EspionageOperationRun::decl(),
+            EspionageOperativeName::decl(),
             EspionageEndReason::decl(),
             EspionageOutcome::decl(),
             EspionageOperationEnd::decl(),
@@ -691,13 +946,22 @@ impl Product for EspionageLog {
     ) -> io::Result<Self::Reply> {
         let state = source.state::<Cache>();
         let mut cache = state.lock().unwrap_or_else(|error| error.into_inner());
-        if cache.branch != Some(params.branch()) {
-            cache.raw = Some(Arc::new(scan(&source.replay(), params, cancelled)?));
-            cache.branch = Some(params.branch());
+        let branch_params = params.branch_params();
+        if cache.branch != Some(branch_params.branch()) {
+            cache.raw = Some(Arc::new(scan(&source.replay(), &branch_params, cancelled)?));
+            cache.branch = Some(branch_params.branch());
         }
-        let mut reply = cache.raw.as_ref().expect("scanned branch").as_ref().clone();
+        let raw = Arc::clone(cache.raw.as_ref().expect("scanned branch"));
         drop(cache);
-        if !reply.types.is_empty() {
+        let mut reply = metadata_window(&raw, params.window)?;
+        if !reply.types.is_empty()
+            || reply.operations.iter().any(|operation| {
+                operation
+                    .runs
+                    .iter()
+                    .any(|run| run.operative_names.is_some())
+            })
+        {
             match context
                 .content()
                 .and_then(|options| intelligence_content(source, options))
@@ -709,17 +973,246 @@ impl Product for EspionageLog {
                         operation_type.icon = artwork.icon;
                         operation_type.icon_missing = missing;
                     }
+                    let mut names = HashMap::new();
+                    for name in reply
+                        .operations
+                        .iter_mut()
+                        .flat_map(|operation| &mut operation.runs)
+                        .flat_map(|run| run.operative_names.iter_mut().flatten())
+                    {
+                        if let Some(raw) = name.name.take() {
+                            let resolved = names.entry(raw.clone()).or_insert_with(|| {
+                                match crate::catalogue::localised_bytes(
+                                    &content.catalogue.localisation,
+                                    raw.as_bytes(),
+                                    crate::catalogue::View::Plain,
+                                ) {
+                                    Ok(name) => (Some(name), None),
+                                    Err(reason) => (None, Some(reason)),
+                                }
+                            });
+                            name.name = resolved.0.clone();
+                            name.unavailable = resolved.1.clone();
+                        }
+                    }
                     reply.warnings.extend(content.warnings.iter().cloned());
                     reply.warnings.extend(content.catalogue.refusal_lines());
                 }
-                Err(reason) => reply
-                    .warnings
-                    .push(format!("Operation content unavailable: {reason}")),
+                Err(reason) => {
+                    for name in reply
+                        .operations
+                        .iter_mut()
+                        .flat_map(|operation| &mut operation.runs)
+                        .flat_map(|run| run.operative_names.iter_mut().flatten())
+                    {
+                        if let Some(raw) = name.name.take() {
+                            match crate::catalogue::localised_bytes(
+                                &installed_content::localisation::Localisation::default(),
+                                raw.as_bytes(),
+                                crate::catalogue::View::Plain,
+                            ) {
+                                Ok(value) => name.name = Some(value),
+                                Err(reason) => name.unavailable = Some(reason),
+                            }
+                        }
+                    }
+                    reply.warnings.push(format!("Operation content unavailable: {reason}; operative names show their saved literal/key"));
+                }
             }
         }
+        let mut name_refusals = BTreeMap::new();
+        for name in reply
+            .operations
+            .iter()
+            .flat_map(|operation| &operation.runs)
+            .flat_map(|run| run.operative_names.iter().flatten())
+        {
+            if let Some(reason) = &name.unavailable {
+                *name_refusals.entry(reason).or_insert(0_usize) += 1;
+            }
+        }
+        reply.warnings.extend(
+            name_refusals
+                .into_iter()
+                .map(|(reason, count)| format!("{reason} ({count} operative-name observations).")),
+        );
         check_reply_budget(&reply)?;
         Ok(reply)
     }
+}
+
+/// Transport windows follow the daily census granularity, independent of native
+/// allocation or recording block size. There is no country/episode/run cap.
+fn metadata_windows(first: i32, last: i32) -> Vec<HourSpan> {
+    let mut windows = Vec::new();
+    let mut hour = i64::from(first);
+    while hour <= i64::from(last) {
+        let end = (hour + 23).min(i64::from(last));
+        windows.push(HourSpan {
+            first_hour: hour as i32,
+            last_hour: end as i32,
+        });
+        hour = end + 1;
+    }
+    windows
+}
+fn clipped(spans: &[HourSpan], first: i32, last: i32) -> Vec<HourSpan> {
+    spans
+        .iter()
+        .filter_map(|span| {
+            let first_hour = span.first_hour.max(first);
+            let last_hour = span.last_hour.min(last);
+            (first_hour <= last_hour).then_some(HourSpan {
+                first_hour,
+                last_hour,
+            })
+        })
+        .collect()
+}
+fn metadata_window(
+    raw: &EspionageLogReply,
+    window: Option<usize>,
+) -> io::Result<EspionageLogReply> {
+    let (first, last) = if let Some(index) = window {
+        let first = i64::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_mul(24))
+            .and_then(|offset| i64::from(raw.first_hour).checked_add(offset))
+            .filter(|first| *first <= i64::from(raw.last_hour))
+            .ok_or_else(|| crate::invalid("Espionage metadata window not in this branch"))?;
+        (
+            first as i32,
+            (first + 23).min(i64::from(raw.last_hour)) as i32,
+        )
+    } else {
+        (raw.first_hour, raw.last_hour)
+    };
+    let mut reply = EspionageLogReply {
+        branch_id: raw.branch_id.clone(),
+        window,
+        windows: if window.is_none() {
+            metadata_windows(raw.first_hour, raw.last_hour)
+        } else {
+            Vec::new()
+        },
+        first_hour: first,
+        last_hour: last,
+        available: if window.is_none() {
+            raw.available.clone()
+        } else {
+            clipped(&raw.available, first, last)
+        },
+        read_hours: Vec::new(),
+        completions_available: if window.is_none() {
+            raw.completions_available.clone()
+        } else {
+            clipped(&raw.completions_available, first, last)
+        },
+        completions_unrecorded: raw.completions_unrecorded.clone(),
+        types: raw.types.clone(),
+        operations: Vec::new(),
+        warnings: raw.warnings.clone(),
+        unavailable: raw.unavailable.clone(),
+    };
+    if window.is_none() {
+        return Ok(reply);
+    }
+    // One actual previous read dates carried values; never fabricate a window read.
+    if let Some(read) = raw.read_hours.iter().rev().find(|read| **read < first) {
+        reply.read_hours.push(*read);
+    }
+    reply.read_hours.extend(
+        raw.read_hours
+            .iter()
+            .copied()
+            .filter(|read| *read >= first && *read <= last),
+    );
+    let mut anchors = BTreeSet::new();
+    for operation in &raw.operations {
+        if operation.first_read > last
+            || operation
+                .end
+                .as_ref()
+                .is_some_and(|end| end.by_hour < first)
+        {
+            continue;
+        }
+        let mut projected = EspionageOperation {
+            id: operation.id.clone(),
+            first_read: operation.first_read,
+            start_hour: operation.start_hour,
+            start_known_at: operation.start_known_at,
+            definition_token: operation.definition_token,
+            runs: Vec::new(),
+            end: operation.end.clone(),
+        };
+        // An ending names its actual supplying read, which can precede a run
+        // clipped at this window. Keep that witness, or one previous identity.
+        let witness = operation
+            .end
+            .as_ref()
+            .filter(|end| end.by_hour <= last && end.last_seen < first)
+            .and_then(|end| {
+                operation
+                    .runs
+                    .iter()
+                    .find(|run| run.first_hour <= end.last_seen && end.last_seen <= run.last_hour)
+                    .map(|run| (run, end.last_seen))
+            });
+        let anchor = witness.or_else(|| {
+            operation
+                .runs
+                .iter()
+                .rev()
+                .find(|run| run.last_hour < first)
+                .map(|run| (run, run.last_hour))
+        });
+        if let Some((run, hour)) = anchor {
+            let mut anchor = run.clone();
+            anchor.first_hour = hour;
+            anchor.last_hour = hour;
+            anchors.insert(hour);
+            projected.runs.push(anchor);
+        }
+        projected
+            .runs
+            .extend(operation.runs.iter().filter_map(|run| {
+                let first_hour = run.first_hour.max(first);
+                let last_hour = run.last_hour.min(last);
+                if first_hour > last_hour {
+                    return None;
+                }
+                let mut run = run.clone();
+                run.first_hour = first_hour;
+                run.last_hour = last_hour;
+                Some(run)
+            }));
+        if projected.end.as_ref().is_some_and(|end| end.by_hour > last) {
+            projected.end = None;
+        }
+        reply.operations.push(projected);
+    }
+    // Anchor availability is identity history only, outside the requested window.
+    let mut available: Vec<HourSpan> = anchors
+        .into_iter()
+        .map(|hour| HourSpan {
+            first_hour: hour,
+            last_hour: hour,
+        })
+        .collect();
+    available.append(&mut reply.available);
+    for span in available {
+        if let Some(previous) = reply
+            .available
+            .last_mut()
+            .filter(|previous| i64::from(previous.last_hour) + 1 >= i64::from(span.first_hour))
+        {
+            previous.last_hour = previous.last_hour.max(span.last_hour);
+        } else {
+            reply.available.push(span);
+        }
+    }
+    Ok(reply)
 }
 
 fn check_reply_budget(reply: &EspionageLogReply) -> io::Result<()> {
@@ -746,6 +1239,8 @@ mod tests {
         let mut frame = crate::test_fixtures::source(1, hour, Some(1));
         // Successful explicit reads also occur away from the scheduled slot.
         frame.metrics.table_ns[TableId::Operations.index()] = 1;
+        *frame.tables[TableId::OperationCompletions.index()] =
+            TableView::Complete(TableRows::OperationCompletions(Vec::new()));
         *frame.tables[TableId::OperationAssignments.index()] =
             TableView::Complete(TableRows::OperationAssignments(Vec::new()));
         *frame.tables[TableId::LexicalTokens.index()] =
@@ -776,6 +1271,9 @@ mod tests {
                     owner: id,
                     target: count + 1 - id,
                     definition_token: 70,
+                    bonus: 0.into(),
+                    detected: 0.into(),
+                    effect_description: Vec::new().into(),
                     preparation_current: 25,
                     preparation_required: 100,
                     ..Default::default()
@@ -783,6 +1281,332 @@ mod tests {
                 .collect(),
         ));
         frame
+    }
+
+    #[test]
+    fn espionage_terminal_rereads_keep_the_first_known_ending_and_description() {
+        let mut builder = Builder::default();
+        let mut sample = frame(100, 1);
+        let mut row = sample.complete::<tables::Operations>().unwrap()[0].clone();
+        row.terminal = 1;
+        row.bonus = 1.into();
+        row.detected = 0.into();
+        row.effect_description = b"first stored outcome".to_vec().into();
+        *sample.tables[TableId::Operations.index()] =
+            TableView::Complete(TableRows::Operations(vec![row.clone()]));
+        builder.observe(&sample);
+        sample.hour = 101;
+        row.effect_description = b"later stored outcome".to_vec().into();
+        *sample.tables[TableId::Operations.index()] =
+            TableView::Complete(TableRows::Operations(vec![row]));
+        builder.observe(&sample);
+        let end = builder.operations[0].end.as_ref().unwrap();
+        assert_eq!(end.by_hour, 100);
+        assert_eq!(end.last_seen, 100);
+        assert_eq!(
+            end.outcome
+                .as_ref()
+                .unwrap()
+                .description_ref
+                .as_ref()
+                .unwrap()
+                .hour,
+            100
+        );
+    }
+
+    #[test]
+    fn espionage_completions_override_disappearance_and_keep_deleted_instances_without_bulk_text() {
+        use crate::test_fixtures::{CAMPAIGN, records};
+        use replay::rows::OperationCompletionRow;
+        let mut initial = frame(100, 1);
+        *initial.tables[TableId::OperationCompletions.index()] =
+            TableView::Complete(TableRows::OperationCompletions(Vec::new()));
+        let mut ended = frame(101, 1);
+        *ended.tables[TableId::Operations.index()] =
+            TableView::Complete(TableRows::Operations(Vec::new()));
+        let text = vec![b'x'; (1 << 20) + 17];
+        let event = OperationCompletionRow {
+            owner: 1,
+            sequence: 1,
+            id: 1,
+            target: 1,
+            definition_token: 70,
+            completion_hour: 101,
+            terminal: 1,
+            bonus: 1,
+            detected: 0,
+            description_required: text.len() as u64,
+            effect_description: text,
+            ..Default::default()
+        };
+        let deleted = OperationCompletionRow {
+            sequence: 2,
+            id: 44,
+            effect_description: Vec::new(),
+            description_required: 0,
+            ..event.clone()
+        };
+        *ended.tables[TableId::OperationCompletions.index()] =
+            TableView::Complete(TableRows::OperationCompletions(vec![
+                event.clone(),
+                deleted.clone(),
+            ]));
+        let mut repeat = ended.clone();
+        repeat.hour = 102;
+        let replay = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(
+                1,
+                vec![initial.clone(), ended.clone(), repeat.clone()],
+            )],
+        )
+        .unwrap();
+        let params = BranchParams {
+            branch_id: "1".into(),
+        };
+        let reply = scan(&replay, &params, &AtomicBool::new(false)).unwrap();
+        assert_eq!(reply.operations.len(), 2);
+        let end = reply.operations[0].end.as_ref().unwrap();
+        assert_eq!(end.completion_hour, Some(101));
+        assert_eq!(end.completion_sequence.as_deref(), Some("1"));
+        assert!(matches!(end.reason, EspionageEndReason::Completed));
+        assert!(end.outcome.as_ref().unwrap().description_ref.is_some());
+        assert_eq!(
+            end.outcome
+                .as_ref()
+                .unwrap()
+                .description_ref
+                .as_ref()
+                .unwrap()
+                .hour,
+            101
+        );
+        assert!(reply.operations[1].runs.is_empty());
+        assert_eq!(reply.operations[1].start_hour, None);
+        assert!(json_len(&reply, 16 * 1024).is_some());
+        let mut changed = event;
+        changed.bonus = 0;
+        *repeat.tables[TableId::OperationCompletions.index()] =
+            TableView::Complete(TableRows::OperationCompletions(vec![changed, deleted]));
+        let replay =
+            Replay::from_records(CAMPAIGN.into(), &[records(1, vec![initial, ended, repeat])])
+                .unwrap();
+        assert!(
+            scan(&replay, &params, &AtomicBool::new(false))
+                .unwrap_err()
+                .to_string()
+                .contains("immutable key changed")
+        );
+    }
+
+    #[test]
+    fn espionage_held_scheduled_and_peer_memberships_do_not_supply_operative_names() {
+        use replay::rows::{OperationAssignmentRow, OperativeMembershipRow};
+        let mut first = frame(15, 1);
+        let mut operation = first.complete::<tables::Operations>().unwrap()[0].clone();
+        operation.assigned_slots = 1;
+        *first.tables[TableId::Operations.index()] =
+            TableView::Complete(TableRows::Operations(vec![operation]));
+        *first.tables[TableId::OperationAssignments.index()] =
+            TableView::Complete(TableRows::OperationAssignments(vec![
+                OperationAssignmentRow {
+                    operation: 1,
+                    ordinal: 0,
+                    operative: 77,
+                    selection: 0,
+                },
+            ]));
+        let member = OperativeMembershipRow {
+            id: 77,
+            name: b"FIRST_RECORDED_NAME".to_vec().into(),
+            ..Default::default()
+        };
+        *first.tables[TableId::OperativeMemberships.index()] =
+            TableView::Complete(TableRows::OperativeMemberships(vec![member.clone()]));
+        first.metrics.table_ns[TableId::OperativeMemberships.index()] = 1;
+        let mut scheduled = first.clone();
+        scheduled.hour = 16;
+        scheduled.metrics.table_ns[TableId::OperativeMemberships.index()] = 0;
+        assert!(replay::cadence::is_refresh(
+            TableId::OperativeMemberships,
+            scheduled.hour
+        ));
+        let mut peer = scheduled.clone();
+        peer.hour = 17;
+        peer.metrics.table_ns[TableId::WingCumulative.index()] = 1;
+        assert_eq!(
+            replay::cadence::cadence(TableId::WingCumulative),
+            replay::cadence::cadence(TableId::OperativeMemberships)
+        );
+        let mut refreshed = first.clone();
+        refreshed.hour = 18;
+        *refreshed.tables[TableId::OperativeMemberships.index()] =
+            TableView::Complete(TableRows::OperativeMemberships(vec![
+                OperativeMembershipRow {
+                    name: b"FRESH_RECORDED_NAME".to_vec().into(),
+                    ..member
+                },
+            ]));
+        let mut builder = Builder::default();
+        for frame in [first, scheduled, peer, refreshed] {
+            builder.observe(&frame);
+        }
+        assert_eq!(builder.reads, [15, 16, 17, 18]);
+        assert_eq!(builder.operations.len(), 1);
+        assert_eq!(
+            builder.operations[0]
+                .runs
+                .iter()
+                .map(|run| (
+                    run.first_hour,
+                    run.last_hour,
+                    run.operative_names
+                        .as_ref()
+                        .and_then(|names| names.first())
+                        .and_then(|name| name.name.as_deref()),
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (15, 15, Some("FIRST_RECORDED_NAME")),
+                (16, 17, None),
+                (18, 18, Some("FRESH_RECORDED_NAME")),
+            ]
+        );
+    }
+
+    #[test]
+    fn espionage_names_use_recorded_assignment_order_and_do_not_backfill_an_unread_hour() {
+        use replay::rows::{OperationAssignmentRow, OperativeMembershipRow};
+        let mut first = frame(100, 1);
+        let mut operation = first.complete::<tables::Operations>().unwrap()[0].clone();
+        operation.assigned_slots = 1;
+        *first.tables[TableId::Operations.index()] =
+            TableView::Complete(TableRows::Operations(vec![operation]));
+        *first.tables[TableId::OperationAssignments.index()] =
+            TableView::Complete(TableRows::OperationAssignments(vec![
+                OperationAssignmentRow {
+                    operation: 1,
+                    ordinal: 0,
+                    operative: 77,
+                    selection: 0,
+                },
+            ]));
+        *first.tables[TableId::OperativeMemberships.index()] =
+            TableView::Complete(TableRows::OperativeMemberships(vec![
+                OperativeMembershipRow {
+                    id: 77,
+                    name: b"RECORDED_OPERATIVE".to_vec().into(),
+                    ..Default::default()
+                },
+            ]));
+        first.metrics.table_ns[TableId::OperativeMemberships.index()] = 1;
+        let mut builder = Builder::default();
+        builder.observe(&first);
+        assert_eq!(
+            builder.operations[0].runs[0]
+                .operative_names
+                .as_ref()
+                .unwrap()[0]
+                .name
+                .as_deref(),
+            Some("RECORDED_OPERATIVE")
+        );
+        first.hour = 101;
+        *first.tables[TableId::OperativeMemberships.index()] = TableView::Unavailable {
+            reason: "synthetic missing read".into(),
+        };
+        builder.observe(&first);
+        assert_eq!(builder.operations[0].runs.len(), 2);
+        assert!(builder.operations[0].runs[1].operative_names.is_none());
+    }
+
+    #[test]
+    fn espionage_window_keeps_the_actual_ending_read_before_its_clipped_run() {
+        use replay::rows::{OperationAssignmentRow, OperativeMembershipRow};
+        let mut builder = Builder::default();
+        let mut initial = frame(100, 1);
+        *initial.tables[TableId::Operations.index()] =
+            TableView::Complete(TableRows::Operations(Vec::new()));
+        builder.observe(&initial);
+        let mut sample = frame(112, 1);
+        let mut operation = sample.complete::<tables::Operations>().unwrap()[0].clone();
+        operation.assigned_slots = 1;
+        operation.phase_count = 3;
+        *sample.tables[TableId::Operations.index()] =
+            TableView::Complete(TableRows::Operations(vec![operation]));
+        *sample.tables[TableId::OperationAssignments.index()] =
+            TableView::Complete(TableRows::OperationAssignments(vec![
+                OperationAssignmentRow {
+                    operation: 1,
+                    ordinal: 0,
+                    operative: 77,
+                    selection: 0,
+                },
+            ]));
+        *sample.tables[TableId::OperativeMemberships.index()] =
+            TableView::Complete(TableRows::OperativeMemberships(vec![
+                OperativeMembershipRow {
+                    id: 77,
+                    name: b"RECORDED_OPERATIVE".to_vec().into(),
+                    ..Default::default()
+                },
+            ]));
+        sample.metrics.table_ns[TableId::OperativeMemberships.index()] = 1;
+        builder.observe(&sample);
+        sample.metrics.table_ns[TableId::Operations.index()] = 0;
+        sample.metrics.table_ns[TableId::OperationAssignments.index()] = 0;
+        for hour in 113..=135 {
+            sample.hour = hour;
+            builder.observe(&sample);
+        }
+        let mut ended = frame(136, 1);
+        *ended.tables[TableId::Operations.index()] =
+            TableView::Complete(TableRows::Operations(Vec::new()));
+        builder.observe(&ended);
+        let raw = EspionageLogReply {
+            branch_id: "1".into(),
+            window: None,
+            windows: Vec::new(),
+            first_hour: 100,
+            last_hour: 147,
+            available: builder.available,
+            read_hours: builder.reads,
+            completions_available: Vec::new(),
+            completions_unrecorded: Some("Completion events not recorded".into()),
+            types: Vec::new(),
+            operations: builder.operations,
+            warnings: Vec::new(),
+            unavailable: None,
+        };
+        let detail = metadata_window(&raw, Some(1)).unwrap();
+        let operation = &detail.operations[0];
+        assert_eq!(
+            (
+                operation.end.as_ref().unwrap().last_seen,
+                operation.end.as_ref().unwrap().by_hour
+            ),
+            (112, 136)
+        );
+        assert_eq!(
+            operation
+                .runs
+                .iter()
+                .map(|run| (run.first_hour, run.last_hour, run.read_hour))
+                .collect::<Vec<_>>(),
+            [(112, 112, 112), (124, 135, 112)]
+        );
+        let witness = operation
+            .runs
+            .iter()
+            .find(|run| run.first_hour <= 112 && 112 <= run.last_hour)
+            .unwrap();
+        assert_eq!(witness.preparation_ratio, Some(25_000));
+        assert_eq!(witness.phase_count, 3);
+        assert_eq!(
+            witness.operative_names.as_ref().unwrap()[0].name.as_deref(),
+            Some("RECORDED_OPERATIVE")
+        );
     }
 
     #[test]
@@ -880,8 +1704,9 @@ mod tests {
         .unwrap();
         let reply = EspionageLog::load(
             &source,
-            &BranchParams {
+            &EspionageLogParams {
                 branch_id: "1".into(),
+                window: Some(0),
             },
             &LoadContext { content: None },
             &cancelled,
@@ -1128,10 +1953,10 @@ mod tests {
     }
 
     #[test]
-    fn espionage_long_campaign_thousand_operations_fifty_progress_reads_fit() {
+    fn espionage_daily_windows_keep_five_thousand_country_campaign_metadata_bounded() {
         let mut builder = Builder::default();
         for day in 0..50 {
-            let mut sample = frame(100 + day * 24, 1000);
+            let mut sample = frame(100 + day * 24, 5000);
             let rows = sample
                 .complete::<tables::Operations>()
                 .unwrap()
@@ -1147,7 +1972,7 @@ mod tests {
                 TableView::Complete(TableRows::Operations(rows));
             builder.observe(&sample);
         }
-        assert_eq!(builder.operations.len(), 1000);
+        assert_eq!(builder.operations.len(), 5000);
         assert!(
             builder
                 .operations
@@ -1156,6 +1981,8 @@ mod tests {
         );
         let reply = EspionageLogReply {
             branch_id: "1".into(),
+            window: None,
+            windows: Vec::new(),
             first_hour: 100,
             last_hour: 1276,
             available: builder.available,
@@ -1169,10 +1996,31 @@ mod tests {
             warnings: vec![],
             unavailable: None,
         };
-        let bytes =
-            json_len(&reply, MAX_PRODUCT_REPLY_BYTES).expect("complete long-campaign reply fits");
-        assert!(bytes < MAX_PRODUCT_REPLY_BYTES);
-        eprintln!("1000 operations x 50 preparation reads: {bytes} serialized bytes");
+        assert!(json_len(&reply, MAX_PRODUCT_REPLY_BYTES).is_none());
+        let manifest = metadata_window(&reply, None).unwrap();
+        assert_eq!(manifest.windows.len(), 50);
+        assert!(manifest.operations.is_empty());
+        assert!(manifest.read_hours.is_empty());
+        assert!(json_len(&manifest, 64 * 1024).is_some());
+        for index in [0, 25, 49] {
+            let detail = metadata_window(&reply, Some(index)).unwrap();
+            assert_eq!(detail.operations.len(), 5000);
+            assert!(
+                detail
+                    .operations
+                    .iter()
+                    .all(|operation| operation.runs.len() <= 2)
+            );
+            assert!(json_len(&detail, MAX_PRODUCT_REPLY_BYTES).is_some());
+            assert_eq!(detail.read_hours.last(), Some(&detail.first_hour));
+            assert!(
+                detail
+                    .operations
+                    .iter()
+                    .all(|operation| operation.first_read == 100)
+            );
+        }
+        assert!(metadata_window(&reply, Some(50)).is_err());
     }
 
     #[test]
@@ -1369,8 +2217,9 @@ mod tests {
         .unwrap();
         let reply = EspionageLog::load(
             &source,
-            &BranchParams {
+            &EspionageLogParams {
                 branch_id: "1".into(),
+                window: Some(0),
             },
             &LoadContext { content: None },
             &cancelled,
@@ -1385,43 +2234,36 @@ mod tests {
         );
     }
 
-    #[test]
-    fn espionage_outcome_bytes_keep_recorded_language_and_refuse_non_utf8() {
-        for (bytes, expected, refusal) in [
-            ("Résultat\0".as_bytes(), Some("Résultat\0"), None),
-            (
-                &[0xff, 0, b'+'][..],
-                None,
-                Some("Stored operation description refused: non-UTF-8 recorded bytes"),
-            ),
-        ] {
-            let required = bytes.len() as u64;
-            let mut warnings = BTreeMap::new();
-            let (outcome, missing) = outcome_at_end(
-                Some(1),
-                Some(0),
-                Some(bytes),
-                None,
-                Some(required),
-                Some("synthetic_language"),
-                &mut warnings,
-            );
-            let outcome = outcome.unwrap();
-            assert!(missing.is_none());
-            assert!(outcome.bonus);
-            assert!(!outcome.detected);
-            assert_eq!(outcome.recorded_language, "synthetic_language");
-            assert_eq!(outcome.description_required_bytes, required.to_string());
-            assert_eq!(outcome.description.as_deref(), expected);
-            assert_eq!(outcome.description_unrecorded.as_deref(), refusal);
-            assert_eq!(
-                warnings,
-                refusal
-                    .into_iter()
-                    .map(|reason| (reason.to_owned(), 1))
-                    .collect::<BTreeMap<_, _>>()
-            );
+    fn description_reference() -> super::super::operation_description::OperationDescriptionRef {
+        super::super::operation_description::OperationDescriptionRef {
+            hour: 100,
+            id: "1".into(),
+            owner: 1,
+            sequence: Some("91".into()),
         }
+    }
+
+    #[test]
+    fn espionage_outcome_metadata_keeps_native_length_and_recorded_language() {
+        let mut warnings = BTreeMap::new();
+        let (outcome, missing) = outcome_at_end(
+            Some(1),
+            Some(0),
+            Some(description_reference()),
+            None,
+            Some(u64::MAX),
+            Some("synthetic_language"),
+            &mut warnings,
+        );
+        let outcome = outcome.unwrap();
+        assert!(missing.is_none());
+        assert!(outcome.bonus);
+        assert!(!outcome.detected);
+        assert_eq!(outcome.recorded_language, "synthetic_language");
+        assert_eq!(outcome.description_required_bytes, u64::MAX.to_string());
+        assert_eq!(outcome.description_ref, Some(description_reference()));
+        assert!(outcome.description_unrecorded.is_none());
+        assert!(warnings.is_empty());
     }
 
     #[test]
@@ -1430,7 +2272,7 @@ mod tests {
         let (outcome, missing) = outcome_at_end(
             Some(0),
             Some(1),
-            Some(&[]),
+            Some(description_reference()),
             Some("operation completion description byte ring short"),
             Some(u64::MAX),
             Some("synthetic_language"),
@@ -1440,7 +2282,7 @@ mod tests {
         assert!(missing.is_none());
         assert!(!outcome.bonus);
         assert!(outcome.detected);
-        assert_eq!(outcome.description, None);
+        assert_eq!(outcome.description_ref, None);
         assert_eq!(outcome.description_required_bytes, u64::MAX.to_string());
         assert_eq!(outcome.recorded_language, "synthetic_language");
         assert_eq!(
@@ -1464,7 +2306,7 @@ mod tests {
             let (outcome, missing) = outcome_at_end(
                 Some(bonus),
                 Some(detected),
-                Some(b"recorded effect"),
+                Some(description_reference()),
                 None,
                 Some(15),
                 Some("synthetic_language"),
@@ -1506,6 +2348,8 @@ mod tests {
     fn espionage_reply_budget_refuses_exact_serialized_size_without_truncating() {
         let mut reply = EspionageLogReply {
             branch_id: "1".into(),
+            window: None,
+            windows: Vec::new(),
             first_hour: 100,
             last_hour: 100,
             available: Vec::new(),

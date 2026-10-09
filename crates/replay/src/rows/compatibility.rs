@@ -10,6 +10,26 @@ pub const RETIRED_FORMAT: u16 = 95;
 pub(crate) const RECORDER_INPUTS_FORMAT: u16 = 98;
 /// Provisional introduction format for the second recorder-input batch.
 pub(crate) const EFFECT_INPUTS_FORMAT: u16 = 99;
+// Provisional until all widget capture families are integrated.
+pub(crate) const WIDGET_CAPTURE_FORMAT: u16 = 100;
+/// Provisional introduction format; central allocation is reconciled at merge.
+pub(crate) const PRODUCTION_MODIFIERS_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
+/// Provisional introduction format for applied fuel and logistics operands.
+pub(crate) const ECONOMY_INPUTS_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
+/// Provisional main+1 construction outcome suffix; parent finalizes the shared landing.
+pub(crate) const CONSTRUCTION_COMPLETION_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
+/// Provisional append after the accepted published recorder-input prefix.
+pub(crate) const OCCUPATION_GROUP_LAWS_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
+/// Provisional introduction of ace presentation and live end-screen operands.
+pub(crate) const GAME_SCORE_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
+/// Provisional Intel suffix and observation format; renumber in the parent union.
+pub(crate) const INTEL_INPUTS_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
+/// Provisional introduction of the recorded native war-overview operands.
+pub(crate) const WAR_OVERVIEW_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
+/// Provisional introduction of captured peace-settlement and resident bid rows.
+pub(crate) const PEACE_SETTLEMENTS_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
+/// Provisional introduction for observed air loss and applied building damage events.
+pub(crate) const AIR_LEDGER_FORMAT: u16 = WIDGET_CAPTURE_FORMAT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordKind {
@@ -111,11 +131,84 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         appended: &[],
     };
     let mut history = [baseline; TableId::ALL.len() + RecordKind::ALL.len()];
+    history[TableId::RocketProductionOutput.index()] = table(
+        TableId::RocketProductionOutput,
+        WIDGET_CAPTURE_FORMAT,
+        "wc/rocket",
+    );
+    history[TableId::RocketProductionOutput.index()].introduced = WIDGET_CAPTURE_FORMAT;
+    history[TableId::ProductionLineOutput.index()] = appended_at(
+        TableId::ProductionLineOutput,
+        WIDGET_CAPTURE_FORMAT,
+        "production-spending-inputs",
+        &[
+            AppendedField {
+                index: 9,
+                name: "spent_raw",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+            AppendedField {
+                index: 10,
+                name: "instant_raw",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+        ],
+    );
     let mut i = 0;
     while i < TableId::ALL.len() {
         history[i].subject = Subject::Table(TableId::ALL[i]);
         i += 1;
     }
+    let politics = [
+        TableId::CountryPowerDaily,
+        TableId::CountryPowerChanges,
+        TableId::CountryPowerDailyCosts,
+        TableId::GovernmentChanges,
+        TableId::PoliticsCaptureCoverage,
+    ];
+    let mut p = 0;
+    while p < politics.len() {
+        let id = politics[p];
+        history[id.index()] = table(id, WIDGET_CAPTURE_FORMAT, "3b4f34f2ea");
+        history[id.index()].introduced = WIDGET_CAPTURE_FORMAT;
+        p += 1;
+    }
+    history[TableId::WarOwnedRelations.index()] = table(
+        TableId::WarOwnedRelations,
+        WAR_OVERVIEW_FORMAT,
+        "capture/w4-wars",
+    );
+    history[TableId::WarOwnedRelations.index()].introduced = WAR_OVERVIEW_FORMAT;
+    history[TableId::WarRelationGoals.index()] = table(
+        TableId::WarRelationGoals,
+        WAR_OVERVIEW_FORMAT,
+        "capture/w4-wars",
+    );
+    history[TableId::WarRelationGoals.index()].introduced = WAR_OVERVIEW_FORMAT;
+    history[TableId::WarOverviewCountries.index()] = table(
+        TableId::WarOverviewCountries,
+        WAR_OVERVIEW_FORMAT,
+        "capture/w4-wars",
+    );
+    history[TableId::WarOverviewCountries.index()].introduced = WAR_OVERVIEW_FORMAT;
+    history[TableId::WarNameRules.index()] = table(
+        TableId::WarNameRules,
+        WAR_OVERVIEW_FORMAT,
+        "capture/w4-wars",
+    );
+    history[TableId::WarNameRules.index()].introduced = WAR_OVERVIEW_FORMAT;
+    history[TableId::PeaceSettlements.index()] = table(
+        TableId::PeaceSettlements,
+        PEACE_SETTLEMENTS_FORMAT,
+        "capture/w4-peace-deals",
+    );
+    history[TableId::PeaceSettlements.index()].introduced = PEACE_SETTLEMENTS_FORMAT;
+    history[TableId::PeaceBids.index()] = table(
+        TableId::PeaceBids,
+        PEACE_SETTLEMENTS_FORMAT,
+        "capture/w4-peace-deals",
+    );
+    history[TableId::PeaceBids.index()].introduced = PEACE_SETTLEMENTS_FORMAT;
     let mut r = 0;
     while r < RecordKind::ALL.len() {
         let kind = RecordKind::ALL[r];
@@ -144,6 +237,40 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         };
         r += 1;
     }
+    history[TableId::NavalResultSources.index()] = table(
+        TableId::NavalResultSources,
+        WIDGET_CAPTURE_FORMAT,
+        "widget-native-naval",
+    );
+    history[TableId::NavalResultSources.index()].introduced = WIDGET_CAPTURE_FORMAT;
+    history[TableId::AirAces.index()] = appended_at(
+        TableId::AirAces,
+        GAME_SCORE_FORMAT,
+        "17d59e11b4",
+        &[AppendedField {
+            index: 11,
+            name: "presentation",
+            introduced: GAME_SCORE_FORMAT,
+        }],
+    );
+    history[TableId::CountryGameScoreInputs.index()] = table(
+        TableId::CountryGameScoreInputs,
+        GAME_SCORE_FORMAT,
+        "49044c1c39",
+    );
+    history[TableId::CountryGameScoreInputs.index()].introduced = GAME_SCORE_FORMAT;
+    history[TableId::AirWingGameScoreStats.index()] = table(
+        TableId::AirWingGameScoreStats,
+        GAME_SCORE_FORMAT,
+        "49044c1c39",
+    );
+    history[TableId::AirWingGameScoreStats.index()].introduced = GAME_SCORE_FORMAT;
+    history[TableId::GameScoreMultipliers.index()] = table(
+        TableId::GameScoreMultipliers,
+        GAME_SCORE_FORMAT,
+        "49044c1c39",
+    );
+    history[TableId::GameScoreMultipliers.index()].introduced = GAME_SCORE_FORMAT;
     history[TableId::Countries.index()] = table(TableId::Countries, 93, "9fb09a565f");
     history[TableId::LandCombatDetails.index()] =
         table(TableId::LandCombatDetails, 93, "9fb09a565f");
@@ -262,6 +389,18 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::OwnedWargoals.index()] =
         table(TableId::OwnedWargoals, RECORDER_INPUTS_FORMAT, "9d09404c0d");
     history[TableId::OwnedWargoals.index()].introduced = RECORDER_INPUTS_FORMAT;
+    history[TableId::CountryExperienceGains.index()] = table(
+        TableId::CountryExperienceGains,
+        WIDGET_CAPTURE_FORMAT,
+        "ecb7ef4c1a",
+    );
+    history[TableId::CountryExperienceGains.index()].introduced = WIDGET_CAPTURE_FORMAT;
+    history[TableId::EventFeedHistory.index()] = table(
+        TableId::EventFeedHistory,
+        WIDGET_CAPTURE_FORMAT,
+        "wc/event-feed",
+    );
+    history[TableId::EventFeedHistory.index()].introduced = WIDGET_CAPTURE_FORMAT;
     history[TableId::AdvisorRoles.index()] = appended_at(
         TableId::AdvisorRoles,
         EFFECT_INPUTS_FORMAT,
@@ -317,15 +456,78 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             },
         ],
     );
-    history[TableId::OperativeMemberships.index()] = appended(
+    history[TableId::OperativeMemberships.index()] = appended_at(
         TableId::OperativeMemberships,
-        "d53fa4e05c",
-        &[AppendedField {
-            index: 8,
-            name: "ordinal",
-            introduced: RECORDER_INPUTS_FORMAT,
-        }],
+        INTEL_INPUTS_FORMAT,
+        "intel-native-union",
+        &[
+            AppendedField {
+                index: 8,
+                name: "ordinal",
+                introduced: RECORDER_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 9,
+                name: "target_country",
+                introduced: INTEL_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 10,
+                name: "operation",
+                introduced: INTEL_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 11,
+                name: "name",
+                introduced: INTEL_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 12,
+                name: "cooldown_kind",
+                introduced: INTEL_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 13,
+                name: "cooldown_start_hour",
+                introduced: INTEL_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 14,
+                name: "cooldown_end_hour",
+                introduced: INTEL_INPUTS_FORMAT,
+            },
+        ],
     );
+    history[TableId::Operations.index()] = appended_at(
+        TableId::Operations,
+        INTEL_INPUTS_FORMAT,
+        "intel-native-union",
+        &[
+            AppendedField {
+                index: 13,
+                name: "bonus",
+                introduced: INTEL_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 14,
+                name: "detected",
+                introduced: INTEL_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 15,
+                name: "effect_description",
+                introduced: INTEL_INPUTS_FORMAT,
+            },
+        ],
+    );
+    let intel = [TableId::AgencyUpgradeLevels, TableId::OperationCompletions];
+    let mut i = 0;
+    while i < intel.len() {
+        let id = intel[i];
+        history[id.index()] = table(id, INTEL_INPUTS_FORMAT, "intel-native-union");
+        history[id.index()].introduced = INTEL_INPUTS_FORMAT;
+        i += 1;
+    }
     history[TableId::DivisionStatus.index()] = appended_at(
         TableId::DivisionStatus,
         EFFECT_INPUTS_FORMAT,
@@ -462,15 +664,37 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             },
         ],
     );
+    history[TableId::States.index()] = appended_at(
+        TableId::States,
+        OCCUPATION_GROUP_LAWS_FORMAT,
+        "occupation-retained-continent",
+        &[AppendedField {
+            index: 6,
+            name: "continent",
+            introduced: OCCUPATION_GROUP_LAWS_FORMAT,
+        }],
+    );
     history[TableId::OccupationSettings.index()] = appended_at(
         TableId::OccupationSettings,
-        EFFECT_INPUTS_FORMAT,
-        "ffd3e03cc6",
-        &[AppendedField {
-            index: 3,
-            name: "occupied",
-            introduced: EFFECT_INPUTS_FORMAT,
-        }],
+        OCCUPATION_GROUP_LAWS_FORMAT,
+        "occupation-group-law-union",
+        &[
+            AppendedField {
+                index: 3,
+                name: "occupied",
+                introduced: EFFECT_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 4,
+                name: "group_laws",
+                introduced: OCCUPATION_GROUP_LAWS_FORMAT,
+            },
+            AppendedField {
+                index: 5,
+                name: "fallback_law",
+                introduced: OCCUPATION_GROUP_LAWS_FORMAT,
+            },
+        ],
     );
     history[TableId::Scientists.index()] = appended_at(
         TableId::Scientists,
@@ -541,8 +765,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::CapturedOperativeReferences.index()].introduced = EFFECT_INPUTS_FORMAT;
     history[TableId::ReservedCountryNaming.index()] = appended_at(
         TableId::ReservedCountryNaming,
-        EFFECT_INPUTS_FORMAT,
-        "ffd3e03cc6",
+        WIDGET_CAPTURE_FORMAT,
+        "widget-artwork-predicate",
         &[
             AppendedField {
                 index: 8,
@@ -569,6 +793,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 name: "owned_state_count",
                 introduced: EFFECT_INPUTS_FORMAT,
             },
+            AppendedField {
+                index: 13,
+                name: "dynamic_tag_boundary",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
         ],
     );
     history[TableId::ReservedCountryNaming.index()].introduced = EFFECT_INPUTS_FORMAT;
@@ -578,6 +807,32 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         "ffd3e03cc6",
     );
     history[TableId::AttritionModifierBreakdowns.index()].introduced = EFFECT_INPUTS_FORMAT;
+    history[TableId::CountryProductionModifiers.index()] = table(
+        TableId::CountryProductionModifiers,
+        PRODUCTION_MODIFIERS_FORMAT,
+        "production-modifiers",
+    );
+    history[TableId::CountryProductionModifiers.index()].introduced = PRODUCTION_MODIFIERS_FORMAT;
+    history[TableId::ProductionLineModifiers.index()] = table(
+        TableId::ProductionLineModifiers,
+        PRODUCTION_MODIFIERS_FORMAT,
+        "production-modifiers",
+    );
+    history[TableId::ProductionLineModifiers.index()].introduced = PRODUCTION_MODIFIERS_FORMAT;
+    let air_ledgers = [
+        TableId::AirLossEvents,
+        TableId::BuildingBombingDamage,
+        TableId::AirDailyRoster,
+    ];
+    let mut ledger = 0;
+    while ledger < air_ledgers.len() {
+        let id = air_ledgers[ledger];
+        history[id.index()] = LastChange {
+            introduced: AIR_LEDGER_FORMAT,
+            ..table(id, AIR_LEDGER_FORMAT, "7fa2b75e16")
+        };
+        ledger += 1;
+    }
     history[TableId::VariantDefinitions.index()] = appended(
         TableId::VariantDefinitions,
         "9d09404c0d",
@@ -636,6 +891,161 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             name: "LandBorderWarInputs.combat_width",
             introduced: RECORDER_INPUTS_FORMAT,
         }];
+    history[TableId::CountryFuel.index()] = appended_at(
+        TableId::CountryFuel,
+        ECONOMY_INPUTS_FORMAT,
+        "a72768d69e",
+        &[
+            AppendedField {
+                index: 19,
+                name: "country_instance",
+                introduced: ECONOMY_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 20,
+                name: "awards",
+                introduced: ECONOMY_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 21,
+                name: "demand",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+        ],
+    );
+    history[TableId::LogisticsEquipment.index()] = appended_at(
+        TableId::LogisticsEquipment,
+        ECONOMY_INPUTS_FORMAT,
+        "afa36ffdef",
+        &[AppendedField {
+            index: 3,
+            name: "available_raw",
+            introduced: ECONOMY_INPUTS_FORMAT,
+        }],
+    );
+    history[TableId::ConstructionLineOutput.index()] = appended_at(
+        TableId::ConstructionLineOutput,
+        CONSTRUCTION_COMPLETION_FORMAT,
+        "construction completion outcomes (provisional)",
+        &[AppendedField {
+            index: 13,
+            name: "completion",
+            introduced: CONSTRUCTION_COMPLETION_FORMAT,
+        }],
+    );
+    history[TableId::StateGarrisons.index()] = appended_at(
+        TableId::StateGarrisons,
+        WIDGET_CAPTURE_FORMAT,
+        "garrison-strength-operands",
+        &[AppendedField {
+            index: 5,
+            name: "equipment",
+            introduced: WIDGET_CAPTURE_FORMAT,
+        }],
+    );
+    // Signed net rows preserve every historical positive amount. Missing new
+    // columns remain field gaps; correctly decoded old prefixes still open.
+    history[TableId::EquipmentDestruction.index()] = appended_at(
+        TableId::EquipmentDestruction,
+        WIDGET_CAPTURE_FORMAT,
+        "91cbbe55",
+        &[
+            AppendedField {
+                index: 1,
+                name: "coverage",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+            AppendedField {
+                index: 2,
+                name: "unavailable_reason",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+        ],
+    );
+    history[TableId::Fleets.index()] = appended_at(
+        TableId::Fleets,
+        WIDGET_CAPTURE_FORMAT,
+        "91cbbe55",
+        &[
+            AppendedField {
+                index: 2,
+                name: "name",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+            AppendedField {
+                index: 3,
+                name: "leader",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+        ],
+    );
+    history[TableId::OrdersGroups.index()] = appended_at(
+        TableId::OrdersGroups,
+        WIDGET_CAPTURE_FORMAT,
+        "91cbbe55",
+        &[AppendedField {
+            index: 9,
+            name: "name",
+            introduced: WIDGET_CAPTURE_FORMAT,
+        }],
+    );
+    history[TableId::LandCombatProgress.index()] = appended_at(
+        TableId::LandCombatProgress,
+        WIDGET_CAPTURE_FORMAT,
+        "91cbbe55",
+        &[
+            AppendedField {
+                index: 4,
+                name: "attacker_manpower_loss",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+            AppendedField {
+                index: 5,
+                name: "defender_manpower_loss",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+            AppendedField {
+                index: 6,
+                name: "attacker_equipment_losses",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+            AppendedField {
+                index: 7,
+                name: "defender_equipment_losses",
+                introduced: WIDGET_CAPTURE_FORMAT,
+            },
+        ],
+    );
+    history[TableId::DivisionEquipmentDeletions.index()] = table(
+        TableId::DivisionEquipmentDeletions,
+        WIDGET_CAPTURE_FORMAT,
+        "91cbbe55",
+    );
+    history[TableId::DivisionEquipmentDeletions.index()].introduced = WIDGET_CAPTURE_FORMAT;
+    history[TableId::DivisionLandInputs.index()] = table(
+        TableId::DivisionLandInputs,
+        WIDGET_CAPTURE_FORMAT,
+        "91cbbe55",
+    );
+    history[TableId::DivisionLandInputs.index()].introduced = WIDGET_CAPTURE_FORMAT;
+    history[TableId::LandCombatResults.index()] = table(
+        TableId::LandCombatResults,
+        WIDGET_CAPTURE_FORMAT,
+        "91cbbe55",
+    );
+    history[TableId::LandCombatResults.index()].introduced = WIDGET_CAPTURE_FORMAT;
+    history[TableId::DestroyedDivisions.index()] = table(
+        TableId::DestroyedDivisions,
+        WIDGET_CAPTURE_FORMAT,
+        "91cbbe55",
+    );
+    history[TableId::DestroyedDivisions.index()].introduced = WIDGET_CAPTURE_FORMAT;
+    history[TableId::LandEventCoverage.index()] = table(
+        TableId::LandEventCoverage,
+        WIDGET_CAPTURE_FORMAT,
+        "91cbbe55",
+    );
+    history[TableId::LandEventCoverage.index()].introduced = WIDGET_CAPTURE_FORMAT;
     history
 };
 
@@ -726,6 +1136,47 @@ impl RecordKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_war_operands_are_named_gaps_before_their_introduction() {
+        for table in [
+            TableId::WarOwnedRelations,
+            TableId::WarRelationGoals,
+            TableId::WarOverviewCountries,
+            TableId::WarNameRules,
+        ] {
+            let history = table.last_change();
+            for format in PROVEN_FROM..WAR_OVERVIEW_FORMAT {
+                assert!(!history.present(format));
+                assert!(
+                    history
+                        .table_gap(table, format)
+                        .unwrap()
+                        .contains("not recorded")
+                );
+            }
+            assert!(history.present(WAR_OVERVIEW_FORMAT));
+            assert!(history.table_gap(table, WAR_OVERVIEW_FORMAT).is_none());
+        }
+    }
+
+    #[test]
+    fn peace_actions_are_named_gaps_before_their_introduction() {
+        for table in [TableId::PeaceSettlements, TableId::PeaceBids] {
+            let history = table.last_change();
+            for format in PROVEN_FROM..PEACE_SETTLEMENTS_FORMAT {
+                assert!(!history.present(format));
+                assert!(
+                    history
+                        .table_gap(table, format)
+                        .unwrap()
+                        .contains("not recorded")
+                );
+            }
+            assert!(history.present(PEACE_SETTLEMENTS_FORMAT));
+            assert!(history.table_gap(table, PEACE_SETTLEMENTS_FORMAT).is_none());
+        }
+    }
 
     #[test]
     fn compatibility_catalog_covers_every_table_and_record_once() {

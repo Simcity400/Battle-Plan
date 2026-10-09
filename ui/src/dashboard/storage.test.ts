@@ -1,13 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultTemplate, WIDGET_CONTENT_SCALES } from './model.ts';
-import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, saveLayouts } from './storage.ts';
+import { loadLayouts, MAX_LAYOUTS, parseLayoutLibrary, parseLayoutLibraryWithNotes, parseTemplate, saveLayouts } from './storage.ts';
 import '../widgets/definitions.ts';
 
 function memoryStorage() {
   const values = new Map<string, string>();
   return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
 }
+
+test('saved Territory faction counts follow its uncapped definition without changing shared validation', () => {
+  const template = defaultTemplate();
+  const widget = template.widgets[0];
+  widget.kind = 'territory';
+  for (const count of [1, 30, 31, 64, 5_000, Number.MAX_SAFE_INTEGER]) {
+    widget.countries = { kind: 'factions', count, membership: 'hour' };
+    assert.equal(parseTemplate(template)?.widgets[0].countries.kind, 'factions');
+  }
+  for (const count of [Number.MAX_SAFE_INTEGER + 1, 0, 1.5]) {
+    widget.countries = { kind: 'factions', count, membership: 'hour' };
+    assert.equal(parseTemplate(template), null);
+  }
+});
 
 test('widget content scales migrate, persist independently and reject invalid saved values', () => {
   const storage = memoryStorage();
@@ -243,4 +257,16 @@ test('restoration drops non-string tag entries and counts notes across layouts',
   assert.match(loaded.warning!, /10 country tag entries were left out/);
   assert.deepEqual(loaded.library, parsed.library);
   assert.equal(storage.getItem('hoi4-replay.workspace-layouts.v1'), saved);
+});
+
+test('an uninstalled widget retains faction selections beyond thirty without a private default limit', () => {
+  const template = defaultTemplate(); template.widgets[0].kind = 'uninstalled-faction-widget';
+  template.widgets[0].countries = { kind: 'factions', count: 5000, membership: 'end' };
+  assert.deepEqual(parseTemplate(template)?.widgets[0].countries, template.widgets[0].countries);
+});
+
+test('stored faction-total counts survive an installed widget choice maximum', () => {
+  const template = defaultTemplate(); template.widgets[0].kind = 'factions';
+  template.widgets[0].countries = { kind: 'factions', count: 5000, membership: 'ever' };
+  assert.deepEqual(parseTemplate(template)?.widgets[0].countries, template.widgets[0].countries);
 });

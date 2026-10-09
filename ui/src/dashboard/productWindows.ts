@@ -16,6 +16,24 @@ export interface ProductWindows<T> {
 /** The windows loaded (or failed) for one identity. */
 export interface Held<T> { identity: string | null; data: Map<number, T>; errors: Map<number, string> }
 
+export interface WindowDisplay<T> { identity: string; data: T; hour: number }
+
+/** Keep the previous window at its own hour while the next is loading. A new
+ * recording/content identity never borrows the previous recording's rows. */
+export function windowDisplay<T>(previous: WindowDisplay<T> | null, identity: string | null, data: T | undefined, hour: number): WindowDisplay<T> | null {
+  if (identity === null) return null;
+  if (data === undefined) return previous?.identity === identity ? previous : null;
+  return previous?.identity === identity && previous.data === data && previous.hour === hour ? previous : { identity, data, hour };
+}
+
+export function useWindowDisplay<T>(identity: string | null, data: T | undefined, hour: number, client?: DashboardClient): WindowDisplay<T> | null {
+  const owner = useMemo(() => ({ client, identity }), [client, identity]);
+  const [held, setHeld] = useState<{ owner: typeof owner; display: WindowDisplay<T> | null }>({ owner, display: null });
+  const shown = windowDisplay(held.owner === owner ? held.display : null, identity, data, hour);
+  useEffect(() => { setHeld(previous => previous.owner === owner && previous.display === shown ? previous : { owner, display: shown }); }, [shown, owner]);
+  return shown;
+}
+
 /** What is held once `wanted` is all that is wanted: nothing of another identity, and
  * none of the windows no longer wanted; the same object when nothing changes, so a
  * render that wants the same windows is not repeated. */
@@ -33,36 +51,41 @@ export function keepWanted<T>(held: Held<T>, identity: string | null, wanted: Re
  * between. Windows no longer wanted are released. */
 export function useProductWindows<T>(client: DashboardClient, identity: string | null, request: (window: number) => ProductRequest,
   wanted: readonly number[], active: boolean, validate?: (data: unknown) => T): ProductWindows<T> {
-  const [held, setHeld] = useState<Held<T>>({ identity, data: new Map(), errors: new Map() });
-  const [attempt, setAttempt] = useState(0);
-  const current = held.identity === identity ? held : null;
+  const owner = useMemo(() => ({ client, identity }), [client, identity]);
+  const [held, setHeld] = useState<Held<T> & { owner: typeof owner; attempt: number }>({ owner, identity, data: new Map(), errors: new Map(), attempt: 0 });
+  const current = held.owner === owner ? held : null;
+  const attempt = current?.attempt ?? 0;
   const key = wanted.join(',');
   useEffect(() => {
     if (!active || identity == null) return;
     const controller = new AbortController();
     const want = new Set(wanted);
     // Release what is no longer wanted; a new identity starts afresh.
-    setHeld(previous => keepWanted(previous, identity, want));
+    setHeld(previous => {
+      if (previous.owner !== owner) return { owner, identity, data: new Map(), errors: new Map(), attempt: 0 };
+      const kept = keepWanted(previous, identity, want);
+      return kept === previous ? previous : { ...kept, owner, attempt: previous.attempt };
+    });
     for (const window of want) {
       if (current?.data.has(window) || current?.errors.has(window)) continue;
       void loadProduct<T>(client, request(window), controller.signal, validate).then(
         data => {
           if (controller.signal.aborted) return;
-          setHeld(previous => previous.identity !== identity ? previous
-            : { identity, data: new Map(previous.data).set(window, data), errors: previous.errors });
+          setHeld(previous => previous.owner !== owner ? previous
+            : { ...previous, data: new Map(previous.data).set(window, data) });
         },
         error => {
           if (controller.signal.aborted) return;
           const message = error instanceof Error ? error.message : String(error);
-          setHeld(previous => previous.identity !== identity ? previous
-            : { identity, data: previous.data, errors: new Map(previous.errors).set(window, message) });
+          setHeld(previous => previous.owner !== owner ? previous
+            : { ...previous, errors: new Map(previous.errors).set(window, message) });
         },
       );
     }
     return () => controller.abort();
     // The identity and the wanted windows name every request; `request` is rebuilt each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, identity, key, active, attempt]);
+  }, [owner, key, active, attempt]);
   const data = current?.data;
   const errors = current?.errors;
   return useMemo(() => ({
@@ -70,8 +93,7 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
     errors: errors ?? new Map<number, string>(),
     // A failed load already left the shared cache; retrying only asks again.
     retry: () => {
-      setHeld(previous => ({ ...previous, errors: new Map() }));
-      setAttempt(value => value + 1);
+      setHeld(previous => previous.owner !== owner ? previous : { ...previous, errors: new Map(), attempt: previous.attempt + 1 });
     },
-  }), [data, errors]);
+  }), [data, errors, owner]);
 }

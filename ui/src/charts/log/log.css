@@ -5,7 +5,7 @@
 .log-scroll { position: relative; flex: 1; min-height: 0; overflow: auto; padding: 0 var(--space-3) var(--space-3); outline: none; }
 .log-scroll:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-line); border-radius: var(--r-sm); }
 .log-body { position: relative; }
-.log-row, .log-body > .log-month { position: absolute; top: 0; left: 0; right: 0; }
+.log-row, .log-body > .log-month, .log-page { position: absolute; top: 0; left: 0; right: 0; }
 .log-row { display: grid; grid-template-columns: 58px var(--log-columns, 1fr); align-items: center; gap: 10px; height: 38px; padding: 0 var(--space-3);
   border-radius: var(--r-sm); font-size: var(--type-md); line-height: 1.3; cursor: default; }
 .log.is-compact .log-row { height: 28px; font-size: var(--type-sm); gap: var(--space-3); }
@@ -30,10 +30,28 @@
 .log.is-compact .log-art, .log.is-compact .log-art img:not(.log-art-overlay) { width: 20px; height: 20px; max-width: 20px; max-height: 20px; }
 .log-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-text b { font-weight: 600; }
-.log-flag { display: inline-block; width: 18px; height: 12px; margin-right: 5px; vertical-align: -1px; object-fit: cover; border-radius: 1px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 30%); }
+.log-flag, .log-widget .log-flag { display: inline-block; width: 18px; height: 12px; margin-right: 5px; vertical-align: -1px; object-fit: cover; border-radius: 1px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 30%); }
 .log-tag { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted); white-space: nowrap; }
 .log-tag i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
 .log-value { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .log-value.is-muted { color: var(--muted); font-weight: 500; }
 .log-chips { padding: 0 var(--space-4) var(--space-3); }
 .log-chips .chip-set { gap: 5px; }
+
+/* Card logs keep the shared scroll, motion and interaction layer while their
+   contents decide their height. translate leaves the row's placement intact. */
+.log .log-row.log-card { display: block; height: auto; padding: 0; }
+.log .log-row.log-card:hover { background: none; }
+.log .log-card.is-entering { animation: log-card-in 700ms cubic-bezier(.2, .8, .2, 1); }
+@keyframes log-card-in { from { opacity: 0; translate: 0 -12px; } }
+:root[data-motion='reduced'] .log .log-card.is-entering,
+.log.no-motion .log-card.is-entering { animation: none; }
+
+/* Paged windows keep their counted height while pending or refused. */
+.log.is-paged .log-scroll { overflow-anchor: none; }
+.log.is-paged .log-body { overflow: hidden; }
+.log-page { padding: 0 var(--space-3); color: var(--muted); font-size: var(--type-sm); overflow: hidden; }
+.log-page > span { display: flex; align-items: center; min-height: calc(var(--space-6) + var(--space-4) + var(--space-1)); overflow-wrap: anywhere; }
+.log.is-compact .log-page > span { min-height: calc(var(--space-6) + var(--space-2)); }
+/* Rebased placement must stay immediate in compressed scroll coordinates. */
+.log.is-compressed .moving-row { transition-property: opacity; }

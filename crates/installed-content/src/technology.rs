@@ -1,6 +1,6 @@
 //! Equipment localisation links projected from the native technology reader.
-//! An equipment-unlocking technology can use its equipment's generic name and
-//! description instead of technology-localisation keys. [`read_enablers`] also
+//! An equipment-unlocking technology can use its equipment's name and description;
+//! consumers share admission while retaining the distinct native display gates. [`read_enablers`] also
 //! projects its id and parent for the production icon's technology fallback.
 use crate::key_names::KeyNames;
 use crate::{
@@ -24,6 +24,12 @@ pub(crate) use units::{StatKey, equipment_pool_roster, equipment_pool_shape, sta
 
 /// Each technology's single unconditional equipment link, when known.
 pub type EquipmentLinks = BTreeMap<String, Option<String>>;
+type ParsedPresentation = (
+    EquipmentLinks,
+    BTreeMap<String, Result<PresentationName, String>>,
+    Vec<crate::Diagnostic>,
+);
+type ParseError = (crate::DiagnosticKind, io::Error);
 
 #[derive(Clone, Copy)]
 enum Node {
@@ -46,14 +52,16 @@ pub fn parse_equipment(
     input: &[u8],
     names: &KeyNames,
 ) -> io::Result<(EquipmentLinks, Vec<crate::Diagnostic>)> {
-    parse_with_registry(input, &units::Registry::default(), names).map_err(|(_, error)| error)
+    parse_with_registry(input, &units::Registry::default(), names)
+        .map(|(equipment, _, notes)| (equipment, notes))
+        .map_err(|(_, error)| error)
 }
 
 fn parse_with_registry(
     input: &[u8],
     registry: &units::Registry,
     names: &KeyNames,
-) -> Result<(EquipmentLinks, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
+) -> Result<ParsedPresentation, ParseError> {
     parse_with_tokens(input, registry, names, &mut Vec::new())
 }
 
@@ -62,7 +70,7 @@ fn parse_with_tokens(
     registry: &units::Registry,
     names: &KeyNames,
     tokens: &mut Vec<String>,
-) -> Result<(EquipmentLinks, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)> {
+) -> Result<ParsedPresentation, ParseError> {
     let (read, undecided, refused) = read_templates_with_tokens(input, registry, names, tokens);
     if let Some(cause) = read.unsettled {
         return Err((cause.kind, invalid(format!("technology: {cause}"))));
@@ -77,6 +85,7 @@ fn parse_with_tokens(
         ));
     }
     let mut result = BTreeMap::new();
+    let mut display_keys = BTreeMap::new();
     for root in read
         .items
         .iter()
@@ -92,8 +101,25 @@ fn parse_with_tokens(
                     invalid("technology token is not UTF-8"),
                 )
             })?;
+            // CTechnologyTemplate+0x3B0 parent overrides its display-name
+            // key (140AC3C70, 140AC1980, 140AC1830).
+            let parent = technology
+                .value
+                .items()
+                .unwrap_or_default()
+                .iter()
+                .rfind(|field| field.keyword_is("parent"))
+                .map(|parent| {
+                    parent
+                        .value
+                        .c_str()
+                        .map_err(|error| format!("technology {token} parent: {error}"))
+                        .map(str::to_owned)
+                })
+                .transpose();
             let mut unlocks: Vec<String> = Vec::new();
             let mut conditional = false;
+            let mut candidates = Vec::new();
             for field in technology.value.items().unwrap_or_default() {
                 if field.keyword_is("folder") {
                     for position in field
@@ -127,9 +153,11 @@ fn parse_with_tokens(
                 if !field.keyword_is("enable_equipments") {
                     continue;
                 }
+                let mut limits = Vec::new();
                 for equipment in field.value.items().unwrap_or_default() {
                     if equipment.keyword_is("limit") {
                         conditional = true;
+                        limits.push(equipment.value.items().unwrap_or_default().to_vec());
                         continue;
                     }
                     // 140AC3C70 has a special, evaluated `limit` branch in
@@ -152,8 +180,32 @@ fn parse_with_tokens(
                     if !unlocks.iter().any(|old| old.eq_ignore_ascii_case(name)) {
                         unlocks.push(name.into());
                     }
+                    candidates.push(EquipmentName {
+                        name: name.into(),
+                        limits: limits.clone(),
+                    });
                 }
             }
+            let fields = technology.value.items().unwrap_or_default();
+            // 140AC3C70 uses read_bool_field 1424ABCA0; a failed value keeps
+            // the preceding assignment (read_bool_token 1424B06E0).
+            let force_small = parser::read_bool_field(fields, "force_use_small_tech_layout", false);
+            display_keys.insert(
+                token.to_owned(),
+                parent.map(|parent| {
+                    let template_key = parent.unwrap_or_else(|| token.into());
+                    let template_key = if template_key.is_empty() {
+                        token.to_owned()
+                    } else {
+                        template_key
+                    };
+                    PresentationName {
+                        template: template_key,
+                        equipment: candidates,
+                        force_small,
+                    }
+                }),
+            );
             result.insert(
                 token.to_owned(),
                 (!conditional && unlocks.len() == 1).then(|| unlocks.remove(0)),
@@ -162,11 +214,90 @@ fn parse_with_tokens(
     }
     Ok((
         result,
+        display_keys,
         read.misreads
             .iter()
             .map(|note| (note.kind, note.to_string()))
             .collect(),
     ))
+}
+
+/// Native full-name roots for a recorded technology owner.
+#[derive(Debug)]
+pub struct PresentationName {
+    pub template: String,
+    pub equipment: Vec<EquipmentName>,
+    pub force_small: bool,
+}
+
+/// One authored child, with its load-time admission condition when present.
+#[derive(Debug)]
+pub struct EquipmentName {
+    pub name: String,
+    pub limits: Vec<Vec<Item>>,
+}
+
+impl PresentationName {
+    /// Full GetLocalizedName 140EC9A60 uses one native admitted child unless
+    /// template+0x40A forces the template key. 140AC3C70 checks limits at
+    /// content load in a fresh empty scope 140528800, then stores accepted
+    /// names at template+0x278/count+0x284. 140EBDC40 resolves those names and
+    /// applies the validity/category/DLC gate before filling instance+0x68.
+    /// Classifier propagation 140EC19C0 does not recheck these limits.
+    pub fn name(
+        &self,
+        evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
+        resolve: impl FnMut(&str) -> Result<Option<String>, String>,
+    ) -> Result<String, String> {
+        let mut children = self.children(evaluate, resolve)?;
+        Ok(if children.len() == 1 {
+            children.remove(0)
+        } else {
+            self.template.clone()
+        })
+    }
+
+    /// Admission is shared by names and descriptions. Description 140EC51F0
+    /// counts non-duplicate children separately, then selects the first child.
+    pub fn children(
+        &self,
+        mut evaluate: impl FnMut(&[Item]) -> Result<bool, String>,
+        mut resolve: impl FnMut(&str) -> Result<Option<String>, String>,
+    ) -> Result<Vec<String>, String> {
+        if self.force_small {
+            return Ok(Vec::new());
+        }
+        let mut children = Vec::new();
+        let mut accepted = BTreeSet::new();
+        for candidate in &self.equipment {
+            // A false limit exits this authored field's whole loop 140AC3C70;
+            // later checks in that field cannot restore its admission.
+            let mut admitted = true;
+            for limit in &candidate.limits {
+                if !evaluate(limit).map_err(|why| {
+                    format!(
+                        "enable_equipments limit for {} at content load: {why}",
+                        candidate.name
+                    )
+                })? {
+                    admitted = false;
+                    break;
+                }
+            }
+            if !admitted {
+                continue;
+            }
+            // Template names deduplicate by folded authored token 1404548E0;
+            // distinct aliases may resolve to the same pointer and still
+            // occupy two runtime children in 140EBDC40.
+            if accepted.insert(candidate.name.to_ascii_lowercase())
+                && let Some(name) = resolve(&candidate.name)?
+            {
+                children.push(name);
+            }
+        }
+        Ok(children)
+    }
 }
 
 /// One preparation read supplies both native equipment links and the inventory.
@@ -176,6 +307,7 @@ pub struct Database {
     pub tokens: Vec<String>,
     pub equipment_warnings: Vec<crate::Diagnostic>,
     pub inventory_warnings: Vec<crate::Diagnostic>,
+    pub names: BTreeMap<String, Result<PresentationName, String>>,
 }
 
 impl Database {
@@ -184,13 +316,15 @@ impl Database {
         let names = layers.key_names()?;
         let mut result = BTreeMap::new();
         let mut tokens = Vec::new();
+        let mut presentation_names = BTreeMap::new();
         let mut equipment_warnings = Vec::new();
         let mut inventory_warnings = Vec::new();
         // 140AC1BA0 enumerates this directory without recursion.
         for path in layers.directory_files("common/technologies", ".txt")? {
             match parse_with_tokens(&layers.read(&path)?, &registry, &names, &mut tokens) {
-                Ok((definitions, notes)) => {
+                Ok((definitions, display_names, notes)) => {
                     result.extend(definitions);
+                    presentation_names.extend(display_names);
                     let notes: Vec<_> = notes
                         .into_iter()
                         .map(|(kind, note)| (kind, format!("{path}: {note}")))
@@ -220,6 +354,7 @@ impl Database {
             tokens,
             equipment_warnings,
             inventory_warnings,
+            names: presentation_names,
         })
     }
 }
@@ -647,6 +782,14 @@ mod tests {
         let read = Database::read(&layers).unwrap();
         assert!(read.equipment.is_empty());
         assert_eq!(read.equipment_warnings.len(), 1);
+        assert_eq!(
+            read.names.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["a_second", "middle", "repeated", "z_first"]
+        );
+        assert_eq!(
+            read.names["repeated"].as_ref().unwrap().template,
+            "repeated"
+        );
         let (tokens, notes) = (read.tokens, read.inventory_warnings);
         assert_eq!(
             tokens,
@@ -666,6 +809,200 @@ mod tests {
         names: &KeyNames,
     ) -> io::Result<BTreeMap<String, Option<String>>> {
         super::parse_equipment(input, names).map(|(definitions, _)| definitions)
+    }
+
+    #[test]
+    fn completion_name_projection_uses_template_single_child_and_load_time_limits() {
+        let (links, display, _) = parse_with_registry(br#"technologies={plain={} renamed={parent=mod_parent} equipment={enable_equipments={mod_equipment}} forced={parent=mod_parent enable_equipments={mod_equipment} force_use_small_tech_layout=yes} conditional={enable_equipments={limit={always=yes} mod_equipment}}}"#, &units::Registry::default(), &KeyNames::default()).unwrap();
+        let name = |key: &str| {
+            display[key]
+                .as_ref()
+                .unwrap()
+                .name(|_| Ok(true), |name| Ok(Some(name.into())))
+                .unwrap()
+        };
+        assert_eq!(name("plain"), "plain");
+        assert_eq!(name("renamed"), "mod_parent");
+        assert_eq!(name("equipment"), "mod_equipment");
+        assert_eq!(name("forced"), "mod_parent");
+        assert_eq!(name("conditional"), "mod_equipment");
+        assert_eq!(
+            display["conditional"]
+                .as_ref()
+                .unwrap()
+                .name(|_| Ok(false), |_| unreachable!())
+                .unwrap(),
+            "conditional"
+        );
+        assert!(
+            display["conditional"]
+                .as_ref()
+                .unwrap()
+                .name(
+                    |_| Err("load-time global unavailable".into()),
+                    |_| unreachable!()
+                )
+                .unwrap_err()
+                .contains("at content load")
+        );
+        assert_eq!(links["equipment"].as_deref(), Some("mod_equipment"));
+    }
+
+    #[test]
+    fn invalid_parent_refuses_only_its_presentation_and_keeps_equipment_links() {
+        let input = b"technologies={\
+            before={enable_equipments={before_equipment}} \
+            invalid={parent=\x80 enable_equipments={invalid_equipment}} \
+            after={parent=after_name enable_equipments={after_equipment}}}";
+        let (links, names, _) =
+            parse_with_registry(input, &units::Registry::default(), &KeyNames::default()).unwrap();
+        assert_eq!(links.len(), 3);
+        for token in ["before", "invalid", "after"] {
+            assert_eq!(links[token], Some(format!("{token}_equipment")));
+        }
+        assert_eq!(names["before"].as_ref().unwrap().template, "before");
+        assert_eq!(names["after"].as_ref().unwrap().template, "after_name");
+        let refusal = names["invalid"].as_ref().unwrap_err();
+        assert!(refusal.contains("technology invalid parent:"));
+        assert!(refusal.contains("not UTF-8"));
+        assert_eq!(parse_equipment(input, &KeyNames::default()).unwrap(), links);
+
+        // Shape::Current stores `{`; its nested fields are technology fields
+        // and their `}` closes the technology (1424A9730, 140AC3C70).
+        let block = b"technologies={\
+            before={enable_equipments={before_equipment}} \
+            after={parent=after_name enable_equipments={after_equipment}} \
+            invalid={enable_equipments={invalid_equipment} parent={nested=value}}}";
+        let (block_links, block_names, notes) =
+            parse_with_registry(block, &units::Registry::default(), &KeyNames::default()).unwrap();
+        assert_eq!(block_links, links);
+        assert_eq!(block_names["before"].as_ref().unwrap().template, "before");
+        assert_eq!(
+            block_names["after"].as_ref().unwrap().template,
+            "after_name"
+        );
+        assert_eq!(block_names["invalid"].as_ref().unwrap().template, "{");
+        assert!(notes.iter().any(|(_, reason)| {
+            reason.contains("`parent`") && reason.contains("block where its reader takes one value")
+        }));
+    }
+
+    #[test]
+    fn malformed_small_layout_boolean_keeps_the_last_native_value() {
+        for (values, expected) in [
+            (&["invalid"][..], false),
+            (&["yes", "invalid"][..], true),
+            (&["no", "invalid"][..], false),
+            (&["yes", "no", "invalid"][..], false),
+            (&["no", "yes", "invalid"][..], true),
+            (&["yes", "{invalid=yes}"][..], true),
+            (&["no", "{invalid=yes}"][..], false),
+        ] {
+            let assignments = values
+                .iter()
+                .map(|value| format!("force_use_small_tech_layout={value}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let input = format!(
+                "technologies={{modded={{parent=mod_name enable_equipments={{mod_equipment}} {assignments}}}}}"
+            );
+            let (links, names, notes) = parse_with_registry(
+                input.as_bytes(),
+                &units::Registry::default(),
+                &KeyNames::default(),
+            )
+            .unwrap();
+            let presentation = names["modded"].as_ref().unwrap();
+            assert_eq!(presentation.force_small, expected, "{assignments}");
+            assert_eq!(links["modded"].as_deref(), Some("mod_equipment"));
+            if values.last() == Some(&"{invalid=yes}") {
+                assert!(notes.iter().any(|(_, reason)| {
+                    reason.contains("force_use_small_tech_layout")
+                        && reason.contains("block where its reader takes one value")
+                }));
+            }
+            assert_eq!(
+                presentation
+                    .name(|_| unreachable!(), |token| Ok(Some(token.into())))
+                    .unwrap(),
+                if expected {
+                    "mod_name"
+                } else {
+                    "mod_equipment"
+                },
+                "{assignments}"
+            );
+        }
+    }
+
+    #[test]
+    fn completion_name_deduplicates_authored_tokens_but_preserves_alias_children() {
+        let (_, display, _) = parse_with_registry(
+            br#"technologies={same={enable_equipments={one ONE}} aliases={enable_equipments={one alias}}}"#,
+            &units::Registry::default(), &KeyNames::default(),
+        ).unwrap();
+        assert_eq!(
+            display["same"]
+                .as_ref()
+                .unwrap()
+                .name(|_| unreachable!(), |_| Ok(Some("child".into())))
+                .unwrap(),
+            "child"
+        );
+        assert_eq!(
+            display["aliases"]
+                .as_ref()
+                .unwrap()
+                .name(|_| unreachable!(), |_| Ok(Some("child".into())))
+                .unwrap(),
+            "aliases"
+        );
+    }
+
+    #[test]
+    fn completion_name_limit_prefix_short_circuits_and_resets_between_fields() {
+        let p = PresentationName {
+            template: "template".into(),
+            force_small: false,
+            equipment: vec![EquipmentName {
+                name: "late".into(),
+                limits: vec![Vec::new(), Vec::new()],
+            }],
+        };
+        let mut checks = 0;
+        assert_eq!(
+            p.name(
+                |_| {
+                    checks += 1;
+                    assert_eq!(checks, 1);
+                    Ok(false)
+                },
+                |_| unreachable!()
+            )
+            .unwrap(),
+            "template"
+        );
+        assert_eq!(checks, 1);
+        let (_, parsed, _) = parse_with_registry(
+            br#"technologies={separate={enable_equipments={limit={always=no} first} enable_equipments={limit={always=yes} second}}}"#,
+            &units::Registry::default(), &KeyNames::default(),
+        ).unwrap();
+        assert_eq!(
+            parsed["separate"]
+                .as_ref()
+                .unwrap()
+                .name(
+                    |body| Ok(body[0].value.scalar() == Some(b"yes")),
+                    |name| Ok(Some(name.into())),
+                )
+                .unwrap(),
+            "second"
+        );
+        let error = parse_with_registry(
+            br#"technologies={ambiguous={enable_equipments={limit={always=no} limit={always=yes} second}}}"#,
+            &units::Registry::default(), &KeyNames::default(),
+        ).unwrap_err().1;
+        assert!(error.to_string().contains("enable_equipments.limit"));
     }
 
     #[test]
@@ -784,7 +1121,7 @@ mod tests {
                 .contains("category_leg_infantry")
         );
         names.effects.modifiers_gap = None;
-        let (links, _) = parse_with_registry(input, &units, &names).unwrap();
+        let (links, _, _) = parse_with_registry(input, &units, &names).unwrap();
         assert_eq!(links["t"].as_deref(), Some("one"));
         assert_eq!(
             modifiers::registered(b"category_leg_infantry", Some(&names)),

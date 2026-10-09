@@ -1,14 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { AutonomyReply, AutonomyRun } from '../../generated/dashboard';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { createServer } from 'vite';
+import type { WidgetProps } from '../../dashboard/definitions';
+import type { WidgetStateProps } from '../../components/WidgetState';
+import type { TimelineLane } from '../../charts/timeline/Timeline';
+import type { AutonomyReply, AutonomyRun, CountryGroupReply } from '../../generated/dashboard';
 import { laneStops } from '../../charts/timeline/layout.ts';
-import { Lineage, countryMembership } from '../../dashboard/identity.ts';
-import { absentAt, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, partlyIdentified, partlyRecorded, progressOf, runOf,
+import { countryIdentityIndex } from '../../dashboard/countryIdentity.ts';
+import { absentAt, autonomyViews, chosenViews, clipSubject, formatProgress, formatScore, laneLabels, levelName, membershipUnknownFor, noLanesMessage, overlordIdentityUnknownFor, partlyIdentified, partlyRecorded, progressOf, runOf,
   subjectLane, validateAutonomyReply } from './autonomyData.ts';
 
 const run = (firstHour: number, lastHour: number, level: number, scoreRaw: string, lowerRaw: string, upperRaw: string, extra: Partial<AutonomyRun> = {}): AutonomyRun => ({
   firstHour, lastHour, startsSegment: false, overlord: 'GER', level, scoreRaw, lowerRaw, upperRaw, lowest: false, highest: false, ratioRaw: '20000', ...extra,
 });
+const fixedIdentities = countryIdentityIndex(['D01 mod', 'GER', 'ENG', 'ITA', 'AAA', 'BBB', 'A', 'B'].map((tag, slot) => ({ tag,
+  identities: [{ firstHour: 0, lastHour: 100_000, slot, countryId: slot + 10 }] })));
+const memberRuns = (entries: [string, { firstHour: number; lastHour: number }[]][]) => new Map(entries.map(([tag, spans]) => [fixedIdentities.keyAt(tag, 0)!, spans]));
 
 test('a release at hour 150 keeps the historical lane and names recorded absence in its pill and description', () => {
   const subject = { tag: 'AAA', runs: [run(100, 149, 0, '15000000', '10000000', '25000000', { startsSegment: true })] };
@@ -58,25 +67,143 @@ const REPLY: AutonomyReply = {
 };
 
 test('renamed subjects and overlords keep one country history, while reused tags stay separate', () => {
-  const lineage = new Lineage([{ hour: 120, from: 'AAA', to: 'BBB' }, { hour: 130, from: 'GER', to: 'NEW OWNER' }]);
+  const identities = countryIdentityIndex([
+    { tag: 'AAA', identities: [{ firstHour: 100, lastHour: 119, slot: 1, countryId: 10 }, { firstHour: 140, lastHour: 150, slot: 2, countryId: 20 }] },
+    { tag: 'BBB', identities: [{ firstHour: 120, lastHour: 150, slot: 1, countryId: 10 }] },
+    { tag: 'GER', identities: [{ firstHour: 100, lastHour: 129, slot: 3, countryId: 30 }, { firstHour: 130, lastHour: 150, slot: 4, countryId: 40 }] },
+    { tag: 'NEW OWNER', identities: [{ firstHour: 130, lastHour: 150, slot: 3, countryId: 30 }] },
+  ]);
   const reply = { ...REPLY, subjects: [
     { tag: 'AAA', runs: [run(100, 119, 0, '1', '0', '10', { startsSegment: true }), run(140, 150, 0, '3', '0', '10', { startsSegment: true })] },
     { tag: 'BBB', runs: [run(120, 129, 0, '2', '0', '10', { startsSegment: true }), run(130, 150, 0, '2', '0', '10', { overlord: 'NEW OWNER' })] },
   ] };
-  const views = autonomyViews(reply, lineage);
+  const views = autonomyViews(reply, identities);
   assert.equal(views.length, 2);
-  const original = lineage.countryAt('AAA', 100);
-  const selected = chosenViews(views, new Set([original]), true, lineage);
+  const original = identities.keyAt('AAA', 100)!;
+  const selected = chosenViews(views, new Set([original]), true, identities);
   assert.equal(selected.length, 1);
   const lane = subjectLane(selected[0], reply.levels);
   assert.equal(lane.id, original);
   assert.deepEqual(lane.stretches, [{ firstHour: 100, lastHour: 150 }]);
-  assert.deepEqual(chosenViews(views, new Set([lineage.countryAt('NEW OWNER', 150)]), false, lineage).map(view => view.countryId), [original]);
-  assert.deepEqual(chosenViews(views, new Set([lineage.countryAt('GER', 150)]), false, lineage).map(view => view.countryId), [lineage.countryAt('AAA', 140)]);
-  const membership = countryMembership([{ tag: 'GER', firstHour: 100, lastHour: 129 }, { tag: 'NEW OWNER', firstHour: 130, lastHour: 145 }], lineage);
-  assert.equal(clipSubject(selected[0], false, membership, [], lineage).runs.at(-1)?.lastHour, 145);
-  const many = { ...REPLY, subjects: Array.from({ length: 5000 }, (_, index) => ({ tag: `mod ${index}`, runs: [run(100, 150, 0, '1', '0', '10')] })) };
-  assert.equal(autonomyViews(many, lineage).length, 5000);
+  assert.deepEqual(chosenViews(views, new Set([identities.keyAt('NEW OWNER', 150)!]), false, identities).map(view => view.countryId), [original]);
+  assert.deepEqual(chosenViews(views, new Set([identities.keyAt('GER', 150)!]), false, identities).map(view => view.countryId), [identities.keyAt('AAA', 140)!]);
+  const membership = new Map([[identities.keyAt('GER', 100)!, [{ firstHour: 100, lastHour: 145 }]]]);
+  assert.equal(clipSubject(selected[0], false, membership, [], identities).runs.at(-1)?.lastHour, 145);
+});
+
+test('native manual holders clip reused tags and gaps without taking unrelated aliases', () => {
+  const identities = countryIdentityIndex([
+    { tag: 'X', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 30, slot: 1, countryId: 20 }] },
+    { tag: 'Y', identities: [{ firstHour: 10, lastHour: 19, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 30, slot: 2, countryId: 30 }] },
+    { tag: 'GER', identities: [{ firstHour: 0, lastHour: 30, slot: 3, countryId: 40 }] },
+  ]);
+  const reply = { ...REPLY, subjects: ['X', 'Y'].map(tag => ({ tag, runs: [run(0, 30, 0, '1', '0', '10', { startsSegment: true })] })) };
+  const views = autonomyViews(reply, identities);
+  const chosen = chosenViews(views, identities.selected(['X']), true, identities);
+  assert.equal(chosen.length, 2);
+  assert.deepEqual(chosen.map(subject => subject.runs.map(run => [run.firstHour, run.lastHour])), [[[0, 9], [10, 19]], [[20, 30]]]);
+  assert.deepEqual(subjectLane(chosen[0], reply.levels).stretches, [{ firstHour: 0, lastHour: 19 }]);
+  const membership = new Map([[identities.keyAt('Y', 10)!, [{ firstHour: 12, lastHour: 15 }]]]);
+  const clipped = clipSubject(chosen[0], true, membership, [], identities);
+  assert.deepEqual(clipped.runs.map(run => [run.firstHour, run.lastHour]), [[12, 15]]);
+  assert.deepEqual(laneLabels(reply, subjectLane(chosen[0], reply.levels), 20, [], false),
+    { label: 'Native country identity not recorded', pill: 'Not recorded', description: 'Native country identity not recorded' });
+});
+
+test('native overlord replacement splits selection even when the subject and tag stay the same', () => {
+  const identities = countryIdentityIndex([
+    { tag: 'X', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 10 }] },
+    { tag: 'GER', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 30, slot: 1, countryId: 20 }] },
+    { tag: 'SUB', identities: [{ firstHour: 0, lastHour: 30, slot: 2, countryId: 30 }] },
+  ]);
+  const views = autonomyViews({ ...REPLY, subjects: [{ tag: 'SUB', runs: [run(0, 30, 0, '1', '0', '10')] }] }, identities);
+  // Subject values remain recorded through unknown overlord spans.
+  assert.deepEqual(views[0].runs.map(run => [run.firstHour, run.lastHour]), [[0, 9], [10, 19], [20, 30]]);
+  assert.equal(chosenViews(views, identities.selected(['X']), false, identities).length, 1);
+  const membership = new Map([[identities.keyAt('GER', 0)!, [{ firstHour: 0, lastHour: 30 }]]]);
+  assert.deepEqual(clipSubject(views[0], false, membership, [], identities).runs.map(run => [run.firstHour, run.lastHour]), [[0, 9]]);
+});
+
+test('known subjects retain their values when an unresolved overlord prevents proving selected absence', () => {
+  const identities = countryIdentityIndex([
+    { tag: 'X', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 30, slot: 1, countryId: 10 }] },
+    { tag: 'SUB', identities: [{ firstHour: 0, lastHour: 30, slot: 2, countryId: 20 }] },
+    { tag: 'Other', identities: [{ firstHour: 0, lastHour: 30, slot: 3, countryId: 30 }] },
+  ]);
+  const reply = { ...REPLY, subjects: [{ tag: 'SUB', runs: [run(10, 19, 0, '123', '0', '1000', { overlord: 'X' })] }] };
+  const views = autonomyViews(reply, identities);
+  assert.equal(views.length, 1);
+  assert.equal(views[0].runs[0].scoreRaw, '123');
+  assert.deepEqual(chosenViews(views, identities.selected(['X']), false, identities), []);
+  assert.equal(overlordIdentityUnknownFor(views[0], identities), true);
+  assert.equal(chosenViews(views, identities.selected(['SUB']), true, identities).length, 1);
+  for (const overlord of ['Other', null]) {
+    const known = { ...views[0], runs: views[0].runs.map(run => ({ ...run, overlord })) };
+    assert.equal(overlordIdentityUnknownFor(known, identities), false);
+    assert.deepEqual(chosenViews([known], identities.selected(['X']), false, identities), []);
+  }
+});
+
+test('actual Autonomy refuses false overlord absence while keeping known subject values and proved empty selections', async () => {
+  const data: AutonomyReply = { ...REPLY, recorded: [{ firstHour: 0, lastHour: 30 }],
+    subjects: [{ tag: 'SUB', runs: [run(10, 19, 0, '123', '0', '1000', { overlord: 'X' })] }] };
+  const groups: CountryGroupReply = { branchId: '1', humans: [], factions: [], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+    countryIdentities: [
+      { tag: 'X', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 10 }, { firstHour: 20, lastHour: 30, slot: 1, countryId: 10 }] },
+      { tag: 'SUB', identities: [{ firstHour: 0, lastHour: 30, slot: 2, countryId: 20 }] },
+      { tag: 'Other', identities: [{ firstHour: 0, lastHour: 30, slot: 3, countryId: 30 }] },
+    ], unobserved: { humans: [], factions: [], wars: [] }, warnings: [] };
+  const fixture: { data: AutonomyReply; groups: CountryGroupReply; state?: WidgetStateProps; lanes?: TimelineLane[] } = { data, groups };
+  const host = globalThis as typeof globalThis & { __autonomyR2?: typeof fixture };
+  host.__autonomyR2 = fixture;
+  const replacements: Record<string, string> = {
+    '/dashboard/products.ts': 'export const useProduct = () => ({ data: globalThis.__autonomyR2.data });',
+    '/dashboard/useCountryGroups.ts': 'export const useCountryGroups = () => ({ data: globalThis.__autonomyR2.groups });',
+    '/dashboard/playback.ts': 'export const usePlaybackHour = () => 25;',
+    '/charts/useChartTokens.ts': "export const useChartTokens = () => ({ surface: '#111111', text: '#ffffff', accent: '#aaaaaa' });",
+    '/dashboard/countryLooks.ts': 'export const useCountryLooks = () => ({ name: tag => tag, flag: () => undefined, revision: 0 });',
+    '/dashboard/useHoverLabels.ts': 'export const useHoverLabels = () => ({ ask() {}, labelAt: () => tag => ({ name: tag }), revision: 0 });',
+    '/components/ContextMenu.tsx': 'export const useContextMenu = () => ({ menu: null });',
+    '/components/WidgetState.tsx': 'export default props => { globalThis.__autonomyR2.state = props; return props.message ?? props.label; };',
+    '/charts/timeline/Timeline.tsx': 'export default props => { globalThis.__autonomyR2.lanes = props.lanes; return null; };',
+  };
+  const vite = await createServer({ configFile: false, optimizeDeps: { noDiscovery: true }, server: { middlewareMode: true, watch: null, hmr: false, ws: false },
+    plugins: [{ name: 'autonomy-native-unknown', enforce: 'pre', transform(_code, id) {
+      const path = id.replaceAll('\\', '/'); return Object.entries(replacements).find(([suffix]) => path.endsWith(suffix))?.[1];
+    } }] });
+  try {
+    const { default: Widget } = await vite.ssrLoadModule('/ui/src/widgets/autonomy/AutonomyWidget.tsx');
+    const props = { widget: { id: 'autonomy', kind: 'autonomy', trackIds: ['main'], countries: { kind: 'tags', tags: ['X'] }, time: { mode: 'campaign' }, options: {} },
+      runtime: { tracks: [{ id: 'main', source: { id: 'source', revision: '1', metadata: { countries: [] } }, branch: { id: '1', firstHour: 0, lastHour: 30 }, axisOffset: 0 }],
+        clock: { getHour: () => 25, getSnapshot: () => ({ hoursPerSecond: 0 }) }, client: {} }, active: true, onDiagnostics() {} } as unknown as WidgetProps;
+    const currentState = () => fixture.state;
+    const render = () => { fixture.state = undefined; fixture.lanes = undefined; return renderToStaticMarkup(createElement(Widget, props)); };
+    const unresolved = render();
+    assert.equal(fixture.state?.kind, 'unavailable');
+    assert.match(unresolved, /overlord native identities were not recorded/);
+    assert.doesNotMatch(unresolved, /had no subjects/);
+    props.widget.countries = { kind: 'tags', tags: ['SUB'] }; props.widget.options = { countriesAre: 'subjects' };
+    render();
+    assert.equal(fixture.state, undefined);
+    assert.equal(fixture.lanes?.length, 1);
+    assert.equal(fixture.lanes?.[0].spans[0].firstHour, 10);
+    assert.equal(fixture.lanes?.[0].spans[0].lastHour, 19);
+    props.widget.countries = { kind: 'tags', tags: ['X'] }; props.widget.options = {};
+    fixture.data = { ...data, subjects: [{ tag: 'SUB', runs: [run(10, 19, 0, '123', '0', '1000', { overlord: 'Other' })] }] };
+    render();
+    assert.equal(currentState()?.kind, 'empty', 'a known unrelated overlord proves the selected overlord has no matching subjects');
+    fixture.data = { ...data, subjects: [{ tag: 'SUB', runs: [run(0, 9, 0, '100', '0', '1000', { overlord: 'X' }), ...data.subjects[0].runs] }] };
+    assert.match(render(), /matching subjects is incomplete in those hours/);
+    assert.equal(fixture.lanes?.length, 1, 'a proved matching span preserves the subject history');
+    assert.equal(fixture.lanes?.[0].spans.at(-1)?.lastHour, 19, 'known autonomy values survive an unknown overlord');
+  } finally { delete host.__autonomyR2; await vite.close(); }
+});
+
+test('5,000 native subject holders remain selectable without a country cap', () => {
+  const countries = Array.from({ length: 5000 }, (_, slot) => ({ tag: `mod ${slot}`, identities: [{ firstHour: 0, lastHour: 1, slot, countryId: slot + 10 }] }));
+  const identities = countryIdentityIndex(countries);
+  const views = autonomyViews({ ...REPLY, subjects: countries.map(country => ({ tag: country.tag, runs: [run(0, 1, 0, '1', '0', '10', { overlord: null })] })) }, identities);
+  assert.equal(chosenViews(views, identities.selected(countries.map(country => country.tag)), true, identities).length, 5000);
 });
 
 test('the reply is checked, and runs naming no level are refused', () => {
@@ -87,9 +214,13 @@ test('the reply is checked, and runs naming no level are refused', () => {
 });
 
 test('splitting at an overlord tag change keeps a gap break only on the original first piece', () => {
-  const lineage = new Lineage([{ hour: 120, from: 'GER', to: 'NEW OWNER' }]);
+  const identities = countryIdentityIndex([
+    { tag: 'AAA', identities: [{ firstHour: 100, lastHour: 150, slot: 1, countryId: 10 }] },
+    { tag: 'GER', identities: [{ firstHour: 100, lastHour: 119, slot: 2, countryId: 20 }] },
+    { tag: 'NEW OWNER', identities: [{ firstHour: 120, lastHour: 150, slot: 2, countryId: 20 }] },
+  ]);
   const reply = { ...REPLY, subjects: [{ tag: 'AAA', runs: [run(100, 150, 0, '1', '0', '10', { startsSegment: true })] }] };
-  const [view] = autonomyViews(reply, lineage);
+  const [view] = autonomyViews(reply, identities);
   assert.deepEqual(view.runs.map(run => [run.firstHour, run.lastHour, run.startsSegment]), [[100, 119, true], [120, 150, false]]);
   const lane = subjectLane(view, reply.levels);
   assert.deepEqual(lane.stretches, [{ firstHour: 100, lastHour: 150 }]);
@@ -135,16 +266,16 @@ test('the keyboard stops at every change inside a level, not only where the leve
 });
 
 test('a group counted at each hour shows a subject only while it, or its overlord, belongs; unknown membership is cut out', () => {
-  const subject = REPLY.subjects[0];
+  const subject = { ...REPLY.subjects[0], countryId: fixedIdentities.keyAt(REPLY.subjects[0].tag, 100)! };
   // As a chosen subject: a member from 110 (as the human players group can become), so nothing shows before.
-  const member = new Map([['D01 mod', [{ firstHour: 110, lastHour: 150 }]]]);
+  const member = memberRuns([['D01 mod', [{ firstHour: 110, lastHour: 150 }]]]);
   const own = clipSubject(subject, true, member, []);
   assert.deepEqual(own.runs.map(item => [item.firstHour, item.lastHour]), [[110, 110], [111, 120], [121, 130], [140, 150]]);
   // As a subject of chosen overlords: only while its overlord (GER) belongs.
-  const overlords = new Map([['GER', [{ firstHour: 100, lastHour: 115 }]]]);
-  assert.deepEqual(clipSubject(subject, false, overlords, []).runs.map(item => [item.firstHour, item.lastHour]), [[100, 110], [111, 115]]);
+  const overlords = memberRuns([['GER', [{ firstHour: 100, lastHour: 115 }]]]);
+  assert.deepEqual(clipSubject(subject, false, overlords, [], fixedIdentities).runs.map(item => [item.firstHour, item.lastHour]), [[100, 110], [111, 115]]);
   // Hours whose membership was not recorded are cut out, and break the line.
-  const always = new Map([['D01 mod', [{ firstHour: 0, lastHour: 1000 }]]]);
+  const always = memberRuns([['D01 mod', [{ firstHour: 0, lastHour: 1000 }]]]);
   const cut = clipSubject(subject, true, always, [{ firstHour: 105, lastHour: 112 }]);
   assert.deepEqual(cut.runs.map(item => [item.firstHour, item.lastHour]), [[100, 104], [113, 120], [121, 130], [140, 150]]);
   assert.deepEqual(subjectLane(cut, REPLY.levels).stretches, [{ firstHour: 100, lastHour: 104 }, { firstHour: 113, lastHour: 130 }, { firstHour: 140, lastHour: 150 }]);
@@ -159,7 +290,7 @@ test('a group counted at one moment keeps its countries’ whole history, howeve
   assert.equal(clipSubject(bbb, false, null, unobserved), bbb);
   assert.equal(clipSubject(bbb, true, null, unobserved), bbb);
   // Counted at each hour, the same hours are unknown and cut out.
-  assert.deepEqual(clipSubject(bbb, false, new Map([['AAA', [{ firstHour: 100, lastHour: 110 }]]]), unobserved).runs, []);
+  assert.deepEqual(clipSubject(bbb, false, memberRuns([['AAA', [{ firstHour: 100, lastHour: 110 }]]]), unobserved, fixedIdentities).runs, []);
 });
 
 test('a branch recorded only in part says so, so a missing lane is not called "no subjects"', () => {
@@ -175,8 +306,8 @@ test('a subject whose overlord changes is cut by each overlord’s own membershi
     run(120, 129, 0, '15000000', '10000000', '25000000'),
     run(130, 139, 0, '15000000', '10000000', '25000000', { overlord: null, ratioRaw: null }),
   ] };
-  const membership = new Map([['GER', [{ firstHour: 105, lastHour: 125 }]], ['ENG', [{ firstHour: 100, lastHour: 200 }]]]);
-  assert.deepEqual(clipSubject(subject, false, membership, []).runs.map(item => [item.firstHour, item.lastHour, item.overlord, item.startsSegment]),
+  const membership = memberRuns([['GER', [{ firstHour: 105, lastHour: 125 }]], ['ENG', [{ firstHour: 100, lastHour: 200 }]]]);
+  assert.deepEqual(clipSubject(subject, false, membership, [], fixedIdentities).runs.map(item => [item.firstHour, item.lastHour, item.overlord, item.startsSegment]),
     [[105, 109, 'GER', false], [110, 119, 'ENG', false], [120, 125, 'GER', false]]);
 });
 
@@ -188,10 +319,10 @@ test('cutting a subject by its overlords’ membership counted at each hour keep
       { overlord: index % 2 ? 'ENG' : 'GER' }));
     const spans = (parity: number) => Array.from({ length: count / 2 }, (_, index) => index * 4 + parity * 2)
       .filter((_, index) => index % 2 === 0).map(hour => ({ firstHour: hour, lastHour: hour + 1 }));
-    return { subject: { tag: 'D01 mod', runs }, membership: new Map([['GER', spans(0)], ['ENG', spans(1)]]) };
+    return { subject: { tag: 'D01 mod', runs }, membership: memberRuns([['GER', spans(0)], ['ENG', spans(1)]]) };
   };
   const { subject, membership } = history(32_000);
-  assert.equal(clipSubject(subject, false, membership, []).runs.length, 16_000);
+  assert.equal(clipSubject(subject, false, membership, [], fixedIdentities).runs.length, 16_000);
 });
 
 test('an hour with a subject or overlord the recording does not name is never called one without subjects', () => {
@@ -222,9 +353,9 @@ test('a lane cut away where the group’s membership was unknown is said, never 
   // A belongs to the group 100–105 and its membership is unknown 106–110, when B is its subject.
   const b = { tag: 'B', runs: [run(106, 110, 0, '15000000', '10000000', '25000000', { startsSegment: true, overlord: 'A' })] };
   const reply: AutonomyReply = { ...REPLY, subjects: [b], recorded: [{ firstHour: 100, lastHour: 160 }] };
-  const membership = new Map([['A', [{ firstHour: 100, lastHour: 105 }]]]);
+  const membership = memberRuns([['A', [{ firstHour: 100, lastHour: 105 }]]]);
   const unobserved = [{ firstHour: 106, lastHour: 110 }];
-  assert.deepEqual(clipSubject(b, false, membership, unobserved).runs, []);
+  assert.deepEqual(clipSubject(b, false, membership, unobserved, fixedIdentities).runs, []);
   assert.equal(membershipUnknownFor([b], false, unobserved), true);
   const branch = { firstHour: 100, lastHour: 160 };
   const message = noLanesMessage(reply, branch, false, ['A'], membershipUnknownFor([b], false, unobserved));
@@ -240,11 +371,10 @@ test('a lane cut away where the group’s membership was unknown is said, never 
 });
 
 test('subjects are those of the chosen overlords at any hour, or the chosen subjects, in the reply’s order', () => {
-  const lineage = new Lineage([]);
-  const views = autonomyViews(REPLY, lineage);
-  const ids = (...tags: string[]) => new Set(tags.map(tag => lineage.countryAt(tag, 160)));
-  assert.deepEqual(chosenViews(views, ids('GER'), false, lineage).map(subject => subject.tag), ['D01 mod']);
-  assert.deepEqual(chosenViews(views, ids('ENG'), false, lineage).map(subject => subject.tag), ['ITA']);
-  assert.deepEqual(chosenViews(views, ids('ITA', 'D01 mod'), true, lineage).map(subject => subject.tag), ['D01 mod', 'ITA']);
-  assert.deepEqual(chosenViews(views, ids('FRA'), false, lineage), []);
+  const views = autonomyViews(REPLY, fixedIdentities);
+  const ids = (...tags: string[]) => fixedIdentities.selected(tags);
+  assert.deepEqual(chosenViews(views, ids('GER'), false, fixedIdentities).map(subject => subject.tag), ['D01 mod']);
+  assert.deepEqual(chosenViews(views, ids('ENG'), false, fixedIdentities).map(subject => subject.tag), ['ITA']);
+  assert.deepEqual(chosenViews(views, ids('ITA', 'D01 mod'), true, fixedIdentities).map(subject => subject.tag), ['D01 mod', 'ITA']);
+  assert.deepEqual(chosenViews(views, ids('FRA'), false, fixedIdentities), []);
 });

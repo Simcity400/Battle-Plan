@@ -1,43 +1,31 @@
 # Fuel
 
-One country's fuel over time (mock-up economy-1).
+## What it shows
 
-- **Level and capacity:** the fuel in the tank is a filled line in the theme's accent colour; its capacity is a dashed line above it, a ceiling. Both are recorded once a day, so each value holds from its read until the next and is dated by it. The line breaks at a recording gap or when another country takes the tag.
-- **End labels:** "Capacity" and "Fuel" with their values at the end of the lines drawn, the capacity's muted; when the playhead or view ends in a recording gap, they stay where the lines end. Without them, a key under the header names the solid and the dashed line.
-- **Gain and burn bars:** a strip under the chart on the same time axis. Each bar covers the 24 hours before a read: fuel gained up (the palette's first colour), fuel burned down (its second), on one scale fitted to the bars in view. Bars too narrow to tell apart share a pixel column that keeps the largest of each. The strip is a setting, on by default.
-- **Tooltip:** the fuel, capacity and how full the tank is; then gained (own production: lend-lease fuel received is not in it, and the note says so), burned and the net for the day before the read, written as the game writes amounts (at most two decimals). A value read earlier than the hour shown says when it was read. A full tank adds that the game discards fuel beyond capacity, which is why the level can rise by less than the net. When lend-lease fuel was arriving at the read, the note names its last hour's amount (the only one recorded) and says the figures leave it out; a read whose day is left out makes no such claim, since after a country loses its states that value stays frozen. Hovering a bar shows the read of the bar drawn there (where one pixel holds several days, the day whose gain or burn is drawn in the half pointed at), even when a zoom cuts the bar off; hovering the lines shows the hour under the pointer. In a window too short for it all, the tooltip keeps the fuel and the net and reads the rest out.
-- **Keyboard:** with the chart focused, the arrow keys step through the reads and every gain and burn bar drawn in view (one a zoom cuts off stops at the view's end and describes its read, as the pointer does; a date range starting between reads also stops at its start, where the earlier read is carried), Home and End go to the first and last, and Escape leaves; the tooltip shows and is read out. The context-menu key opens Jump to for the read shown.
-- **Right-click** jumps to that moment.
-- In whole-campaign playback the lines, bars and hover stop at the playhead unless **Show after the playhead** is on. A date range shows only its hours, even where the time axis is dragged past it.
-- **Settings:** the playback mode, window and **Show after the playhead**; gain and burn bars, capacity, area fill and end labels; the value axis (from, to, log scale).
+Fuel level/capacity per country, with separate drills for current required consumption and completed-day gain/burn accounting.
 
-## Data
+## Products it reads
 
-**Product `country-fuel`** (`crates/dashboard/src/products/country_fuel.rs`) supplies each read of `CountryFuel` for one country: the hour it was read (`firstHour`) and the last hour it holds, the level (`current_raw`) and capacity (`maximum_raw`) in /32768 units, and its day, or why the day is left out. The reply carries the engine's scales and the day's length (the fuel ring's 24 hourly slots); the widget hard-codes none of them.
+[`country-fuel`](../../../../crates/dashboard/src/products/country_fuel.rs), [award history](../../../../crates/dashboard/src/products/country_fuel/detail.rs) and [demand detail/history](../../../../crates/dashboard/src/products/country_fuel/demand.rs).
 
-**What gained and burned are.** The game's hourly fuel update (`UpdateFuel@1410e2450`) books each hour into a 24-slot ring. Its `fuel_gain` is what the update adds from base gain, refineries, oil and a negative flat cost; its `consumed` is everything it takes out: the flat cost and lend-lease fuel sent (both also booked as `other`), and the fuel its three consumers received. So a day's **gained** is the recorded sum `ring_gain_raw` (fixed5) and its **burned** is `ring_consumed_raw` (/32768), with `other` already inside it; adding `other` again would count it twice. After each hour the tank is clamped to zero and to its capacity.
+## Settings
 
-**The arithmetic, checked on real data:**
+Countries, campaign/follow/pin/range; playback/window/axes, gain/burn strip, capacity, fill, end labels, drill placement and Show.
 
-- In the W3 part-I save (hour 60827812), all 2,544 hourly entries of the 106 countries the game updated hold consumed = other + the received fuel. Each of the 106 ends at its hour's fuel minus consumed, clamped.
-- In the W3 part-J recording (hours 60827814–60828741), 3,441 kept days follow a kept day of the same country 24 hours earlier. In 711 of them the level changed by exactly gained − burned, within the fuel conversion's rounding (at most 39/32768 of a unit). In the other 2,730 the tank was full (2,693) or empty (37) at one of the two reads, where the clamps change it by less.
-- The oracle proved the recorded sums against the save's ring (`crates/recorder/src/oracle/economy.rs`).
+## Notable behaviour
 
-**At capacity** the game discards what does not fit each hour, so a full tank's bars keep showing the day's gain while its level stands still, and the level of a tank that fills during the day rises by less than the net.
+- Current required rates differ from completed-day debits/receipts. Keep native caches as stale as the game. Signed/zero rows remain selectable; geometry never proves a complete census.
+- Days cover updates before their supplying read, with overlaps excluded. At capacity the game discards excess, so gain minus burn need not equal level change. Comparisons hide the strip.
+- Preserve scales and BigInt fractions. Incoming lend-lease stays outside own-production gain; Other is inside burn. Actual attribution and legacy fallback retain different known parts; missing historical label operands remain `?` with reasons.
+- Demand keeps native roster occurrences/topology, including repeated/refused air sites. Keys bind original read, country/instance and occurrence; renames retain detail only while these match. Gaps, absent occurrences and resets stay unknown. Load wanted windows only.
+- Picks bind a native country through its aliases; overlap choices hold the clicked date. Picking holds; Follow uses the clock. Pin saves actor, level/occurrence or recipient, basis and history extent; its header uses the displayed drill hour.
+- Label refresh retains numbers/picks while masking old labels; source, actor or numeric changes invalidate it.
 
-**Which days are shown:**
+## Files
 
-- The sums cover the 24 hourly updates before a read, not a calendar day. Daily reads (the table's daily slot) are 24 hours apart and tile time exactly.
-- A read at another hour (a branch start, a load, a gap or a refresh) overlaps them. Its day is left out, and its tooltip says its hours are counted in another read's bar.
-- Reads in the daily slot are kept first. A read at another hour keeps its day only when it is at least 24 hours from every kept read, so no hour is counted twice. In part J this leaves out each country's branch-start read and the refresh at hour 60828739.
-- The game updates a country's fuel only while it owns a state (`PreHourlyUpdate@1401d8120` checks `CCountry::OWNED_STATE_COUNT`). A country without states keeps its last ring, which repeats the same sums every day; in part J four such countries repeat a gain of 48 that never reaches their tank.
-- A read's day is therefore shown only when all 24 samples that govern its updates were recorded and each shows the same country owning a state (`States`): the 24 samples before the read, not the read's own. The collector samples at the entry of the hourly tick, before the tick advances the date and runs the fuel update, so each update follows the sample an hour before it (the module notes in `country_fuel.rs` give the call order). A sample the recording lacks (a gap, or hours before the branch), or holds without the tables to tell (or with links that cannot resolve the country or a state's owner), leaves the day out as ownership not recorded ("Not known"): a country that lost its last state in hours nobody saw stopped updating then, so its ring still holds older updates and its sums would count them twice. A sample showing no state wins over it. In part J, recorded without gaps, this keeps 38 days for each of the 93 countries holding a state; each country's branch-start read, and the first daily read of each of the 93 (11 hours after the branch starts, so its day begins before the recording), are not known.
-
-**Built from the kit:** [CountryRaceView](../../charts/race/CountryRaceView.tsx) draws the level and ceiling, fits their extent, places end labels, fits tooltip forms, and supplies chart controls, keyboard hover and Jump to. Fixed measure looks retain the accent fuel line, muted dashed capacity, area fill and exact raw end-label text; the presentation options retain curved geometry and shared layout-token label room. Product states keep the shared hooks mounted. Fuel keeps the gain/burn strip (`barStrip`), its read stops and full/compact tooltip rows because they describe fuel reads and days, rather than country races. `runAt`/`clipToSpans` select the reads, `readAt`/`readNote` date them, and `rescale` with `formatAmount`/`formatSigned` writes exact amounts. The product dates reads with `metadata::slot_read` and finds the country with `tagged_country` and `link_slot`, as Resource balance does.
-
-## Not yet
-
-- **Comparing countries** is left out: the widget shows one country. Level lines per country would follow the Political power pattern; how gain and burn would show for several countries (hidden, or one small strip per country) is not built.
-- **Lend-lease fuel received** is added to the tank but not booked in the ring, and only its latest hourly amount is recorded (`lendLeaseRaw`), so it is not in "gained"; the tooltip says so and names the last hour's amount when there was one, but no daily total exists. A country receiving lend-lease fuel gains more than the bars show.
-- **Burn by consumer:** the recording keeps each consumer's requested and received fuel (`ring_requested_*`, `ring_received_*`, `CountryFuelConsumers`). By the game's code the three consumers are divisions (0), the strategic air manager (1) and fleets' task forces (2), and the game's fuel tooltip names them with the fixed keys `TOPBAR_ARMY`, `TOPBAR_AIR` and `TOPBAR_NAVY`. Showing them (the drill-down in the spec) needs those names, which content does not define per consumer.
-- **The game's own tooltip** projects the current hour's rates over a day; this widget shows what the ring booked. They differ whenever the rates changed during the day.
+| File | Responsibility |
+|---|---|
+| [FuelWidget.tsx](FuelWidget.tsx), [fuelData.ts](fuelData.ts) | Overview, day accounting and exact values. |
+| [FuelBreakdown.tsx](FuelBreakdown.tsx), [fuelDrill.ts](fuelDrill.ts), [fuelCountry.ts](fuelCountry.ts), [FuelCountryChip.tsx](FuelCountryChip.tsx) | Awards, pins and dated header. |
+| [FuelConsumptionBreakdown.tsx](FuelConsumptionBreakdown.tsx), [FuelConsumptionStack.tsx](FuelConsumptionStack.tsx), [fuelConsumption.ts](fuelConsumption.ts) | Demand drill and history. |
+| [definition.ts](definition.ts), [index.ts](index.ts) | Settings and registration; adjacent tests. |

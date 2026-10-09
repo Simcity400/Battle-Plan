@@ -4,7 +4,8 @@ import { buildStack } from '../../charts/stack.ts';
 import type { StackModel, StackRun } from '../../charts/stack';
 import { fixedNumber, formatAxisValue, formatFixed } from '../../charts/valueAxis.ts';
 import { Lineage } from '../../dashboard/identity.ts';
-import type { CountryMetadata, FixedRun, TensionCountry, TensionEvent, TensionRead, TensionReply } from '../../generated/dashboard';
+import { countryIdentityKey } from '../../dashboard/countryIdentity.ts';
+import type { CountryIdentityRun, CountryMetadata, FixedRun, TensionCountry, TensionEvent, TensionRead, TensionReply } from '../../generated/dashboard';
 
 /** World tension and each country's contribution to it (the `world-tension`
  * product): lookups by hour, the layers ranked at a moment, and the events. Values
@@ -34,7 +35,9 @@ export function validateTensionReply(data: unknown): TensionReply {
     && Array.isArray(item.added) && item.added.length > 0 && item.added.every(added => Number.isInteger(added.hour) && RAW.test(added.addedRaw));
   const ok = typeof reply === 'object' && reply != null && decimalsOf(reply.tensionScale) != null && decimalsOf(reply.contributionScale) != null
     && RAW.test(reply.ceilingRaw) && Array.isArray(reply.reads) && spans(reply.reads) && reply.reads.every(read)
-    && Array.isArray(reply.countries) && reply.countries.every(country => typeof country.tag === 'string' && Number.isInteger(country.slot) && runs(country.runs))
+    && Array.isArray(reply.countries) && reply.countries.every(country => typeof country.tag === 'string' && Number.isInteger(country.slot) && runs(country.runs)
+      && (country.identities === undefined || (Array.isArray(country.identities) && spans(country.identities)
+        && country.identities.every(identity => Number.isInteger(identity.slot) && identity.slot === country.slot && Number.isInteger(identity.countryId)))))
     && new Set(reply.countries.map(countryKey)).size === reply.countries.length
     && Array.isArray(reply.events) && reply.events.every(event) && Array.isArray(reply.warnings);
   if (!ok) throw new Error('The world tension reply is malformed.');
@@ -52,6 +55,8 @@ export interface TensionModel {
   tagOf: ReadonlyMap<string, string>;
   /** Countries behind each layer, keeping canonical slots distinct even when tags coincide. */
   countryOf: ReadonlyMap<string, string>;
+  identities: ReadonlyMap<string, readonly CountryIdentityRun[]>;
+  nativeKeys: ReadonlySet<string>;
   lineage: Lineage;
 }
 
@@ -70,11 +75,16 @@ export function tensionModel(reply: TensionReply, lineage = new Lineage([]), met
   const observed = [...reply.countries].sort((a, b) => (a.runs[0]?.firstHour ?? Infinity) - (b.runs[0]?.firstHour ?? Infinity));
   for (const country of observed) if (!slots.has(country.slot)) slots.set(country.slot, lineage.countryAt(country.tag, country.runs[0]?.firstHour ?? 0));
   const countryOf = new Map(reply.countries.map(country => [countryKey(country), slots.get(country.slot)!]));
-  return { reply, tensionDecimals: decimalsOf(reply.tensionScale)!, contributionDecimals, raw, tagOf, countryOf, lineage };
+  const identities = new Map(reply.countries.map(country => [countryKey(country), country.identities ?? []]));
+  const nativeKeys = new Set(reply.countries.filter(country => country.identities !== undefined).map(countryKey));
+  return { reply, tensionDecimals: decimalsOf(reply.tensionScale)!, contributionDecimals, raw, tagOf, countryOf, identities, nativeKeys, lineage };
 }
 
-/** The tag a layer's country had at the hour shown, through recorded renames. */
-export const layerTagAt = (model: TensionModel, key: string, hour: number) => model.lineage.tagOf(model.countryOf.get(key)!, hour);
+/** A native layer's own proved alias at this hour; only omitted suffixes use the
+ * historical rename path. Missing native spans never acquire a label. */
+export const layerTagAt = (model: TensionModel, key: string, hour: number): string | null => model.nativeKeys.has(key)
+  ? runAt(model.identities.get(key) ?? [], Math.floor(hour)) ? model.tagOf.get(key)! : null
+  : model.lineage.tagOf(model.countryOf.get(key)!, hour);
 
 /** The read holding an hour, or null where none was recorded. */
 export function readAt(model: TensionModel, hour: number): TensionRead | null {
@@ -108,12 +118,13 @@ export const formatTensionAxis = (value: number, ticks: readonly number[]) => `$
  * first): the order the layers and the lists take. `among` narrows it to chosen
  * countries, by tag (null: every country). */
 export function rankedAt(model: TensionModel, hour: number, among: ReadonlySet<string> | null = null,
-  countryIds?: ReadonlySet<string> | null): { key: string; tag: string; raw: string }[] {
+  countryIds?: ReadonlySet<string> | null): { key: string; tag: string | null; raw: string }[] {
   if (!readAt(model, hour)) return [];
-  const ranked: { key: string; tag: string; raw: string; value: bigint }[] = [];
+  const ranked: { key: string; tag: string | null; raw: string; value: bigint }[] = [];
   for (const [key, runs] of model.raw) {
     const tag = layerTagAt(model, key, hour);
-    if (countryIds ? !countryIds.has(model.countryOf.get(key)!) : among && !among.has(tag)) continue;
+    const identity = runAt(model.identities.get(key) ?? [], Math.floor(hour));
+    if (countryIds ? identity === null || !countryIds.has(countryIdentityKey(identity)) : among && (tag === null || !among.has(tag))) continue;
     const run = runAt(runs, Math.floor(hour));
     if (run && run.valueRaw !== '0') ranked.push({ key, tag, raw: run.valueRaw, value: BigInt(run.valueRaw) });
   }
@@ -161,14 +172,27 @@ export function layerRaw(model: TensionModel, read: TensionRead, raw: string, sh
  * where a read follows a gap and where a layer's own run starts a segment, so the
  * stack never joins what the reply keeps apart. */
 export function tensionStack(model: TensionModel, keys: readonly string[], share: boolean,
-  membership: ReadonlyMap<string, readonly Span[]> | null = null, membersAreCountries = false): StackModel {
+  membership: ReadonlyMap<string, readonly Span[]> | null = null, membersAreCountries = false,
+  countryIds: ReadonlySet<string> | null = null): StackModel {
   const bands: StackRun[][] = Array.from({ length: keys.length + 1 }, () => []);
   const sources = keys.map(key => model.raw.get(key) ?? []);
-  const held = sources.map((runs, index) => membership ? clipToSpans(runs,
-    membership.get((membersAreCountries ? model.countryOf : model.tagOf).get(keys[index])!) ?? []) : runs);
+  const held = sources.map((runs, index) => {
+    if (!countryIds && !(membership && membersAreCountries)) return membership ? clipToSpans(runs, membership.get(model.tagOf.get(keys[index])!) ?? []) : runs;
+    const byCountry = new Map<string, CountryIdentityRun[]>();
+    for (const identity of model.identities.get(keys[index]) ?? []) {
+      const key = countryIdentityKey(identity);
+      if (countryIds && !countryIds.has(key)) continue;
+      const spans = byCountry.get(key);
+      if (spans) spans.push(identity); else byCountry.set(key, [identity]);
+    }
+    const known = [...byCountry].flatMap(([key, spans]) => membership && membersAreCountries
+      ? clipToSpans(spans, membership.get(key) ?? []) : spans);
+    const selected = clipToSpans(runs, known);
+    return membership && !membersAreCountries ? clipToSpans(selected, membership.get(model.tagOf.get(keys[index])!) ?? []) : selected;
+  });
   // Membership can change between daily reads. Split there too, moving the
   // contribution to Other while keeping the value supplied by the same read.
-  const cuts = membership ? [...new Set(held.flatMap(runs => runs.flatMap(run => [run.firstHour, run.lastHour + 1])))].sort((a, b) => a - b) : [];
+  const cuts = membership || countryIds ? [...new Set(held.flatMap(runs => runs.flatMap(run => [run.firstHour, run.lastHour + 1])))].sort((a, b) => a - b) : [];
   let cut = 0;
   for (const read of model.reply.reads) {
     while (cut < cuts.length && cuts[cut] <= read.firstHour) cut++;
@@ -195,8 +219,9 @@ export function tensionStack(model: TensionModel, keys: readonly string[], share
  * zero-width band carries the recorded total through the stack's clipping and
  * sampling even when contributions differ. It is stroked, not filled. */
 export function tensionPlot(model: TensionModel, keys: readonly string[], share: boolean,
-  membership: ReadonlyMap<string, readonly Span[]> | null = null, membersAreCountries = false): StackModel {
-  const stack = tensionStack(model, keys, share, membership, membersAreCountries);
+  membership: ReadonlyMap<string, readonly Span[]> | null = null, membersAreCountries = false,
+  countryIds: ReadonlySet<string> | null = null): StackModel {
+  const stack = tensionStack(model, keys, share, membership, membersAreCountries, countryIds);
   stack.edges.forEach((edges, index) => {
     if (!edges) return;
     const value = tensionPercent(model, readAt(model, stack.hours[index])!.tensionRaw);

@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { ChipSet } from '../../components/ChipSet';
 import { useContextMenu } from '../../components/ContextMenu';
 import WidgetState from '../../components/WidgetState';
@@ -7,6 +8,10 @@ import { barEndLabel, divergingBar } from '../../charts/divergingBar';
 import { dayLabel, drawLine, drawValueRule, placeEndLabels } from '../../charts/draw';
 import { easeTau } from '../../charts/easing';
 import { jumpItem } from '../../charts/jump';
+import { pickLines } from '../../charts/linePick';
+import DrillHost from '../../charts/drill/DrillHost';
+import { CLOSED, drillHour, reduceDrill } from '../../charts/drill/drillState';
+import type { DrillAction } from '../../charts/drill/drillState';
 import Legend from '../../charts/Legend';
 import { lineStyles } from '../../charts/palette';
 import { clipToSpans, extentOfAll, lineEndHour, runAt } from '../../charts/series';
@@ -23,17 +28,28 @@ import type { PlaybackMode } from '../../charts/view';
 import { formatDateTime } from '../../dashboard/calendar';
 import { chosenShown, storedChoices, toggleChosen } from '../../dashboard/chosen';
 import type { WidgetProps } from '../../dashboard/definitions';
+import DatedCountryChip from '../../dashboard/DatedCountryChip';
+import { useCountryLabelsAt } from '../../dashboard/countryFlagsAt';
+import { countryDrillTagAt } from '../../dashboard/countryIdentity';
+import { readDatedCountry } from '../../dashboard/datedCountry';
+import type { DatedCountrySelection } from '../../dashboard/datedCountry';
+import CountryComparisons from '../../dashboard/CountryComparisons';
+import type { ComparisonProps } from '../../dashboard/CountryComparisons';
 import { resolveWindow } from '../../dashboard/model';
 import type { BoundTrack } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
 import { readAt, readNote } from '../../dashboard/reads';
 import type { EquipmentStockpileReply } from '../../generated/dashboard';
-import { OPTIONS } from './definition';
+import { BREAKDOWN, OPTIONS } from './definition';
 import { AI_NOTE, automaticLines, CHOSEN_KEYS, hasRecords, balanceAt, balanceMode, barExtent, chartRuns, choiceKey, choiceRow, formatPercent, oneChoicePerRow, GROUP_NOUNS, groupLabel, groupTooltip, labelAt,
   NO_DESIGN, orderGroups, otherDesigns, overTimeTooltip, shareModeOf, shareOf, shareScale, stockAt, stockChoices, stockGroups, typesComplete, undrawableReason, weeklyAt, columnVars } from './stockpileData';
 import type { Grouping, RowOrder, StockGroup } from './stockpileData';
-import { useEquipmentStockpile } from './useEquipmentStockpile';
+import { useEquipmentStockpile, useStockpileCountry } from './useEquipmentStockpile';
+import { useStockpileArtwork } from './useStockpileArtwork';
+import StockpileDrill from './StockpileDrill.tsx';
+import { pinStockpileDrill, stockpileDrillGroup } from './stockpileDrill';
+import type { StockpileMode } from './stockpileDrill';
 import './equipmentStockpile.css';
 
 const NO_WARNINGS: string[] = [];
@@ -62,44 +78,130 @@ function readNotes(data: EquipmentStockpileReply, hour: number): string | undefi
  * country each equipment type's surplus or shortage as a share of what is needed, as
  * bars or over time; for an AI-controlled one, for which the game computes none, what
  * it holds. The hover adds produced per week and the variants in stock. */
-export default function EquipmentStockpileWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+export default function EquipmentStockpileWidget(props: WidgetProps) {
+  return props.widget.options?.show === BREAKDOWN.id ? <EquipmentStockpileCountry {...props} />
+    : <CountryComparisons {...props} component={EquipmentStockpileCountry} />;
+}
+
+function EquipmentStockpileCountry({ widget, runtime, active, onDiagnostics, setOption, countrySlot, within }: ComparisonProps) {
   const tokens = useChartTokens();
   const viewport = useViewportHeight();
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, tag, data, error, retry } = useEquipmentStockpile(widget, runtime, active);
+  const { track, tag, data: reply, numbers, contentPending, error, retry } = useEquipmentStockpile(widget, runtime, active);
+  const data = useMemo(() => reply && within ? { ...reply, stockHours: clipToSpans(reply.stockHours, within), lineHours: clipToSpans(reply.lineHours, within),
+    balanceHours: clipToSpans(reply.balanceHours, within), aiHours: clipToSpans(reply.aiHours, within) } : reply, [reply, within]);
   const window = track && resolveWindow(widget, track, runtime.tracks, runtime.clock.getHour());
   const following = widget.time.mode === 'follow' || widget.time.mode === 'pin';
   const playhead = window && following ? window.lastHour : null;
   const extent: [number, number] = track ? (widget.time.mode === 'range' && window ? [window.firstHour, window.lastHour] : [track.branch.firstHour, track.branch.lastHour]) : [0, 1];
   const head = Math.floor(playhead ?? extent[1]);
   const menu = useContextMenu('Stockpile actions');
-  useEffect(() => {
-    onDiagnostics(data?.warnings.length ? data.warnings : NO_WARNINGS);
-    return () => onDiagnostics(NO_WARNINGS);
-  }, [data, onDiagnostics]);
   const grouping = (options.grouping as Grouping) ?? 'type';
   const includedText = typeof options.included === 'string' ? options.included : '';
   // Stored as `setToken(key)`, so a key a setting cannot store can be included too.
   const included = useMemo(() => contentSet(includedText).map(contentKey), [includedText]);
+  const anchor = useRef<HTMLDivElement>(null);
+  const scope = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, tag, grouping, included, options.show, options.stockpileCountry, options.partGroup, options.partMode, widget.time, within]);
+  const pickOwner = useMemo(() => ({ scope, client: runtime.client, numbers }), [scope, runtime.client, numbers]);
+  const [drill, dispatch] = useReducer(reduceDrill, CLOSED);
+  const [drillOwner, setDrillOwner] = useState<object | null>(null);
+  const [selection, setSelection] = useState<{ owner: object; key: string; mode: StockpileMode } | null>(null);
+  const shownDrill = drillOwner === pickOwner ? drill : CLOSED;
+  const saved = options.show === BREAKDOWN.id;
+  const groups = useMemo(() => data ? stockGroups(data, grouping, Infinity, included) : [], [data, grouping, included]);
+  const mode = saved ? options.partMode as StockpileMode : selection?.mode ?? 'balance';
+  const clockHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || shownDrill.breakdown !== null && shownDrill.follow));
+  const playbackHour = Math.floor(clockHour) + (track?.axisOffset ?? 0);
+  const detailHead = shownDrill.breakdown !== null && shownDrill.follow ? playbackHour : playhead ?? head;
+  const at = saved && shownDrill.breakdown === null ? head : drillHour(shownDrill, playbackHour) ?? head;
+  const savedCountry = useMemo(() => saved && track ? readDatedCountry(options.stockpileCountry,
+    track.source.metadata.campaignKey, track.branch.id, widget.countries) : null,
+  [saved, options.stockpileCountry, widget.countries, track?.source.metadata.campaignKey, track?.branch.id]);
+  const [countryPick, setCountryPick] = useState<{ owner: object; selection: DatedCountrySelection } | null>(null);
+  const selectedCountry = saved ? savedCountry : countryPick?.owner === pickOwner ? countryPick.selection : null;
+  const missingSavedDate = saved && shownDrill.breakdown === null && (widget.time.mode === 'pin' || widget.time.mode === 'range') && !window;
+  const actor = useStockpileCountry(selectedCountry, runtime, track, active);
+  const detailData = selectedCountry ? actor.data : undefined;
+  useEffect(() => {
+    const warnings = (saved || shownDrill.breakdown !== null ? detailData : data)?.warnings;
+    onDiagnostics(warnings?.length ? warnings : NO_WARNINGS);
+    return () => onDiagnostics(NO_WARNINGS);
+  }, [data, detailData, saved, shownDrill.breakdown, onDiagnostics]);
+  const detailGroups = useMemo(() => detailData ? stockGroups(detailData, grouping, Infinity, included) : [], [detailData, grouping, included]);
+  const picked = saved ? stockpileDrillGroup(detailGroups, String(options.partGroup ?? ''))
+    : selection?.owner === pickOwner ? detailGroups.find(group => group.key === selection.key) : undefined;
+  const headerTag = actor.spans ? countryDrillTagAt(actor.spans, at) : null;
+  const headerReason = missingSavedDate ? 'The chosen moment is unavailable.' : !selectedCountry ? options.stockpileCountry
+    ? 'This country selection belongs to another country, campaign or branch, or is malformed.'
+    : 'The original country choice was not saved. Select a stockpile breakdown again.'
+    : actor.reason ?? (headerTag ? null : 'The selected native country is not recorded at this moment.');
+  const header = useCountryLabelsAt(runtime.client, track, saved && countrySlot && headerTag && !headerReason ? [{ tag: headerTag, hour: at }] : [], active);
+  const pinnedHeader = saved && countrySlot ? createPortal(<DatedCountryChip hour={missingSavedDate ? null : at} reason={headerReason}
+    label={headerTag && !headerReason ? header.labelAt(at)(headerTag) : null} />, countrySlot) : null;
+  const detailPickOwner = useMemo(() => ({ pickOwner, selectedCountry, numbers: actor.numbers }), [pickOwner, selectedCountry, actor.numbers]);
+  const ownerRef = useRef({ owner: pickOwner, active });
+  ownerRef.current = { owner: pickOwner, active };
+  useEffect(() => {
+    ownerRef.current.active = active;
+    return () => { ownerRef.current.active = false; };
+  }, [active, pickOwner]);
+  const act = (action: DrillAction) => { if (!ownerRef.current.active || ownerRef.current.owner !== pickOwner) return; setDrillOwner(pickOwner); dispatch(action); };
+  useEffect(() => { dispatch({ type: 'close' }); setDrillOwner(null); setSelection(null); setCountryPick(null); }, [pickOwner]);
 
-  if (!track || !tag) return <WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its equipment stockpile." />;
-  if (playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <WidgetState kind="unavailable" message="This time is outside the country’s recorded branch." />;
-  if ((widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." />;
-  if (error) return <WidgetState kind="error" message={error} onRetry={retry} />;
-  if (!data) return <WidgetState kind="loading" label="Loading the stockpile…" />;
+  if (!track || !tag) return <>{pinnedHeader}<WidgetState kind="empty" icon="grid" message="Load a campaign and choose a country to see its equipment stockpile." /></>;
+  if (!saved && shownDrill.breakdown === null && playhead != null && (playhead < track.branch.firstHour || playhead > track.branch.lastHour)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="This time is outside the country’s recorded branch." /></>;
+  if (shownDrill.breakdown === null && (widget.time.mode === 'range' || widget.time.mode === 'pin') && !window) return <>{pinnedHeader}<WidgetState kind="unavailable" message="The chosen moment is not in this campaign. Choose it again in the widget settings." /></>;
+  if (!saved && shownDrill.breakdown === null && error) return <>{pinnedHeader}<WidgetState kind="error" message={error} onRetry={retry} /></>;
+  if (!saved && shownDrill.breakdown === null && !data) return <>{pinnedHeader}<WidgetState kind="loading" label="Loading the stockpile…" /></>;
   // Whatever was recorded shows (production without a stockpile read, say); each value
   // not recorded says so.
-  if (!hasRecords(data)) return <WidgetState kind="unavailable" message="No stockpile, production or logistics was recorded for this country in this branch." />;
+  if (!saved && shownDrill.breakdown === null && data && !hasRecords(data)) return <>{pinnedHeader}<WidgetState kind="unavailable" message="No stockpile, production or logistics was recorded for this country in this branch." /></>;
 
   const jump = (hour: number) => [jumpItem(runtime, track.id, hour)];
-  return <div className="equipment-stockpile">
+  const open = (group: StockGroup, hour: number, mode: StockpileMode) => {
+    if (!ownerRef.current.active || ownerRef.current.owner !== pickOwner) return;
+    setSelection({ owner: pickOwner, key: group.key, mode });
+    setCountryPick({ owner: pickOwner, selection: { campaign: track.source.metadata.campaignKey, branch: track.branch.id,
+      tag, originOffset: Math.floor(hour) - track.branch.firstHour } });
+    const playing = runtime.clock.getSnapshot().playing;
+    act({ type: 'open', breakdown: BREAKDOWN.id, hour, playing, playhead: playhead ?? (playing ? playbackHour : null) });
+  };
+  const main = data ? <div className="equipment-stockpile">
     {options.view === 'time'
       ? <OverTime data={data} tokens={tokens} viewport={viewport} options={options} runtime={runtime} track={track} extent={extent} playhead={playhead}
-        active={active} grouping={grouping} included={included} onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} />
-      : <StockBars data={data} tokens={tokens} hour={head} grouping={grouping} included={included} order={options.order as RowOrder}
-        scale={options.scale === 'moment' ? 'moment' : 'campaign'} owner={`equipment-stockpile:${widget.id}`} active={active} viewport={viewport}
+        active={active && (shownDrill.breakdown === null || options.drill === 'popout')} grouping={grouping} groups={groups}
+        onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} setOption={setOption} pickOwner={pickOwner} onPick={open} />
+      : <StockBars data={data} tokens={tokens} hour={head} grouping={grouping} included={included} allGroups={groups} order={options.order as RowOrder}
+        scale={options.scale === 'moment' ? 'moment' : 'campaign'} owner={`equipment-stockpile:${widget.id}:${tag}`}
+        active={active && (shownDrill.breakdown === null || options.drill === 'popout')} viewport={viewport}
+        runtime={runtime} track={track} onDiagnostics={onDiagnostics} onPick={open}
         hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} onMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />}
+  </div> : null;
+  const detail = !selectedCountry ? <WidgetState kind="unavailable" message={headerReason!} />
+    : actor.error ? <WidgetState kind="error" message={actor.error} onRetry={actor.retry} />
+      : actor.reason ? <WidgetState kind="unavailable" message={actor.reason} />
+        : picked && detailData ? <StockpileDrill data={detailData} group={picked} mode={mode} percentage={mode === 'balance'} hour={at}
+    extent={extent} playhead={detailHead} playback="cursor" afterPlayhead selectedHour={at} branchStart={track.branch.firstHour}
+    hoursPerSecond={runtime.clock.getSnapshot().hoursPerSecond} active={active && (saved || shownDrill.breakdown !== null)}
+    pickOwner={detailPickOwner} onPick={hour => act(saved
+      ? { type: 'open', breakdown: BREAKDOWN.id, hour, playing: false, playhead: null } : { type: 'pick', hour })}
+    onContextMenu={(hour, x, y) => menu.open(x, y, jump(hour))} />
+    : <p className="drill-empty">The chosen equipment or saved design is not defined by this campaign.</p>;
+  return <div ref={anchor} className="stockpile-drill-host">
+    {contentPending && <p className="stockpile-caption">Equipment names are updating.</p>}
+    {saved ? <div className="drill-body">
+      {pinnedHeader}
+      {(shownDrill.breakdown === null ? widget.time.mode !== 'follow' : !shownDrill.follow) && <button type="button" className="button small quiet"
+        onClick={() => act({ type: 'open', breakdown: BREAKDOWN.id, hour: playbackHour, playing: true, playhead: playbackHour })}>Follow playback</button>}{detail}
+    </div> : <DrillHost anchor={anchor} mode={options.drill === 'popout' ? 'popout' : 'inline'} open={shownDrill.breakdown !== null}
+      title={picked ? labelAt(picked, grouping, at) : BREAKDOWN.label} day={dayLabel(at)} following={shownDrill.follow}
+      returnFocus={options.view === 'time' ? '.stockpile-chart canvas' : picked ? `[data-stockpile-key="${setToken(picked.key)}"]` : undefined}
+      canFollow onClose={() => act({ type: 'close' })} onFollow={() => act({ type: 'follow' })} main={main}
+      onPin={picked && selectedCountry && !actor.reason && choiceKey(picked, at) !== null ? () => {
+        if (!ownerRef.current.active || ownerRef.current.owner !== pickOwner) return;
+        const pinned = pinStockpileDrill(widget, track, selectedCountry.tag, picked, grouping, mode, at, shownDrill.follow, selectedCountry);
+        if (pinned) runtime.addWidgetBelow(widget.id, pinned);
+      } : undefined}>{detail}</DrillHost>}
     {menu.menu}
   </div>;
 }
@@ -111,16 +213,27 @@ const percent = (fraction: number) => `${Math.round(fraction * 100000) / 1000}%`
  * share of what is needed, all on one scale, with the exact amount at the bar's end;
  * else a bar from zero to what is in stock. Rows are focusable: hover or focus shows
  * the group's tooltip, right-click or the menu key jumps to the read shown. */
-function StockBars({ data, tokens, hour, grouping, included, order, scale, owner, active, viewport, hoursPerSecond, onMenu }: {
+function StockBars({ data, tokens, hour, grouping, included, allGroups, order, scale, owner, active, viewport, hoursPerSecond, onMenu, runtime, track, onDiagnostics, onPick }: {
   data: EquipmentStockpileReply; tokens: ChartTokens; hour: number; grouping: Grouping; included: readonly string[]; order: RowOrder;
+  allGroups: StockGroup[];
   scale: 'campaign' | 'moment'; owner: string; active: boolean; viewport: number; hoursPerSecond: number; onMenu: (hour: number, x: number, y: number) => void;
+  runtime: WidgetProps['runtime']; track: BoundTrack; onDiagnostics: WidgetProps['onDiagnostics'];
+  onPick: (group: StockGroup, hour: number, mode: StockpileMode) => void;
 }) {
   const groups = useMemo(() => stockGroups(data, grouping, hour, included), [data, grouping, hour, included]);
+  const mode = grouping === 'variant' ? 'variant' : balanceMode(data, hour);
+  const artCoverage = mode === 'player' ? data.balanceHours : data.stockHours;
+  const artHour = runAt(artCoverage, hour) ? readAt(mode === 'player' ? data.logisticsReads : data.reads, hour) : null;
+  const variants = useMemo(() => grouping === 'variant' ? groups.flatMap(group => group.variants.map(variant => variant.id)) : [], [groups, grouping]);
+  const artwork = useStockpileArtwork(runtime, track, data.tag, artHour, variants, active);
+  const art = useMemo(() => new Map(artwork?.data?.entries.map(entry => [entry.key, entry]) ?? []), [artwork]);
+  useEffect(() => {
+    onDiagnostics([...data.warnings, ...(artwork?.data?.warnings ?? []), ...(artwork?.error ? [artwork.error] : [])]);
+    return () => onDiagnostics(NO_WARNINGS);
+  }, [data, artwork, onDiagnostics]);
   // The campaign scales depend on the groups, not on the names shown at an hour.
-  const allGroups = useMemo(() => stockGroups(data, grouping, Infinity, included), [data, grouping, included]);
   const campaignStock = useMemo(() => barExtent(data, allGroups, null), [data, allGroups]);
   const campaignShare = useMemo(() => shareScale(data, allGroups, null), [data, allGroups]);
-  const mode = grouping === 'variant' ? 'variant' : balanceMode(data, hour);
   const diverging = mode === 'player';
   const stockExtent = scale === 'moment' ? barExtent(data, groups, hour) : campaignStock;
   const share = scale === 'moment' ? shareScale(data, groups, hour) : campaignShare;
@@ -137,9 +250,14 @@ function StockBars({ data, tokens, hour, grouping, included, order, scale, owner
   // Every group's tooltip and spoken text, built once per hour (and reply, grouping
   // and window); moving the pointer reuses them.
   const described = useMemo(() => new Map(groups.map(group => {
-    const content = groupTooltip(data, group, grouping, hour, { title: group.label, subtitle: dayLabel(hour), note: readNotes(data, hour) }, viewport);
+    const picture = art.get(grouping === 'variant' ? `variant:${group.variants[0]?.id}` : `type:${group.key}`);
+    const note = [readNotes(data, hour), picture && artHour !== null
+      ? `Picture: ${picture.name ?? `variant ${picture.variant}`}, read ${formatDateTime(artHour)}.${picture.reason ? ` ${picture.reason}.` : ''}`
+      : grouping === 'domain' ? 'An arm combines equipment types and has no single native best variant.'
+        : artwork?.data ? 'A native picture is unavailable at this value read.' : undefined].filter(Boolean).join(' ');
+    const content = groupTooltip(data, group, grouping, hour, { title: group.label, subtitle: dayLabel(hour), note }, viewport);
     return [group.key, { content, text: tooltipText(content) }] as const;
-  })), [data, groups, grouping, hour, viewport]);
+  })), [data, groups, grouping, hour, viewport, art, artHour, artwork?.data]);
   const content = useCallback((key: string) => described.get(key)?.content ?? null, [described]);
   const rowTips = useRowTooltips<string>({ owner, active, content, revision: `${hour}:${data.branchId}:${grouping}`, onMenu: (_, x, y) => onMenu(jumpHour, x, y) });
   const glide = Math.round(3 * easeTau(tokens.motion, hoursPerSecond, tokens.reducedMotion));
@@ -193,14 +311,22 @@ function StockBars({ data, tokens, hour, grouping, included, order, scale, owner
       : <ol className={`stockpile-bars${diverging ? ' is-diverging' : ''}`} style={style} aria-label={`${diverging ? 'Surplus or shortage' : 'Equipment in stock'} on ${dayLabel(hour)}`}>
         {rows.map(row => {
           const group = byKey.get(row.key) ?? row.item;
+          const picture = art.get(grouping === 'variant' ? `variant:${group.variants[0]?.id}` : `type:${group.key}`);
+          const pick = () => { const current = byKey.get(row.key); if (current) onPick(current, hour, diverging ? 'balance' : 'stock'); };
           return <li key={row.key} className={movingRowClass(row)} style={{ transform: `translateY(${row.slot * ROW_HEIGHT}px)`, height: ROW_HEIGHT }}
-            aria-label={groupLabel(data, group, hour)} {...rowTips.rowProps(row.key)}>
+            aria-label={groupLabel(data, group, hour)} data-stockpile-key={setToken(group.key)} {...rowTips.rowProps(row.key)}
+            onClick={pick}
+            onKeyDown={event => {
+              rowTips.rowProps(row.key).onKeyDown?.(event);
+              if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick(); }
+            }}>
             {/* The full tooltip, even where the window trims it (the tooltip layer is not read out). */}
             <span id={rowTips.descriptionId(row.key)} className="sr-only">{described.get(row.key)?.text}</span>
             <span className="stockpile-name">
-              {/* Equipment art is not wired yet: the game draws a type with the country's best variant and that variant's icon, both recorded. */}
-              <span className="stockpile-art" aria-hidden="true" />
-              <span>{group.label}</span>
+              {picture?.icon
+                ? <img className="stockpile-art" src={picture.icon} alt="" />
+                : <span className="stockpile-art" aria-hidden="true" />}
+              <span>{group.label}{grouping === 'type' && picture?.name && <small>{picture.name}</small>}</span>
             </span>
             {diverging ? divergingRow(group) : stockRow(group)}
           </li>;
@@ -212,15 +338,15 @@ function StockBars({ data, tokens, hour, grouping, included, order, scale, owner
 /** The chosen groups over time, each in its own palette colour, with the zero line
  * emphasised and names at the line ends (mock-up economy-1): the surplus as a share
  * of need where the game computed it, else what was in stock. */
-function OverTime({ data, tokens, viewport, options, runtime, track, extent, playhead, active, grouping, included, onMenu, setOption }: {
+function OverTime({ data, tokens, viewport, options, runtime, track, extent, playhead, active, grouping, groups, onMenu, setOption, pickOwner, onPick }: {
   data: EquipmentStockpileReply; tokens: ChartTokens; viewport: number; options: Record<string, unknown>; runtime: WidgetProps['runtime']; track: BoundTrack;
-  extent: [number, number]; playhead: number | null; active: boolean; grouping: Grouping; included: readonly string[];
+  extent: [number, number]; playhead: number | null; active: boolean; grouping: Grouping; groups: StockGroup[];
   onMenu: (hour: number, x: number, y: number) => void; setOption: WidgetProps['setOption'];
+  pickOwner: object; onPick: (group: StockGroup, hour: number, mode: StockpileMode) => void;
 }) {
   // The share chart wherever the balance is recorded; variants have none of their own.
   const shareMode = shareModeOf(data, grouping);
   const head = Math.floor(playhead ?? extent[1]);
-  const groups = useMemo(() => stockGroups(data, grouping, Infinity, included), [data, grouping, included]);
   const series = useMemo(() => new Map(groups.map(group => [group.key, chartRuns(data, group, grouping)])), [data, groups, grouping]);
   const drawable = useMemo(() => groups.filter(group => (series.get(group.key)?.length ?? 0) > 0), [groups, series]);
   // Choices are stored as `setToken(choiceKey)` (the kit's `storedChoices`), so a key a
@@ -255,6 +381,10 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
     const style = styles.get(key);
     return group && style ? [{ group, color: style.color, dash: style.primary, runs: clipToSpans(series.get(key) ?? [], [{ firstHour: extent[0], lastHour: extent[1] }]) }] : [];
   }), [chosen, groups, styles, series, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const chosenScope = JSON.stringify(chosen);
+  const choiceOwner = useMemo(() => ({ pickOwner, chosenScope, extent }), [pickOwner, chosenScope, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [selection, setSelection] = useState<{ owner: object; hour: number; keys: readonly string[] } | null>(null);
+  const pending = selection?.owner === choiceOwner ? selection : null;
   const layers = useMemo<ChartLayer[]>(() => [
     { draw: (ctx, frame, chartTokens) => drawValueRule(ctx, frame, chartTokens, 0) },
     ...lines.map((line): ChartLayer => ({
@@ -296,6 +426,12 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
       return { id: line.group.key, label: labelAt(line.group, grouping, head), color: line.color, value: stock == null ? 'Not recorded' : formatAmount(stock, data.decimals) };
     })} />}
     <p className="stockpile-caption">{caption}</p>
+    {pending && <label>Choose drawn equipment on {dayLabel(pending.hour)} <select autoFocus value="" onChange={event => {
+      const group = lines.find(line => line.group.key === event.target.value)?.group;
+      if (group && pending.keys.includes(group.key)) { onPick(group, pending.hour, shareMode ? 'balance' : 'stock'); setSelection(null); }
+    }}><option value="" disabled>Choose equipment…</option>
+      {lines.filter(line => pending.keys.includes(line.group.key)).map(line => <option key={line.group.key} value={line.group.key}>
+        {labelAt(line.group, grouping, pending.hour)}</option>)}</select></label>}
     {lines.length === 0 && <p className="stockpile-empty">{shareMode
       ? 'Nothing here can be plotted: what is needed cannot be derived for these types, so they have no share to draw.'
       : 'Nothing chosen was recorded in stock.'}</p>}
@@ -312,6 +448,13 @@ function OverTime({ data, tokens, viewport, options, runtime, track, extent, pla
         // The keyboard steps through the reads; the kit adds the start of a range or zoom
         // that begins between two reads, so the value carried into it is reachable too.
         keyHours={shareMode ? data.logisticsReads : data.reads}
+        pickOwner={choiceOwner} onPick={(hour, context) => {
+          const keys = pickLines(lines.map(line => ({ key: line.group.key, runs: line.runs })), hour, context);
+          if (keys.length === 1) {
+            const group = lines.find(line => line.group.key === keys[0])?.group;
+            if (group) { setSelection(null); onPick(group, hour, shareMode ? 'balance' : 'stock'); }
+          } else setSelection(keys.length ? { owner: choiceOwner, hour, keys } : null);
+        }}
         tooltip={hour => {
           if (hour < extent[0] || hour > extent[1]) return null;
           const ai = shareMode && balanceMode(data, hour) === 'ai';

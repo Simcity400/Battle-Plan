@@ -1,60 +1,22 @@
 # Combat windows
 
-Land, naval and result windows use the content stack's native GUI declarations,
-retained lifecycle instances and the shared native walk and draw. Sprites, fonts,
-texts and bounded lazy portraits resolve through `native_resources`; grids retain
-their finalized extents and synchronize their containers' native scrollbars.
+Land, naval and result windows bind recorded values into native GUI declarations. The shared walk/lifecycle/compiler owns layout and drawing; producers own combat details, tactics and hover text.
 
-Interactive Match game rasterises this GUI at the game's framebuffer scale,
-then linearly presents the completed image at the display stretch (`142224600`,
-`1422206C0`). This preserves the initiative overlay's opaque one-texel border
-and thin font strokes. Active and reserve names both retain the native
-`truncate` flag through binding, preparation and retained refresh; ellipsis is
-three font-measured dots (`1422D7D10`, `142286770`, `14228DE40`, `14228B2F0`).
+| Area | Entry points |
+|---|---|
+| Content, binding, presentation | [assets.rs](assets.rs), [binding.rs](binding.rs), [mod.rs](mod.rs) |
+| Recorded calculations | [land_details.rs](land_details.rs), [naval_details.rs](naval_details.rs), [keyed.rs](keyed.rs) |
+| Tactics and text | [tactics.rs](tactics.rs), [modifier_text.rs](modifier_text.rs), [tooltips.rs](tooltips.rs) |
+| Marker hover and history | [land_marker_tooltips.rs](land_marker_tooltips.rs), [naval_marker_tooltips.rs](naval_marker_tooltips.rs), [icon_frames.rs](icon_frames.rs) |
 
-Producers bind `Values` by element path and own details, tactics and hover text.
-The native geometry supplies clipped hover regions to the shared `ToolTip` in
-[tooltip_painter.rs](tooltip_painter.rs). Unsupported content and missing operands
-remain named and counted.
+## Rules
 
-Land construction/update: `1415C5900`, `1415C6AB0`, `1415C7520`; naval:
-`1417D7450`, `1417D81B0`, `1417DA2F0`. List refill (`1415CA230`, `1415CA460`)
-finalizes grids (`1422B2F10`) and synchronizes scrolling (`1422AFA30`).
+- Bind `Values` by path through native resources, including bounded lazy portraits. Preserve membership order, finalized grid extents and scrollbar synchronization.
+- *Match game* rasterises before display stretch. Keep active/reserve name truncation and font-measured three-dot ellipsis.
+- Hovers use clipped geometry, reverse attach order and [ToolTip](tooltip_painter.rs); transparent text passes through. Shortcuts append native keycaps/delay. Ship groups anchor beside the window; sunk entries follow grid slots. Naval markers click only backgrounds/visible HQ frames; balance icons hover.
+- Land marker counts include reserves; countries keep primary-list order. [Border tails](border_marker.rs) use recorded state/event operands and shared effect descriptions; missing/unsupported fragments refuse by name/count.
+- Naval positioning, screening, carrier air and anti-air refresh from runtime operands rather than lagging combat copies. Index joins once per refresh; missing/duplicate keys and incompatible fixed modifier definitions leave values unknown.
+- Commander roles use recorded category/skill; terrain hovers use content adjusters/widths. Timed-trait gaps refuse only affected hovers. Exile flag/frame withhold together on missing inputs. Naval trait context differs from land; only naval shows field-marshal inactivity.
+- Unseen icons prefer established view/index frames, else land's authored/naval binding initial frame with a counted history reason. Fallback never establishes history.
 
-Commander portrait headings use the recorded leader category and skill to select
-the native localised role before the name (`140C0A7A0`, `140C0A9A0`). The land
-terrain banner's hover reads common adjusters, widths, modifiers, supply-flow
-reduction and movement cost from the recorded content stack (`14142A4C0`).
-
-Map land-combat hovers (`land_marker_tooltips.rs`, `1418AC1D0`) use the shared
-engaged index. Counts include reserves; country names follow the recorded primary
-list's order. Outlook uses survival scores, with primary or secondary country
-membership making the wording relative to the viewer (`1413CCBC0`). Unknown
-engagement, naming operands or score operands produce counted refusals. Border
-conflict effect tails need unrecorded combatant country, state and event operands
-(`1413D69D0`) and are refused while the common lines remain available.
-
-Naval marker hovers (`naval_marker_tooltips.rs`, `1418E2DC0`) add task forces,
-convoys, ordered countries and the viewer's first qualifying naval HQ count.
-Only the background and visible HQ frame buttons receive clicks (`1418E42A0`);
-the balance icons receive hovers. Ship group hovers anchor beside the combat
-window (`1417D47E0`); sunk entries follow the authored grid slots (`1417D05D0`).
-Carrier grouping shares the equipment-pool predicate used by sortie modifiers
-(`14195ED00`, `140C2B7E0`), and runtime air sprites load from the stacked registry.
-
-Combat hovers reject transparent text and follow graphical attach order
-(`1422D8240`, `142226BD0`). Authored button shortcuts append native keycaps and
-use the normal show delay (`1402A2810`, `1402A4080`). Naval header skills use
-recorded component values and retained definitions (`141DF4270`, `140AD9010`);
-trait hovers share the land reader and use recorded timed traits for live and
-result commanders (`141C5F730`, `140C0B3C0`, `140C07810`). Naval grids use context 2,
-land grids context 4; only naval shows the field-marshal-only inactivity warning.
-A historical timed-trait
-gap refuses only the trait hover by field name and counts it.
-
-Unseen combat icons retain established frames. Without history, the owner ruling
-(2026-10-06) draws the land frame child's authored initial value (`CIconType+0x134`,
-`142358490`, `142358910`, `142358760`); naval uses the binding's explicit frame 1
-(`1418E42A0`), which overrides its button's authored value. Each fallback counts a
-named client-pool limitation with its history reason (`icon_frames.rs`), including
-a pending index; it never establishes history.
+The [viewer guide](../../README.md#native-gui-and-hover-ownership) owns lifecycle, clocks, language guards and matched comparisons. Formulas/evidence stay beside code. Use [AGENTS.md](../../../../AGENTS.md) checks; synthetic tests establish no live hover parity.

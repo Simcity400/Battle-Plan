@@ -14,6 +14,7 @@ mod faction_names;
 pub mod map_settings;
 pub mod metadata;
 pub mod modifier_text;
+pub mod naval_battle_name;
 pub mod products;
 pub mod protocol;
 pub mod ranking;

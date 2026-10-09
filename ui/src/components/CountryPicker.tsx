@@ -6,12 +6,17 @@ import { CountryFlag } from './CountryFlag';
 import { forgetSettledProducts, loadProduct, loadTransientProduct } from '../dashboard/products';
 import { FlagStore, flagStore, loadListFlags } from '../dashboard/flagCache';
 import { useContentRevision } from '../dashboard/contentRevision';
+import { nameKey, useCountryNamesAt } from '../dashboard/countryNamesAt';
 import type { DashboardClient, DashboardSource, ProductRequest } from '../dashboard/client';
 import type { CountryFlagImage, CountryFlagParams, CountryFlagReply, CountryFlagSize, LandOwners } from '../generated/dashboard';
-import { COUNTRY_ROW_HEIGHT, countryChoices, filterChoices, moveIndex, revealRow, visibleRange } from './countryList';
+import { COUNTRY_ROW_HEIGHT, allowedCountryChoices, countryChoices, filterChoices, moveIndex, revealRow, visibleRange } from './countryList';
+import type { CountryOption } from './countryList';
 
 /** `.country-picker-list` max-height, used until the list is measured. */
 const LIST_HEIGHT = 340;
+const NO_NAMES: ReadonlyMap<string, string> = new Map();
+
+export interface CountryPickerRead { tag: string; branchId: string; hour: number }
 
 function flagsRequest(context: { sourceId: string; revision: string; branchId: string; hour: number }, size: CountryFlagSize, tags: string[]): ProductRequest<CountryFlagParams> {
   return { sourceId: context.sourceId, revision: context.revision, product: 'country-flags', params: { branchId: context.branchId, hour: context.hour, tags, size } };
@@ -22,13 +27,19 @@ function flagsRequest(context: { sourceId: string; revision: string; branchId: s
  * playback day; lists use the game's medium flags at each country's observed hour.
  * The list renders only the rows in view and loads only their flags, so it costs
  * the same at any country count. */
-export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, flagAt = null, addLabel, chosen }: {
+export default function CountryPicker({ countries, selectedTag, playerCountryId, onChange, onCountries, onReconnect, source, client, field = false, flagAt = null, addLabel, chosen, allowedTags, choiceReads }: {
   countries: CountryMetadata[]; selectedTag: string | null; playerCountryId: string | null;
   onChange: (tag: string | null) => void; source: DashboardSource | null | undefined; client: DashboardClient;
   onCountries?: (sourceId: string, revision: string, countries: CountryMetadata[]) => void;
   onReconnect?: () => void; field?: boolean; flagAt?: { branchId: string; hour: number } | null;
   /** A multi-country field: the trigger reads this label and every `chosen` tag is ticked. */
   addLabel?: string; chosen?: readonly string[];
+  /** A drill chooser can restrict its list to the countries being compared. */
+  allowedTags?: readonly string[];
+  /** Immutable, authoritative supplying reads, keyed by the pickable tag. A
+   * missing/null read refuses looks; read branches must match flagAt.branchId.
+   * Clicks still return the pickable tag, never the supplying read's alias. */
+  choiceReads?: ReadonlyMap<string, CountryPickerRead | null>;
 }) {
   const id = useId();
   const listId = `${id}-countries`;
@@ -43,52 +54,106 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
   const [retry, setRetry] = useState(0);
   const content = useContentRevision(client);
   const sourceKey = source ? JSON.stringify([source.id, source.revision, content]) : '';
+  const nameContext = useMemo(() => ({ sourceKey, client, branchId: flagAt?.branchId, hour: flagAt?.hour, choiceReads }),
+    [sourceKey, client, flagAt?.branchId, flagAt?.hour, choiceReads]);
+  const [capturedNames, setCapturedNames] = useState<{ context: typeof nameContext | null; names: ReadonlyMap<string, string> }>({ context: null, names: NO_NAMES });
+  const heldNames = capturedNames.context === nameContext ? capturedNames.names : NO_NAMES;
   const [roster, setRoster] = useState<{ key: string; countries: CountryMetadata[]; error: string | null; warning: string | null }>({ key: '', countries: [], error: null, warning: null });
-  const loading = !!source && roster.key !== sourceKey;
-  const choices = useMemo(() => roster.key === sourceKey ? countryChoices(roster.countries) : [], [roster, sourceKey]);
+  const loading = !!source && !allowedTags && roster.key !== sourceKey;
+  const choices = useMemo(() => {
+    const choices = allowedTags ? allowedCountryChoices(countries, allowedTags, flagAt, heldNames)
+      : roster.key === sourceKey ? countryChoices(roster.countries) : [];
+    return choiceReads === undefined ? choices : choices.map(({ country }) => {
+      const name = heldNames.get(country.tag) ?? country.tag;
+      return { country: { ...country, name }, search: `${name} ${country.tag}`.toLowerCase() };
+    });
+  }, [countries, roster, sourceKey, allowedTags, flagAt?.branchId, flagAt?.hour, heldNames, choiceReads]); // eslint-disable-line react-hooks/exhaustive-deps
   const byTag = useMemo(() => new Map(choices.map(({ country }) => [country.tag, country])), [choices]);
   const selected = useMemo(() => selectedTag == null ? countries.find((country) => country.id === playerCountryId)
     : byTag.get(selectedTag) ?? countries.find((country) => country.tag === selectedTag), [countries, playerCountryId, selectedTag, byTag]);
   const filtered = useMemo(() => filterChoices(choices, query), [choices, query]);
   const range = visibleRange(filtered.length, view.scrollTop, view.height);
   const visible = open ? filtered.slice(range.start, range.end) : [];
-  const [flagState, setFlagState] = useState<{ key: string; loads: number; error: string | null }>({ key: '', loads: 0, error: null });
-  const [headerFlag, setHeaderFlag] = useState<{ identity: string; key: string; image?: CountryFlagImage; error: string | null }>({ identity: '', key: '', error: null });
-  const headerTag = addLabel ? null : selected?.tag ?? selectedTag;
+  const choiceTrack = useMemo(() => {
+    const branch = source?.metadata.branches.find(branch => branch.id === flagAt?.branchId);
+    return source && branch ? { source, branch } : undefined;
+  }, [source, flagAt?.branchId]);
+  const choiceRead = (tag: string): CountryPickerRead | null => {
+    if (choiceReads === undefined) return flagAt ? { tag, ...flagAt } : null;
+    const read = choiceReads.get(tag);
+    return read && choiceTrack && read.branchId === choiceTrack.branch.id && Number.isSafeInteger(read.hour)
+      && read.hour >= choiceTrack.branch.firstHour && read.hour <= choiceTrack.branch.lastHour ? read : null;
+  };
+  const choiceReason = (tag: string) => choiceReads !== undefined && !choiceRead(tag)
+    ? 'Name and flag unavailable: no recorded read for this country.' : undefined;
+  const wantedChoices = allowedTags || choiceReads !== undefined ? [...new Set([...visible.map(choice => choice.country.tag), ...(selected ? [selected.tag] : [])])]
+    .flatMap(displayTag => { const read = choiceRead(displayTag); return read ? [{ displayTag, ...read }] : []; }) : [];
+  const wantedNames = wantedChoices.map(({ tag, hour }) => ({ tag, hour }));
+  const names = useCountryNamesAt(client, choiceTrack, wantedNames, (!!allowedTags || choiceReads !== undefined) && (!!flagAt || choiceReads !== undefined));
+  // Keep names already seen at this held hour searchable after filtering or
+  // scrolling releases their visible-row requests. Another context starts empty.
+  useEffect(() => {
+    if ((!allowedTags || !flagAt) && choiceReads === undefined) return;
+    setCapturedNames(previous => {
+      const held = previous.context === nameContext ? previous.names : NO_NAMES;
+      const added = wantedChoices.flatMap(({ displayTag, tag, hour }) => {
+        const name = names.get(nameKey(hour, tag));
+        return name !== undefined && held.get(displayTag) !== name ? [[displayTag, name] as const] : [];
+      });
+      return previous.context === nameContext && !added.length ? previous : { context: nameContext, names: new Map([...held, ...added]) };
+    });
+    // `names` changes for the exact visible target set returned by the hook.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [names, nameContext, allowedTags]);
+  const countryName = (country: CountryOption) => choiceReads !== undefined || allowedTags && flagAt
+    ? heldNames.get(country.tag) ?? country.tag : country.name || country.tag;
+  const [flagState, setFlagState] = useState<{ context: typeof nameContext | null; loads: number; error: string | null }>({ context: null, loads: 0, error: null });
+  const [headerFlag, setHeaderFlag] = useState<{ client: DashboardClient | null; identity: string; key: string; image?: CountryFlagImage; error: string | null }>({ client: null, identity: '', key: '', error: null });
+  const displayHeaderTag = addLabel ? null : selected?.tag ?? selectedTag;
+  const headerRead = displayHeaderTag ? choiceRead(displayHeaderTag) : null;
+  const headerTag = choiceReads === undefined ? displayHeaderTag : headerRead?.tag ?? null;
   const headerSize: CountryFlagSize = field ? 'medium' : 'shield';
   const flags = flagStore(client);
-  const flagOf = (country: CountryMetadata) => source
-    ? flags.get(FlagStore.key(source.id, source.revision, country.observedBranchId, country.observedHour, country.tag)) ?? undefined : undefined;
+  const countryAt = (country: CountryOption) => choiceReads !== undefined ? choiceRead(country.tag)
+    : allowedTags && flagAt ? { tag: country.tag, ...flagAt }
+    : country.observedBranchId != null && country.observedHour != null ? { tag: country.tag, branchId: country.observedBranchId, hour: country.observedHour } : null;
+  const flagOf = (country: CountryOption) => {
+    const at = countryAt(country);
+    return source && at ? flags.get(FlagStore.key(source.id, source.revision, at.branchId, at.hour, at.tag)) ?? undefined : undefined;
+  };
   const flagContext = useMemo(() => {
     if (!source?.metadata.branches.length) return null;
     const witness = selected ?? source.metadata.countries.find((country) => country.id === source.metadata.playerCountryId) ?? source.metadata.countries[0];
     const branch = source.metadata.branches.find((branch) => branch.id === witness?.observedBranchId) ?? source.metadata.branches[0];
     return { sourceId: source.id, revision: source.revision, branchId: branch.id,
-      hour: witness?.observedBranchId === branch.id ? witness.observedHour : branch.firstHour };
+      hour: witness?.observedBranchId === branch.id ? witness.observedHour ?? branch.firstHour : branch.firstHour };
   }, [source, selected]);
-  const live = !field && !!flagAt && !!source;
-  const headerContext = useMemo(() => live ? { sourceId: source!.id, revision: source!.revision, branchId: flagAt!.branchId, hour: flagAt!.hour } : flagContext,
-    [live, source, flagAt?.branchId, flagAt?.hour, flagContext]);
-  const headerIdentity = `${sourceKey}:${headerTag}:${headerSize}`;
+  const live = (choiceReads !== undefined || (!field || !!allowedTags) && !!flagAt) && !!source;
+  const headerContext = useMemo(() => choiceReads !== undefined ? source && headerRead
+    ? { sourceId: source.id, revision: source.revision, branchId: headerRead.branchId, hour: headerRead.hour } : null
+    : live ? { sourceId: source!.id, revision: source!.revision, branchId: flagAt!.branchId, hour: flagAt!.hour } : flagContext,
+    [choiceReads !== undefined, source, headerRead?.branchId, headerRead?.hour, live, flagAt?.branchId, flagAt?.hour, flagContext]);
+  const headerIdentity = choiceReads !== undefined ? JSON.stringify([sourceKey, displayHeaderTag, headerTag, headerSize, headerContext?.branchId, headerContext?.hour])
+    : `${sourceKey}:${headerTag}:${headerSize}`;
   const headerKey = `${headerIdentity}:${headerContext?.branchId}:${headerContext?.hour}`;
   // A new playback day keeps the current flag on screen until its own flag arrives.
-  const headerImage = headerFlag.identity === headerIdentity ? headerFlag.image : undefined;
-  const flagError = [flagState.key === sourceKey ? flagState.error : null, headerFlag.key === headerKey ? headerFlag.error : null].filter(Boolean).join('\n') || null;
+  const headerImage = headerFlag.client === client && headerFlag.identity === headerIdentity ? headerFlag.image : undefined;
+  const flagError = [flagState.context === nameContext ? flagState.error : null, headerFlag.client === client && headerFlag.key === headerKey ? headerFlag.error : null].filter(Boolean).join('\n') || null;
   useEffect(() => {
     if (!headerContext || !headerTag) return;
     const controller = new AbortController();
     const request = flagsRequest(headerContext, headerSize, [headerTag]);
     // Per-day requests bypass the shared cache so they cannot evict full-branch products.
     void (live ? loadTransientProduct<CountryFlagReply>(client, request, controller.signal) : loadProduct<CountryFlagReply>(client, request, controller.signal)).then(result => {
-      if (!controller.signal.aborted) setHeaderFlag({ identity: headerIdentity, key: headerKey, image: result.flags.find(image => image.tag === headerTag), error: null });
+      if (!controller.signal.aborted) setHeaderFlag({ client, identity: headerIdentity, key: headerKey, image: result.flags.find(image => image.tag === headerTag), error: null });
     }).catch(error => {
       // An unreadable hour shows no flag rather than carrying one across it.
-      if (!controller.signal.aborted) setHeaderFlag({ identity: headerIdentity, key: headerKey, image: undefined, error: String(error) });
+      if (!controller.signal.aborted) setHeaderFlag({ client, identity: headerIdentity, key: headerKey, image: undefined, error: String(error) });
     });
     return () => controller.abort();
   }, [headerContext, client, headerTag, headerKey, headerIdentity, headerSize, live, retry]);
   useEffect(() => {
-    if (!source) return;
+    if (!source || allowedTags) return;
     const controller = new AbortController();
     void loadProduct<LandOwners>(client, { sourceId: source.id, revision: source.revision, product: 'land-owners', params: {} }, controller.signal).then(result => {
       if (!controller.signal.aborted) {
@@ -99,10 +164,13 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
       if (!controller.signal.aborted) setRoster(previous => ({ key: sourceKey, countries: previous.key === sourceKey ? previous.countries : [], error: String(error), warning: null }));
     });
     return () => controller.abort();
-  }, [sourceKey, client, onCountries, retry]);
+  }, [sourceKey, client, onCountries, retry, allowedTags]);
   // Only the rows in view ask for flags; stored flags are never requested again.
   // JSON escapes line breaks, so one line per row keeps the key exact.
-  const visibleTargets = visible.map(({ country }) => JSON.stringify([country.observedBranchId, country.observedHour, country.tag])).join('\n');
+  const visibleTargets = visible.flatMap(({ country }) => {
+    const at = countryAt(country);
+    return at ? [JSON.stringify([at.branchId, at.hour, at.tag])] : [];
+  }).join('\n');
   useEffect(() => {
     if (!source || !visibleTargets) return;
     const targets = visibleTargets.split('\n').map(line => {
@@ -113,12 +181,12 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     // Reply warnings describe the recording (such as its content coverage), not
     // a failed flag; only a failed request counts as a flag error.
     void loadListFlags(client, source, targets, controller.signal).then(() => {
-      if (!controller.signal.aborted) setFlagState(previous => ({ key: sourceKey, loads: (previous.key === sourceKey ? previous.loads : 0) + 1, error: null }));
+      if (!controller.signal.aborted) setFlagState(previous => ({ context: nameContext, loads: (previous.context === nameContext ? previous.loads : 0) + 1, error: null }));
     }).catch(error => {
-      if (!controller.signal.aborted) setFlagState(previous => ({ key: sourceKey, loads: previous.key === sourceKey ? previous.loads : 0, error: String(error) }));
+      if (!controller.signal.aborted) setFlagState(previous => ({ context: nameContext, loads: previous.context === nameContext ? previous.loads : 0, error: String(error) }));
     });
     return () => controller.abort();
-  }, [source, sourceKey, client, visibleTargets, retry]);
+  }, [source, sourceKey, client, visibleTargets, retry, nameContext]);
   useLayoutEffect(() => {
     if (open && list.current) setView({ scrollTop: list.current.scrollTop, height: list.current.clientHeight || LIST_HEIGHT });
   }, [open]);
@@ -136,14 +204,15 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
     else { if (source && flagError) forgetSettledProducts(client, source.id); setRetry(value => value + 1); }
   };
   const choose = (tag: string | null) => { onChange(tag); menu.close(); };
-  const flagsMissing = flagState.key === sourceKey && !!flagState.error && !visible.some(({ country }) => flagOf(country));
+  const flagsMissing = flagState.context === nameContext && !!flagState.error && !visible.some(({ country }) => flagOf(country));
   return <div className={field ? 'field widget-country-field' : 'header-control header-country'}>
     <span className={field ? undefined : 'sr-only'}>Country</span>
     <button ref={trigger} type="button" className={field ? 'widget-country-trigger' : 'header-country-trigger'} disabled={!source} popoverTarget={id}
-      aria-label={addLabel ?? (field ? 'Widget country' : 'Choose country')} aria-haspopup="dialog" aria-expanded={open}>
+      aria-label={addLabel ?? (field ? 'Widget country' : 'Choose country')} aria-haspopup="dialog" aria-expanded={open}
+      data-tooltip={displayHeaderTag ? choiceReason(displayHeaderTag) : undefined}>
       {addLabel ? <Icon name="plus" /> : <CountryFlag image={headerImage} />}
-      {addLabel ? <span>{addLabel}</span> : field ? <span>{selected?.name || selected?.tag || selectedTag || 'Choose country'}</span>
-        : <span className="header-country-text"><strong>{selected?.name || selected?.tag || selectedTag || (source ? 'Choose country' : 'No campaign')}</strong></span>}
+      {addLabel ? <span>{addLabel}</span> : field ? <span>{(selected ? countryName(selected) : selectedTag) ?? 'Choose country'}</span>
+        : <span className="header-country-text"><strong>{(selected ? countryName(selected) : selectedTag) ?? (source ? 'Choose country' : 'No campaign')}</strong></span>}
       <Icon name="chevron-down" />
     </button>
     <Popover menu={menu} portal={!field} id={id} aria-label="Choose country" className="country-picker"
@@ -176,18 +245,20 @@ export default function CountryPicker({ countries, selectedTag, playerCountryId,
             {visible.map(({ country }, offset) => {
               const index = range.start + offset;
               const ticked = chosen ? chosen.includes(country.tag) : selected?.tag === country.tag;
+              const reason = choiceReason(country.tag);
               return <div key={country.tag} id={optionId(index)} role="option" aria-selected={ticked} aria-setsize={filtered.length} aria-posinset={index + 1}
                 className="country-picker-option" data-active={index === active || undefined} style={{ top: index * COUNTRY_ROW_HEIGHT }}
-                onClick={() => choose(country.tag)}>
-                <CountryFlag image={flagOf(country)} /><span>{country.name || country.tag}</span><small>{country.tag}</small>{ticked && <Icon name="check" className="country-selected-mark" />}
+                onClick={() => choose(country.tag)} data-tooltip={reason}
+                aria-label={reason ? `${countryName(country)} (${country.tag}). ${reason}` : undefined}>
+                <CountryFlag image={flagOf(country)} /><span>{countryName(country)}</span><small>{country.tag}</small>{reason && <Icon name="alert" />}{ticked && <Icon name="check" className="country-selected-mark" />}
               </div>;
             })}
           </div>
           {flagsMissing && <div className="country-picker-note"><Icon name="alert" /><span>Flags unavailable</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
           {loading && <p className="country-picker-empty" role="status"><span className="spinner" />Finding countries that owned land…</p>}
-          {!loading && roster.error && <div className="country-picker-note" data-tooltip={roster.error}><Icon name="alert" /><span>Could not load countries</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
-          {!loading && roster.warning && <div className="country-picker-note" data-tooltip={roster.warning}><Icon name="info" /><span>Some ownership history is unavailable</span></div>}
-          {!loading && !roster.error && !filtered.length && <p className="country-picker-empty">{query ? 'No matching countries' : 'No recorded land-owning countries'}</p>}
+          {!allowedTags && !loading && roster.error && <div className="country-picker-note" data-tooltip={roster.error}><Icon name="alert" /><span>Could not load countries</span><button type="button" className="button small quiet" onClick={retryCountries}>Retry</button></div>}
+          {!allowedTags && !loading && roster.warning && <div className="country-picker-note" data-tooltip={roster.warning}><Icon name="info" /><span>Some ownership history is unavailable</span></div>}
+          {!loading && (allowedTags || !roster.error) && !filtered.length && <p className="country-picker-empty">{query ? 'No matching countries' : allowedTags ? 'No recorded choices' : 'No recorded land-owning countries'}</p>}
         </div>
       </>}
     </Popover>

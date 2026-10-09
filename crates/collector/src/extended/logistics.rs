@@ -14,18 +14,13 @@ pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LogisticsEquipment];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-/// Rows the first capture is sized for: a few human-controlled countries'
-/// archetypes. Only countries the game computes the balance for have rows,
-/// so this does not scale with the country slots; a larger read grows it.
-const ROWS: usize = 1024;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { rows: ROWS }
+impl Capacities {
+    pub(crate) fn raise(&mut self, rows: usize) {
+        self.rows = self.rows.max(rows);
     }
 }
 
@@ -74,6 +69,11 @@ impl Captured {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
         self.rows.outcome = native::walk(memory, base, game_state, &mut self.rows.rows);
+        crate::logistics_balance::fill(
+            memory,
+            base,
+            &mut self.rows.rows[..self.rows.outcome.len()],
+        );
         [qpc().saturating_sub(started).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -89,6 +89,7 @@ impl Captured {
                 token: row.token,
                 balance_raw: row.balance_raw,
                 stock_raw: row.stock_raw,
+                available_raw: replay::rows::Recorded::Value(row.available_raw),
             },
         )]
     }
@@ -134,6 +135,8 @@ mod tests {
             token: 0x5001,
             balance_raw: i64::MIN,
             stock_raw: 14_507_500_000,
+            available_raw: Some(300_000),
+            ..Default::default()
         };
         captured.rows.rows[1] = native::Row {
             country: 4,
@@ -141,6 +144,8 @@ mod tests {
             token: 0x5002,
             balance_raw: -11_200_000,
             stock_raw: 0,
+            available_raw: Some(0),
+            ..Default::default()
         };
         captured.rows.outcome = Outcome::Rows { len: 2 };
         let [TableView::Complete(TableRows::LogisticsEquipment(rows))] = captured.tables() else {
@@ -155,6 +160,7 @@ mod tests {
                     token: 0x5001,
                     balance_raw: i64::MIN,
                     stock_raw: 14_507_500_000,
+                    available_raw: replay::rows::Recorded::Value(Some(300_000)),
                 },
                 LogisticsEquipmentRow {
                     country: 4,
@@ -162,6 +168,7 @@ mod tests {
                     token: 0x5002,
                     balance_raw: -11_200_000,
                     stock_raw: 0,
+                    available_raw: replay::rows::Recorded::Value(Some(0)),
                 },
             ]
         );

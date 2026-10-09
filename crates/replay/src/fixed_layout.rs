@@ -400,7 +400,18 @@ pub const ORACLE_INFRASTRUCTURE: Family = Family {
     tables: &[],
 };
 
+pub const PRODUCTION_MODIFIERS: Family = Family {
+    name: "production modifier hovers",
+    keys: &engine::production_modifiers::KEYS,
+    tokens: &[],
+    tables: &[
+        TableId::CountryProductionModifiers,
+        TableId::ProductionLineModifiers,
+    ],
+};
+
 pub const FAMILIES: &[Family] = &[
+    PRODUCTION_MODIFIERS,
     MOVEMENT,
     STRATEGIC_ACTION,
     NAVAL_TRANSFER,
@@ -601,6 +612,7 @@ mod tests {
     #[test]
     fn mismatch_fixture_refuses_each_viewer_literal_by_name() {
         for family in [
+            PRODUCTION_MODIFIERS,
             NAVAL_WEAPONS,
             SHIP_ORGANISATION,
             NAVAL_POSITIONING,

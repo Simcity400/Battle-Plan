@@ -1,7 +1,13 @@
 import type { WidgetMeta } from '../../dashboard/definitions';
 import type { OptionField } from '../../dashboard/options';
+import { DRILL_OPTION, breakdownOption } from '../../charts/drill/drillState.ts';
 
 export const OPTIONS: readonly OptionField[] = [
+  { key: 'productionCountry', section: 'options', label: 'Selected country', kind: 'content-choice', automatic: 'Selected country', default: '', visibleWhen: () => false },
+  breakdownOption([{ id: 'efficiency', label: 'Efficiency breakdown' }, { id: 'output', label: 'Output breakdown' }], 'Production lines'),
+  { key: 'line', section: 'options', label: 'Production line', kind: 'content-choice', automatic: 'Choose a production line', default: '' },
+  { key: 'factor', section: 'options', label: 'Production factor', kind: 'content-choice', automatic: 'Default breakdown', default: '' },
+  DRILL_OPTION,
   { key: 'order', section: 'options', label: 'Order', hint: 'Live table', kind: 'choice', default: 'game',
     choices: [{ value: 'game', label: 'Game order' }, { value: 'factories', label: 'Factories' }, { value: 'output', label: 'Output' }] },
   { key: 'columns', section: 'options', label: 'Columns', hint: 'Live table', kind: 'choice', default: 'basic',

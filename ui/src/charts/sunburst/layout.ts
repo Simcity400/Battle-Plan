@@ -2,6 +2,7 @@ import { mix } from '../../shell/appearance/color.ts';
 import type { Rgb } from '../../shell/appearance/color';
 import { CATEGORY_LIMIT } from '../palette.ts';
 import type { TooltipContent, TooltipRow } from '../tooltip';
+import { fractionSum } from '../valueAxis.ts';
 
 /** The sunburst's pure parts (spec 2.4, mock-up style-3): a tree grouped from a
  * widget's items, folded so no parent has more slices than the palette has colours,
@@ -10,7 +11,19 @@ import type { TooltipContent, TooltipRow } from '../tooltip';
 
 /** One level's key of an item: what the slice is (its identity within its parent)
  * and how it is named and pictured, from the game or the recording only. */
-export interface SunburstKey { id: string; label: string; icon?: string | null }
+export interface SunburstKey {
+  id: string; label: string; icon?: string | null;
+  /** Presence identifies a country even while its dated flag is unavailable. */
+  countryFlag?: TooltipRow['countryFlag'];
+  /** A recorded entity colour, used exactly rather than a category palette slot. */
+  colour?: string;
+  /** A remainder belongs after the named parts, whatever its size. */
+  last?: boolean;
+  /** Keep a recorded zero in the legend, with its exact amount and share. */
+  keepZero?: boolean;
+  /** A recorded identity or value gap changes this, so its shape must snap. */
+  stretch?: number | string | null;
+}
 
 /** One thing a sunburst adds up, such as one kind of project in one state. */
 export interface SunburstItem {
@@ -20,28 +33,37 @@ export interface SunburstItem {
    * (`note` says why). */
   value: number | null;
   /** The same amount exactly, for what is written (`SunburstText.format`), where a
-   * number could lose digits: an integer in the widget's own units. */
+   * number could lose digits: an integer or a numerator over `exactDenominator`. */
   exact?: bigint | null;
+  /** Positive denominator for an exact fraction; omitted for integer amounts. */
+  exactDenominator?: bigint;
   /** The total cannot be told, rather than merely not measured. Unknown parts
    * make every ancestor's total unknown, even beside exact measured parts. */
   unknownValue?: boolean;
   /** Incomplete attribution at particular path levels. The exact leaf can stay
    * known even when its type or domain cannot have a complete total. */
   unknownLevels?: readonly boolean[];
+  /** Incomplete attribution restricted to these levels when source totals stay known. */
+  localUnknownLevels?: readonly boolean[];
   /** False for an item that has not appeared by the moment shown: it adds only its
-   * `final`, so the order, the colours and Fill's whole stay those of the end. */
+   * `final` and weight, keeping order, colours and Fill's whole fixed. */
   present?: boolean;
   /** Its whole amount at the end of what is shown: Fill growth sweeps toward it, and
    * slices keep one order while playback grows them. Defaults to `value`. */
   final?: number | null;
+  /** Stable magnitude for order, folding and palette slots when a recorded
+   * correction reduces the final amount. Defaults to `final`; never sizes area. */
+  weight?: number;
   /** The whole total cannot be told. Any numeric `final` is only an ordering
    * weight; Fill shows Share until its denominator is known. */
   finalUnknown?: boolean;
   /** Incomplete attribution of the whole at particular path levels. */
   finalUnknownLevels?: readonly boolean[];
+  /** Incomplete whole-amount attribution restricted to these levels. */
+  localFinalUnknownLevels?: readonly boolean[];
   /** Parts of it not counted by the moment shown, as counts by reason. */
   unknown?: Readonly<Record<string, number>>;
-  /** Why it is not measured, when `value` is null. */
+  /** A recorded read, name or attribution note, independent of numeric exactness. */
   note?: string;
   /** The things it holds by the moment shown (such as projects), by id, named by
    * `SunburstText.countLabel`: a node counts each id once, however many of its
@@ -51,7 +73,7 @@ export interface SunburstItem {
 
 /** An independently established whole, when it does not depend on how its parts
  * are attributed (such as all deliveries despite an unresolved equipment type). */
-export type SunburstTotal = Pick<SunburstItem, 'value' | 'exact' | 'unknownValue' | 'final' | 'finalUnknown' | 'note'>;
+export type SunburstTotal = Pick<SunburstItem, 'value' | 'exact' | 'exactDenominator' | 'unknownValue' | 'final' | 'finalUnknown' | 'note'>;
 
 export interface SunburstNode {
   /** Unique in the tree: the keys from the root, so it survives regrouping. */
@@ -59,6 +81,11 @@ export interface SunburstNode {
   key: string;
   label: string;
   icon?: string;
+  countryFlag?: TooltipRow['countryFlag'];
+  colour?: string;
+  last?: boolean;
+  keepZero?: boolean;
+  stretch?: number | string | null;
   depth: number;
   parent: SunburstNode | null;
   children: SunburstNode[];
@@ -66,9 +93,14 @@ export interface SunburstNode {
   value: number;
   /** The same exactly, when every measured item gave one; else null. */
   exact: bigint | null;
+  exactDenominator?: bigint;
   valueUnknown: boolean;
   final: number;
+  /** Sum of supplied weights and other parts' finals; omitted when none supplied. */
+  weight?: number;
   finalUnknown: boolean;
+  /** A negative current/final input here or below, retained through regrouping. */
+  corrections: boolean;
   /** Something in it has appeared by the moment shown. */
   present: boolean;
   /** Nothing in it is measured: it has no slice, and the legend says why. */
@@ -77,7 +109,7 @@ export interface SunburstNode {
    * its new buildings, with the kind level off): it stays listed even when its
    * measured amount is zero. */
   partlyUnmeasured: boolean;
-  /** Why parts of it are not measured, each once. */
+  /** Recorded notes from its present parts, each once. */
   notes: string[];
   /** Parts not counted by the moment shown, by reason. */
   unknown: Record<string, number>;
@@ -89,29 +121,34 @@ export interface SunburstNode {
 }
 
 const SEPARATOR = '\u0000';
+const MAX_SAFE_GEOMETRY = BigInt(Number.MAX_SAFE_INTEGER);
 const add = (into: Record<string, number>, from: Readonly<Record<string, number>> | undefined) => {
   for (const [reason, count] of Object.entries(from ?? {})) if (count > 0) into[reason] = (into[reason] ?? 0) + count;
 };
+const hasAmount = (node: SunburstNode) => node.value !== 0 || node.exact != null && node.exact !== 0n;
 
 /** Whether a node can be drawn at some moment of what is shown: it has a whole
- * amount. Folding and palette slots go by this alone, so they hold all playback long. */
-export const drawable = (node: SunburstNode) => node.final > 0 || node.value > 0;
+ * amount or supplied stable weight. Folding and palette slots hold during playback. */
+export const drawable = (node: SunburstNode) => (node.weight ?? node.final) !== 0 || hasAmount(node);
 
 /** Whether a node is listed (legend, read-out): it has appeared, and it has an
  * amount, is not measured, or has parts not counted. A node with no amount yet but
  * with parts not counted stays listed, with its uncertainty, though it has no slice. */
-export const listed = (node: SunburstNode) => node.present && (node.valueUnknown || node.unmeasured || node.partlyUnmeasured || node.value > 0 || unknownTotal(node) > 0);
+export const listed = (node: SunburstNode): boolean => node.present && (node.valueUnknown || node.unmeasured || node.partlyUnmeasured || hasAmount(node) || node.corrections || node.keepZero || unknownTotal(node) > 0 || node.children.some(listed));
+
+/** Signed corrections keep exact rows but supply no area or share denominator. */
+export const hasCorrections = (node: SunburstNode) => node.corrections;
 
 /** Whether a node shows "Not measured" rather than an amount: none of it is
  * measured, or part of it is not and the rest has no amount yet. */
-export const notMeasured = (node: SunburstNode) => node.unmeasured || (node.partlyUnmeasured && !(node.value > 0));
+export const notMeasured = (node: SunburstNode) => node.unmeasured || (node.partlyUnmeasured && !hasAmount(node));
 
 /** The order of a node's children, stable while playback grows them: Other last,
- * then by whole amount (`final`, so parts never drawn come after), then by data key;
+ * then by supplied weight or whole amount, then by data key;
  * never by the amount so far or by what has appeared, which change with playback. */
 function order(a: SunburstNode, b: SunburstNode): number {
-  return Number(a.other ?? false) - Number(b.other ?? false)
-    || b.final - a.final || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+  return Number(Boolean(a.last || a.other)) - Number(Boolean(b.last || b.other))
+    || (b.weight ?? b.final) - (a.weight ?? a.final) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 }
 
 /** The tree of `items` under a root, with only the levels `shown` (a level set to
@@ -119,7 +156,7 @@ function order(a: SunburstNode, b: SunburstNode): number {
  * add together). Amounts and unknown counts add up the tree; a node is unmeasured
  * only when every item in it is. */
 export function groupTree(items: readonly SunburstItem[], root: { id: string; label: string }, shown: readonly boolean[] = [], authoritativeTotal?: SunburstTotal): SunburstNode {
-  const top: SunburstNode = { id: root.id, key: root.id, label: root.label, depth: 0, parent: null, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0 };
+  const top: SunburstNode = { id: root.id, key: root.id, label: root.label, depth: 0, parent: null, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0 };
   const byId = new Map<string, SunburstNode>([[top.id, top]]);
   const measured = new Set<SunburstNode>();
   const notes = new Map<SunburstNode, Set<string>>();
@@ -133,7 +170,9 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
       const id = `${node.id}${SEPARATOR}${key.id}`;
       let child = byId.get(id);
       if (!child) {
-        child = { id, key: key.id, label: key.label, icon: key.icon ?? undefined, depth: node.depth + 1, parent: node, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0 };
+        child = { id, key: key.id, label: key.label, icon: key.icon ?? undefined, countryFlag: key.countryFlag, colour: key.colour, last: key.last, keepZero: key.keepZero,
+          stretch: key.stretch,
+          depth: node.depth + 1, parent: node, children: [], value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: true, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0 };
         byId.set(id, child);
         node.children.push(child);
       }
@@ -141,26 +180,33 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
       chain.push(child);
       if (item.unknownLevels?.[level] && item.present !== false) for (const link of chain) uncertain.add(link);
       if (item.finalUnknownLevels?.[level]) for (const link of chain) finalUncertain.add(link);
+      if (item.localUnknownLevels?.[level] && item.present !== false) uncertain.add(child);
+      if (item.localFinalUnknownLevels?.[level]) finalUncertain.add(child);
     }
     const present = item.present !== false;
     const value = present ? item.value : null;
     const final = item.final === undefined ? item.value : item.final;
+    const correction = value != null && (value < 0 || item.exact != null && item.exact < 0n)
+      || final != null && final < 0;
     for (const link of chain) {
+      if (item.weight !== undefined || link.weight !== undefined)
+        link.weight = (link.weight ?? link.final) + (item.weight ?? final ?? 0);
       if (final != null) link.final += final;
       link.finalUnknown ||= item.finalUnknown === true || finalUncertain.has(link);
+      link.corrections ||= correction;
       if (!present) continue;
       link.present = true;
       link.valueUnknown ||= item.unknownValue === true || uncertain.has(link);
       if (value != null) {
         link.value += value;
-        link.exact = link.exact != null && item.exact != null ? link.exact + item.exact : null;
+        addExact(link, item.exact, item.exactDenominator);
         measured.add(link);
       }
       add(link.unknown, item.unknown);
       for (const id of item.counted ?? []) link.counted.add(id);
       link.count = link.counted.size;
       if (value == null) link.partlyUnmeasured = true;
-      if ((value == null || uncertain.has(link)) && item.note) {
+      if (item.note) {
         let seen = notes.get(link);
         if (!seen) { seen = new Set(); notes.set(link, seen); }
         if (!seen.has(item.note)) { seen.add(item.note); link.notes.push(item.note); }
@@ -170,6 +216,7 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
   for (const node of byId.values()) {
     node.unmeasured = node.present && !measured.has(node);
     if (!measured.has(node) || node.valueUnknown) node.exact = null;
+    recoverGeometry(node);
     node.children.sort(order);
   }
   if (authoritativeTotal) {
@@ -177,20 +224,31 @@ export function groupTree(items: readonly SunburstItem[], root: { id: string; la
     top.valueUnknown = authoritativeTotal.value == null || authoritativeTotal.unknownValue === true;
     top.value = authoritativeTotal.value ?? top.value;
     top.exact = top.valueUnknown ? null : authoritativeTotal.exact ?? null;
+    top.exactDenominator = authoritativeTotal.exactDenominator;
     top.unmeasured = false;
     top.final = authoritativeTotal.final ?? top.final;
     top.finalUnknown = authoritativeTotal.finalUnknown === true || authoritativeTotal.final === null;
+    top.corrections ||= top.value < 0 || top.final < 0 || top.exact != null && top.exact < 0n;
+    recoverGeometry(top);
     if (authoritativeTotal.note && !top.notes.includes(authoritativeTotal.note)) top.notes.push(authoritativeTotal.note);
   }
   return top;
 }
 
+/** A wholly unavailable reading replaces every part, so it cannot draw a partial
+ * ring. Entity breakdowns can keep all their own colours without palette folding. */
+export function sunburstTree(items: readonly SunburstItem[], root: { id: string; label: string },
+  shown?: readonly boolean[], options: { fold?: boolean; unavailableReason?: string | null; authoritativeTotal?: SunburstTotal } = {}): SunburstNode {
+  if (options.unavailableReason != null) return groupTree([{ path: [], value: null, note: options.unavailableReason }], root);
+  const tree = groupTree(items, root, shown, options.authoritativeTotal);
+  return options.fold === false ? tree : foldTree(tree);
+}
+
 /** Folds each node's drawable children beyond `limit` (the palette's colours) into
- * one "Other" slice holding the smallest by their whole amount, amounts not yet
- * present included; the folded slices are its children, a ring further out, so
- * zooming into it shows them, folded again for that view only. Whole amounts do
- * not change during playback, so the same slices fold throughout. */
-export function foldTree(node: SunburstNode, limit = CATEGORY_LIMIT, label = 'Other'): SunburstNode {
+ * one "Other" slice holding the smallest by their supplied weight or whole amount,
+ * amounts not yet present included; the folded slices are its children, a ring
+ * further out, so zooming into it shows them, folded again for that view only. */
+export function foldTree(node: SunburstNode, limit: number = CATEGORY_LIMIT, label = 'Other'): SunburstNode {
   foldChildren(node, limit, label);
   deepen(node, node.depth);
   return node;
@@ -203,12 +261,15 @@ function foldChildren(node: SunburstNode, limit: number, label: string): void {
     const folded = shown.slice(limit - 1);
     const surplus = new Set(folded);
     const other: SunburstNode = { id: `${node.id}${SEPARATOR}\u0001other`, key: '\u0001other', label, depth: node.depth + 1, parent: node,
-      children: folded, value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, present: false, unmeasured: false, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0, other: true };
+      children: folded, value: 0, exact: 0n, valueUnknown: false, final: 0, finalUnknown: false, corrections: false, present: false, unmeasured: false, partlyUnmeasured: false, notes: [], unknown: {}, counted: new Set(), count: 0, other: true };
     const notes = new Set<string>();
     for (const child of folded) {
+      if (child.weight !== undefined || other.weight !== undefined)
+        other.weight = (other.weight ?? other.final) + (child.weight ?? child.final);
       other.value += child.value; other.final += child.final; add(other.unknown, child.unknown);
       other.valueUnknown ||= child.valueUnknown;
       other.finalUnknown ||= child.finalUnknown;
+      other.corrections ||= child.corrections;
       for (const id of child.counted) other.counted.add(id);
       other.count = other.counted.size;
       other.present ||= child.present;
@@ -220,9 +281,28 @@ function foldChildren(node: SunburstNode, limit: number, label: string): void {
     // the sum of theirs, when each has one), else not measured.
     const measured = folded.filter(child => child.present && !child.unmeasured);
     other.unmeasured = other.present && measured.length === 0;
-    other.exact = measured.length && !other.valueUnknown ? measured.reduce<bigint | null>((sum, child) => sum != null && child.exact != null ? sum + child.exact : null, 0n) : null;
+    if (measured.length && !other.valueUnknown) for (const child of measured) addExact(other, child.exact, child.exactDenominator);
+    else other.exact = null;
+    recoverGeometry(other);
     node.children = [...node.children.filter(child => !surplus.has(child)), other].sort(order);
   }
+}
+
+function addExact(node: SunburstNode, amount: bigint | null | undefined, denominator = 1n): void {
+  if (node.exact == null || amount == null) { node.exact = null; return; }
+  if (denominator === 1n && node.exactDenominator == null) { node.exact += amount; return; }
+  const [sum, units] = fractionSum([[node.exact, node.exactDenominator ?? 1n], [amount, denominator]]);
+  node.exact = sum;
+  node.exactDenominator = units === 1n ? undefined : units;
+}
+
+/** Recover a rounded-away remainder only from exact finite Number operands.
+ * Larger fractions keep their exact row without guessing geometry. */
+function recoverGeometry(node: SunburstNode): void {
+  if (node.value !== 0 || node.valueUnknown || node.exact == null) return;
+  const denominator = node.exactDenominator ?? 1n;
+  if (node.exact >= -MAX_SAFE_GEOMETRY && node.exact <= MAX_SAFE_GEOMETRY && denominator > 0n && denominator <= MAX_SAFE_GEOMETRY)
+    node.value = Number(node.exact) / Number(denominator);
 }
 
 function deepen(node: SunburstNode, depth: number): void {
@@ -280,6 +360,7 @@ export interface ArcTarget { a0: number; a1: number; ring: number; shown: boolea
 export function sweepOf(focus: SunburstNode, growth: Growth): number {
   if (focus.valueUnknown) return 0;
   if (focus.finalUnknown) return TAU;
+  if (hasCorrections(focus)) return TAU;
   if (growth === 'share') return TAU;
   return focus.final > 0 ? TAU * Math.max(0, Math.min(1, focus.value / focus.final)) : focus.value > 0 ? TAU : 0;
 }
@@ -289,29 +370,34 @@ export function sweepOf(focus: SunburstNode, growth: Growth): number {
  * outside the focus close to nothing at its edges. */
 export function arcTargets(root: SunburstNode, focus: SunburstNode, growth: Growth, rings = 2): Map<string, ArcTarget> {
   const opened = new Set(pathTo(focus));
-  const spans = new Map<string, [number, number, boolean]>();
-  const part = (node: SunburstNode, a0: number, a1: number, closed = false) => {
+  const spans = new Map<string, [number, number, boolean, boolean]>();
+  const part = (node: SunburstNode, a0: number, a1: number, closed = false, inFocus = node === focus) => {
     const blocked = closed || (node.valueUnknown && !(opened.has(node) && node !== focus));
-    spans.set(node.id, [a0, a1, blocked]);
+    spans.set(node.id, [a0, a1, blocked, inFocus]);
     let at = a0;
+    // A signed net total cannot size positive slices. Preserve blank space
+    // when an authoritative total includes independently unplaced amounts.
+    const amount = Math.max(node.value, node.children.reduce((sum, child) => sum + Math.max(0, child.value), 0));
     for (const child of node.children) {
-      const width = node.value > 0 ? (a1 - a0) * child.value / node.value : 0;
-      part(child, at, at + width, blocked || (node.other === true && !opened.has(node)));
+      const width = amount > 0 ? (a1 - a0) * Math.max(0, child.value) / amount : 0;
+      part(child, at, at + width, blocked || (node.other === true && !opened.has(node)), inFocus || child === focus);
       at += width;
     }
   };
   part(root, 0, TAU);
+  const focusSpan = spans.get(focus.id);
+  if (focusSpan && focusSpan[0] === focusSpan[1]) part(focus, 0, TAU);
   const [f0, f1] = spans.get(focus.id) ?? [0, TAU];
   const sweep = sweepOf(focus, growth);
   const span = f1 - f0;
   const map = (angle: number) => span > 0 ? Math.max(0, Math.min(sweep, (angle - f0) / span * sweep)) : 0;
   const targets = new Map<string, ArcTarget>();
   for (const node of walk(root)) {
-    const [a0, a1, closed] = spans.get(node.id)!;
+    const [a0, a1, closed, inFocus] = spans.get(node.id)!;
     const ring = node.depth - focus.depth;
     const t0 = map(a0);
-    const t1 = map(a1);
-    targets.set(node.id, { a0: t0, a1: t1, ring, shown: !closed && ring >= 1 && ring <= rings && node.value > 0 && t1 - t0 > 1e-9 });
+    const t1 = inFocus || opened.has(node) ? map(a1) : t0;
+    targets.set(node.id, { a0: t0, a1: t1, ring, shown: inFocus && !closed && ring >= 1 && ring <= rings && node.value > 0 && t1 - t0 > 1e-9 });
   }
   return targets;
 }
@@ -329,10 +415,11 @@ export function sliceColours(focus: SunburstNode, palette: readonly string[], sh
     if (node.other) return;
     node.children.filter(drawable).forEach((child, index) => {
       const step = index === 0 ? 0 : 0.12 + 0.08 * Math.floor((index - 1) / 2);
-      paint(child, step ? mix(colour, index % 2 ? shades.light : shades.dark, step) : colour);
+      paint(child, child.colour ?? (step ? mix(colour, index % 2 ? shades.light : shades.dark, step) : colour));
     });
   };
-  focus.children.filter(drawable).forEach((child, index) => paint(child, palette[index % Math.max(1, palette.length)] ?? shades.light));
+  focus.children.filter(child => drawable(child) || child.keepZero && child.colour != null)
+    .forEach((child, index) => paint(child, child.colour ?? palette[index % Math.max(1, palette.length)] ?? shades.light));
   return colours;
 }
 
@@ -440,10 +527,16 @@ export function shareText(part: number, whole: number): string {
 export interface SunburstText {
   /** An amount as written: `exact` when the tree has it (never rounded through a
    * number), else `value`. */
-  format: (value: number, exact: bigint | null) => string;
+  format: (value: number, exact: bigint | null, denominator?: bigint) => string;
   unit: string;
   /** The tooltip's name for the amount, such as "Spent". */
   valueLabel: string;
+  /** False keeps measured amounts but omits percentage claims for incomplete totals. */
+  shares?: boolean;
+  /** Recording-backed measures say "Not recorded"; other measures may be unmeasured. */
+  missingLabel?: string;
+  /** Text for an empty legend; the shared default is "Nothing yet.". */
+  emptyLabel?: string;
   /** A reason for parts not counted, as a row label. */
   unknownLabel?: (reason: string) => string;
   /** The name of the items' `count` (such as "Projects"); none leaves it out. */
@@ -464,10 +557,11 @@ export function sliceTooltip(node: SunburstNode, focus: SunburstNode, text: Sunb
   const rows: TooltipRow[] = [node.valueUnknown
     ? { label: text.valueLabel, value: 'Not known', tone: 'muted' }
     : unmeasured
-    ? { label: text.valueLabel, value: 'Not measured', tone: 'muted' }
+    ? { label: text.valueLabel, value: text.missingLabel ?? 'Not measured', tone: 'muted' }
     : { label: text.valueLabel, value: `${amountText(node, text)} ${text.unit}`, strong: true }];
-  if (!node.valueUnknown && !unmeasured && node.parent && !node.parent.valueUnknown) rows.push({ label: `Of ${node.parent.label}`, value: shareText(node.value, node.parent.value) });
-  if (!node.valueUnknown && !unmeasured && node.parent && node.parent !== focus && node !== focus && !focus.valueUnknown) rows.push({ label: `Of ${focus.label}`, value: shareText(node.value, focus.value) });
+  const shareable = text.shares !== false && (node.value > 0 || node.value === 0 && node.keepZero);
+  if (!node.valueUnknown && !unmeasured && shareable && node.parent && !node.parent.valueUnknown && !hasCorrections(node.parent)) rows.push({ label: `Of ${node.parent.label}`, value: shareText(node.value, node.parent.value) });
+  if (!node.valueUnknown && !unmeasured && shareable && node.parent && node.parent !== focus && node !== focus && !focus.valueUnknown && !hasCorrections(focus)) rows.push({ label: `Of ${focus.label}`, value: shareText(node.value, focus.value) });
   if (text.countLabel && node.count > 0) rows.push({ label: text.countLabel, value: String(node.count) });
   rows.push(...(text.describe?.(node) ?? []));
   const total = unknownTotal(node);
@@ -476,27 +570,29 @@ export function sliceTooltip(node: SunburstNode, focus: SunburstNode, text: Sunb
   const full: TooltipRow[] = total ? [counted, ...reasons.map(([reason, count]): TooltipRow =>
     ({ label: text.unknownLabel?.(reason) ?? reason, value: String(count), indent: true, tone: 'muted' }))] : [];
   const note = node.notes.length ? node.notes.join(' ') : undefined;
-  const base = { title: path, icon: node.icon, note };
+  const base = { title: path, icon: node.icon, countryFlag: node.countryFlag, note };
   return [{ ...base, rows: [...rows, ...full] }, { ...base, rows: total ? [...rows, counted] : rows }];
 }
 
 /** A node's amount as written, exactly when the tree has it. */
-export const amountText = (node: SunburstNode, text: SunburstText) => node.valueUnknown ? 'Not known' : text.format(node.value, node.exact);
+export const amountText = (node: SunburstNode, text: SunburstText) => node.valueUnknown ? 'Not known' : text.format(node.value, node.exact, node.exactDenominator);
 
 /** How a node is read out: "not measured", else its amount (and share of `whole`),
  * and what is not counted. */
 export function spokenAmount(node: SunburstNode, whole: SunburstNode | null, text: SunburstText): string {
   if (node.valueUnknown) return `not known${node.notes.length ? `: ${node.notes.join(' ')}` : ''}`;
-  if (notMeasured(node)) return 'not measured';
+  if (notMeasured(node)) return (text.missingLabel ?? 'Not measured').toLowerCase();
   const unknown = unknownTotal(node);
-  if (!(node.value > 0) && unknown) return `nothing counted, ${unknown} not counted`;
-  const amount = `${amountText(node, text)} ${text.unit}${whole && !whole.valueUnknown ? `, ${shareText(node.value, whole.value)}` : ''}`;
+  if (node.value === 0 && unknown) return `nothing counted, ${unknown} not counted`;
+  const shareable = text.shares !== false && (node.value > 0 || node.value === 0 && node.keepZero);
+  const amount = `${amountText(node, text)} ${text.unit}${shareable && whole && !whole.valueUnknown && !hasCorrections(whole) ? `, ${shareText(node.value, whole.value)}` : ''}`;
   return unknown ? `${amount}, ${unknown} not counted` : amount;
 }
 
 /** The zoomed slice read out: its amount and each listed part's, for assistive
  * technology, saying "not measured" as the centre does. */
-export function sunburstSummary(focus: SunburstNode, text: SunburstText): string {
+export function sunburstSummary(focus: SunburstNode, text: SunburstText, notes = false): string {
   const parts = focus.children.filter(listed).map(child => `${child.label}: ${spokenAmount(child, focus, text)}`);
-  return [`${focus.label}: ${spokenAmount(focus, null, text)}`, ...parts].join('; ');
+  return [`${focus.label}: ${spokenAmount(focus, null, text)}`, ...parts,
+    ...(notes && parts.length === 0 && notMeasured(focus) ? focus.notes : [])].join('; ');
 }

@@ -45,22 +45,6 @@ pub(crate) fn built_template(
     })
 }
 
-/// A country's CountryAppearance fields idea naming reads: its original
-/// tag (`name_tag`, set exactly for a country
-/// ccountry_tag::name_substitution_predicate 140BA61F0 holds for: canonical
-/// slot at or past CCountryDatabase+0x88) and its cosmetic tag. None when the
-/// frame's table does not hold the row.
-pub(crate) fn appearance(frame: &replay::frame::DecodedFrame, link: u32) -> Option<(&str, &str)> {
-    let rows = frame
-        .complete::<replay::rows::tables::CountryAppearance>()
-        .ok()?;
-    let row = rows.iter().find(|row| row.country == link)?;
-    Some((
-        std::str::from_utf8(&row.name_tag).ok()?,
-        std::str::from_utf8(&row.cosmetic_tag).ok()?,
-    ))
-}
-
 /// Whether GetCountryIdeologyGroupIndex (140D2BD20) holds for a country at
 /// the frame's hour, as CIdea::GetDisplayNameForCountry (140FBCF90) and
 /// `has_civil_war` (1403D3670) call it on the country's CDiplomacyStatus
@@ -208,13 +192,28 @@ impl Look {
         frame: &replay::frame::DecodedFrame,
         row: &replay::rows::CountryRow,
     ) -> Option<Self> {
-        let (name_tag, cosmetic_tag) = appearance(frame, row.id)?;
+        let appearance = frame
+            .complete::<replay::rows::tables::CountryAppearance>()
+            .ok()?
+            .iter()
+            .find(|appearance| appearance.country == row.id)?;
+        Self::read_with_appearance(frame, row, appearance)
+    }
+
+    fn read_with_appearance(
+        frame: &replay::frame::DecodedFrame,
+        row: &replay::rows::CountryRow,
+        appearance: &replay::rows::CountryAppearanceRow,
+    ) -> Option<Self> {
+        let name_tag = std::str::from_utf8(&appearance.name_tag).ok()?;
+        let cosmetic_tag = std::str::from_utf8(&appearance.cosmetic_tag).ok()?;
         Some(Self {
             name_tag: name_tag.to_owned(),
-            original_or_own_tag: installed_content::country_names::original_or_own_tag(
-                frame,
-                row.canonical_slot,
-            )
+            original_or_own_tag: if row.canonical_slot == 0 {
+                installed_content::country_names::reserved_zero_original_tag(frame)
+            } else {
+                installed_content::country_names::original_tag(row, appearance)
+            }
             .map(str::to_owned),
             cosmetic_tag: cosmetic_tag.to_owned(),
             civil_war: if name_tag.is_empty() {
@@ -240,6 +239,20 @@ impl NamingCountry {
         Self {
             slot: row.canonical_slot,
             look: Look::read(frame, row),
+        }
+    }
+
+    /// The same naming getters with the caller's indexed appearance row.
+    pub fn read_with_appearance(
+        frame: &replay::frame::DecodedFrame,
+        row: &replay::rows::CountryRow,
+        appearance: Option<&replay::rows::CountryAppearanceRow>,
+    ) -> Self {
+        Self {
+            slot: row.canonical_slot,
+            look: appearance
+                .filter(|appearance| appearance.country == row.id)
+                .and_then(|appearance| Look::read_with_appearance(frame, row, appearance)),
         }
     }
 

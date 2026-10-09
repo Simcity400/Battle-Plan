@@ -14,7 +14,8 @@ import { formatDateTime } from '../../dashboard/calendar.ts';
 import { domainName, unresolvedTypeName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt, readNote } from '../../dashboard/reads.ts';
 import { compareTags } from '../../dashboard/tagOrder.ts';
-import type { EquipmentProducedReply, HourSpan, ProducedCoded, ProducedGrouping, ProducedKey, ProducedMeasure, ProducedParams } from '../../generated/dashboard';
+import { validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
+import type { CountryIdentityRun, EquipmentProducedReply, HourSpan, ProducedCoded, ProducedGrouping, ProducedKey, ProducedMeasure, ProducedParams } from '../../generated/dashboard';
 
 export type Measure = ProducedMeasure;
 export type Grouping = ProducedGrouping;
@@ -57,11 +58,12 @@ export function validateProducedReply(data: unknown): EquipmentProducedReply {
     && Array.isArray(reply.series) && reply.series.every(series => {
       const count = Array.isArray(series.firstHours) ? series.firstHours.length : -1;
       return typeof series.tag === 'string' && count >= 0 && Array.isArray(series.lastHours) && series.lastHours.length === count
+        && validCountryIdentityRuns(series.identities)
         && series.firstHours.every((first, index) => INT(first) && INT(series.lastHours[index]) && first <= series.lastHours[index]
           && (index === 0 || series.lastHours[index - 1] < first))
         && ascending(series.breaks) && series.breaks.every(index => index >= 0 && index < count)
         && Array.isArray(series.values) && series.values.every(values => INT(values.key) && values.key >= 0 && values.key < reply.keys.length
-          && coded(values.values))
+          && coded(values.values) && (values.equipmentValues === undefined || coded(values.equipmentValues)))
         && new Set(series.values.map(values => values.key)).size === series.values.length
         && (series.total === null || coded(series.total))
         && (series.membership === null || (Array.isArray(series.membership) && spans(series.membership)));
@@ -127,8 +129,10 @@ export interface ProducedSeriesModel {
   samples: readonly Sample[];
   stretch: readonly number[];
   values: ReadonlyMap<number, Column>;
+  equipmentValues: ReadonlyMap<number, Column>;
   total: Column | null;
   membership: readonly HourSpan[] | null;
+  identities: readonly CountryIdentityRun[];
 }
 
 /** A reply ready for lookups, built once per reply. */
@@ -141,12 +145,20 @@ export interface ProducedModel {
 /** A group's value in a series at a sample (NaN where unknown). */
 export const groupValue = (series: ProducedSeriesModel, key: number, index: number) => valueAt(series.values.get(key) ?? null, index);
 
+/** Available only when the native reply separately retained equipment lines.
+ * It never supplies the combined chart or ranking amount. */
+export const equipmentGroupValue = (series: ProducedSeriesModel, key: number, index: number) => {
+  const value = series.equipmentValues.get(key);
+  return value ? valueAt(value, index) : Number.NaN;
+};
+
 /** The numbers the model holds for its values: bounded by the reply's own coded size,
  * never by samples × groups. */
 export function storedValues(model: ProducedModel): number {
   let count = 0;
   for (const series of model.series.values()) {
     for (const values of series.values.values()) count += values.sums.length + values.unknown.length;
+    for (const values of series.equipmentValues.values()) count += values.sums.length + values.unknown.length;
     if (series.total) count += series.total.sums.length + series.total.unknown.length;
   }
   return count;
@@ -157,8 +169,9 @@ export function producedModel(reply: EquipmentProducedReply): ProducedModel {
     const breaks = new Set(item.breaks);
     const samples = item.firstHours.map((firstHour, index) => ({ firstHour, lastHour: item.lastHours[index], breakBefore: breaks.has(index) }));
     const values = new Map(item.values.map(entry => [entry.key, column(entry.values)] as const));
-    return [item.tag, { tag: item.tag, samples, stretch: stretchStarts(samples), values, total: item.total ? column(item.total) : null,
-      membership: item.membership }] as const;
+    const equipmentValues = new Map(item.values.flatMap(entry => entry.equipmentValues === undefined ? [] : [[entry.key, column(entry.equipmentValues)] as const]));
+    return [item.tag, { tag: item.tag, samples, stretch: stretchStarts(samples), values, equipmentValues, total: item.total ? column(item.total) : null,
+      membership: item.membership, identities: item.identities ?? [] }] as const;
   }));
   return { reply, series, tags: reply.series.map(item => item.tag) };
 }
@@ -263,6 +276,16 @@ export function bandValue(series: ProducedSeriesModel, band: KeyBand, index: num
   return sum;
 }
 
+export function equipmentBandValue(series: ProducedSeriesModel, band: KeyBand, index: number): number {
+  let sum = 0;
+  for (const key of band.keys) {
+    const combined = groupValue(series, key, index);
+    if (!Number.isNaN(combined)) return Number.NaN;
+    sum += equipmentGroupValue(series, key, index);
+  }
+  return sum;
+}
+
 export const bandLabel = (model: ProducedModel, band: KeyBand, hour: number) => band.other ? 'Other' : keyLabel(model, band.keys[0], hour);
 
 export const formatUnits = (value: number) => formatAmount(BigInt(Math.round(value)), 0);
@@ -344,7 +367,13 @@ export function* producedTooltips(model: ProducedModel, tag: string, name: strin
   const row = (label: string, value: number | null, swatch: string | undefined): TooltipRow =>
     ({ label, value: value === null ? 'Not known' : formatUnits(value), ...(swatch ? { swatch } : {}), ...(value === null ? { tone: 'muted' as const } : {}) });
   const empty: TooltipRow[] = parts.length ? [] : [{ label: 'Nothing delivered', tone: 'muted' }];
-  yield { ...base, rows: [...empty, ...parts.map(part => row(keyLabel(model, part.key, hour), part.value, colorOf.get(part.key))), total] };
+  const equipment = parts.flatMap(part => {
+    if (part.value !== null) return [];
+    const subtotal = equipmentGroupValue(series, part.key, at.index);
+    return Number.isNaN(subtotal) ? [] : [row(`${keyLabel(model, part.key, hour)} — Equipment lines`, subtotal, colorOf.get(part.key))];
+  });
+  const detailNote = equipment.length ? `${base.note ?? ''} Equipment-line subtotals are independent; combined amounts are not known.`.trim() : base.note;
+  yield { ...base, note: detailNote, rows: [...empty, ...parts.map(part => row(keyLabel(model, part.key, hour), part.value, colorOf.get(part.key))), ...equipment, total] };
   const shown = bands.map(band => ({ band, value: known(bandValue(series, band, at.index)) })).filter(item => item.value !== 0);
-  yield { ...base, rows: [...empty, ...shown.map(item => row(bandLabel(model, item.band, hour), item.value, item.band.color)), total] };
+  yield { ...base, note: detailNote, rows: [...empty, ...shown.map(item => row(bandLabel(model, item.band, hour), item.value, item.band.color)), total] };
 }

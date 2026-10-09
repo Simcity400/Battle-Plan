@@ -1,5 +1,9 @@
 //! The one branch scan of every country's production output, shared by units
-//! delivered and delivered IC at read cost. No product repeats the table walk.
+//! delivered and exact applied equipment-line IC. No product repeats the walk.
+
+#[path = "production/rocket.rs"]
+mod rocket;
+pub(crate) use rocket::RocketProduced;
 
 use super::{self as equipment, Domain, Texts, VariantCatalogue};
 use crate::products::LoadContext;
@@ -10,7 +14,7 @@ use crate::{
 use replay::{
     container::Replay,
     frame::{FrameDecoder, TableView},
-    rows::{TableId, tables},
+    rows::{Recorded, TableId, tables},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -35,21 +39,25 @@ pub(crate) type Entry = (u64, bool);
 /// counted exactly (the total is exact only at zero).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Total {
-    pub units: i64,
+    pub units: i128,
     pub inexact: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum ProductionSpendingUnknown {
-    MissingCost,
-    InvalidCost,
-    OutputInexact,
+    NotRecorded,
+    SpendingUnavailable,
     LostOutput,
     MissedPublication,
     RecordingGap,
     ObservationRestarted,
+    ObservationMismatch,
     CountryChanged,
+    RocketTableUnavailable,
+    RocketInputInexact,
+    RocketOwnerUnreadable,
+    RocketDesignUnreadable,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -67,6 +75,7 @@ pub struct TagHistory {
     /// Whether a sample starts a new line.
     pub starts: Vec<bool>,
     pub identities: Vec<Identity>,
+    pub(crate) presence: Vec<Option<bool>>,
     /// Each entry's total at the samples where it changed.
     pub changes: BTreeMap<Entry, Vec<(u32, Total)>>,
     pub(crate) cost_changes: BTreeMap<Entry, Vec<(u32, CostTotal)>>,
@@ -109,6 +118,7 @@ pub struct ScannedProduced {
     /// Frames and reads that could not be ingested.
     pub missed: usize,
     pub(crate) spending_tainted: BTreeMap<u32, (i32, ProductionSpendingUnknown)>,
+    pub(crate) rocket: RocketProduced,
 }
 
 impl ScannedProduced {
@@ -141,6 +151,7 @@ struct RowState {
     units: i64,
     exact: bool,
     ended: bool,
+    spent_raw: i64,
 }
 
 /// Adds a row's new count to its producer's total.
@@ -161,9 +172,7 @@ fn apply(
     let (changed, entries) = totals.entry(identity).or_default();
     *changed = *version;
     let total = entries.entry(state.entry).or_default();
-    total.units = total
-        .units
-        .saturating_add(units.saturating_sub(state.units));
+    total.units += i128::from(units) - i128::from(state.units);
     total.inexact = total.inexact + u32::from(!exact) - u32::from(!state.exact);
 }
 
@@ -171,24 +180,12 @@ fn apply_cost(
     totals: &mut HashMap<Identity, (u64, BTreeMap<Entry, CostTotal>)>,
     version: &mut u64,
     state: &RowState,
-    delta: i64,
-    cost: Option<i64>,
+    delta: i128,
     reason: Option<ProductionSpendingUnknown>,
 ) -> io::Result<()> {
     let Some(identity) = state.identity else {
         return Ok(());
     };
-    let reason = reason.or(if delta < 0 {
-        Some(ProductionSpendingUnknown::OutputInexact)
-    } else if delta == 0 {
-        None
-    } else {
-        match cost {
-            Some(raw) if raw >= 0 => None,
-            Some(_) => Some(ProductionSpendingUnknown::InvalidCost),
-            None => Some(ProductionSpendingUnknown::MissingCost),
-        }
-    });
     if delta == 0 && reason.is_none() {
         return Ok(());
     }
@@ -198,13 +195,10 @@ fn apply_cost(
     let total = entries.entry(state.entry).or_default();
     total.reason = total.reason.or(reason);
     if total.reason.is_none() {
-        let amount = i128::from(delta)
-            .checked_mul(i128::from(cost.unwrap_or(0)))
-            .ok_or_else(|| io::Error::other("Delivered IC exceeds its exact integer range"))?;
         total.raw = total
             .raw
-            .checked_add(amount)
-            .ok_or_else(|| io::Error::other("Delivered IC exceeds its exact integer range"))?;
+            .checked_add(delta)
+            .ok_or_else(|| io::Error::other("Applied IC exceeds its exact integer range"))?;
     }
     Ok(())
 }
@@ -222,6 +216,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
         TableId::VariantUpgrades,
         TableId::ProductionLines,
         TableId::ProductionLineOutput,
+        TableId::RocketProductionOutput,
     ];
     let cancel = || {
         io::Error::new(
@@ -231,14 +226,23 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
     };
     let mut result = ScannedProduced::default();
     let mut rows: HashMap<(u64, u32), RowState> = HashMap::new();
-    // Rows still expected at the next read: listed, not ended and exact.
+    // Rows still expected at the next read, including independently known IC
+    // when their delivery count is inexact.
     let mut live: HashSet<(u64, u32)> = HashSet::new();
     let mut totals: HashMap<Identity, (u64, BTreeMap<Entry, Total>)> = HashMap::new();
     let mut cost_totals: HashMap<Identity, (u64, BTreeMap<Entry, CostTotal>)> = HashMap::new();
     let mut kinds: HashMap<u64, u8> = HashMap::new();
+    let mut seen_production: HashSet<Identity> = HashSet::new();
     let mut unlisted: HashSet<u64> = HashSet::new();
     let (mut version, mut observation) = (0u64, 0u32);
     let mut cost_version = 0;
+    // The introduction ledger also authenticates exact zero in an empty
+    // publication; absent suffixes must not become an old recording's zero.
+    let mut spending_recorded = TableId::ProductionLineOutput
+        .last_change()
+        .appended
+        .iter()
+        .any(|field| field.name == "spent_raw" && replay.format.version() >= field.introduced);
     let mut last_frame = replay
         .branches
         .iter()
@@ -280,6 +284,9 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 }
             };
             let hour = frame.hour;
+            // Rocket rows retain every country/design total; they do not depend
+            // on a registered line or on the equipment census being readable.
+            result.rocket.observe(decoded)?;
             if let Some(last) = last_frame
                 && last.checked_add(1) != Some(hour)
             {
@@ -301,18 +308,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     kinds.insert(line.handle, line.kind);
                 }
             }
-            // Carried census costs are not costs at this output read.
-            let costs: HashMap<u64, &replay::rows::ProductionLineRow> =
-                if read && slot_read(&decoded.metrics, TableId::ProductionLines, hour) {
-                    decoded
-                        .complete::<tables::ProductionLines>()
-                        .unwrap_or(&[])
-                        .iter()
-                        .map(|line| (line.handle, line))
-                        .collect()
-                } else {
-                    HashMap::new()
-                };
             // An hour the tables cannot tell extends nothing, so nothing continues across it.
             let (Ok(countries), Ok(links), Ok(output)) = (
                 decoded.complete::<tables::Countries>(),
@@ -386,9 +381,18 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         live.clear();
                         totals.clear();
                         cost_totals.clear();
+                        seen_production.clear();
                     }
                     Some(_) => {}
                 }
+            }
+            // Explicit suffix values also authenticate provisional source
+            // fixtures; empty publications require the introduction ledger.
+            spending_recorded |= output
+                .iter()
+                .any(|row| !matches!(row.spent_raw, Recorded::NotRecorded));
+            if !spending_recorded {
+                result.spending_taint(observation, hour, ProductionSpendingUnknown::NotRecorded);
             }
             let observed: Vec<(String, Identity)> = tagged
                 .into_iter()
@@ -398,6 +402,21 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 .iter()
                 .map(|(_, identity)| (identity.0, *identity))
                 .collect();
+            let mut presence_unknown = false;
+            let census_complete = if let Ok(lines) = decoded.complete::<tables::ProductionLines>() {
+                for line in lines {
+                    if let Some(identity) =
+                        link_slot(links, line.country).and_then(|slot| by_slot.get(&slot))
+                    {
+                        seen_production.insert(*identity);
+                    } else {
+                        presence_unknown = true;
+                    }
+                }
+                true
+            } else {
+                false
+            };
             let mut seen = HashSet::with_capacity(output.len());
             for row in output {
                 let key = (row.line, row.ordinal);
@@ -422,6 +441,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         units: 0,
                         exact: true,
                         ended: false,
+                        spent_raw: 0,
                     }
                 });
                 // A producer the links could not tell before may be told now, while
@@ -430,35 +450,47 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 if state.identity.is_none() && state.units == 0 && state.exact {
                     state.identity = producer;
                 }
+                if let Some(identity) = state.identity {
+                    seen_production.insert(identity);
+                } else {
+                    presence_unknown = true;
+                }
                 if state.identity.is_none() && (row.units != 0 || !row.exact) {
                     result.taint(observation, hour);
+                }
+                if state.identity.is_none() && !matches!(row.spent_raw, Recorded::Value(Some(0))) {
+                    result.spending_taint(
+                        observation,
+                        hour,
+                        ProductionSpendingUnknown::SpendingUnavailable,
+                    );
                 }
                 // Not exact once: a tick is left out of every later count.
                 let exact = state.exact && row.exact;
                 if state.exact && !exact {
                     result.inexact += 1;
                 }
-                // Whole delivered units × fixed5 cost from this read, only when
-                // the census still describes the row's producer/design/MIO.
-                let cost = costs
-                    .get(&row.line)
-                    .filter(|line| {
-                        line.variant == row.variant
-                            && line.mio == row.mio
-                            && link_slot(links, row.country).is_some()
-                            && link_slot(links, line.country) == link_slot(links, row.country)
-                    })
-                    .map(|line| line.cost_raw);
+                // The observer authenticates the applied input's tuple. Census
+                // cost, delivered units and their exactness do not reprice it.
+                let (delta, spending_reason) = match row.spent_raw {
+                    Recorded::Value(Some(value)) => {
+                        (i128::from(value) - i128::from(state.spent_raw), None)
+                    }
+                    Recorded::Value(None) => {
+                        (0, Some(ProductionSpendingUnknown::SpendingUnavailable))
+                    }
+                    Recorded::NotRecorded => (0, Some(ProductionSpendingUnknown::NotRecorded)),
+                };
                 apply_cost(
                     &mut cost_totals,
                     &mut cost_version,
                     state,
-                    row.units.checked_sub(state.units).ok_or_else(|| {
-                        io::Error::other("A delivered-unit change exceeds its exact integer range")
-                    })?,
-                    cost,
-                    (!exact || row.units < 0).then_some(ProductionSpendingUnknown::OutputInexact),
+                    delta,
+                    spending_reason,
                 )?;
+                if let Recorded::Value(Some(value)) = row.spent_raw {
+                    state.spent_raw = value;
+                }
                 apply(&mut totals, &mut version, state, row.units, exact);
                 state.units = row.units;
                 state.exact = exact;
@@ -467,14 +499,13 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
             // A row gone without its ended publication lost its final count.
             for key in live.iter().filter(|key| !seen.contains(*key)) {
                 if let Some(state) = rows.get_mut(key) {
-                    result.lost += 1;
+                    result.lost += usize::from(state.exact);
                     let units = state.units;
                     apply_cost(
                         &mut cost_totals,
                         &mut cost_version,
                         state,
                         0,
-                        None,
                         Some(ProductionSpendingUnknown::LostOutput),
                     )?;
                     apply(&mut totals, &mut version, state, units, false);
@@ -483,10 +514,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
             }
             live = seen
                 .into_iter()
-                .filter(|key| {
-                    rows.get(key)
-                        .is_some_and(|state| !state.ended && state.exact)
-                })
+                .filter(|key| rows.get(key).is_some_and(|state| !state.ended))
                 .collect();
             // Each tag's sample: its country's totals at this read.
             let present: HashSet<&str> = observed.iter().map(|(tag, _)| tag.as_str()).collect();
@@ -510,6 +538,13 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 track.last_hours.push(hour);
                 track.starts.push(starts);
                 track.identities.push(identity);
+                track.presence.push(if seen_production.contains(&identity) {
+                    Some(true)
+                } else if census_complete && !presence_unknown {
+                    Some(false)
+                } else {
+                    None
+                });
                 track.last = Some((identity, hour));
                 let (cost_changed, cost_entries) = cost_totals
                     .get(&identity)
@@ -606,6 +641,13 @@ pub(crate) fn variant_types(
         .tags
         .values()
         .flat_map(|track| track.changes.keys().map(|(variant, _)| *variant))
+        .chain(scanned.rocket.tags.values().flat_map(|track| {
+            track
+                .changes
+                .keys()
+                .map(|(variant, _)| *variant)
+                .filter(|variant| *variant != 0)
+        }))
         .collect();
     variant_types_for(&scanned.variants, variants, named)
 }

@@ -6,7 +6,7 @@ use std::{
 use installed_content::save::{Division, naval_history as saved};
 use replay::{
     frame::DecodedFrame,
-    rows::{CountryRow, tables},
+    rows::{CountryRow, Recorded, tables},
 };
 
 use super::{Report, complete, equal, invalid, tag};
@@ -353,6 +353,14 @@ pub(in crate::oracle) fn compare_order_of_battle(
             report,
             |actual, ((country, theatre, expected), oob), report| {
                 let label = format!("orders group {}", expected.id);
+                match &actual.name {
+                    Recorded::NotRecorded => report.limitation("stored command name not in this recording", format!("{label}.name")),
+                    Recorded::Value(None) => return Err(invalid("stored command name capture refused")),
+                    Recorded::Value(Some(bytes)) => {
+                        let bytes = super::serialized_text(report, &format!("{label}.name"), bytes);
+                        equal(report, format!("{label}.name"), bytes, expected.name.as_slice());
+                    }
+                }
                 equal(
                     report,
                     format!("{label}.country"),

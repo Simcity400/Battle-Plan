@@ -136,7 +136,21 @@ fn effect_catalogues_remain_available_without_map_inputs() {
     assert!(scripted.effects().unwrap().ideas.is_some());
     let fixture = Fixture::new();
     let text = ScriptedText::new(&fixture.frame, &catalogue.localisation, scripted, 1);
-    assert!(text.world().err().unwrap().contains("default.map"));
+    assert!(text.world().is_ok());
+    let geography = text
+        .trigger_world()
+        .unwrap()
+        .evaluate(
+            &installed_content::triggers::read(
+                b"impassable=no ",
+                &installed_content::key_names::KeyNames::default(),
+            )
+            .items,
+            crate::triggers::Scopes::of(crate::triggers::Scope::State(64)),
+        )
+        .decided()
+        .unwrap_err();
+    assert!(geography.contains("default.map"), "{geography}");
 }
 
 pub(super) struct Fixture {

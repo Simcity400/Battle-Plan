@@ -316,6 +316,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
         task,
         installed_content::save::TaskForce {
             id: task,
+            name: None,
             fleet,
             roster_owner: b"GER".to_vec(),
             logical_owner: b"GER".to_vec(),
@@ -363,6 +364,7 @@ fn naval_country_and_supply_membership_inputs_compare_with_saved_rules() {
         sent_volunteers: Default::default(),
         first_divisions: Default::default(),
         division_orders: Default::default(),
+        fleet_orders: [(b"GER".to_vec(), vec![fleet])].into(),
         prides: [(b"GER".to_vec(), Some(pride))].into(),
         fleets: [(
             fleet,

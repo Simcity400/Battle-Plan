@@ -27,30 +27,31 @@ test('folder and readiness changes invalidate content; repeated native status up
 });
 
 test('only products declared to read content change their request identity', () => {
-  for (const product of ['country-fuel', 'country-measure']) {
-    const request = { sourceId: 'same', revision: 'same', product, params: {} };
-    assert.equal(productKey(request, 1), productKey(request, 2));
-    assert.ok(!(CONTENT_PRODUCTS as readonly string[]).includes(product));
-  }
+  const recorded = { sourceId: 'same', revision: 'same', product: 'country-measure', params: {} };
+  assert.equal(productKey(recorded, 1), productKey(recorded, 2));
+  assert.ok(!(CONTENT_PRODUCTS as readonly string[]).includes(recorded.product));
   for (const product of CONTENT_PRODUCTS) {
     const request = { sourceId: 'same', revision: 'same', product, params: {} };
     assert.notEqual(productKey(request, 1), productKey(request, 2));
   }
   // Counts are recorded, but this reply also names content building definitions.
   assert.ok(CONTENT_PRODUCTS.includes('country-factories'));
+  assert.ok(CONTENT_PRODUCTS.includes('country-fuel'));
 });
 
 test('a recording-only product keeps its settled cache and pending load across content changes', async () => {
   let calls = 0;
   let aborted = false;
   let finish = () => {};
+  // A duplicate load must fail the call count instead of waiting on another gate.
+  const response = new Promise<void>(resolve => { finish = resolve; });
   const client = { product: async (request: ProductRequest, signal: AbortSignal) => {
     calls++;
     signal.addEventListener('abort', () => { aborted = true; });
-    await new Promise<void>(resolve => { finish = resolve; });
+    await response;
     return { ...request, data: { recorded: '12' } };
   } } as unknown as DashboardClient;
-  const request = { sourceId: 'same', revision: 'same', product: 'country-fuel', params: { branchId: '1', tag: 'ABC' } };
+  const request = { sourceId: 'same', revision: 'same', product: 'country-measure', params: { branchId: '1', tag: 'ABC' } };
   const signal = () => new AbortController().signal;
   const pending = loadProduct(client, request, signal());
   await Promise.resolve();

@@ -1,0 +1,2 @@
+.air-timeline { display: flex; flex-direction: column; gap: 4px; height: 100%; min-height: 0; }
+.air-timeline-chart { flex: 1; min-height: 120px; }

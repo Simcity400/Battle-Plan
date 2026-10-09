@@ -31,6 +31,78 @@ use replay::{
     rows::{FactionMemberRow, TableSchema, tables},
 };
 
+/// Recorded inputs for authored country-scoped scripted text and its triggers.
+/// Consumers that see a scripted `[` in resolved content decode this set once
+/// in their forward presentation pass. Plain text needs none of these tables.
+pub(crate) const TABLES: &[replay::rows::TableId] = &[
+    replay::rows::TableId::ActiveIdeas,
+    replay::rows::TableId::AdvisorTokens,
+    replay::rows::TableId::ArmyOrderPlans,
+    replay::rows::TableId::ArmyOrders,
+    replay::rows::TableId::Autonomy,
+    replay::rows::TableId::CharacterOperatives,
+    replay::rows::TableId::CharacterRoleTraits,
+    replay::rows::TableId::Characters,
+    replay::rows::TableId::CompletedFocuses,
+    replay::rows::TableId::Countries,
+    replay::rows::TableId::CountryAppearance,
+    replay::rows::TableId::CountryBuildingResources,
+    replay::rows::TableId::CountryCharacters,
+    replay::rows::TableId::CountryCivilWars,
+    replay::rows::TableId::CountryCounterInputs,
+    replay::rows::TableId::CountryFactories,
+    replay::rows::TableId::CountryLeaderRoles,
+    replay::rows::TableId::CountryLinks,
+    replay::rows::TableId::CountryRetiredCharacters,
+    replay::rows::TableId::CountryResources,
+    replay::rows::TableId::CountryWars,
+    replay::rows::TableId::DynamicModifiers,
+    replay::rows::TableId::FactionAdvisors,
+    replay::rows::TableId::FactionMembers,
+    replay::rows::TableId::Factions,
+    replay::rows::TableId::Focus,
+    replay::rows::TableId::GlobalSavedEventTargets,
+    replay::rows::TableId::HiredAdvisors,
+    replay::rows::TableId::IntelligenceAgencies,
+    replay::rows::TableId::InvasionPreparations,
+    replay::rows::TableId::LandTheatres,
+    replay::rows::TableId::LexicalTokens,
+    replay::rows::TableId::LocalPlayer,
+    replay::rows::TableId::ModifierDefinitions,
+    replay::rows::TableId::Nukes,
+    replay::rows::TableId::OrdersGroupPlans,
+    replay::rows::TableId::OrdersGroups,
+    replay::rows::TableId::PartyLeaders,
+    replay::rows::TableId::PoliticalParties,
+    replay::rows::TableId::Politics,
+    replay::rows::TableId::PowerBalanceMembers,
+    replay::rows::TableId::PowerBalanceModifierBreakdowns,
+    replay::rows::TableId::PowerBalances,
+    replay::rows::TableId::Projects,
+    replay::rows::TableId::ProvinceBuildings,
+    replay::rows::TableId::ProvinceNames,
+    replay::rows::TableId::Provinces,
+    replay::rows::TableId::RelationOpinions,
+    replay::rows::TableId::ResearchTechnologies,
+    replay::rows::TableId::ReservedCountryNaming,
+    replay::rows::TableId::ResourceDefinitions,
+    replay::rows::TableId::ScriptFlags,
+    replay::rows::TableId::ScriptVariables,
+    replay::rows::TableId::SimulationFeatures,
+    replay::rows::TableId::StateBaseResources,
+    replay::rows::TableId::StateBuildings,
+    replay::rows::TableId::StateCores,
+    replay::rows::TableId::StateDynamicModifiers,
+    replay::rows::TableId::StateResourceInputs,
+    replay::rows::TableId::StateResources,
+    replay::rows::TableId::States,
+    replay::rows::TableId::Subjects,
+    replay::rows::TableId::TechnologyDefinitions,
+    replay::rows::TableId::UnitLeaderTraits,
+    replay::rows::TableId::UnitLeaders,
+    replay::rows::TableId::WarRelations,
+];
+
 mod balance;
 mod entries;
 mod numeric;
@@ -599,6 +671,51 @@ impl<'a> ScriptedText<'a> {
         self.expand_in(text, &scopes)
     }
 
+    /// GetIndustrialOrganisationLocalizedName@140DA44C0, in the fresh
+    /// organisation/owner-FROM scope pair (140A3B740/140A3CFE0).
+    pub(crate) fn organisation_name(&self, reference: u64) -> Result<String, String> {
+        let organisations = self
+            .frame
+            .complete::<tables::IndustrialOrganisations>()
+            .map_err(|why| why.to_string())?;
+        let row = organisations
+            .iter()
+            .find(|row| row.organisation == reference)
+            .ok_or_else(|| format!("IndustrialOrganisations lacks organisation {reference:#x}"))?;
+        let name = if row.name.is_empty() {
+            let tokens = self
+                .frame
+                .complete::<tables::LexicalTokens>()
+                .map_err(|why| why.to_string())?;
+            let at = tokens
+                .binary_search_by_key(&row.token, |token| token.token)
+                .map_err(|_| "LexicalTokens lacks industrial organisation name")?;
+            tokens[at].literal.as_slice()
+        } else {
+            row.name.as_slice()
+        };
+        let name =
+            std::str::from_utf8(name).map_err(|_| "industrial organisation name is not UTF-8")?;
+        let owner = self
+            .scopes
+            .slot(row.owner)
+            .ok_or("CountryLinks lacks industrial organisation owner")?;
+        let tagged = format!("{}_{name}", self.country_tag(owner)?);
+        let key = if owner > 0 && self.localisation.get(&tagged).is_some() {
+            tagged.as_str()
+        } else {
+            name
+        };
+        let scopes = EventScopes::new(vec![
+            EventScope {
+                from: Link::Scope(1),
+                ..EventScope::of(EventObject::IndustrialOrganisation(reference))
+            },
+            EventScope::of(EventObject::Country(owner)),
+        ]);
+        self.expand_in(&self.localise(key)?, &scopes) // 14146B1D0.
+    }
+
     /// SScopeLocalizer (1402F5F40): expand in the caller's event scopes, the
     /// first being the caller's own (raid triggers, 1413931A0).
     pub fn expand_in(&self, text: &str, scopes: &EventScopes) -> Result<String, String> {
@@ -740,6 +857,28 @@ impl<'a> ScriptedText<'a> {
 
     pub(crate) fn recorded_language(&self) -> &str {
         &self.content.recorded_language
+    }
+
+    /// Expand a caller scope whose random word is not recorded. Ordinary
+    /// expressions remain usable; an unseeded multi-member random_list refuses
+    /// only when it reads that word (140A9CD70). ROOT/FROM/PREV select a
+    /// concrete context (141A81250) whose entry fallback constructs the separate
+    /// known 424242 scope (1410CD900/1410CDDF0); bare entries keep the caller scope.
+    pub fn expand_in_without_random_seed(
+        &self,
+        text: &str,
+        scopes: &EventScopes,
+        reason: &'static str,
+    ) -> Result<String, String> {
+        if scopes.scopes.is_empty() {
+            return Err("scripted text needs an event scope".into());
+        }
+        if !text.contains('[') {
+            return Ok(text.to_owned());
+        }
+        let expansion = ExpansionScopes::new(scopes);
+        expansion.scopes.borrow_mut()[0].random_seed_refusal = Some(reason);
+        self.process(text, 0, &expansion, 0, Object::Event)
     }
 
     /// An explicit province text context (kind 15, 1410CCE20), with the
@@ -1822,3 +1961,6 @@ mod tests_wiring;
 #[cfg(test)]
 #[path = "scripted_text/effect_scopes/tests.rs"]
 mod tests_effect_scopes;
+
+#[cfg(test)]
+mod organisation_tests;

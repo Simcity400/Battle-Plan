@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryGroupReply } from '../generated/dashboard';
 import type { CountrySelection } from './model';
-import { countryMatch, countryMatchFilter, groupLabel, groupMembers, groupRuns, groupUnobserved, membershipChanges, worldFilter } from './groups.ts';
+import { aggregateGroupRuns, resolveCountries, projectResolvedCountries, rankedCandidates, countrySelectionMode, countrySelectionModes, countryMatch, countryMatchFilter, groupLabel, groupMembers, groupRuns, groupUnobserved, membershipChanges, worldFilter, worldRequestTags } from './groups.ts';
+import type { ResolvedCountries } from './groups';
 import { createWidget } from './model.ts';
 import { parseTemplate } from './storage.ts';
 import { defaultTemplate } from './model.ts';
-import { Lineage } from './identity.ts';
+import { countryIdentityIndex, countryIdentityKey } from './countryIdentity.ts';
 import '../widgets/definitions.ts';
 
 const REPLY: CountryGroupReply = {
@@ -16,23 +17,29 @@ const REPLY: CountryGroupReply = {
     { tag: 'GER', firstHour: 100, lastHour: 200 }, { tag: 'ITA', firstHour: 120, lastHour: 170 }, { tag: 'HUN', firstHour: 180, lastHour: 200 }], leaders: [], incomplete: [] },
   { id: '6', name: null, recordedName: '', firstHour: 190, lastHour: 200, nameReason: 'Faction template not recorded', names: [{ firstHour: 190, lastHour: 200, name: null, reason: 'Faction template not recorded' }], members: [], leaders: [], incomplete: [] }],
   wars: [{ first: 'FRA', second: 'GER', firstHour: 130, lastHour: 200 }, { first: 'GER', second: 'POL', firstHour: 110, lastHour: 140 }],
+  countryIdentities: ['GER', 'ENG', 'ITA', 'HUN', 'FRA', 'POL', 'D01', 'MY TAG', 'A B'].map((tag, index) => ({ tag,
+    identities: [{ firstHour: 0, lastHour: 200, slot: index + 100, countryId: index + 200 }] })),
 };
 
 test('world filters resolve countries at the counted membership hour, including tag reuse within a run', () => {
   const identityChanges = [{ hour: 10, from: 'AAA', to: 'BBB' }];
-  const lineage = new Lineage(identityChanges);
+  const first = { slot: 3, countryId: 4 }, other = { slot: 3, countryId: 5 };
   const reply: CountryGroupReply = { ...REPLY, identityChanges,
     humans: [{ tag: 'AAA', firstHour: 0, lastHour: 9 }, { tag: 'BBB', firstHour: 10, lastHour: 20 }],
+    countryIdentities: [
+      { tag: 'AAA', identities: [{ firstHour: 0, lastHour: 9, ...first }] },
+      { tag: 'BBB', identities: [{ firstHour: 0, lastHour: 9, ...other }, { firstHour: 10, lastHour: 20, ...first }] },
+    ],
   };
   const filter = (membership: 'hour' | 'end' | 'ever', data = reply) =>
-    worldFilter({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false }, [], data, 5, 20, lineage);
-  assert.deepEqual([...filter('end').tags!], ['BBB']);
-  assert.deepEqual(filter('end').countryIds, new Set([lineage.countryAt('AAA', 5)]));
+    worldFilter({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false }, [], data, 5, 20);
+  assert.deepEqual([...filter('end').tags!], ['AAA']);
+  assert.deepEqual(filter('end').countryIds, new Set([countryIdentityKey(first)]));
   assert.deepEqual(filter('hour').countryIds, filter('end').countryIds);
   assert.deepEqual(filter('ever').countryIds, filter('end').countryIds);
   // A tag's continuous membership can name two countries during the run.
   const reused = { ...reply, humans: [{ tag: 'BBB', firstHour: 0, lastHour: 20 }] };
-  assert.deepEqual(filter('ever', reused).countryIds, new Set([lineage.countryAt('BBB', 0), lineage.countryAt('BBB', 10)]));
+  assert.deepEqual(filter('ever', reused).countryIds, new Set([countryIdentityKey(other), countryIdentityKey(first)]));
 });
 
 test('members at each hour, at the end, or anyone ever', () => {
@@ -116,13 +123,14 @@ test('a faction is unobserved where no faction was read or its own roster was in
 test('a log row passes the country choice at its own hour, and all countries pass everything', () => {
   const all = countryMatch({ kind: 'all' }, [], undefined, 200);
   assert.equal(all.ready && all.matches('XYZ', 1), true);
-  const chosen = countryMatch({ kind: 'tags', tags: ['GER'] }, ['ENG'], undefined, 200);
+  const chosen = countryMatch({ kind: 'tags', tags: ['GER'] }, ['ENG'], REPLY, 200);
   assert.deepEqual([chosen.matches('GER', 1), chosen.matches('ENG', 1)], [true, false]);
-  assert.equal(countryMatch({ kind: 'selected' }, ['ENG'], undefined, 200).matches('ENG', 1), true);
+  assert.equal(countryMatch({ kind: 'selected' }, ['ENG'], REPLY, 200).matches('ENG', 1), true);
   // A mod's tag may hold a space: it stays one tag.
-  const spaced = countryMatch({ kind: 'selected' }, ['A B'], undefined, 200);
+  const spaced = countryMatch({ kind: 'selected' }, ['A B'], REPLY, 200);
   assert.deepEqual([spaced.matches('A B', 1), spaced.matches('A', 1), spaced.matches('B', 1)], [true, false, false]);
-  assert.equal(countryMatch({ kind: 'selected' }, [], undefined, 200).reason, 'Choose a country in the widget settings.');
+  assert.equal(countryMatch({ kind: 'selected' }, [], REPLY, 200).reason, 'Choose a country in the widget settings.');
+  assert.equal(countryMatch({ kind: 'tags', tags: ['GER'] }, [], undefined, 200).ready, false);
   const axis = { kind: 'group', group: { type: 'faction', id: '5' }, aggregate: false } as const;
   assert.equal(countryMatch({ ...axis, membership: 'hour' }, [], undefined, 200).ready, false);
   const atHour = countryMatch({ ...axis, membership: 'hour' }, [], REPLY, 200);
@@ -149,7 +157,7 @@ test('a widget about the whole world shows all countries by default, narrowed by
   assert.match(filter({ kind: 'selected' }).reason!, /Choose a country/);
   assert.match(filter({ kind: 'group', group: { type: 'faction', id: '9' }, membership: 'hour', aggregate: false }).reason!, /not in this campaign branch/);
   // While the groups load, nothing is shown rather than everything.
-  assert.deepEqual(worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], undefined, 150, 200), { tags: new Set(), reason: null });
+  assert.deepEqual(worldFilter({ kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false }, [], undefined, 150, 200), { tags: new Set(), countryIds: new Set(), reason: null });
 });
 
 test('a whole-world widget narrowed to a group honours its membership setting', () => {
@@ -171,6 +179,57 @@ test('a whole-world widget narrowed to a group honours its membership setting', 
   assert.match(axis('hour', 195).reason!, /not recorded at this moment/);
   // Before any member joined, the group is empty at that moment.
   assert.match(axis('hour', 90).reason!, /no members at this moment/);
+});
+
+const range = { firstHour: 100, lastHour: 107 };
+const members = (): ResolvedCountries => ({ tags: ['realm A', 'realm B'], membership: new Map([
+  ['realm A', [{ tag: 'realm A', firstHour: 100, lastHour: 107 }]],
+  ['realm B', [{ tag: 'realm B', firstHour: 102, lastHour: 105 }]],
+]), unobserved: [{ firstHour: 104, lastHour: 104 }], dropped: 0, reason: null });
+
+test('group sums follow joins/leaves and leave gaps for a missing member and unknown roster', () => {
+  assert.deepEqual(aggregateGroupRuns([
+    { tag: 'realm A', runs: [{ firstHour: 100, lastHour: 107, value: 5 }] },
+    { tag: 'realm B', runs: [{ firstHour: 102, lastHour: 102, value: 2 }, { firstHour: 104, lastHour: 105, value: 3 }] },
+  ], members(), range), [
+    { firstHour: 100, lastHour: 101, value: 5 }, { firstHour: 102, lastHour: 102, value: 7 },
+    { firstHour: 105, lastHour: 105, value: 8 }, { firstHour: 106, lastHour: 107, value: 5 },
+  ]);
+});
+
+test('an aggregate keeps a member identity break, exact zero, and gaps when every member is missing', () => {
+  const resolved = { ...members(), tags: ['realm A'], membership: null };
+  assert.deepEqual(aggregateGroupRuns([{ tag: 'realm A', runs: [
+    { firstHour: 100, lastHour: 101, value: 0 }, { firstHour: 102, lastHour: 103, value: 0, breakBefore: true },
+  ] }], resolved, range), [{ firstHour: 100, lastHour: 101, value: 0 }, { firstHour: 102, lastHour: 103, value: 0, breakBefore: true }]);
+  assert.deepEqual(aggregateGroupRuns([], resolved, range), []);
+  assert.deepEqual(aggregateGroupRuns([], { ...resolved, tags: [] }, range), []);
+});
+
+test('a faction sum uses its recorded faction id without copying a 5,000-country roster to the client sum', () => {
+  const tags = Array.from({ length: 5000 }, (_, index) => index === 4999 ? 'Renamed realm' : `realm ${index}`);
+  const reply: CountryGroupReply = { branchId: '7', humans: [], factions: [{ id: 'custom faction', name: 'New union', nameReason: null, names: [{ ...range, name: 'New union', reason: null }], recordedName: 'New union', leaders: [], ...range, incomplete: [],
+    members: tags.map(tag => ({ tag, ...range })) }], wars: [], warStarts: [], capitulations: [], identityChanges: [],
+    unobserved: { humans: [], factions: [], wars: [] }, warnings: [], countryIdentities: tags.map((tag, slot) => ({ tag,
+      identities: [{ ...range, slot, countryId: slot + 10_000 }] })) };
+  const resolved = resolveCountries({ kind: 'group', group: { type: 'faction', id: 'custom faction' }, membership: 'hour', aggregate: true },
+    [], reply, range.lastHour, Infinity, true);
+  const ordinary = resolveCountries({ kind: 'group', group: { type: 'faction', id: 'custom faction' }, membership: 'hour', aggregate: true },
+    [], reply, range.lastHour, Infinity);
+  assert.deepEqual(new Set(ordinary.tags), new Set(tags), 'other widgets keep their country roster');
+  assert.equal(ordinary.factionId, undefined);
+  assert.equal(resolved.factionId, 'custom faction');
+  assert.deepEqual(resolved.tags, []);
+  assert.equal(resolved.membership, null);
+  assert.throws(() => aggregateGroupRuns([], resolved, range), /faction-totals/);
+});
+
+test('ranked country widgets keep main selection segments and top groups stay in Group', () => {
+  // A ranked widget's limits add no segment: top groups stay under Group.
+  assert.deepEqual(countrySelectionModes({}).map(mode => mode.value), ['countries', 'group']);
+  assert.deepEqual(countrySelectionModes({ all: true }).map(mode => mode.value), ['all', 'countries', 'group']);
+  assert.deepEqual(countrySelectionModes({ factions: true }).map(mode => mode.value), ['countries', 'group', 'factions']);
+  assert.equal(countrySelectionMode({ kind: 'group', group: { type: 'top', count: 10 }, aggregate: false, membership: 'hour' }), 'group');
 });
 
 test('group headers use the name at the shown hour, with campaign overrides first', () => {
@@ -203,5 +262,135 @@ test('server top-N country predicate matches the dated client country rule witho
     }
   }
   const tags = Array.from({ length: 5000 }, (_, i) => `opaque ${i}`);
-  assert.equal(countryMatchFilter({ kind: 'tags', tags }, [], undefined, 200).tags?.length, 5000);
+  const reply = { ...REPLY, countryIdentities: tags.map((tag, slot) => ({ tag,
+    identities: [{ firstHour: 0, lastHour: 200, slot, countryId: slot + 10_000 }] })) };
+  assert.equal(countryMatchFilter({ kind: 'tags', tags }, [], reply, 200).membership?.length, 5000);
+});
+
+test('dated log country choices use full native holder histories with exact server/client predicate parity', () => {
+  const reply: CountryGroupReply = { ...REPLY,
+    identityChanges: [{ hour: 10, from: 'AAA', to: 'BBB' }, { hour: 20, from: 'BBB', to: 'CCC' }],
+    humans: [{ tag: 'AAA', firstHour: 0, lastHour: 9 }, { tag: 'BBB', firstHour: 10, lastHour: 14 }, { tag: 'CCC', firstHour: 22, lastHour: 25 }],
+    unobserved: { humans: [{ firstHour: 12, lastHour: 12 }], factions: [], wars: [] },
+    countryIdentities: [
+      { tag: 'AAA', identities: [{ firstHour: 0, lastHour: 9, slot: 1, countryId: 11 }] },
+      { tag: 'BBB', identities: [{ firstHour: 0, lastHour: 9, slot: 2, countryId: 12 }, { firstHour: 10, lastHour: 11, slot: 1, countryId: 11 },
+        { firstHour: 13, lastHour: 19, slot: 1, countryId: 11 }, { firstHour: 20, lastHour: 25, slot: 3, countryId: 13 }] },
+      { tag: 'CCC', identities: [{ firstHour: 20, lastHour: 25, slot: 1, countryId: 11 }] },
+    ] };
+  const identities = countryIdentityIndex(reply.countryIdentities);
+  const selections: CountrySelection[] = [{ kind: 'tags', tags: ['CCC'] }, { kind: 'selected' },
+    ...(['hour', 'end', 'ever'] as const).map((membership): CountrySelection =>
+      ({ kind: 'group', group: { type: 'humans' }, membership, aggregate: false }))];
+  for (const selection of selections) {
+    const client = countryMatch(selection, ['CCC'], reply, 25, identities);
+    const filter = countryMatchFilter(selection, ['CCC'], reply, 25, identities, 0);
+    for (const hour of [0, 9, 10, 12, 14, 15, 19, 20, 25]) for (const tag of ['AAA', 'BBB', 'CCC']) {
+      const server = (filter.tags === null || filter.tags.includes(tag)) && (filter.membership === null ||
+        filter.membership.some(run => run.tag === tag && run.firstHour <= hour && hour <= run.lastHour)) &&
+        !filter.unobserved.some(span => span.firstHour <= hour && hour <= span.lastHour);
+      assert.equal(server, client.matches(tag, hour), `${selection.kind}: ${tag}@${hour}`);
+    }
+  }
+  const picked = countryMatch({ kind: 'tags', tags: ['CCC'] }, [], reply, 25, identities);
+  assert.deepEqual([picked.matches('AAA', 9), picked.matches('BBB', 15), picked.matches('CCC', 25)], [true, true, true]);
+  assert.deepEqual([picked.matches('AAA', 10), picked.matches('BBB', 25), picked.matches('BBB', 9)], [false, false, false]);
+  const hourly = countryMatch(selections[2], [], reply, 25, identities);
+  assert.deepEqual([hourly.matches('AAA', 9), hourly.matches('AAA', 10), hourly.matches('BBB', 12), hourly.matches('BBB', 14), hourly.matches('BBB', 15)],
+    [true, false, false, true, false]);
+  assert.equal(countryMatch({ kind: 'selected' }, ['CCC'], undefined, 25, null).ready, false);
+  assert.equal(countryMatch({ kind: 'all' }, [], undefined, 25, null).matches('AAA', 10), true);
+  assert.deepEqual(identities.aliasRuns(new Set([identities.keyAt('BBB', 0)!]), 0, 25), [{ tag: 'BBB', firstHour: 0, lastHour: 9 }]);
+  assert.deepEqual(identities.aliasRuns(new Set([identities.keyAt('BBB', 25)!]), 0, 25), [{ tag: 'BBB', firstHour: 20, lastHour: 25 }]);
+  assert.deepEqual(worldRequestTags({ kind: 'tags', tags: ['CCC'] }, [], reply, 25).tags, ['CCC']);
+  assert.deepEqual(countryMatchFilter({ kind: 'tags', tags: ['CCC'] }, [], undefined, 25), { tags: null, membership: [], unobserved: [] });
+});
+
+test('manual selection includes every reused literal holder while smart groups retain their own dates', () => {
+  const a = { slot: 4, countryId: 5 }, c = { slot: 4, countryId: 6 }, unrelated = { slot: 7, countryId: 8 };
+  const reply = { ...REPLY, identityChanges: [], humans: [{ tag: 'X', firstHour: 1, lastHour: 2 }], countryIdentities: [
+    { tag: 'earlier alias', identities: [{ firstHour: -3, lastHour: -1, ...a }] },
+    { tag: 'X', identities: [{ firstHour: 0, lastHour: 4, ...a }, { firstHour: 10, lastHour: 14, ...c }] },
+    { tag: 'Y', identities: [{ firstHour: 0, lastHour: 4, ...unrelated }, { firstHour: 5, lastHour: 9, ...a }] },
+    { tag: 'later alias', identities: [{ firstHour: 15, lastHour: 19, ...c }] },
+  ] };
+  const manual: CountrySelection = { kind: 'tags', tags: ['X'] };
+  const match = countryMatch(manual, [], reply, 19), filter = countryMatchFilter(manual, [], reply, 19, undefined, -3);
+  const rows = [['earlier alias', -2, true], ['X', 2, true], ['Y', 6, true], ['X', 12, true], ['later alias', 18, true],
+    ['Y', 2, false], ['X', 6, false], ['later alias', 20, false]] as const;
+  for (const [tag, hour, expected] of rows) {
+    assert.equal(match.matches(tag, hour), expected, `${tag}@${hour}`);
+    assert.equal(filter.membership!.some(run => run.tag === tag && run.firstHour <= hour && hour <= run.lastHour), expected);
+  }
+  assert.deepEqual(worldFilter(manual, [], reply, 6, 19).countryIds, new Set([countryIdentityKey(a), countryIdentityKey(c)]));
+  assert.deepEqual([...worldFilter(manual, [], reply, 6, 19).tags!], ['Y']);
+  assert.deepEqual(worldRequestTags(manual, [], reply, 19).tags, ['X'], 'aliases do not become new literal selection roots');
+  const resolved = resolveCountries(manual, [], reply, 19, Number.MAX_SAFE_INTEGER);
+  const projected = projectResolvedCountries(resolved, filter);
+  assert.deepEqual(resolved.tags, ['X'], 'drawing projection cannot mutate backend selection roots');
+  assert.deepEqual(projected.membership?.get('Y'), [{ tag: 'Y', firstHour: 5, lastHour: 9 }]);
+  assert.deepEqual(rankedCandidates(projected, -2, []), ['earlier alias']);
+  assert.deepEqual(rankedCandidates(projected, 2, []), ['X']);
+  assert.deepEqual(rankedCandidates(projected, 6, []), ['Y']);
+  assert.deepEqual(rankedCandidates(projected, 12, []), ['X']);
+  assert.deepEqual(rankedCandidates(projected, 18, []), ['later alias']);
+  const ever = { kind: 'group', group: { type: 'humans' }, membership: 'ever', aggregate: false } as const;
+  const smart = countryMatch(ever, [], reply, 19);
+  assert.equal(smart.matches('Y', 6), true);
+  assert.equal(smart.matches('X', 12), false);
+  const endReply = { ...reply, humans: [{ tag: 'X', firstHour: 12, lastHour: 14 }] };
+  const atEnd = countryMatch({ ...ever, membership: 'end' }, [], endReply, 14);
+  assert.equal(atEnd.matches('X', 2), false);
+  assert.equal(atEnd.matches('X', 12), true);
+  assert.equal(atEnd.matches('later alias', 18), true);
+  const endSelection = { ...ever, membership: 'end' } as const;
+  const endDrawReply = { ...reply, humans: [{ tag: 'later alias', firstHour: 15, lastHour: 19 }] };
+  const endProjection = projectResolvedCountries(resolveCountries(endSelection, [], endDrawReply, 19, Number.MAX_SAFE_INTEGER),
+    countryMatchFilter(endSelection, [], endDrawReply, 19, undefined, -3));
+  assert.deepEqual(rankedCandidates(endProjection, 2, []), []);
+  assert.deepEqual(rankedCandidates(endProjection, 12, []), ['X']);
+  assert.deepEqual(rankedCandidates(endProjection, 18, []), ['later alias']);
+  const hourlySelection = { ...ever, membership: 'hour' } as const;
+  const hourlyProjection = projectResolvedCountries(resolveCountries(hourlySelection, [], reply, 19, Number.MAX_SAFE_INTEGER),
+    countryMatchFilter(hourlySelection, [], reply, 19));
+  assert.deepEqual(rankedCandidates(hourlyProjection, 0, []), []);
+  assert.deepEqual(rankedCandidates(hourlyProjection, 1, []), ['X']);
+  assert.deepEqual(rankedCandidates(hourlyProjection, 6, []), []);
+  assert.deepEqual(worldRequestTags({ ...ever, membership: 'hour' }, [], reply, 19).tags, ['X']);
+  assert.equal(worldRequestTags({ ...ever, membership: 'hour' }, [], reply, 19).ready, true);
+});
+
+test('native drawing projection preserves ranking/errors and merges additional unknown coverage without changing roots', () => {
+  const resolved: ResolvedCountries = { tags: ['literal root'], membership: null, dropped: 2, reason: null,
+    unobserved: [{ firstHour: 2, lastHour: 3 }] };
+  const filter = { tags: null, membership: [{ tag: 'dated alias', firstHour: 4, lastHour: 5 }],
+    unobserved: [{ firstHour: 2, lastHour: 3 }, { firstHour: 7, lastHour: 8 }] };
+  const projected = projectResolvedCountries(resolved, filter);
+  assert.equal(projected.dropped, 2);
+  assert.deepEqual(projected.tags, ['dated alias']);
+  assert.deepEqual(projected.unobserved, [{ firstHour: 2, lastHour: 3 }, { firstHour: 7, lastHour: 8 }]);
+  assert.deepEqual(resolved.tags, ['literal root']);
+  const top = { ...resolved, top: 3 }, refused = { ...resolved, reason: 'Native membership is unavailable.' };
+  assert.equal(projectResolvedCountries(top, filter), top);
+  assert.equal(projectResolvedCountries(refused, filter), refused);
+  assert.equal(projectResolvedCountries(resolved, { tags: null, membership: null, unobserved: [] }), resolved);
+  assert.deepEqual(projectResolvedCountries(resolved, { tags: null, membership: [], unobserved: [] }).tags, []);
+  const incomplete = projectResolvedCountries(resolved, { tags: null,
+    membership: [{ tag: 'dated alias', firstHour: 1, lastHour: 10 }], unobserved: [{ firstHour: 4, lastHour: 6 }] });
+  assert.deepEqual(incomplete.membership?.get('dated alias'), [
+    { tag: 'dated alias', firstHour: 1, lastHour: 3 }, { tag: 'dated alias', firstHour: 7, lastHour: 10 },
+  ]);
+  assert.deepEqual(rankedCandidates(incomplete, 5, []), []);
+});
+
+test('hourly membership and server filters omit unrecorded identity spans even when membership itself is known', () => {
+  const reply = { ...REPLY, humans: [{ tag: 'X', firstHour: 0, lastHour: 9 }],
+    unobserved: { humans: [], factions: [], wars: [] }, countryIdentities: [{ tag: 'X', identities: [
+      { firstHour: 0, lastHour: 3, slot: 4, countryId: 5 }, { firstHour: 6, lastHour: 9, slot: 4, countryId: 5 },
+    ] }] };
+  const selection = { kind: 'group', group: { type: 'humans' }, membership: 'hour', aggregate: false } as const;
+  const match = countryMatch(selection, [], reply, 9), filter = countryMatchFilter(selection, [], reply, 9, undefined, 1);
+  assert.deepEqual(filter.membership, [{ tag: 'X', firstHour: 1, lastHour: 3 }, { tag: 'X', firstHour: 6, lastHour: 9 }]);
+  assert.equal(match.matches('X', 4), false);
+  assert.equal(match.matches('X', 6), true);
 });

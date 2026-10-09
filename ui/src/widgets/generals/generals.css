@@ -1,0 +1,32 @@
+.generals-widget { height: 100%; min-height: 0; }
+.leader-table { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.leader-table .chart-table { flex: 1; --table-rank-width: calc(var(--space-6) + var(--space-1)); }
+.leader-identity { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+.leader-portrait { flex: none; display: grid; place-items: center; width: min(32px, calc((var(--table-row-height, 48px) - var(--space-2)) * 32 / 43)); height: min(43px, calc(var(--table-row-height, 48px) - var(--space-2))); overflow: hidden; border-radius: var(--r-xs); background: var(--surface); color: var(--muted); }
+.leader-portrait img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.leader-text { min-width: 0; display: flex; flex-direction: column; }
+.leader-text strong { font-size: var(--type-sm); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.leader-text small { display: flex; align-items: center; font-size: var(--type-xs); color: var(--muted); min-width: 0; white-space: nowrap; }
+.leader-stars { display: inline-flex; width: 100%; min-width: 0; color: var(--warning, var(--accent)); letter-spacing: calc(var(--space-1) / 2); font-size: var(--type-xs); white-space: nowrap; overflow: hidden; }
+.leader-stars em { color: color-mix(in srgb, var(--text) 18%, transparent); font-style: normal; }
+.leader-traits { display: flex; gap: var(--space-2); overflow: hidden; flex-wrap: nowrap; height: var(--space-6); align-items: center; }
+.leader-traits img, .leader-traits i { flex: none; width: 18px; height: 22px; object-fit: contain; }
+.leader-traits i { display: grid; place-items: center; color: var(--muted); border: 1px dashed var(--border); font-style: normal; }
+.leader-missing { color: var(--muted); font-size: var(--type-xs); white-space: nowrap; }
+.general-career { height: 100%; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.career-top { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4) var(--space-3); }
+.career-top .leader-identity { flex: 1; }
+.career-top .leader-portrait { width: 44px; height: 59px; }
+.career-top .leader-text strong { font-size: var(--type-md); }
+.career-stats { display: flex; gap: var(--space-4); margin-left: auto; font-size: var(--type-xs); color: var(--muted); text-align: end; }
+.career-stats strong { display: block; color: var(--text); font-size: var(--type-sm); font-weight: 600; }
+.career-note { margin: var(--space-2) var(--space-4); color: var(--muted); font-size: var(--type-xs); }
+.general-career .timeline-chart { min-height: calc(var(--space-6) * 8); }
+
+/* The four tracks match the mock-up without changing shared table cells. */
+.leader-attributes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: calc(var(--space-1) + var(--space-2)); width: 100%; font-size: var(--type-xs); font-variant-numeric: tabular-nums; }
+.leader-attributes > span { display: flex; flex-direction: column; text-align: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.leader-attribute-bar { display: block; height: var(--space-2); margin-top: var(--space-1); border-radius: var(--space-1); background: var(--line-soft); overflow: hidden; }
+.leader-attribute-bar i { display: block; height: 100%; background: var(--accent); }
+
+.leader-attributes[aria-label] > span { display: block; white-space: nowrap; }

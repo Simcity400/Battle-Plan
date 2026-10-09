@@ -6,7 +6,7 @@ use replay::{
         AirTheatreGroupRow, AirTheatreMemberRow, AirTheatreRow, ArmyGroupMemberRow, DivisionRow,
         LandTheatreGroupRow, LandTheatreMemberRow, LandTheatreRow, NavalResultCountryRow,
         NavalResultMemberRow, NavalResultRow, OrdersGroupMemberRow, OrdersGroupRow,
-        RailCooldownRow, RailEdgeRow, SunkShipsRow, TableId, TableRows,
+        RailCooldownRow, RailEdgeRow, Recorded, SunkShipsRow, TableId, TableRows,
     },
 };
 
@@ -63,6 +63,7 @@ fn oob_frame() -> DecodedFrame {
                 parent: oob_handle(431, 53),
                 leader: oob_handle(279, 4713),
                 hq_provider: oob_handle(12456, 4713),
+                name: Recorded::NotRecorded,
             },
             OrdersGroupRow {
                 handle: oob_handle(431, 53),
@@ -75,6 +76,7 @@ fn oob_frame() -> DecodedFrame {
                 parent: 0,
                 leader: 0,
                 hq_provider: 0,
+                name: Recorded::NotRecorded,
             },
         ]));
     *frame.tables[TableId::OrdersGroupMembers.index()] =

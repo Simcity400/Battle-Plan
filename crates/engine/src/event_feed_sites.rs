@@ -1,0 +1,430 @@
+//! Guarded operands for the second war-link CALL@140D15418 and annex
+//! dispatch@1406C8E34. Fresh reciprocal matrix checks prove a war attachment.
+//! The caller must independently prove world and thread lifetime; these reads
+//! do not qualify replacement/load operations or safe hook publication.
+
+use crate::{
+    Memory, ccountry, cdiplomacy_status, cevent_scope, cgame_state, cpdx_array::Array, crelation,
+    crelation_status, cwar_relation, memory::Raw, read,
+};
+
+#[derive(Debug, Clone, Copy)]
+pub struct CallSite {
+    pub rva: usize,
+    pub return_rva: usize,
+    pub target_rva: usize,
+    pub sentinel: [u8; 16],
+}
+
+/// Indexed CALL140D15418 -> 140D18990; second link, native RCX=status,
+/// RDX=RDI=candidate. The suffix is MOV R15D,860; MOV R14D,10.
+pub const WAR: CallSite = CallSite {
+    rva: 0x00d1_5418,
+    return_rva: 0x00d1_541d,
+    target_rva: 0x00d1_8990,
+    sentinel: [
+        0xe8, 0x73, 0x35, 0, 0, 0x41, 0xbf, 0x60, 0x08, 0, 0, 0x41, 0xbe, 0x10, 0, 0,
+    ],
+};
+/// Indexed CALL1406C8E34 -> 140A6AAE0; R8=RBP+A0 primary scope, R9D=0.
+pub const ANNEX: CallSite = CallSite {
+    rva: 0x006c_8e34,
+    return_rva: 0x006c_8e39,
+    target_rva: 0x00a6_aae0,
+    sentinel: [
+        0xe8, 0xa7, 0x1c, 0x3a, 0, 0x90, 0x48, 0x8b, 0x55, 0x30, 0x48, 0x83, 0xfa, 0x0f, 0x76, 0x31,
+    ],
+};
+
+/// Verify before publication, alongside build::PINNED_BUILD. A sentinel is
+/// not installation or unwind approval and does not match an installed patch.
+pub fn verify(memory: &impl Memory, base: usize, site: CallSite) -> Result<usize, &'static str> {
+    let address = at(base, site.rva)?;
+    if read::<[u8; 16]>(memory, address) != Some(site.sentinel) {
+        return Err("event feed CALL sentinel unreadable or differs");
+    }
+    Ok(address)
+}
+
+/// Source meanings, not replay discriminant allocations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Declaration,
+    Join,
+    CivilWarWarTransfer,
+    Annex,
+}
+
+/// Preserve the source reference independently of its resolved full native
+/// CCountry ID (+8/+C). The second word is not a generation counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CountryIdentity {
+    pub reference: u32,
+    pub id: u32,
+    pub instance: u32,
+}
+
+/// Only owned integer operands; no native address is publishable history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Operands {
+    pub source: Source,
+    pub hour: i32,
+    pub actor: CountryIdentity,
+    pub target: CountryIdentity,
+}
+
+/// Snapshot of native registers immediately BEFORE CALL140D15418. This is
+/// neither Rust callback RSP nor stub-entry RSP (which is eight bytes lower).
+#[derive(Debug, Clone, Copy)]
+pub struct WarFrame {
+    pub rsp_before_call: usize,
+    pub rcx: usize,
+    pub rdx: usize,
+    pub rdi: usize,
+}
+
+/// Opaque correlation for this one original invocation only. It is not Clone,
+/// serializable or an event key. The owner retains it on uncertain completion;
+/// only a proved normal return may consume it through war_returned.
+pub struct WarPending {
+    candidate: usize,
+    state: usize,
+    pair: [u32; 2],
+    operands: Operands,
+}
+
+impl WarPending {
+    /// Owned pre-call operands; attachment needs the normal-return check.
+    pub fn operands(&self) -> Operands {
+        self.operands
+    }
+}
+
+fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
+    pointer
+        .checked_add(offset)
+        .ok_or("event feed operand address overflow")
+}
+
+fn value<T: Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Result<T, &'static str> {
+    read(memory, at(pointer, offset)?).ok_or("event feed operand unreadable")
+}
+
+fn pointer(memory: &impl Memory, object: usize, offset: usize) -> Result<usize, &'static str> {
+    usize::try_from(value::<u64>(memory, object, offset)?)
+        .map_err(|_| "event feed pointer overflow")
+}
+
+fn verify_vtable(
+    memory: &impl Memory,
+    base: usize,
+    object: usize,
+    rva: usize,
+) -> Result<(), &'static str> {
+    if object == 0 || read::<u64>(memory, object) != Some(at(base, rva)? as u64) {
+        return Err("event feed object identity mismatch");
+    }
+    Ok(())
+}
+
+fn state(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
+    let state = pointer(memory, base, cgame_state::SINGLETON_RVA)?;
+    if state == 0 {
+        return Err("event feed game state is null");
+    }
+    Ok(state)
+}
+
+fn identity(
+    memory: &impl Memory,
+    base: usize,
+    countries: &ccountry::Reader<'_, impl Memory>,
+    reference: u32,
+) -> Result<(ccountry::Country, CountryIdentity), &'static str> {
+    let country = if reference == 0 {
+        // ResolveCountryReference@140BA56A0 selects physical slot zero.
+        let array = countries.arrays()[0];
+        let address = array
+            .element(0, 8)
+            .ok_or("event feed reserved country absent")?;
+        let pointer = pointer(memory, address, 0)?;
+        verify_vtable(memory, base, pointer, ccountry::VTABLE_RVA)?;
+        if value::<u32>(memory, pointer, ccountry::ID)? != 0 {
+            return Err("event feed reserved country ID differs");
+        }
+        ccountry::Country {
+            pointer,
+            canonical_slot: 0,
+            id: 0,
+        }
+    } else {
+        countries.resolve(reference)?
+    };
+    Ok((
+        country,
+        CountryIdentity {
+            reference,
+            id: country.id,
+            instance: value(memory, country.pointer, ccountry::ID_INSTANCE)?,
+        },
+    ))
+}
+
+fn same(
+    countries: &ccountry::Reader<'_, impl Memory>,
+    a: u32,
+    b: u32,
+) -> Result<bool, &'static str> {
+    // CompareCountryReferences@140BA60A0: raw equality, else two nonzero links.
+    Ok(a == b
+        || (a != 0
+            && b != 0
+            && countries.resolve(a)?.canonical_slot == countries.resolve(b)?.canonical_slot))
+}
+
+fn diplomacy(
+    memory: &impl Memory,
+    base: usize,
+    country: ccountry::Country,
+) -> Result<usize, &'static str> {
+    let diplomacy = pointer(memory, country.pointer, ccountry::DIPLOMACY_STATUS)?;
+    verify_vtable(memory, base, diplomacy, cdiplomacy_status::VTABLE_RVA)?;
+    if pointer(memory, diplomacy, cdiplomacy_status::COUNTRY)? != country.pointer {
+        return Err("event feed diplomacy owner mismatch");
+    }
+    Ok(diplomacy)
+}
+
+fn status(
+    memory: &impl Memory,
+    base: usize,
+    countries: &ccountry::Reader<'_, impl Memory>,
+    owner: ccountry::Country,
+    target: ccountry::Country,
+    target_reference: u32,
+) -> Result<usize, &'static str> {
+    let diplomacy = diplomacy(memory, base, owner)?;
+    let matrix = Array::read(memory, at(diplomacy, cdiplomacy_status::RELATIONS)?, 8)
+        .ok_or("event feed relation matrix unreadable or invalid")?;
+    let slot = matrix
+        .element(target.canonical_slot, 8)
+        .ok_or("event feed target outside relation matrix")?;
+    let status = pointer(memory, slot, 0)?;
+    verify_vtable(memory, base, status, crelation_status::VTABLE_RVA)?;
+    if pointer(memory, status, crelation_status::DIPLOMACY_STATUS)? != diplomacy {
+        return Err("event feed relation status owner mismatch");
+    }
+    if !same(
+        countries,
+        value(memory, status, crelation_status::TARGET_COUNTRY)?,
+        target_reference,
+    )? {
+        return Err("event feed relation status target mismatch");
+    }
+    Ok(status)
+}
+
+fn candidate(
+    memory: &impl Memory,
+    base: usize,
+    candidate: usize,
+) -> Result<[u32; 2], &'static str> {
+    verify_vtable(memory, base, candidate, cwar_relation::VTABLE_RVA)?;
+    if value::<u32>(memory, candidate, crelation::TYPE_ID)? != cwar_relation::TYPE {
+        return Err("event feed candidate type mismatch");
+    }
+    if value::<u8>(memory, candidate, crelation::CANCEL)? != 0
+        || value::<u8>(memory, candidate, crelation::RETIRED)? != 0
+    {
+        return Err("event feed candidate canceled or retired");
+    }
+    let pair: [u8; 8] = value(memory, candidate, crelation::FIRST_COUNTRY)?;
+    Ok([
+        u32::from_le_bytes(pair[..4].try_into().unwrap()),
+        u32::from_le_bytes(pair[4..].try_into().unwrap()),
+    ])
+}
+
+fn war_source(memory: &impl Memory, base: usize, frame: WarFrame) -> Result<Source, &'static str> {
+    // apply_link pushes28/sub1B0; InitializeUnlessDuplicate pushes18/sub250;
+    // CreateWarRelation pushes8/sub50. Include each intervening CALL's return.
+    if value::<u64>(memory, frame.rsp_before_call, 0x1d8)? != at(base, 0x00d0_baff)? as u64
+        || value::<u64>(memory, frame.rsp_before_call, 0x448)? != at(base, 0x00d0_b57d)? as u64
+        || pointer(memory, frame.rsp_before_call, 0x438)? != frame.rcx
+    {
+        return Err("event feed war creator frame mismatch");
+    }
+    // Actual intermediary instructions: vtable+A8@140D0BAF9, creator@140D0B578.
+    if read::<[u8; 6]>(memory, at(base, 0x00d0_baf9)?) != Some([0xff, 0x90, 0xa8, 0, 0, 0])
+        || read::<[u8; 5]>(memory, at(base, 0x00d0_b578)?) != Some([0xe8, 0x03, 0x05, 0, 0])
+    {
+        return Err("event feed war creator instruction differs");
+    }
+    let source_pc = value::<u64>(memory, frame.rsp_before_call, 0x4a8)?;
+    // Indexed E8s: declaration140D20809, join140D269D5, transfer1410CB9C3.
+    let (source, call_rva, bytes) = if source_pc == at(base, 0x00d2_080e)? as u64 {
+        (
+            Source::Declaration,
+            0x00d2_0809,
+            [0xe8, 0xc2, 0xab, 0xfe, 0xff],
+        )
+    } else if source_pc == at(base, 0x00d2_69da)? as u64 {
+        (Source::Join, 0x00d2_69d5, [0xe8, 0xf6, 0x49, 0xfe, 0xff])
+    } else if source_pc == at(base, 0x010c_b9c8)? as u64 {
+        (
+            Source::CivilWarWarTransfer,
+            0x010c_b9c3,
+            [0xe8, 0x08, 0xfa, 0xc3, 0xff],
+        )
+    } else {
+        return Err("event feed war producer is unclassified");
+    };
+    if read::<[u8; 5]>(memory, at(base, call_rva)?) != Some(bytes) {
+        return Err("event feed war source CALL unreadable or differs");
+    }
+    Ok(source)
+}
+
+/// Copy before the second replacement. No pre-null requirement: native may
+/// replace an old relation whose destructor reenters. The same candidate
+/// already installed in the selected slot is an unproved-source refusal.
+pub fn war_before(
+    memory: &impl Memory,
+    base: usize,
+    frame: WarFrame,
+) -> Result<WarPending, &'static str> {
+    let source = war_source(memory, base, frame)?;
+    if frame.rdx == 0 || frame.rdx != frame.rdi {
+        return Err("event feed candidate register mismatch");
+    }
+    let pair = candidate(memory, base, frame.rdx)?;
+    verify_vtable(memory, base, frame.rcx, crelation_status::VTABLE_RVA)?;
+    let owner_diplomacy = pointer(memory, frame.rcx, crelation_status::DIPLOMACY_STATUS)?;
+    verify_vtable(memory, base, owner_diplomacy, cdiplomacy_status::VTABLE_RVA)?;
+    let owner = pointer(memory, owner_diplomacy, cdiplomacy_status::COUNTRY)?;
+    let actor_reference = value(memory, owner, ccountry::ID)?;
+    let target_reference = value(memory, frame.rcx, crelation_status::TARGET_COUNTRY)?;
+    let state = state(memory, base)?;
+    let countries = ccountry::Reader::new(memory, base, state)?;
+    let (actor, actor_identity) = identity(memory, base, &countries, actor_reference)?;
+    let (target, target_identity) = identity(memory, base, &countries, target_reference)?;
+    if actor.pointer != owner
+        || !same(&countries, pair[0], actor_reference)?
+        || !same(&countries, pair[1], target_reference)?
+    {
+        return Err("event feed creator and candidate pair mismatch");
+    }
+    let selected = status(memory, base, &countries, actor, target, target_reference)?;
+    if selected != frame.rcx || diplomacy(memory, base, actor)? != owner_diplomacy {
+        return Err("event feed creator status is not selected matrix slot");
+    }
+    if pointer(memory, selected, crelation_status::WAR_RELATION)? == frame.rdx {
+        return Err("event feed candidate already installed before second link");
+    }
+    Ok(WarPending {
+        candidate: frame.rdx,
+        state,
+        pair,
+        operands: Operands {
+            source,
+            hour: value(memory, state, cgame_state::CURRENT_HOUR)?,
+            actor: actor_identity,
+            target: target_identity,
+        },
+    })
+}
+
+/// Only on proved normal native return, before returning to140D1541D.
+/// ReplaceRelation@140D02DF0 destroys the old relation before store@140D03010.
+/// Fresh reads must retain the owned full IDs, raw candidate pair and exact
+/// candidate in both actual matrix slots. Never retry or substitute another
+/// relation. Root-address equality does not replace a proved world lifetime.
+pub fn war_returned(
+    memory: &impl Memory,
+    base: usize,
+    pending: WarPending,
+) -> Result<Operands, &'static str> {
+    let state = state(memory, base)?;
+    if state != pending.state {
+        return Err("event feed game state changed during native operation");
+    }
+    let countries = ccountry::Reader::new(memory, base, state)?;
+    let (actor, actor_identity) =
+        identity(memory, base, &countries, pending.operands.actor.reference)?;
+    let (target, target_identity) =
+        identity(memory, base, &countries, pending.operands.target.reference)?;
+    if actor_identity != pending.operands.actor || target_identity != pending.operands.target {
+        return Err("event feed country identity changed during native operation");
+    }
+    if candidate(memory, base, pending.candidate)? != pending.pair {
+        return Err("event feed candidate raw pair changed during native operation");
+    }
+    let selected = status(
+        memory,
+        base,
+        &countries,
+        actor,
+        target,
+        pending.operands.target.reference,
+    )?;
+    let reciprocal = status(
+        memory,
+        base,
+        &countries,
+        target,
+        actor,
+        pending.operands.actor.reference,
+    )?;
+    if pointer(memory, selected, crelation_status::WAR_RELATION)? != pending.candidate
+        || pointer(memory, reciprocal, crelation_status::WAR_RELATION)? != pending.candidate
+    {
+        return Err("event feed candidate reciprocal attachment not proved");
+    }
+    Ok(pending.operands)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AnnexFrame {
+    pub rbp: usize,
+    pub r8: usize,
+    pub r9: u64,
+}
+
+/// Copy the annex operation before authored dispatch can mutate either role.
+/// Zero country references are preserved through the reserved native object.
+/// Escape handling and partial evidence belong to the enclosing runtime owner.
+pub fn annex_before(
+    memory: &impl Memory,
+    base: usize,
+    frame: AnnexFrame,
+) -> Result<Operands, &'static str> {
+    if frame.r8 != at(frame.rbp, 0xa0)? || frame.r9 != 0 {
+        return Err("event feed annex register frame mismatch");
+    }
+    verify_vtable(memory, base, frame.r8, cevent_scope::VTABLE_RVA)?;
+    let from = pointer(memory, frame.r8, cevent_scope::FROM)?;
+    verify_vtable(memory, base, from, cevent_scope::VTABLE_RVA)?;
+    let state = state(memory, base)?;
+    let countries = ccountry::Reader::new(memory, base, state)?;
+    let (_, actor) = identity(
+        memory,
+        base,
+        &countries,
+        value(memory, frame.r8, cevent_scope::COUNTRY_TAG)?,
+    )?;
+    let (_, target) = identity(
+        memory,
+        base,
+        &countries,
+        value(memory, from, cevent_scope::COUNTRY_TAG)?,
+    )?;
+    Ok(Operands {
+        source: Source::Annex,
+        hour: value(memory, state, cgame_state::CURRENT_HOUR)?,
+        actor,
+        target,
+    })
+}
+
+#[cfg(test)]
+mod tests;

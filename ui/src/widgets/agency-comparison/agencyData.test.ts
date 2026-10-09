@@ -3,13 +3,14 @@ import test from 'node:test';
 import type { AgencyComparisonReply, AgencyValue } from '../../generated/dashboard';
 import { agencyRequestParams, agencyRows, agencyTooltip, operativesCell, upgradesCell, validateAgencyComparisonReply } from './agencyData.ts';
 import { sortRows } from '../../charts/table/logic.ts';
+import { formatDateTime } from '../../dashboard/calendar.ts';
 
 const value = (created = true): AgencyValue => ({ created, name: created ? 'Recorded agency' : 'Agence par défaut', defenseRaw: '125000', defenseText: 'Defence level: 1.25', defenseValue: '1.25', activeCount: 3, maximum: 5,
   upgrades: { readHour: null, unavailable: null, nonnegativeLevelSum: null, items: [] } });
 const fixture = (): AgencyComparisonReply => ({ branchId: '1', available: true, defenseLabel: 'Defence level', observed: [{ firstHour: 10, lastHour: 20 }, { firstHour: 25, lastHour: 30 }],
   upgradesUnrecorded: 'Acquired upgrade levels were not recorded; elapsed work is a different field.', operativeReadHours: [10, 17, 25], warnings: [],
   series: [{ tag: 'CUSTOM', segments: [{ firstHour: 10, lastHour: 30 }], membership: null,
-  rosters: [{ firstHour: 10, lastHour: 20, count: 2 }, { firstHour: 25, lastHour: 30, count: 0 }],
+  rosters: [{ firstHour: 10, lastHour: 20, readHour: 10, count: 2 }, { firstHour: 25, lastHour: 30, readHour: 25, count: 0 }],
   entries: [{ firstHour: 10, lastHour: 20, readHour: 10, value: value() }, { firstHour: 25, lastHour: 30, readHour: 25, value: value() }] }] });
 
 test('agency gaps and absent rows stay missing; a recorded zero remains zero', () => {
@@ -152,7 +153,7 @@ test('a recorded nonpositive acquired list has an exact zero sum', () => {
 test('agency products retain all 5000 countries and backend top membership, with exact sort', () => {
   const reply = fixture();
   reply.series = Array.from({ length: 5000 }, (_, i) => ({ tag: `Synthetic_${i}`, segments: [{ firstHour: 10, lastHour: 30 }], membership: null,
-    rosters: [{ firstHour: 10, lastHour: 20, count: 2 }],
+    rosters: [{ firstHour: 10, lastHour: 20, readHour: 10, count: 2 }],
     entries: [{ firstHour: 10, lastHour: 20, readHour: 10, value: { ...value(), defenseRaw: String(BigInt(i) * 100000n) } }] }));
   const checked = validateAgencyComparisonReply(reply);
   const rows = agencyRows(checked, 17, null);
@@ -178,8 +179,38 @@ test('equal roster counts keep one run with exact later read dates; unavailable 
   assert.throws(() => validateAgencyComparisonReply(unknownIdentity), /unresolved roster/);
 });
 
+test('an off-read alias keeps its actual census date without a visible source-alias scalar', () => {
+  const reply: AgencyComparisonReply = { branchId: '1', available: true, defenseLabel: 'Defence level',
+    observed: [{ firstHour: 15, lastHour: 22 }], upgradesUnrecorded: null,
+    operativeReadHours: [15, 20], warnings: [], series: [{ tag: 'Y',
+      segments: [{ firstHour: 16, lastHour: 22 }], membership: null,
+      rosters: [{ firstHour: 16, lastHour: 21, readHour: 15, count: 2 }],
+      entries: [{ firstHour: 16, lastHour: 22, readHour: 16, value: { ...value(), activeCount: 7 } }] }] };
+  const checked = validateAgencyComparisonReply(reply);
+  assert.deepEqual(checked.operativeReadHours, [15, 20]);
+  assert.deepEqual(agencyRows(checked, 16, null).map(row => [row.tag, row.value.activeCount, row.operativeRosterCount, row.operativeReadHour]),
+    [['Y', 7, 2, 15]]);
+  for (const [hour, read] of [[16, 15], [20, 20]]) {
+    const row = agencyRows(checked, hour, null)[0];
+    assert.equal(agencyTooltip(row, 'Country', null).rows.find(item => item.label === 'Active-list read')?.value, formatDateTime(read));
+  }
+  assert.deepEqual(agencyRows(checked, 22, null).map(row => [row.value.activeCount, row.operativeRosterCount, row.operativeReadHour]), [[7, null, null]]);
+  const clipped = structuredClone(reply);
+  clipped.series[0].rosters[0].firstHour = 21;
+  assert.deepEqual(agencyRows(validateAgencyComparisonReply(clipped), 21, null).map(row => [row.operativeRosterCount, row.operativeReadHour]), [[2, 20]]);
+  const unlisted = structuredClone(reply); unlisted.series[0].rosters[0].readHour = 14;
+  assert.throws(() => validateAgencyComparisonReply(unlisted), /undated/);
+  const future = structuredClone(reply); future.series[0].rosters[0].readHour = 20;
+  assert.throws(() => validateAgencyComparisonReply(future), /malformed/);
+  const missing = structuredClone(reply) as unknown as { series: { rosters: { readHour?: number }[] }[] };
+  delete missing.series[0].rosters[0].readHour;
+  assert.throws(() => validateAgencyComparisonReply(missing), /malformed/);
+});
+
 test('selected agency request is bounded to its countries; a missing selection cannot request all', () => {
-  assert.deepEqual(agencyRequestParams('1', { kind: 'tags', tags: ['Chosen mod country'] }, [], undefined, 30, false, 'defense'),
+  const groups = { countryIdentities: [{ tag: 'Chosen mod country', identities: [{ firstHour: 10, lastHour: 30, slot: 1, countryId: 7 }] }] } as import('../../generated/dashboard').CountryGroupReply;
+  assert.equal(agencyRequestParams('1', { kind: 'tags', tags: ['Chosen mod country'] }, [], undefined, 30, false, 'defense'), null);
+  assert.deepEqual(agencyRequestParams('1', { kind: 'tags', tags: ['Chosen mod country'] }, [], groups, 30, false, 'defense'),
     { branchId: '1', tags: ['Chosen mod country'], includeUncreated: false, top: null });
   assert.equal(agencyRequestParams('1', { kind: 'selected' }, [], undefined, 30, false, 'defense'), null);
   assert.deepEqual(agencyRequestParams('1', { kind: 'all' }, [], undefined, 30, true, 'active')?.tags, []);

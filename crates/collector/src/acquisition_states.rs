@@ -65,6 +65,7 @@ impl Request {
                 visitor.visit(source)
             });
             visitor.finish(outcome);
+            cstate::read_continents(memory, base, game_state, outcome, rows);
             let outcome =
                 cstate::read_movement_infrastructure(memory, base, game_state, outcome, rows);
             let walk = cstate::read_names(memory, game_state, outcome, rows, &mut names.bytes);
@@ -263,6 +264,7 @@ pub(crate) mod tests {
             request.visitor.visit(source)
         });
         request.visitor.finish(outcome);
+        cstate::read_continents(memory, 0, STATE, outcome, &mut request.census.payload);
         let outcome = cstate::read_movement_infrastructure(
             memory,
             0,
@@ -350,13 +352,25 @@ pub(crate) mod tests {
             let report = actual.run(&memory);
             let outcome = serial(&mut reference, &expected);
             assert_eq!(report.census.result, outcome, "fault {fault}");
-            // A census fault fails the census; a later flag fault fails only
-            // the flags run acquired after it.
-            assert!(
-                matches!(report.census.result, Outcome::Unavailable { .. })
-                    || matches!(actual.visitor.outcomes(), [Outcome::Unavailable { .. }]),
-                "fault {fault}"
-            );
+            // read_continents' database singleton (1401770B0) is optional.
+            if healthy.calls.borrow()[fault] == (0x0331_6ca0, 8) {
+                assert_eq!(report.census.result, Outcome::Rows { len: 2 });
+                assert_eq!(actual.visitor.outcomes(), [Outcome::Rows { len: 2 }]);
+                assert!(
+                    actual
+                        .census
+                        .payload
+                        .iter()
+                        .all(|row| row.continent.is_none())
+                );
+            } else {
+                // A census fault fails the census; a flag fault fails only flags.
+                assert!(
+                    matches!(report.census.result, Outcome::Unavailable { .. })
+                        || matches!(actual.visitor.outcomes(), [Outcome::Unavailable { .. }]),
+                    "fault {fault}"
+                );
+            }
             assert_eq!(actual.census.payload, reference.census.payload);
             assert_eq!(*memory.calls.borrow(), *expected.calls.borrow());
             actual.visitor.capture(&memory, 0, STATE);

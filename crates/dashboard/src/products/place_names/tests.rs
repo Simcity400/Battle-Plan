@@ -168,6 +168,7 @@ fn state_names_use_recorded_custom_owner_and_content_precedence_at_5000_countrie
     );
     let (source, context) = content_source(vec![f], &folder);
     let params = PlaceNamesParams {
+        land: false,
         branch_id: "1".into(),
         places: Vec::new(),
         states: [66, 65, 64, 99999]
@@ -230,6 +231,7 @@ fn state_names_only_need_states_and_the_catalogues_own_state_cache() {
     let reply = PlaceNames::load(
         &source,
         &PlaceNamesParams {
+            land: false,
             branch_id: "1".into(),
             places: Vec::new(),
             states: vec![StateNameRequest {
@@ -272,6 +274,7 @@ fn place_names_mixed_requests_preserve_province_bytes_and_state_only_labels() {
     let (_cat, folder) = catalogue();
     let (source, context) = content_source(vec![frame(1)], &folder);
     let mut params = PlaceNamesParams {
+        land: false,
         branch_id: "1".into(),
         places: vec![PlaceNameRequest {
             province_id: 17,
@@ -316,6 +319,7 @@ fn state_names_key_recorded_renames_by_each_requested_hour_and_keep_gaps() {
     set::<tables::States>(&mut second, states);
     let (source, context) = content_source(vec![first, second], &folder);
     let mut params = PlaceNamesParams {
+        land: false,
         branch_id: "1".into(),
         places: Vec::new(),
         states: [2, 1, 3, 2]
@@ -405,6 +409,7 @@ fn place_names_return_all_states_and_refuse_the_combined_transport_budget() {
         hour: 1,
     };
     let mut params = PlaceNamesParams {
+        land: false,
         branch_id: "1".into(),
         places: Vec::new(),
         states: vec![state.clone(); 5000],
@@ -548,6 +553,7 @@ fn place_names_selected_reads_keep_each_row_hour_and_gaps() {
         &replay,
         1,
         &PlaceNamesParams {
+            land: false,
             branch_id: "1".into(),
             places: requests.to_vec(),
             states: Vec::new(),
@@ -575,6 +581,7 @@ fn place_names_selected_reads_keep_each_row_hour_and_gaps() {
 #[test]
 fn place_names_have_no_chosen_request_count_limit() {
     let mut params = PlaceNamesParams {
+        land: false,
         branch_id: "1".into(),
         places: vec![
             PlaceNameRequest {
@@ -627,6 +634,7 @@ fn place_names_have_no_chosen_request_count_limit() {
     )
     .unwrap();
     assert!(legacy.states.is_empty());
+    assert!(!legacy.land);
     assert!(
         serde_json::from_value::<PlaceNamesParams>(serde_json::json!({
             "branchId": "1", "places": [],
@@ -644,7 +652,7 @@ fn resolved(
     regions: Result<&BTreeMap<u32, Result<String, String>>, &str>,
 ) -> (Option<String>, Option<String>) {
     let text = ScriptedText::new(frame, &cat.localisation, cat.scripted_content().unwrap(), 0);
-    name_at(frame, &text, province, cat, names, regions)
+    name_at(frame, &text, province, cat, names, regions, false)
 }
 fn name(
     frame: &DecodedFrame,
@@ -688,6 +696,75 @@ fn place_names_primary_name_needs_no_state_lookup_and_names_sea_regions() {
             .0
             .is_none()
     );
+}
+
+#[test]
+fn land_place_names_try_the_state_after_empty_primary_and_never_use_a_region() {
+    let (_cat, folder) = catalogue();
+    let path = folder.0.join("localisation/mod_l_english.yml");
+    let mut localisation = std::fs::read_to_string(&path).unwrap();
+    localisation.push_str(" EMPTY:0 \"\"\n");
+    std::fs::write(path, localisation).unwrap();
+    let mut f = frame(1);
+    let mut provinces = f.complete::<tables::Provinces>().unwrap().to_vec();
+    provinces.extend([
+        ProvinceRow {
+            id: 60000,
+            ..Default::default()
+        },
+        ProvinceRow {
+            id: 60001,
+            state: 99999,
+            ..Default::default()
+        },
+    ]);
+    set::<tables::Provinces>(&mut f, provinces);
+    set::<tables::ProvinceNames>(
+        &mut f,
+        vec![ProvinceNameRow {
+            province: 17,
+            name: b"EMPTY".to_vec(),
+        }],
+    );
+    let (source, context) = content_source(vec![f], &folder);
+    let cat = catalogue::catalogue(&source, context.content.as_ref().unwrap()).unwrap();
+    let names = BTreeMap::from([(64, Ok("Mod state".into()))]);
+    let regions = BTreeMap::from([(60000, Ok("Sea region".into()))]);
+    let mut params = PlaceNamesParams {
+        branch_id: "1".into(),
+        land: true,
+        places: [17, 60000, 60001]
+            .map(|province_id| PlaceNameRequest {
+                province_id,
+                hour: 1,
+            })
+            .to_vec(),
+        states: Vec::new(),
+    };
+    let read = |params: &PlaceNamesParams| {
+        read_names(
+            source.replay_ref(),
+            1,
+            params,
+            &cat,
+            Ok(&names),
+            Ok(&regions),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .0
+    };
+    let land = read(&params);
+    assert_eq!(land[0].name.as_deref(), Some("Mod state"));
+    assert!(
+        land[1..]
+            .iter()
+            .all(|place| place.name.is_none() && place.missing.is_some())
+    );
+    params.land = false;
+    let native = read(&params);
+    assert!(native[0].name.is_none());
+    assert_eq!(native[1].name.as_deref(), Some("Sea region"));
 }
 
 #[test]
@@ -737,6 +814,7 @@ fn selected_place_reads_keep_the_reserved_original_tag_operand() {
     );
     let replay = crate::test_fixtures::replay(vec![f]);
     let params = PlaceNamesParams {
+        land: false,
         branch_id: "1".into(),
         places: vec![
             PlaceNameRequest {
