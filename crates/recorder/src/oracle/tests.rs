@@ -1531,7 +1531,7 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
             other => panic!("StateGarrisons is {other:?}"),
         };
     let group = "construction equipment StateGarrisons";
-    // The same mismatched inventory is compared on its slot or a forced read,
+    // The same mismatched requirements are compared on their slot or a forced read,
     // but retained daily rows are not compared against a later save.
     for (hour, forced, carried) in [
         (read_hour, false, false),
@@ -1570,7 +1570,7 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
         );
         assert_eq!(
             report.difference_groups.get(group).copied().unwrap_or(0),
-            if carried { 0 } else { 2 }
+            if carried { 0 } else { 1 }
         );
         assert_eq!(
             report
@@ -1580,16 +1580,26 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
             (!carried).then_some(1)
         );
         if !carried {
-            for field in ["requirements", "allocation[0]"] {
-                assert!(
-                    report
-                        .difference_owners
-                        .iter()
-                        .zip(&report.differences)
-                        .any(|(owner, difference)| owner == group && difference.contains(field))
-                );
-            }
+            assert!(
+                report
+                    .difference_owners
+                    .iter()
+                    .zip(&report.differences)
+                    .any(
+                        |(owner, difference)| owner == group && difference.contains("requirements")
+                    )
+            );
         }
+        // 140FEB450/140FFDB00 save variants, not the allocation cache at pool+8.
+        assert_eq!(
+            report.limitations.iter().any(|(reason, subjects)| {
+                reason.contains("allocation cache")
+                    && subjects
+                        .iter()
+                        .any(|subject| subject == "garrison.GER.1.equipment.allocations")
+            }),
+            !carried
+        );
     }
 }
 
