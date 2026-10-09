@@ -288,9 +288,11 @@ mod bootstrap_witness_tests {
 
     #[test]
     fn bootstrap_refuses_prepared_witness_with_trailing_byte() {
-        let directory =
-            Path::new("captures/astra/lead-h-collector-oom/allocation-tests")
-                .join(format!("bootstrap-witness-length-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!(
+            "hoi4-bootstrap-witness-length-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         let witness = directory.join(replay::witness::WITNESS_FILE_NAME);
         fs::write(
@@ -317,6 +319,7 @@ mod bootstrap_witness_tests {
             read(&module).err(),
             Some("collector bootstrap witness length invalid")
         );
+        let _ = fs::remove_dir_all(&directory);
     }
 }
 fn write_status(path: &Path, status: &impl serde::Serialize) -> io::Result<()> {

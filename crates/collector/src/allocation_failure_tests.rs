@@ -10,14 +10,12 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     ptr,
-    sync::OnceLock,
     sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 const CHILD: &str = "allocation_failure_tests::allocation_safety_child";
-const SCRATCH: &str = "captures/astra/lead-h-collector-oom/allocation-tests";
 const CAMPAIGN: &[u8; 36] = b"01234567-89ab-cdef-0123-456789abcdef";
 #[cfg(feature = "alloc-fault-injection")]
 const PHASES: [(Phase, &str); 11] = [
@@ -120,17 +118,13 @@ impl Drop for NullGuard {
 }
 
 fn child(mode: &str, phase: &str, ordinal: usize) -> Output {
-    static RUN: OnceLock<PathBuf> = OnceLock::new();
-    let run = RUN.get_or_init(|| {
-        Path::new(SCRATCH).join(format!(
-            "run-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-    });
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let run = std::env::temp_dir().join(format!(
+        "hoi4-collector-allocation-{}-{}",
+        std::process::id(),
+        CALLS.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&run);
     let mut process = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -140,7 +134,7 @@ fn child(mode: &str, phase: &str, ordinal: usize) -> Output {
             "--test-threads=1",
         ])
         .env("BATTLE_PLAN_COLLECTOR_ALLOCATION_TEST", mode)
-        .env("BATTLE_PLAN_COLLECTOR_ALLOCATION_RUN", run)
+        .env("BATTLE_PLAN_COLLECTOR_ALLOCATION_RUN", &run)
         .env("BATTLE_PLAN_COLLECTOR_ALLOCATION_PHASE", phase)
         .env("BATTLE_PLAN_COLLECTOR_ALLOCATION_ORDINAL", ordinal.to_string())
         .stdout(Stdio::piped())
@@ -161,7 +155,12 @@ fn child(mode: &str, phase: &str, ordinal: usize) -> Output {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    process.wait_with_output().unwrap()
+    let output = process.wait_with_output().unwrap();
+    // A failed child keeps its files for diagnosis.
+    if output.status.success() {
+        let _ = fs::remove_dir_all(&run);
+    }
+    output
 }
 fn successful(output: &Output, mode: &str, phase: &str, ordinal: usize) {
     assert!(
