@@ -161,7 +161,7 @@ content/configuration change, never successful empty data.
 
 ## Check a change
 
-Follow [AGENTS.md](../../AGENTS.md#builds-and-merging) for the build wrapper and
+Follow [AGENTS.md](../../AGENTS.md) for the build wrapper and
 crate-scoped formatting, clippy and affected synthetic tests. Exercise changed
 identity, gap/read-date, mod-content and complete-reply-budget behaviour at the
 required scale. Capture integration also needs the relevant fresh-save oracle

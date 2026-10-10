@@ -4,7 +4,7 @@ Tauri host for the replay app. **Campaign map** embeds the native viewer; **Over
 
 ## Develop
 
-Use Node.js 22.12+ and Microsoft Edge WebView2; see the [project index](../../README.md) for component guides. Run from the worktree root using the [shared wrapper](../../AGENTS.md#builds-and-merging):
+Use Node.js 22.12+ and Microsoft Edge WebView2; see the [project index](../../README.md) for component guides. Run from the worktree root using the [shared wrapper](../../AGENTS.md):
 
 ```powershell
 npm.cmd ci

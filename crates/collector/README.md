@@ -43,7 +43,7 @@ Acquire each scheduled table once from the first hour. Freeze activity before di
 
 [cadence.rs](../replay/src/cadence.rs) owns scheduling; [slicing.rs](src/slicing.rs) owns sliced-family selection. Preserve full-refresh and invalidation rules. Encoding keyframes use held rows without extra reads. Successful acquisition establishes freshness even when values encode unchanged; carried data keeps its prior read hour. Failed or unpublished reads cannot certify reuse or erase independent sibling outcomes. [fixed_layout.rs](src/fixed_layout.rs) authenticates native modifier and lexer layouts; apply its refusals after merging so carried rows cannot bypass the checks.
 
-Size rows, arenas, logs and watches from live registries and content demand before installation; raise capacity off-thread as demand grows. `country_scale.rs` coordinates hints. Short walks report exact demand; failed sizing observations are named and counted, adding no fabricated zero hint. A failed or racing hint loses no data, so it never becomes the session warning; any resulting shortage surfaces as its capture's own named refusal. Use checked growth for large storage, with no chosen population, text or tree-depth cap. Scale requirements live in [AGENTS.md](../../AGENTS.md#keep-these-guarantees).
+Size rows, arenas, logs and watches from live registries and content demand before installation; raise capacity off-thread as demand grows. `country_scale.rs` coordinates hints. Short walks report exact demand; failed sizing observations are named and counted, adding no fabricated zero hint. A failed or racing hint loses no data, so it never becomes the session warning; any resulting shortage surfaces as its capture's own named refusal. Use checked growth for large storage, with no chosen population, text or tree-depth cap. Scale requirements live in [AGENTS.md](../../AGENTS.md).
 
 Observer overflow refuses the interval and requests off-thread growth even when population is unchanged. Drains/recycled frames accept prepared larger storage; callbacks never grow or retire it.
 
@@ -89,7 +89,7 @@ Observer restoration and quiescence share a bounded wait for every family; a tim
 
 New packs need replay rows/cadence, registration in `extended/mod.rs`, live-sized owned buffers, dependency-safe jobs and off-thread conversion. Follow adjacent take/restore paths and update affected writers/consumers together under the [replay guide](../replay/README.md).
 
-Use existing synthetic-memory, pipeline, scale and fault tests for aliases, first faults, truncation/growth, sibling isolation and owned-versus-direct equivalence. Hook changes need publication, register/unwind and lifetime checks. Follow the [shared build checks](../../AGENTS.md#builds-and-merging); documentation-only changes need link and diff checks.
+Use existing synthetic-memory, pipeline, scale and fault tests for aliases, first faults, truncation/growth, sibling isolation and owned-versus-direct equivalence. Hook changes need publication, register/unwind and lifetime checks. Follow the [shared build checks](../../AGENTS.md); documentation-only changes need link and diff checks.
 
 Measure the whole game-thread wall block and tails, including buffer waits; overlapping worker timings cannot be summed. Keep native reads, off-thread work, retained memory, encoded size and throughput separate. Charge reads once through [read_accounting.rs](src/read_accounting.rs); diagnostics stay in `status.json`. Batch without changing fault scope/order and split only measured bottlenecks.
 

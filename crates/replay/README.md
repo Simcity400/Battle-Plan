@@ -81,7 +81,7 @@ Naval trees retain native source/child order, formatting gates and root values w
 4. Wire scheduling/carry in [cadence.rs](src/cadence.rs), sliced owner reads/merges in [sliced.rs](src/sliced.rs), and fixed-key/token dependencies in [fixed_layout.rs](src/fixed_layout.rs).
 5. Wire acquisition/capacities/conversion in [collector](../collector/README.md) and affected frame/container/spool handling, [recorder](../recorder/README.md), [viewer](../viewer/README.md) and [dashboard](../dashboard/README.md) consumers together. New inputs need a save comparison or named limitation.
 6. Add synthetic fixtures and fault-campaign coverage in [acceptance.rs](src/acceptance.rs). `DOMAIN_TABLES` plus direct fixtures must cover each table exactly once. Exercise snapshots/deltas, unchanged/carried freshness, missing/truncated reads, baseline recovery, malformed input and readable older prefixes as applicable.
-7. Run scoped [AGENTS.md checks](../../AGENTS.md#builds-and-merging) and relevant [fresh-save/load and smoke checks](../recorder/README.md#inspect-and-compare). Reconcile provisional version/IDs against current main at merge.
+7. Run scoped [AGENTS.md checks](../../AGENTS.md) and relevant [fresh-save/load and smoke checks](../recorder/README.md#inspect-and-compare). Reconcile provisional version/IDs against current main at merge.
 
 ## Checking changes
 

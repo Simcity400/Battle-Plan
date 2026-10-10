@@ -140,7 +140,7 @@ powershell -NoProfile -File .\tools\smoke.ps1 -Action Smoke -Checkpoint -Expecte
 
 It runs the gate once, builds three release packages and writes `build-receipt.json`. `-Checkpoint` excludes receipt/binary-directory reuse and never sets `GATE`. Later checks reuse the receipt at unchanged clean HEAD without builds/tests; `smoke-result.json` with matching source/binary fields also qualifies.
 
-Cost checks use matched saves/content and baselines. Keep builds/movement-oracle outside timing; separate cold/steady work. Report game-hours/second, callback p95, memory/pools, encoded size and finalization. See [AGENTS.md](../../AGENTS.md#live-checks) and [collector](../collector/README.md).
+Cost checks use matched saves/content and baselines. Keep builds/movement-oracle outside timing; separate cold/steady work. Report game-hours/second, callback p95, memory/pools, encoded size and finalization. See [AGENTS.md](../../AGENTS.md) and [collector](../collector/README.md).
 
 ## Exact recorded metrics
 
@@ -170,4 +170,4 @@ Recovery validates [terminal evidence](../replay/src/witness.rs), identity/conte
 
 Allocation-failure checks require both binaries' `alloc-fault-injection` feature and coordinated `--alloc-fault <phase>:<positive-ordinal>[:<committed-hours>]`; production builds refuse it. Confirm game survival and partial-replay visibility, then run relevant fresh-save/load and smoke checks.
 
-Update affected inspection, metrics, oracle and playback consumers together. New inputs need a save comparison or named limitation. Follow scoped [AGENTS.md checks](../../AGENTS.md#builds-and-merging), then relevant fresh-save/load, smoke and native observations above. Documentation-only changes need link/diff checks, not live captures.
+Update affected inspection, metrics, oracle and playback consumers together. New inputs need a save comparison or named limitation. Follow scoped [AGENTS.md checks](../../AGENTS.md), then relevant fresh-save/load, smoke and native observations above. Documentation-only changes need link/diff checks, not live captures.

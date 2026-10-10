@@ -19,7 +19,7 @@ Native map, playback and image-export process. It resolves a recording's content
 
 ## Use and export
 
-From the worktree root, use the [wrapper](../../AGENTS.md#builds-and-merging):
+From the worktree root, use the [wrapper](../../AGENTS.md):
 
 ```powershell
 bash tools/build-slot.sh "dev/viewer" "cargo build -p viewer --release"
