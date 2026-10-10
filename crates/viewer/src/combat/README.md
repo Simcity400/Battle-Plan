@@ -17,6 +17,8 @@ Land, naval and result windows bind recorded values into native GUI declarations
 - Land marker counts include reserves; countries keep primary-list order. [Border tails](border_marker.rs) use recorded state/event operands and shared effect descriptions; missing/unsupported fragments refuse by name/count.
 - Naval positioning, screening, carrier air and anti-air refresh from runtime operands rather than lagging combat copies. Index joins once per refresh; missing/duplicate keys and incompatible fixed modifier definitions leave values unknown.
 - Commander roles use recorded category/skill; terrain hovers use content adjusters/widths. Timed-trait gaps refuse only affected hovers. Exile flag/frame withhold together on missing inputs. Naval trait context differs from land; only naval shows field-marshal inactivity.
+- Retained naval results classify recorded ships and aircraft using native country equivalence, representatives and survivor priorities. Stored result text keeps the recording-language guard; both panels open locally and scroll through retained text bars.
+- Scripted tactic text follows the viewer's NATO choice, including nested unit icons; toggling refreshes land bindings without changing a disengaged naval window's supplying hour.
 - Unseen icons prefer established view/index frames, else land's authored/naval binding initial frame with a counted history reason. Fallback never establishes history.
 
 The [viewer guide](../../README.md#native-gui-and-hover-ownership) owns lifecycle, clocks, language guards and matched comparisons. Formulas/evidence stay beside code. Use [AGENTS.md](../../../../AGENTS.md) checks; synthetic tests establish no live hover parity.

@@ -363,6 +363,24 @@ impl Viewer {
             // colour
             ui.checkbox(&mut self.postfx, "Colour grading")
                 .on_hover_text("The engine's post chain: exposure, tone map, colour LUT");
+            if ui
+                .checkbox(&mut self.graphics.day_night, "Day/night cycle")
+                .changed()
+            {
+                match Config::save_day_night(self.graphics.day_night) {
+                    Ok(()) => self.config.day_night = Some(self.graphics.day_night),
+                    Err(error) => self.error = Some(format!("viewer.json: {error}")),
+                }
+            }
+            if ui
+                .checkbox(&mut self.graphics.show_allied_plans, "Allied battle plans")
+                .changed()
+            {
+                match Config::save_allied_plans(self.graphics.show_allied_plans) {
+                    Ok(()) => self.config.show_allied_plans = Some(self.graphics.show_allied_plans),
+                    Err(error) => self.error = Some(format!("viewer.json: {error}")),
+                }
+            }
         });
     }
 }

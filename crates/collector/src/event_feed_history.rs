@@ -1,4 +1,4 @@
-//! Owned native observations; acquisition allocates nothing and output uses exact receipts.
+//! Owned native observations and pointer-free hourly publications with exact receipts.
 
 use engine::{Memory, allocation, event_feed_sites as native};
 use replay::event_feed_rows::{
@@ -214,9 +214,7 @@ impl Store {
         self.entries.capacity()
     }
     pub(crate) fn capacity_demand(&self) -> usize {
-        self.entries
-            .capacity()
-            .max(self.entries.len().saturating_add(1))
+        self.entries.len().saturating_add(1)
     }
 
     fn advance(&mut self) -> Result<(), &'static str> {
@@ -551,10 +549,26 @@ impl Store {
             failed_batches: self.failed_batches,
         })
     }
+    #[cfg(test)]
     pub(crate) fn snapshot(
         &mut self,
         output: &mut Snapshot,
+        boundary: OwnerBoundary,
+    ) -> Result<(), &'static str> {
+        self.snapshot_mode(output, boundary, false)
+    }
+    pub(crate) fn snapshot_growing(
+        &mut self,
+        output: &mut Snapshot,
+        boundary: OwnerBoundary,
+    ) -> Result<(), &'static str> {
+        self.snapshot_mode(output, boundary, true)
+    }
+    fn snapshot_mode(
+        &mut self,
+        output: &mut Snapshot,
         mut boundary: OwnerBoundary,
+        growing: bool,
     ) -> Result<(), &'static str> {
         // No outstanding ticket can still refer to an index that retain moves.
         if self.outstanding() == 0 && self.retained.is_none() {
@@ -600,6 +614,11 @@ impl Store {
             .iter()
             .filter(|entry| entry.publication.is_none() && entry.fact())
             .count();
+        if growing {
+            output
+                .grow(output.required)
+                .map_err(|_| "Event feed snapshot allocation failed")?;
+        }
         if output.required > output.events.capacity() {
             return Err("Event feed hourly storage needs growth");
         }

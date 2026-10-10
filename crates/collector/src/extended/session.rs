@@ -6,7 +6,7 @@
 //! rides on the existing Clock row instead of paying a second read and a second
 //! availability outcome. Pause use is not recorded; see [archived domain index](#)'s D57 row.
 //!
-//! Only growth and replay conversion allocate.
+//! Worker-owned capture growth and replay conversion allocate.
 
 use crate::{
     raw::RawLog,
@@ -46,14 +46,28 @@ pub struct Capacities {
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            // One manager row; a 1942 save carries 127 sources and about 90
-            // aggregate slots, so both stay below the 75% growth threshold.
-            rows: [2, 1024, 512],
-            reason_bytes: 128 * 1024,
+            rows: [1, 0, 0],
+            reason_bytes: 0,
         }
     }
 }
 impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let reader = cworld_threat::Reader::new(memory, base, state)?;
+        let [sources, aggregates] = reader.counts();
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows[0], rows(1, 1));
+        raise(&mut self.rows[1], rows(sources, 1));
+        raise(&mut self.rows[2], rows(aggregates, 1));
+        raise(&mut self.reason_bytes, reader.reason_demand(memory, base)?);
+        Ok(())
+    }
+
     /// ThreatCountryAggregates is the engine's dense per-country cache.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
@@ -93,6 +107,25 @@ pub struct Captured {
 }
 
 impl Captured {
+    pub(crate) fn fail_final_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.prepare_hour(hour, force_full);
+        if !self.raw_mode {
+            self.fail_session_capture(if self.active {
+                reason
+            } else {
+                replay::cadence::SKIPPED_REASON
+            });
+        }
+    }
+
+    /// Allocation-free placeholder while a worker owns the capture buffers.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            rows: [0; N],
+            reason_bytes: 0,
+        })
+    }
+
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             manager: CaptureRows::new(capacity.rows[0]),
@@ -130,6 +163,7 @@ impl Captured {
     }
 
     /// Acquire the manager and both vectors from one authenticated snapshot.
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -137,6 +171,30 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
+    ) -> [u64; N] {
+        self.capture_storage(memory, base, game_state, hour, force_full, false)
+    }
+
+    /// Worker-owned rows and reasons grow from original headers before publication.
+    pub fn capture_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        self.capture_storage(memory, base, game_state, hour, force_full, true)
+    }
+
+    fn capture_storage(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        growing: bool,
     ) -> [u64; N] {
         self.prepare_hour(hour, force_full);
         self.reset();
@@ -155,7 +213,7 @@ impl Captured {
 
         let _reads = read_accounting::table(TableId::WorldTension);
         let begin = qpc();
-        let first = self.pass(memory, base, game_state);
+        let first = self.pass(memory, base, game_state, growing);
         self.manager.outcome = first.tables[0];
         self.sources.outcome = first.tables[1];
         self.aggregates.outcome = first.tables[2];
@@ -165,11 +223,30 @@ impl Captured {
     }
 
     /// One authenticated pass over all three tables into the primary buffers.
-    fn pass(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> Pass {
+    fn pass(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        growing: bool,
+    ) -> Pass {
         let reader = match cworld_threat::Reader::new(memory, base, game_state) {
             Ok(reader) => reader,
             Err(reason) => return Pass::unavailable(reason),
         };
+        if growing {
+            // CWorldThreat::rebuild_aggregates@140EEFFD0 uses the full current
+            // country census. These are the original owned header extents.
+            let grown = (|| {
+                engine::walk::Buffer::Growing(&mut self.manager.rows).ensure(1)?;
+                engine::walk::Buffer::Growing(&mut self.aggregates.rows)
+                    .ensure(reader.counts()[1])?;
+                Ok::<(), &'static str>(())
+            })();
+            if let Err(reason) = grown {
+                return Pass::unavailable(reason);
+            }
+        }
         let (manager, sources, aggregates, reasons) = (
             &mut self.manager.rows,
             &mut self.sources.rows,
@@ -177,7 +254,11 @@ impl Captured {
             &mut self.reason_bytes.first,
         );
         let manager = bounded(reader.manager(manager), manager.len());
-        let result = reader.sources(memory, base, sources, reasons);
+        let result = if growing {
+            reader.sources_growing(memory, base, sources, reasons)
+        } else {
+            reader.sources(memory, base, sources, reasons)
+        };
         let sources = bounded(result.outcome, sources.len());
         let aggregates = bounded(reader.aggregates(memory, aggregates), aggregates.len());
         Pass {
@@ -280,26 +361,29 @@ const M_SOURCES: u32 = 0x02;
 const M_AGGREGATES: u32 = 0x04;
 const M_ALL: u32 = 0x07;
 
-/// One refresh of raw session payload. Flat pools recycle capacities and the
-/// steady state allocates on neither thread; growth happens on the decode
-/// side only (see `crate::decode::recycle_session_job`).
+/// One refresh of raw session payload. Worker acquisition grows from original
+/// requests and owned decoding grows the rows before publication.
 #[derive(Debug, Default)]
 pub(crate) struct SessionJob {
     pub log: RawLog<3>,
     pub game_state: usize,
     active: bool,
+    // Fixed mode exists for callback-capacity and fault fixtures only.
+    worker_growth: bool,
 }
 
 impl SessionJob {
     pub fn new() -> Self {
         Self {
-            // Late-campaign worst case is about 127 sources with reasons
-            // plus ~440 aggregates; both pools start above that so steady
-            // state never overflows.
-            log: RawLog::new(1 << 14, 4 << 20),
+            log: RawLog::new(0, 0),
             game_state: 0,
             active: false,
+            worker_growth: true,
         }
+    }
+
+    pub fn is_provisioned(&self) -> bool {
+        self.worker_growth || self.log.spans.capacity() != 0
     }
 
     /// Reset lengths for reuse, keeping every capacity. No allocation.
@@ -313,9 +397,8 @@ impl SessionJob {
         self.log.grow_for_next()
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed hours fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
+    /// Fixed fixtures retain demand for their next independent observation.
+    /// Production workers grow before each original span is acquired.
     pub fn grow(&mut self) {
         self.log.grow();
     }
@@ -323,8 +406,8 @@ impl SessionJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct SessionCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
+    /// Fixed fixtures can report staging overflow. Production acquisitions
+    /// retain their original source observation without a live retry.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 3],
     pub raw_bytes: [u64; 3],
@@ -490,6 +573,15 @@ fn copy_pass(memory: &impl engine::Memory, base: usize, game_state: usize, log: 
 }
 
 /// Acquire one refresh into its owned payload.
+pub(crate) fn copy_session_refresh_growing(
+    memory: &impl engine::Memory,
+    ctx: SessionCopyContext,
+    first: &mut SessionJob,
+) -> SessionCopyReport {
+    first.worker_growth = true;
+    copy_session_refresh(memory, ctx, first)
+}
+
 pub(crate) fn copy_session_refresh(
     memory: &impl engine::Memory,
     ctx: SessionCopyContext,
@@ -501,6 +593,9 @@ pub(crate) fn copy_session_refresh(
         return SessionCopyReport::default();
     }
     let started = qpc();
+    if first.worker_growth {
+        first.log.enable_worker_growth();
+    }
     first.game_state = ctx.game_state;
     copy_pass(memory, ctx.base, ctx.game_state, &mut first.log);
     let mut ticks = [0u64; 3];
@@ -545,7 +640,7 @@ impl Captured {
         }
         let started = qpc();
         let recorded = crate::raw::Recorded::build(&job.log);
-        let walked = self.pass(&recorded, base, job.game_state);
+        let walked = self.pass(&recorded, base, job.game_state, job.worker_growth);
         self.manager.outcome = walked.tables[0];
         self.sources.outcome = walked.tables[1];
         self.aggregates.outcome = walked.tables[2];

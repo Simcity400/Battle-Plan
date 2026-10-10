@@ -102,6 +102,83 @@ fn run(bytes: &[u8], rows: usize, text: usize) -> (NameWalk, Vec<Row>, Vec<u8>) 
 }
 
 #[test]
+fn worker_grows_mod_sized_advisor_records_and_both_character_arrays() {
+    let mut rows = Vec::new();
+    let mut text = Vec::new();
+    let mut active = Vec::new();
+    let mut retired = Vec::new();
+    for count in [5_000_u32, 12_345] {
+        let mut bytes = fixture();
+        let data = bytes.len();
+        bytes.resize(data + count as usize * 8, 0);
+        for ordinal in 0..count {
+            p64(&mut bytes, data + ordinal as usize * 8, ADVISORS[0] as u64);
+        }
+        for object in [OBJ1, OBJ2] {
+            for offset in [APPOINTED_ADVISORS, AVAILABLE_ADVISORS] {
+                vector(&mut bytes, object + offset, data, count);
+            }
+        }
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            walk_growing(&memory, 0, GS, &mut rows, &mut text).outcome,
+            Outcome::Rows {
+                len: 2 * count as usize
+            }
+        );
+        assert_eq!(rows[2 * count as usize - 1].ordinal, count - 1);
+        assert_eq!(
+            walk_available_growing(&memory, 0, GS, &mut rows, &mut text).outcome,
+            Outcome::Rows {
+                len: 2 * count as usize
+            }
+        );
+        assert!(
+            rows[..2 * count as usize]
+                .iter()
+                .all(|row| row.slot_len == 0)
+        );
+        let data = bytes.len();
+        bytes.resize(data + count as usize * ACTIVE_RECORD_STRIDE, 0);
+        for ordinal in 0..count {
+            p64(
+                &mut bytes,
+                data + ordinal as usize * ACTIVE_RECORD_STRIDE,
+                CHARACTERS[0].0 as u64,
+            );
+        }
+        for object in [OBJ1, OBJ2] {
+            for offset in [ACTIVE_CHARACTERS, RETIRED_CHARACTERS] {
+                vector(&mut bytes, object + offset, data, count);
+            }
+        }
+        assert_eq!(
+            walk_records_growing(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes
+                },
+                0,
+                GS,
+                &mut active,
+                &mut retired
+            ),
+            [Outcome::Rows {
+                len: 2 * count as usize
+            }; 2]
+        );
+        assert_eq!(active[2 * count as usize - 1].ordinal, count - 1);
+        assert_eq!(
+            retired[2 * count as usize - 1].character,
+            Some(CHARACTERS[0].1)
+        );
+    }
+}
+
+#[test]
 fn available_advisors_keep_their_own_order_without_reading_slot_bytes() {
     let mut bytes = fixture();
     vector(&mut bytes, OBJ1 + AVAILABLE_ADVISORS, ARRAY1, 2);

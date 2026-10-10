@@ -1,19 +1,42 @@
 use super::*;
 use replay::{
     frame::{Metrics, TableView},
-    rows::{CountryLinkRow, FactionMemberRow, SubjectRow, TableRows, WarRelationRow},
+    rows::{
+        CountryCounterInputRow, CountryLinkRow, CountryRow, DirectedWars, FactionMemberRow,
+        Recorded, ReservedCountryNamingRow, ReservedReverseVisibilityInputs,
+        ReverseZeroVisibilityInputs, SubjectRow, TableRows, WarCell, WarRelationRow,
+    },
 };
 
 fn built(
     links: &BTreeMap<u32, u32>,
     ids: &BTreeMap<u32, u32>,
-    relations: &Relations,
+    frame: &DecodedFrame,
     ours: u32,
     sent: &[SentVolunteerRow],
     divisions: &[DivisionRow],
 ) -> Result<Index, String> {
-    let key = Key::read(sent, divisions, links, ids, ours)?;
-    Ok(Index::new(links, relations, &key))
+    let key = Key::read(sent, divisions, links, ours, frame.hour)?;
+    let mut frame = frame.clone();
+    // Synthetic signed receiver IDs use the same resolved object/packet.
+    if let TableView::Complete(TableRows::Countries(rows)) =
+        &mut *frame.tables[TableId::Countries.index()]
+    {
+        for row in rows {
+            row.id = ids[&row.canonical_slot];
+        }
+    }
+    if let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *frame.tables[TableId::CountryCounterInputs.index()]
+    {
+        for row in rows {
+            if let Recorded::Value(Some(packet)) = &mut row.directed_wars {
+                row.country = ids[&packet.receiver_slot];
+                packet.receiver_raw_id = row.country as i32;
+            }
+        }
+    }
+    Ok(Index::new(&frame, links, &key))
 }
 
 fn empty_frame() -> DecodedFrame {
@@ -31,7 +54,7 @@ fn world(
     wars: &[(u32, u32)],
     factions: &[(u32, u64)],
     subjects: &[(u32, u32)],
-) -> (BTreeMap<u32, u32>, BTreeMap<u32, u32>, Relations) {
+) -> (BTreeMap<u32, u32>, BTreeMap<u32, u32>, DecodedFrame) {
     let links: BTreeMap<_, _> = (0..8)
         .map(|s| (100 + s, s))
         .chain([(0, 0), (501, 1)])
@@ -75,11 +98,68 @@ fn world(
             })
             .collect(),
     ));
-    let relations = Relations::read(&frame, &links).unwrap();
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        (1..8)
+            .map(|slot| CountryRow {
+                id: 100 + slot,
+                canonical_slot: slot,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::CountryCounterInputs.index()] =
+        TableView::Complete(TableRows::CountryCounterInputs(
+            (1..8)
+                .map(|slot| CountryCounterInputRow {
+                    country: 100 + slot,
+                    directed_wars: Recorded::Value(Some(DirectedWars {
+                        sample_hour: frame.hour,
+                        receiver_raw_id: (100 + slot) as i32,
+                        receiver_slot: slot,
+                        matrix_count: 8,
+                        cells: (0..8)
+                            .map(|target_slot| WarCell {
+                                target_slot,
+                                active: wars.contains(&(slot, target_slot))
+                                    || wars.contains(&(target_slot, slot)),
+                            })
+                            .collect(),
+                        ..Default::default()
+                    })),
+                    forward_visibility: Recorded::Value(Some(ReverseZeroVisibilityInputs {
+                        target: Some(0),
+                        war: Some([0, 0]),
+                        subject: Some(Default::default()),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::ReservedCountryNaming.index()] =
+        TableView::Complete(TableRows::ReservedCountryNaming(vec![
+            ReservedCountryNamingRow {
+                faction: Recorded::Value(Some(0)),
+                reverse_visibility: Recorded::Value(Some(ReservedReverseVisibilityInputs {
+                    sample_hour: frame.hour,
+                    cells: (0..8)
+                        .map(|slot| {
+                            Some(ReverseZeroVisibilityInputs {
+                                target: Some(100 + slot),
+                                war: Some([0, 0]),
+                                subject: Some(Default::default()),
+                                ..Default::default()
+                            })
+                        })
+                        .collect(),
+                })),
+                ..Default::default()
+            },
+        ]));
     (
         links,
         (0..8).map(|slot| (slot, 100 + slot)).collect(),
-        relations,
+        frame,
     )
 }
 #[test]
@@ -134,6 +214,133 @@ fn volunteers(order: &[u64]) -> Vec<SentVolunteerRow> {
             division,
         })
         .collect()
+}
+
+fn edit_wars(frame: &mut DecodedFrame, slot: u32, edit: impl FnOnce(&mut DirectedWars)) {
+    let mut rows = frame
+        .complete::<tables::CountryCounterInputs>()
+        .unwrap()
+        .to_vec();
+    let packet = match &mut rows[(slot - 1) as usize].directed_wars {
+        Recorded::Value(Some(packet)) => packet,
+        _ => panic!("fixture directed packet missing"),
+    };
+    edit(packet);
+    *frame.tables[TableId::CountryCounterInputs.index()] =
+        TableView::Complete(TableRows::CountryCounterInputs(rows));
+}
+
+#[test]
+fn directed_owner_veto_and_volunteer_tests_never_inherit_reverse_truth() {
+    let (links, ids, mut frame) = world(&[(1, 4), (2, 3)], &[(1, 9), (4, 9)], &[]);
+    edit_wars(&mut frame, 1, |packet| packet.cells[4].active = false);
+    let index = built(&links, &ids, &frame, 1, &[], &[]).unwrap();
+    // Reverse4->1 is active, but viewer1->4 is clear, so sharing survives.
+    assert_eq!(index.of(104, 104), Some(Side::Friend));
+    assert_eq!(
+        index.mission_item(false, 104, 104),
+        Some(Allegiance::Allied)
+    );
+    edit_wars(&mut frame, 3, |packet| packet.cells[2].active = false);
+    let divisions = [DivisionRow {
+        id: 10,
+        logical_owner: 102,
+        ..Default::default()
+    }];
+    let index = built(&links, &ids, &frame, 1, &volunteers(&[10]), &divisions).unwrap();
+    // Host2->logical3 cannot stand in for the native logical3->host2 query.
+    assert_eq!(index.of(103, 103), Some(Side::Neutral));
+}
+
+#[test]
+fn unknown_directed_cells_refuse_only_unproved_sides_and_ordered_hosts() {
+    let (links, ids, mut frame) = world(&[], &[], &[]);
+    edit_wars(&mut frame, 1, |packet| {
+        packet.cells.retain(|cell| cell.target_slot != 4)
+    });
+    let index = built(&links, &ids, &frame, 1, &[], &[]).unwrap();
+    assert_eq!(index.of(104, 104), None);
+    assert_eq!(index.of(501, 104), Some(Side::Friend));
+    assert_eq!(index.mission_item(false, 501, 104), None); // enemy-first port
+    assert_eq!(index.of(u32::MAX, 104), Some(Side::Friend));
+    edit_wars(&mut frame, 3, |packet| {
+        packet.cells.retain(|cell| cell.target_slot != 2)
+    });
+    let divisions = [
+        DivisionRow {
+            id: 10,
+            logical_owner: 102,
+            ..Default::default()
+        },
+        DivisionRow {
+            id: 20,
+            logical_owner: 103,
+            ..Default::default()
+        },
+    ];
+    assert_eq!(
+        built(&links, &ids, &frame, 1, &volunteers(&[10, 20]), &divisions)
+            .unwrap()
+            .of(103, 103),
+        None
+    );
+    // Equality at the first occurrence precedes that occurrence's war test.
+    assert_eq!(
+        built(&links, &ids, &frame, 1, &volunteers(&[20, 10]), &divisions)
+            .unwrap()
+            .of(103, 103),
+        Some(Side::Friend)
+    );
+}
+
+#[test]
+fn actual_zero_and_positive_zero_aliases_keep_distinct_native_self_gates() {
+    let (links, ids, frame) = world(&[], &[], &[]);
+    let index = built(&links, &ids, &frame, 0, &[], &[]).unwrap();
+    assert_eq!(index.of(100, 100), Some(Side::Neutral));
+    assert_eq!(index.mission_item(false, 0, 0), Some(Allegiance::Allied));
+    assert_eq!(index.mission_item(false, 100, 100), Some(Allegiance::Other));
+    let divisions = [DivisionRow {
+        id: 10,
+        logical_owner: 0,
+        ..Default::default()
+    }];
+    let sent = [SentVolunteerRow {
+        country: 0,
+        ordinal: 0,
+        division: 10,
+    }];
+    let index = built(&links, &ids, &frame, 0, &sent, &divisions).unwrap();
+    assert_eq!(index.of(100, 100), Some(Side::Neutral));
+}
+
+#[test]
+fn missing_volunteer_inputs_keep_proven_friend_and_independent_port_enemy() {
+    let (links, _ids, mut frame) = world(&[(1, 4)], &[], &[]);
+    frame.tables[TableId::SentVolunteers.index()] = TableView::Unavailable {
+        reason: "sent list capture failed".into(),
+    }
+    .into();
+    let index = Index::read(&Memo::new(TABLES, 2), &frame, &links, 1);
+    assert_eq!(index.of(501, 501), Some(Side::Friend));
+    assert_eq!(index.of(104, 104), None);
+    assert_eq!(index.mission_item(false, 104, 104), Some(Allegiance::Enemy));
+    assert!(index.problem().contains("SentVolunteers"));
+}
+
+#[test]
+fn carried_directed_packets_do_not_survive_the_memo_hour_key() {
+    let (links, _, frame) = world(&[(1, 4)], &[], &[]);
+    let memo = Memo::new(TABLES, 2);
+    let first = Index::read(&memo, &frame, &links, 1);
+    assert_eq!(first.of(104, 104), Some(Side::Enemy));
+    let mut carried = frame.clone();
+    carried.hour += 1;
+    let next = Index::read(&memo, &carried, &links, 1);
+    assert_eq!(next.of(104, 104), None);
+    assert!(!Arc::ptr_eq(&first, &next));
+    assert_eq!(next.of(501, 501), Some(Side::Friend));
+    assert!(Arc::ptr_eq(&first, &Index::read(&memo, &frame, &links, 1)));
 }
 #[test]
 fn first_volunteer_match_and_friend_precedence_survive_aliases_and_stale_refs() {
@@ -266,7 +473,7 @@ fn nonpositive_receiver_id_cannot_be_at_war() {
         logical_owner: 102,
         ..Default::default()
     }];
-    ids.insert(3, u32::MAX);
+    ids.insert(3, u32::MAX - 1);
     assert_eq!(
         built(&links, &ids, &relations, 1, &volunteers(&[10]), &divisions)
             .unwrap()
@@ -284,6 +491,7 @@ fn attache_and_air_access_do_not_tint_an_unrelated_country() {
             country: 102,
             target_index: 1,
             links: RelationLinkRow::ATTACHE | RelationLinkRow::AIR_BASE_ACCESS,
+            transport_subject: Default::default(),
         }]));
     // Native type 2934 = military access (140D0A6D0 factory). The
     // counter's flags 0,0 exclude the +2A0 access arm of 1406F3B00.
@@ -298,8 +506,11 @@ fn attache_and_air_access_do_not_tint_an_unrelated_country() {
                 ..Default::default()
             },
         ]));
-    let relations = relations.with_attaches(&frame, &links).unwrap();
-    assert!(relations.allied_for_fog(2, 1));
+    let families = Families::read(&relations, &links)
+        .unwrap()
+        .with_attaches(&frame, &links)
+        .unwrap();
+    assert!(families.allied_for_fog(2, 1));
     assert_eq!(
         built(&links, &ids, &relations, 1, &[], &[])
             .unwrap()
@@ -334,8 +545,10 @@ fn indexed_first_match_agrees_with_the_ordered_native_loop() {
                 for logical in 100..108 {
                     let a = links[&roster];
                     let b = links[&logical];
-                    let mut friend = relations.shared(1, a) || relations.shared(1, b);
-                    let mut enemy = relations.at_war(1, a) || relations.at_war(1, b);
+                    let ordinary =
+                        crate::map::visibility::Relations::read(&relations, &links).unwrap();
+                    let mut friend = ordinary.shared(1, a) || ordinary.shared(1, b);
+                    let mut enemy = ordinary.at_war(1, a) || ordinary.at_war(1, b);
                     for reference in &order {
                         let Some(division) = divisions.iter().find(|d| d.id == *reference) else {
                             continue;
@@ -345,7 +558,7 @@ fn indexed_first_match_agrees_with_the_ordered_native_loop() {
                             friend = true;
                             break;
                         }
-                        if relations.at_war(b, host) {
+                        if ordinary.at_war(b, host) {
                             enemy = true;
                             break;
                         }
@@ -369,8 +582,7 @@ fn indexed_first_match_agrees_with_the_ordered_native_loop() {
 }
 #[test]
 fn the_memo_reuses_an_index_until_its_tables_or_key_change() {
-    let (links, ids, _) = world(&[], &[], &[]);
-    let mut frame = empty_frame();
+    let (links, _ids, mut frame) = world(&[], &[], &[]);
     *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
         links
             .iter()
@@ -389,26 +601,27 @@ fn the_memo_reuses_an_index_until_its_tables_or_key_change() {
     *frame.tables[TableId::SentVolunteers.index()] =
         TableView::Complete(TableRows::SentVolunteers(volunteers(&[10])));
     let memo = Memo::new(TABLES, 4);
-    let first = Index::read(&memo, &frame, &links, &ids, 1);
+    let first = Index::read(&memo, &frame, &links, 1);
     assert_eq!(first.of(102, 102), Some(Side::Friend));
     // Divisions is a new allocation every hour; an equal host keeps the index.
     frame.tables[TableId::Divisions.index()] = divisions(102);
-    assert!(Arc::ptr_eq(
-        &first,
-        &Index::read(&memo, &frame, &links, &ids, 1)
-    ));
+    assert!(Arc::ptr_eq(&first, &Index::read(&memo, &frame, &links, 1)));
     // A changed host or a changed relation table builds a new one.
     frame.tables[TableId::Divisions.index()] = divisions(103);
-    let moved = Index::read(&memo, &frame, &links, &ids, 1);
+    let moved = Index::read(&memo, &frame, &links, 1);
     assert_eq!(moved.of(103, 103), Some(Side::Friend));
-    frame.tables[TableId::WarRelations.index()] =
-        TableView::Complete(TableRows::WarRelations(vec![WarRelationRow {
-            first_country: 101,
-            second_country: 104,
-            ..Default::default()
-        }]))
-        .into();
-    let at_war = Index::read(&memo, &frame, &links, &ids, 1);
+    *frame.tables[TableId::CountryCounterInputs.index()] =
+        TableView::Complete(TableRows::CountryCounterInputs({
+            let mut rows = frame
+                .complete::<tables::CountryCounterInputs>()
+                .unwrap()
+                .to_vec();
+            if let Recorded::Value(Some(packet)) = &mut rows[0].directed_wars {
+                packet.cells[4].active = true;
+            }
+            rows
+        }));
+    let at_war = Index::read(&memo, &frame, &links, 1);
     assert!(!Arc::ptr_eq(&moved, &at_war));
     assert_eq!(at_war.of(104, 104), Some(Side::Enemy));
     // A missing input withholds rather than reusing an older index.
@@ -417,7 +630,7 @@ fn the_memo_reuses_an_index_until_its_tables_or_key_change() {
     }
     .into();
     assert!(
-        Index::read(&memo, &frame, &links, &ids, 1)
+        Index::read(&memo, &frame, &links, 1)
             .problem()
             .contains("SentVolunteers")
     );
@@ -447,7 +660,48 @@ fn type_tint_unit_scale() {
             })
             .collect(),
     ));
-    let relations = Relations::read(&frame, &links).unwrap();
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        links
+            .iter()
+            .map(|(&id, &canonical_slot)| CountryLinkRow { id, canonical_slot })
+            .collect(),
+    ));
+    *frame.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+        ids.iter()
+            .map(|(&canonical_slot, &id)| CountryRow {
+                id,
+                canonical_slot,
+                ..Default::default()
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::CountryCounterInputs.index()] =
+        TableView::Complete(TableRows::CountryCounterInputs(
+            (1..=n)
+                .map(|slot| CountryCounterInputRow {
+                    country: 10_000 + slot,
+                    directed_wars: Recorded::Value(Some(DirectedWars {
+                        sample_hour: frame.hour,
+                        receiver_raw_id: (10_000 + slot) as i32,
+                        receiver_slot: slot,
+                        matrix_count: n + 1,
+                        complete_active_domain: true,
+                        cells: (1..=4)
+                            .map(|offset| (slot + offset) % n + 1)
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .map(|target_slot| WarCell {
+                                target_slot,
+                                active: true,
+                            })
+                            .collect(),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    let relations = frame;
     let divisions: Vec<_> = (1..=d)
         .map(|i| DivisionRow {
             id: i as u64,
@@ -469,10 +723,10 @@ fn type_tint_unit_scale() {
     for _ in 0..25 {
         // Every hour reads the key; only a changed key or table builds.
         let start = Instant::now();
-        let key = black_box(Key::read(&sent, &divisions, &links, &ids, 1).unwrap());
+        let key = black_box(Key::read(&sent, &divisions, &links, 1, relations.hour).unwrap());
         keys.push(start.elapsed().as_secs_f64() * 1000.0);
         let start = Instant::now();
-        let index = black_box(Index::new(&links, &relations, &key));
+        let index = black_box(Index::new(&relations, &links, &key));
         builds.push(start.elapsed().as_secs_f64() * 1000.0);
         let start = Instant::now();
         for division in &divisions {

@@ -1,11 +1,19 @@
 use super::*;
 use crate::{
     cadence::{Cadence, cadence},
-    rows::compatibility::{EFFECT_INPUTS_FORMAT, RECORDER_INPUTS_FORMAT},
+    rows::compatibility::{EFFECT_INPUTS_FORMAT, RECORDER_INPUTS_FORMAT, WIDGET_CAPTURE_FORMAT},
 };
 
 fn check98<T: RowCodec + Fields + std::fmt::Debug + PartialEq>(table: TableId, row: T) {
-    let format = FormatVersion::read(RECORDER_INPUTS_FORMAT).unwrap();
+    check_version(RECORDER_INPUTS_FORMAT, table, row);
+}
+
+fn check_version<T: RowCodec + Fields + std::fmt::Debug + PartialEq>(
+    version: u16,
+    table: TableId,
+    row: T,
+) {
+    let format = FormatVersion::read(version).unwrap();
     let fields = format.fields(table);
     let mut bytes = Vec::new();
     row.encode_fields(&mut bytes).unwrap();
@@ -45,6 +53,134 @@ fn check98<T: RowCodec + Fields + std::fmt::Debug + PartialEq>(table: TableId, r
     let delta = decode_delta(table, 0, &mut input).unwrap();
     input.finish().unwrap();
     assert_eq!(delta.apply::<T>(None).unwrap(), decoded);
+}
+
+#[test]
+fn format101_air_scenario_operands_keep_format99_absence_distinct_from_zero() {
+    for version in [EFFECT_INPUTS_FORMAT, WIDGET_CAPTURE_FORMAT] {
+        check_version(
+            version,
+            TableId::AirWings,
+            AirWingRow {
+                id: 7,
+                strategic_bombing_raw: Recorded::Value(Some(0)),
+                ..Default::default()
+            },
+        );
+        check_version(
+            version,
+            TableId::AirMissionInputs,
+            AirMissionInputRow {
+                wing: 7,
+                cas_ratio_raw: Recorded::Value(Some(0)),
+                ..Default::default()
+            },
+        );
+        check_version(
+            version,
+            TableId::AirNavalPatrolHistories,
+            AirNavalPatrolHistoryRow {
+                country: 4,
+                region: 9,
+                index: 7,
+                enemy_ships_sunk_raw: 1,
+                scenario_channels: Recorded::Value(Some([0; 7])),
+                ..Default::default()
+            },
+        );
+    }
+}
+
+#[test]
+fn widget_format_keeps_shared_row_prefixes_without_political_suffixes() {
+    assert_eq!(
+        FormatVersion::read(WIDGET_CAPTURE_FORMAT)
+            .unwrap()
+            .fields(TableId::States),
+        7
+    );
+    assert_eq!(
+        FormatVersion::read(WIDGET_CAPTURE_FORMAT)
+            .unwrap()
+            .fields(TableId::ReservedCountryNaming),
+        14
+    );
+    check_version(
+        WIDGET_CAPTURE_FORMAT,
+        TableId::States,
+        StateRow {
+            id: 7,
+            continent: Some(u32::MAX).into(),
+            railway_infrastructure: Some(0).into(),
+            ..Default::default()
+        },
+    );
+    check_version(
+        WIDGET_CAPTURE_FORMAT,
+        TableId::ReservedCountryNaming,
+        ReservedCountryNamingRow {
+            dynamic_tag_boundary: Some(i32::MIN).into(),
+            faction: Some(0).into(),
+            ..Default::default()
+        },
+    );
+}
+
+#[test]
+fn widget_format_keeps_transport_fields_and_native_null_launch_not_recorded() {
+    let format = FormatVersion::read(WIDGET_CAPTURE_FORMAT).unwrap();
+    for (table, fields) in [
+        (TableId::RelationLinks, 1),
+        (TableId::CountryAppearance, 21),
+        (TableId::DivisionMovement, 15),
+        (TableId::RailwayGunCounterInputs, 26),
+        (TableId::AirBases, 5),
+        (TableId::AirBaseRegistrations, 2),
+    ] {
+        assert_eq!(format.fields(table), fields);
+    }
+    check_version(
+        WIDGET_CAPTURE_FORMAT,
+        TableId::RelationLinks,
+        RelationLinkRow::default(),
+    );
+    check_version(
+        WIDGET_CAPTURE_FORMAT,
+        TableId::CountryAppearance,
+        CountryAppearanceRow::default(),
+    );
+    check_version(
+        WIDGET_CAPTURE_FORMAT,
+        TableId::DivisionMovement,
+        DivisionMovementRow::default(),
+    );
+    check_version(
+        WIDGET_CAPTURE_FORMAT,
+        TableId::RailwayGunCounterInputs,
+        RailwayGunCounterInputRow::default(),
+    );
+    check_version(
+        WIDGET_CAPTURE_FORMAT,
+        TableId::AirBases,
+        AirBaseRow::default(),
+    );
+    check_version(
+        WIDGET_CAPTURE_FORMAT,
+        TableId::AirBaseRegistrations,
+        AirBaseRegistrationRow::default(),
+    );
+    check_version(
+        WIDGET_CAPTURE_FORMAT,
+        TableId::ReservedCountryNaming,
+        ReservedCountryNamingRow {
+            launch_sources: Recorded::Value(Some(ReservedLaunchSources {
+                sample_hour: i32::MIN,
+                naval_bases: LaunchNavalBases::NativeNull,
+                owned_states: Some(Vec::new()),
+            })),
+            ..Default::default()
+        },
+    );
 }
 
 #[test]
@@ -132,6 +268,7 @@ fn format99_appends_leave_format98_prefixes_and_values_available() {
     check98(
         TableId::CountryCounterInputs,
         CountryCounterInputRow {
+            forward_visibility: crate::rows::Recorded::Value(None),
             country: 5000,
             owned_states: Recorded::Value(Some(vec![2, 1, 2])),
             mio_policies: Recorded::Value(Some(vec![u32::MAX, 0])),
@@ -198,6 +335,7 @@ fn format99_appends_leave_format98_prefixes_and_values_available() {
             leader_enroute_days: Recorded::Value(Some(i32::MAX)),
             border_war_presence: Recorded::Value(Some(0xff)),
             invasion_source_distance: Recorded::Value(Some(i32::MIN)),
+            attack: Default::default(),
         },
     );
     check98(
@@ -450,6 +588,7 @@ fn format99_rosters_round_trip_at_5000_countries_with_raw_extremes() {
         .collect();
     let countries = (1..=5000)
         .map(|country| CountryCounterInputRow {
+            forward_visibility: crate::rows::Recorded::Value(None),
             country,
             mio_policies: Recorded::Value(Some(vec![u32::MAX, 0, u32::MAX])),
             neighbors: Recorded::Value(Some(vec![country + 1, country, country + 1])),
@@ -551,7 +690,7 @@ fn format99_reserved_original_tag_retains_presence_states_and_suffix_delta() {
     assert!(gap.encode_fields(&mut Vec::new()).is_err());
     assert_eq!(
         FormatVersion::CURRENT.fields(TableId::ReservedCountryNaming),
-        14
+        ReservedCountryNamingRow::SCHEMA.len()
     );
     let field = TableId::ReservedCountryNaming.last_change().appended[0];
     assert_eq!(
@@ -594,7 +733,7 @@ fn format99_positive_original_tag_changes_only_suffix_and_retains_presence() {
     }
     assert_eq!(
         FormatVersion::CURRENT.fields(TableId::CountryAppearance),
-        21
+        22
     );
     assert_eq!(
         FormatVersion::read(RECORDER_INPUTS_FORMAT)
@@ -825,6 +964,9 @@ fn dynamic_boundary_suffix_keeps_prior_recorded_prefix_and_signed_deltas() {
     let decoded = ReservedCountryNamingRow::decode_fields(0, &mut input).unwrap();
     assert_eq!(decoded.tag, row.tag);
     assert_eq!(decoded.dynamic_tag_boundary, Recorded::NotRecorded);
-    assert_eq!(decoded.not_recorded_fields(), 1 << 13);
+    assert_eq!(
+        decoded.not_recorded_fields(),
+        full_mask(ReservedCountryNamingRow::SCHEMA.len()) ^ full_mask(13)
+    );
     input.finish().unwrap();
 }

@@ -145,6 +145,212 @@ impl Memory for Fixture {
     }
 }
 
+fn capture_growing(f: &Fixture, rows: &mut Vec<Row>) -> Outcome {
+    let countries = ccountry::Reader::new(f, 0, GAME).unwrap();
+    walk_country_growing(
+        f,
+        0,
+        &countries,
+        ccountry::Country {
+            pointer: COUNTRY,
+            id: 1,
+            canonical_slot: 1,
+        },
+        Ok(Context {
+            minimum: 10_000,
+            license: 20_000,
+            sharing_maximum: 50_000,
+            ahead_factor: 200_000,
+        }),
+        &[f.input()],
+        rows,
+    )
+}
+
+#[test]
+fn growing_modifier_sources_keep_mod_sized_fanout_text_and_later_growth() {
+    const POINTERS: usize = 0x40000;
+    const SOURCE: usize = 0x60000;
+    const VALUES: usize = 0x60100;
+    const NAME: usize = 0x61000;
+    let mut f = Fixture::new();
+    f.bytes.resize(0x70000, 0);
+    f.modifier(
+        SOURCE + 0x10,
+        VALUES,
+        crate::modifier_keys::RESEARCH_SPEED_FACTOR,
+        -10_000,
+    );
+    f.put(SOURCE + 0x58, (NAME as u64).to_le_bytes());
+    f.put(SOURCE + 0x68, 2_048_u64.to_le_bytes());
+    f.put(SOURCE + 0x70, 2_048_u64.to_le_bytes());
+    f.bytes[NAME..NAME + 2_048].fill(b's');
+    let mut rows = Vec::new();
+    for count in [5_000_u32, 7_000] {
+        f.array(
+            COUNTRY + ccountry::MODIFIER_ACCUMULATOR + 0x18,
+            POINTERS,
+            count,
+        );
+        for index in 0..count as usize {
+            f.put(POINTERS + index * 8, (SOURCE as u64).to_le_bytes());
+        }
+        f.reads.borrow_mut().clear();
+        let result = capture_growing(&f, &mut rows);
+        assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
+        let sources: Vec<_> = rows[..result.len()]
+            .iter()
+            .filter(|row| row.kind == Kind::CountrySource)
+            .collect();
+        assert_eq!(sources.len(), count as usize);
+        assert!(
+            sources
+                .iter()
+                .all(|row| row.name.as_bytes() == vec![b's'; 2_048])
+        );
+        assert_eq!(
+            f.reads
+                .borrow()
+                .iter()
+                .filter(|&&(at, _)| at == COUNTRY + ccountry::MODIFIER_ACCUMULATOR + 0x18)
+                .count(),
+            1
+        );
+    }
+    assert!(matches!(
+        f.capture(&[f.input()], &mut []),
+        Outcome::Unavailable { .. }
+    ));
+}
+
+#[test]
+fn growing_source_stack_has_no_chosen_depth_and_keeps_cycles_named() {
+    const FIRST: usize = 0x40000;
+    const DEPTH: usize = 5_000;
+    let mut f = Fixture::new();
+    f.bytes.resize(FIRST + DEPTH * 0x100, 0);
+    f.array(COUNTRY + ccountry::MODIFIER_ACCUMULATOR + 0x18, 0x8000, 1);
+    f.put(0x8000, (FIRST as u64).to_le_bytes());
+    for index in 0..DEPTH - 1 {
+        let node = FIRST + index * 0x100;
+        f.array(node + 0x28, node + 0x80, 1);
+        f.put(node + 0x80, ((node + 0x100) as u64).to_le_bytes());
+    }
+    let mut rows = Vec::new();
+    let expected = capture_growing(&f, &mut rows);
+    assert!(matches!(expected, Outcome::Rows { .. }));
+    assert_eq!(
+        f.capture(&[f.input()], &mut vec![Row::default(); expected.len()]),
+        expected
+    );
+    let last = FIRST + (DEPTH - 1) * 0x100;
+    f.array(last + 0x28, last + 0x80, 1);
+    f.put(last + 0x80, (FIRST as u64).to_le_bytes());
+    assert_eq!(
+        capture_growing(&f, &mut rows),
+        Outcome::Unavailable {
+            reason: "research modifier source cycle"
+        }
+    );
+}
+
+#[test]
+fn growing_sharing_groups_and_category_rosters_follow_native_counts() {
+    const POINTERS: usize = 0x40000;
+    const GROUP: usize = 0x50000;
+    const CATEGORIES: usize = 0x60000;
+    let mut f = Fixture::new();
+    f.bytes.resize(CATEGORIES + 5_000 * 40, 0);
+    f.array(STATUS + 0x118, POINTERS, 5_000);
+    f.put(GROUP, (sharing::FACTION_VTABLE as u64).to_le_bytes());
+    for index in 0..5_000 {
+        f.put(POINTERS + index * 8, (GROUP as u64).to_le_bytes());
+    }
+    f.array(TEMPLATE + 0x2c0, CATEGORIES, 5_000);
+    for index in 0..5_000 {
+        f.text(CATEGORIES + index * 40, b"mod_category");
+        f.put(CATEGORIES + index * 40 + 32, (index as u32).to_le_bytes());
+    }
+    let mut rows = Vec::new();
+    let result = capture_growing(&f, &mut rows);
+    assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
+    assert_eq!(
+        rows[..result.len()]
+            .iter()
+            .filter(|row| row.kind == Kind::Sharing)
+            .count(),
+        5_000
+    );
+    assert_eq!(
+        rows[..result.len()]
+            .iter()
+            .filter(|row| row.kind == Kind::SharingCategory)
+            .count(),
+        5_000
+    );
+    let mut fixed = crate::allocation::default_vec(rows.len()).unwrap();
+    let fixed_result = f.capture(&[f.input()], &mut fixed);
+    assert_eq!(fixed_result, result);
+    assert_eq!(fixed[..result.len()], rows[..result.len()]);
+}
+
+#[test]
+fn scientist_categories_batch_the_entire_mod_population() {
+    let mut f = Fixture::new();
+    f.array(TECH + 0x140, 0x20000, 5_000);
+    for index in 0..5_000 {
+        f.put(0x20000 + index * 4, (index as u32).to_le_bytes());
+    }
+    f.put(COUNTRY + ccountry::PROGRAM_STATUS, 0xa000_u64.to_le_bytes());
+    f.put(
+        0xa000,
+        (crate::nproject_cprogram_status::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    f.put(
+        0xa008,
+        (crate::nproject_cprogram_status::SECONDARY_VTABLE_RVA as u64).to_le_bytes(),
+    );
+    f.put(0xa010, 1_u32.to_le_bytes());
+    f.put(0xa088, 0xa100_u64.to_le_bytes());
+    let mut rows = Vec::new();
+    let result = capture_growing(&f, &mut rows);
+    assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
+    let categories: Vec<_> = rows[..result.len()]
+        .iter()
+        .filter(|row| row.kind == Kind::ScientistCategory)
+        .collect();
+    assert_eq!(categories.len(), 5_000);
+    assert_eq!(categories.last().unwrap().source_id, 4_999);
+}
+
+#[test]
+fn growing_script_sources_have_no_chosen_population_limit() {
+    const ENTRIES: usize = 0x40000;
+    const SOURCE: usize = 0x80000;
+    let mut f = Fixture::new();
+    f.bytes.resize(0x81000, 0);
+    f.array(TECH + 0x128, ENTRIES, 5_000);
+    f.put(SOURCE + 0x30, (-1_234_i64).to_le_bytes());
+    for index in 0..5_000 {
+        let entry = ENTRIES + index * 40;
+        f.put(entry, (SOURCE as u64).to_le_bytes());
+        f.text(entry + 8, b"script_source");
+    }
+    let mut rows = Vec::new();
+    let result = capture_growing(&f, &mut rows);
+    assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
+    let scripts: Vec<_> = rows[..result.len()]
+        .iter()
+        .filter(|row| row.kind == Kind::ScriptSource)
+        .collect();
+    assert_eq!(scripts.len(), 5_000);
+    assert!(
+        scripts
+            .iter()
+            .all(|row| row.raw == -1_234 && row.name.as_bytes() == b"script_source")
+    );
+}
+
 #[test]
 fn active_operands_are_exact_and_idle_avoids_country_dependencies() {
     let mut f = Fixture::new();
@@ -152,7 +358,7 @@ fn active_operands_are_exact_and_idle_avoids_country_dependencies() {
     f.put(TECH + 0x1a0, 12_345_i64.to_le_bytes());
     f.put(TECH + 0x1e8, [2]);
     f.put(TEMPLATE + 0x538, 100_003_i64.to_le_bytes());
-    let mut rows = [Row::default(); 64];
+    let mut rows = vec![Row::default(); 64];
     let result = f.capture(&[f.input()], &mut rows);
     assert_eq!(result, Outcome::Rows { len: 12 });
     let value = |kind| {
@@ -183,7 +389,7 @@ fn active_operands_are_exact_and_idle_avoids_country_dependencies() {
 #[test]
 fn unbonused_slots_add_one_guard_each_and_share_country_reads() {
     let f = Fixture::new();
-    let mut rows = [Row::default(); 64];
+    let mut rows = vec![Row::default(); 64];
     assert!(matches!(
         f.capture(&[f.input()], &mut rows),
         Outcome::Rows { .. }
@@ -208,9 +414,9 @@ fn cyclic_country_source_trees_fail_without_unbounded_recursion() {
         (COUNTRY as u64 + ccountry::MODIFIER_ACCUMULATOR as u64 - 0x10).to_le_bytes(),
     );
     assert_eq!(
-        f.capture(&[f.input()], &mut [Row::default(); 32]),
+        f.capture(&[f.input()], &mut vec![Row::default(); 32]),
         Outcome::Unavailable {
-            reason: "research modifier tree limit or cycle"
+            reason: "research modifier source cycle"
         }
     );
 }
@@ -230,7 +436,7 @@ fn country_tree_is_shared_and_preserves_negative_sources_and_clamps() {
     f.text(0x8258, b"slow_idea");
     let mut second = f.input();
     second.slot.index = 1;
-    let mut rows = [Row::default(); 64];
+    let mut rows = vec![Row::default(); 64];
     let result = f.capture(&[f.input(), second], &mut rows);
     assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
     let sources: Vec<_> = rows[..result.len()]
@@ -264,20 +470,23 @@ fn country_tree_is_shared_and_preserves_negative_sources_and_clamps() {
 #[test]
 fn every_short_read_refuses_a_complete_breakdown_and_capacity_reports_demand() {
     let mut f = Fixture::new();
-    let mut rows = [Row::default(); 64];
+    let mut rows = vec![Row::default(); 64];
     let input = f.input();
-    let result = f.capture(&[input], &mut rows);
+    let result = f.capture(std::slice::from_ref(&input), &mut rows);
     let reads = f.reads.borrow().clone();
     for (at, _) in reads.into_iter().skip(2) {
         f.fault = Some(at);
         assert!(
-            matches!(f.capture(&[input], &mut rows), Outcome::Unavailable { .. }),
+            matches!(
+                f.capture(std::slice::from_ref(&input), &mut rows),
+                Outcome::Unavailable { .. }
+            ),
             "{at:x}"
         );
     }
     f.fault = None;
     assert_eq!(
-        f.capture(&[input], &mut rows[..1]),
+        f.capture(std::slice::from_ref(&input), &mut rows[..1]),
         Outcome::Truncated {
             len: 1,
             unread_rows: result.len() as u32 - 1
@@ -298,7 +507,7 @@ fn selected_idea_and_script_sources_retain_names_without_reading_catalogues() {
     f.put(0x8400, 0x8500_u64.to_le_bytes());
     f.text(0x8408, b"script_bonus");
     f.put(0x8530, 25_000_i64.to_le_bytes());
-    let mut rows = [Row::default(); 64];
+    let mut rows = vec![Row::default(); 64];
     let result = f.capture(&[f.input()], &mut rows);
     assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
     assert!(
@@ -345,7 +554,7 @@ fn license_and_scientist_use_only_matching_equipment_and_category() {
     f.put(0xa104, [1]);
     f.put(0xa108, 17_u32.to_le_bytes());
     f.put(0xa110, 8_765_i64.to_le_bytes());
-    let mut rows = [Row::default(); 64];
+    let mut rows = vec![Row::default(); 64];
     let result = f.capture(&[f.input()], &mut rows);
     assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
     assert!(
@@ -390,7 +599,7 @@ fn sharing_resolves_aliases_and_uses_max_level_with_predecessor_gate() {
     f.put(TECH + 0x158, (STATUS as u64).to_le_bytes());
     f.put(TECH + 0x160, (TEMPLATE as u64).to_le_bytes());
     f.put(TECH + 0x174, 1_i32.to_le_bytes());
-    let mut rows = [Row::default(); 64];
+    let mut rows = vec![Row::default(); 64];
     let result = f.capture(&[f.input()], &mut rows);
     assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
     let row = rows[..result.len()]
@@ -459,7 +668,7 @@ fn scientist_efficiency_sources_preserve_character_identity_and_cached_total() {
     f.put(0xc00c, 91_u32.to_le_bytes());
     f.put(0xc0c0, 0xb000_u64.to_le_bytes());
     f.text(0xc048, b"scientist_name");
-    let mut rows = [Row::default(); 64];
+    let mut rows = vec![Row::default(); 64];
     let result = f.capture(&[f.input()], &mut rows);
     assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
     let source = rows[..result.len()]
@@ -509,7 +718,7 @@ fn scientist_hash_collisions_keep_each_raw_category_without_summing() {
         f.put(0xa108 + offset, category.to_le_bytes());
         f.put(0xa110 + offset, i64::MAX.to_le_bytes());
     }
-    let mut rows = [Row::default(); 64];
+    let mut rows = vec![Row::default(); 64];
     let result = f.capture(&[f.input()], &mut rows);
     assert!(matches!(result, Outcome::Rows { .. }), "{result:?}");
     let categories: Vec<_> = rows[..result.len()]
@@ -668,9 +877,8 @@ fn faction_member_pointer_rosters_are_bounded_only_by_their_native_headers() {
     assert_eq!(member_rows(rows), expected_members());
 }
 
-/// The witness memo keeps the first 512 distinct (member, template) keys of a
-/// pass: a repeated early member costs no read, a repeated member first seen
-/// after the memo filled is read again, and rows never depend on either.
+/// The witness memo keeps every distinct (member, template) key of a pass;
+/// repeated early and late members cost no witness read and keep every row.
 #[test]
 fn sharing_witness_memo_keeps_its_first_keys_without_changing_rows() {
     const MEMBERS: usize = 0x36000;
@@ -708,5 +916,81 @@ fn sharing_witness_memo_keeps_its_first_keys_without_changing_rows() {
     plain.push(1);
     let baseline = run(&plain);
     assert_eq!(run(&with(2)), baseline);
-    assert!(run(&with(600)) > baseline);
+    assert_eq!(run(&with(600)), baseline);
+}
+
+#[test]
+fn sharing_witnesses_retain_five_thousand_original_country_references() {
+    const COUNT: usize = 5_001;
+    const TABLE: usize = 0x40000;
+    const LINKS: usize = TABLE + (COUNT + 1) * 8;
+    let mut fixture = Fixture::new();
+    fixture.bytes.resize(LINKS + (COUNT + 1) * 4, 0);
+    fixture.array(
+        GAME + crate::cgame_state::COUNTRIES,
+        TABLE,
+        (COUNT + 1) as u32,
+    );
+    fixture.array(
+        GAME + crate::cgame_state::COUNTRY_LINKS,
+        LINKS,
+        (COUNT + 1) as u32,
+    );
+    for raw in 1..=COUNT {
+        fixture.put(TABLE + raw * 8, (COUNTRY as u64).to_le_bytes());
+        fixture.put(LINKS + raw * 4, 1_u32.to_le_bytes());
+    }
+    struct Readable<'a> {
+        source: &'a Fixture,
+        readable: Cell<bool>,
+    }
+    impl Memory for Readable<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.readable.get() && self.source.copy(address, output)
+        }
+    }
+    let memory = Readable {
+        source: &fixture,
+        readable: Cell::new(true),
+    };
+    let countries = ccountry::Reader::new(&memory, 0, GAME).unwrap();
+    let mut memo = sharing::Witnesses::default();
+    let mut rows = Vec::new();
+    let mut out = Output {
+        rows: crate::walk::Buffer::Growing(&mut rows),
+        len: 0,
+        omitted: 0,
+        current: Row::default(),
+    };
+    for raw in 1..=COUNT {
+        memo.capture(
+            &memory,
+            0,
+            &countries,
+            raw as u32,
+            &fixture.input(),
+            1,
+            &mut out,
+        )
+        .unwrap();
+    }
+    memory.readable.set(false);
+    for raw in 1..=COUNT {
+        memo.capture(
+            &memory,
+            0,
+            &countries,
+            raw as u32,
+            &fixture.input(),
+            1,
+            &mut out,
+        )
+        .unwrap();
+    }
+    assert_eq!(out.len, COUNT * 2);
+    assert!(
+        out.rows[..out.len]
+            .iter()
+            .all(|row| row.kind == Kind::SharingMissingMember)
+    );
 }

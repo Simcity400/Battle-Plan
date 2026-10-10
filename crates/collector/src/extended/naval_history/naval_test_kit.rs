@@ -2,7 +2,7 @@ use super::{Capacities, Captured, NavalCopyContext, NavalCopyReport, NavalJob};
 use engine::{Memory, memory::SliceMemory, walk::Outcome};
 
 pub(crate) fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
-    let mut wings = crate::extended::air::AirWingJob::new();
+    let mut wings = crate::extended::air::AirWingJob::fixture();
     let context = crate::extended::air::AirWingCopyContext {
         hour: 0,
         force_full: true,
@@ -14,7 +14,7 @@ pub(crate) fn stage_wings(memory: &impl Memory, job: &mut NavalJob) {
         game_score: false,
     };
     assert!(crate::extended::air::copy_air_refresh(memory, context, &mut wings).raw_ok);
-    job.install_wings(&wings);
+    job.install_wings(&mut wings);
 }
 
 pub(crate) const BASE: usize = 0;
@@ -292,7 +292,7 @@ fn collect(memory: &impl Memory, capacity: &Capacities) -> Split {
 }
 
 pub(crate) fn direct(memory: &impl Memory) -> Split {
-    collect(memory, &Capacities::default())
+    collect(memory, &Capacities::fixture())
 }
 
 fn decoded(captured: &Captured) -> Split {
@@ -312,11 +312,9 @@ fn decoded(captured: &Captured) -> Split {
     }
 }
 
-/// The same pass given the callback's registry census, as the Naval job
-/// is: the copy walks the census roots, the decode takes them, and the
-/// decoded tables are the registry copy's. A complete census records no
-/// registry, identity or country span; any other census is not kept, and
-/// the copy records the registry exactly as without it.
+/// The same pass given the original registry census, as the Naval job is:
+/// copy/decode preserve either its complete roots or its terminal verdict.
+/// An attempted census records no second registry observation.
 fn assert_census_roots_decode_the_same(
     memory: &impl Memory,
     capacity: &Capacities,
@@ -331,7 +329,7 @@ fn assert_census_roots_decode_the_same(
     };
     let mut roots = vec![engine::corders_group::Root::default(); 64];
     let outcome = engine::corders_group::walk_roots(memory, BASE, &mut roots);
-    let mut job = NavalJob::new();
+    let mut job = NavalJob::fixture();
     stage_wings(memory, &mut job);
     job.capture_roots(&roots[..outcome.len().min(roots.len())], outcome);
     assert!(super::copy_naval_refresh(memory, ctx, &mut job).raw_ok);
@@ -346,14 +344,14 @@ fn assert_census_roots_decode_the_same(
         }
         _ => {
             assert_eq!(job.roots_len, None);
-            assert_eq!(spans(&job), spans(registry), "census {outcome:?}");
+            assert!(spans(&job) < spans(registry), "census {outcome:?}");
         }
     }
 }
 
 pub(crate) fn split(memory: &impl Memory) -> (Split, NavalCopyReport, NavalJob) {
     let split = split_registry(memory);
-    assert_census_roots_decode_the_same(memory, &Capacities::default(), &split.0, &split.2);
+    assert_census_roots_decode_the_same(memory, &Capacities::fixture(), &split.0, &split.2);
     split
 }
 
@@ -366,11 +364,11 @@ pub(crate) fn split_registry(memory: &impl Memory) -> (Split, NavalCopyReport, N
         base: BASE,
         game_state: GAME_STATE,
     };
-    let mut first = NavalJob::new();
+    let mut first = NavalJob::fixture();
     stage_wings(memory, &mut first);
     let report = super::copy_naval_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&Capacities::fixture());
     let mut ticks = [0u64; 9];
     super::decode_naval_payload(&mut captured, BASE, &first, &mut ticks);
     (
@@ -407,7 +405,7 @@ pub(crate) fn split_with(
         base: BASE,
         game_state: GAME_STATE,
     };
-    let mut first = NavalJob::new();
+    let mut first = NavalJob::fixture();
     stage_wings(memory, &mut first);
     let report = super::copy_naval_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
@@ -443,6 +441,7 @@ pub(crate) fn direct_truncated(memory: &impl Memory) -> Split {
         orders_sources: 1,
         wing_sources: 1,
         roster_scratch: 8,
+        rail_levels: 0,
     };
     collect(memory, &capacity)
 }
@@ -454,7 +453,7 @@ pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, NavalCopyReport, 
         base: BASE,
         game_state: GAME_STATE,
     };
-    let mut first = NavalJob::new();
+    let mut first = NavalJob::fixture();
     stage_wings(memory, &mut first);
     let report = super::copy_naval_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
@@ -465,6 +464,7 @@ pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, NavalCopyReport, 
         orders_sources: 1,
         wing_sources: 1,
         roster_scratch: 8,
+        rail_levels: 0,
     };
     let mut captured = Captured::with_capacities(&capacity);
     let mut ticks = [0u64; 9];
@@ -524,18 +524,45 @@ pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
 /// private rows are visible).
 pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct: &Split) {
     assert_eq!(captured.land.outcome, direct.land_outcome, "land outcome");
-    assert_eq!(&captured.land.rows, &direct.land, "land rows");
+    assert_eq!(
+        &captured.land.rows[..captured.land.outcome.len()],
+        &direct.land[..direct.land_outcome.len()],
+        "land rows"
+    );
+    assert_eq!(
+        captured.land_groups.outcome, direct.groups_outcome,
+        "groups outcome"
+    );
+    assert_eq!(
+        &captured.land_groups.rows[..captured.land_groups.outcome.len()],
+        &direct.groups[..direct.groups_outcome.len()],
+        "groups rows"
+    );
+    assert_eq!(
+        captured.land_members.outcome, direct.members_outcome,
+        "members outcome"
+    );
+    assert_eq!(
+        &captured.land_members.rows[..captured.land_members.outcome.len()],
+        &direct.members[..direct.members_outcome.len()],
+        "members rows"
+    );
     assert_eq!(
         captured.groups.outcome, direct.oob_groups_outcome,
         "oob groups outcome"
     );
-    assert_eq!(&captured.groups.rows, &direct.oob_groups, "oob groups rows");
+    assert_eq!(
+        &captured.groups.rows[..captured.groups.outcome.len()],
+        &direct.oob_groups[..direct.oob_groups_outcome.len()],
+        "oob groups rows"
+    );
     assert_eq!(
         captured.group_members.outcome, direct.oob_members_outcome,
         "oob members outcome"
     );
     assert_eq!(
-        &captured.group_members.rows, &direct.oob_members,
+        &captured.group_members.rows[..captured.group_members.outcome.len()],
+        &direct.oob_members[..direct.oob_members_outcome.len()],
         "oob members rows"
     );
     assert_eq!(
@@ -543,7 +570,8 @@ pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct:
         "oob children outcome"
     );
     assert_eq!(
-        &captured.group_children.rows, &direct.oob_children,
+        &captured.group_children.rows[..captured.group_children.outcome.len()],
+        &direct.oob_children[..direct.oob_children_outcome.len()],
         "oob children rows"
     );
 }

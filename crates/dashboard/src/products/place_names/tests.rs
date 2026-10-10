@@ -371,16 +371,13 @@ fn state_names_key_recorded_renames_by_each_requested_hour_and_keep_gaps() {
 }
 
 #[test]
-fn state_names_refuse_empty_names_and_preserve_stored_language_failures() {
+fn state_names_preserve_successful_empty_names_and_stored_language_failures() {
     let (mut cat, _folder) = catalogue();
     let empty = BTreeMap::from([(64, Ok(String::new()))]);
     let mut f = frame(1);
     let (name, missing) = state_name_at(&f, 64, &cat, Ok(&empty));
-    assert!(name.is_none());
-    assert_eq!(
-        missing.as_deref(),
-        Some("state 64: native display name is empty")
-    );
+    assert_eq!(name.as_deref(), Some(""));
+    assert!(missing.is_none());
     let mut states = f.complete::<tables::States>().unwrap().to_vec();
     states[0].custom_name = b"Stored state".to_vec();
     set::<tables::States>(&mut f, states);
@@ -684,18 +681,18 @@ fn place_names_primary_name_needs_no_state_lookup_and_names_sea_regions() {
         }],
     );
     let regions = BTreeMap::from([(60000, Ok("Mod sea region".into()))]);
-    assert_eq!(
-        resolved(&f, 60000, &cat, Err("irrelevant state names"), Ok(&regions))
-            .0
-            .as_deref(),
-        Some("Mod sea region")
-    );
+    let named = resolved(&f, 60000, &cat, Err("irrelevant state names"), Ok(&regions));
+    assert_eq!(named.0.as_deref(), Some("Mod sea region"));
     let regions = BTreeMap::from([(60000, Ok(String::new()))]);
-    assert!(
-        resolved(&f, 60000, &cat, Err("irrelevant state names"), Ok(&regions))
-            .0
-            .is_none()
-    );
+    let empty = resolved(&f, 60000, &cat, Err("irrelevant state names"), Ok(&regions));
+    assert_eq!(empty.0.as_deref(), Some(""));
+    assert_eq!(empty.1, named.1);
+    let regions = BTreeMap::from([(60000, Err("region unavailable".into()))]);
+    let unavailable = resolved(&f, 60000, &cat, Err("irrelevant state names"), Ok(&regions));
+    assert!(unavailable.0.is_none());
+    assert!(unavailable.1.as_ref().is_some_and(|reason| {
+        reason.contains("region unavailable") && reason.contains(named.1.as_deref().unwrap())
+    }));
 }
 
 #[test]
@@ -763,7 +760,8 @@ fn land_place_names_try_the_state_after_empty_primary_and_never_use_a_region() {
     );
     params.land = false;
     let native = read(&params);
-    assert!(native[0].name.is_none());
+    assert_eq!(native[0].name.as_deref(), Some(""));
+    assert!(native[0].missing.is_none());
     assert_eq!(native[1].name.as_deref(), Some("Sea region"));
 }
 
@@ -779,10 +777,10 @@ fn place_names_unresolvable_names_keep_ids_out_of_display_text() {
             ..Default::default()
         }],
     );
-    let names = BTreeMap::from([(64, Ok(String::new()))]);
+    let names = BTreeMap::new();
     let (name, missing) = resolved(&f, 60000, &cat, Ok(&names), Ok(&BTreeMap::new()));
     assert!(name.is_none());
-    assert!(missing.unwrap().contains("60000"));
+    assert!(missing.unwrap().contains("64"));
     let (name, missing) = resolved(&f, 99999, &cat, Ok(&names), Ok(&BTreeMap::new()));
     assert!(name.is_none());
     assert!(missing.unwrap().contains("99999"));

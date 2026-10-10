@@ -790,6 +790,10 @@ fn bound_scope(
 ) -> usize {
     let this = match object {
         Object::Event => return active,
+        // 1410CDDF0 kind3 reads this text object's own country+8, then uses
+        // set_country(clear=1). Actual Country0 stays a country TEXT object,
+        // but binding its raw0 own word leaves this EVENT scope empty.
+        Object::Country(0) => EventObject::State(crate::triggers::NULL_STATE),
         Object::Country(slot) => EventObject::Country(slot),
         Object::State(id) => EventObject::State(id.unwrap_or(crate::triggers::NULL_STATE)),
         Object::Character(id) => EventObject::Character(id),
@@ -940,6 +944,13 @@ impl EnvironmentInputs {
         aliases: std::sync::Arc<installed_content::tag_aliases::TagAliases>,
     ) -> Self {
         Self { aliases, ..self }
+    }
+
+    pub(super) fn with_triggers(self, triggers: installed_content::trigger_keys::TriggerNames) -> Self {
+        Self {
+            triggers: Ok(triggers),
+            ..self
+        }
     }
 
     pub(super) fn with_terrain(

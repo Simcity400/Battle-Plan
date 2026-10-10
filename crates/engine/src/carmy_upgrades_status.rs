@@ -19,8 +19,10 @@ pub const GROUPS_COUNT: usize = 0x2c;
 pub const GROUP_ENTRY_STRIDE: usize = 0x08;
 
 use crate::{
-    Memory, army_upgrade_request_row, carmy_upgrades_requests, cpdx_array::Array,
-    cupgrade_delivery, equipment_entry, read, walk::Outcome,
+    Memory, army_upgrade_request_row, carmy_upgrades_requests,
+    cpdx_array::Array,
+    cupgrade_delivery, equipment_entry, read,
+    walk::{Buffer, Outcome},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +58,49 @@ pub fn walk(
     requests: &mut [army_upgrade_request_row::Row],
     deliveries: &mut [cupgrade_delivery::Row],
     produced: &mut [cupgrade_delivery::ProducedRow],
+) -> Outcomes {
+    walk_buffer(
+        memory,
+        base,
+        sources,
+        Buffer::Fixed(groups),
+        Buffer::Fixed(requests),
+        Buffer::Fixed(deliveries),
+        Buffer::Fixed(produced),
+    )
+}
+
+/// Worker-only graph capture. Write@1414FE120 traverses +30 request rows and
+/// +48 delivery pointers; delivery serializer@1414FE370 owns the produced
+/// pool. Grow each lane from those same acquired headers, without a retry.
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    groups: &mut Vec<carmy_upgrades_requests::Row>,
+    requests: &mut Vec<army_upgrade_request_row::Row>,
+    deliveries: &mut Vec<cupgrade_delivery::Row>,
+    produced: &mut Vec<cupgrade_delivery::ProducedRow>,
+) -> Outcomes {
+    walk_buffer(
+        memory,
+        base,
+        sources,
+        Buffer::Growing(groups),
+        Buffer::Growing(requests),
+        Buffer::Growing(deliveries),
+        Buffer::Growing(produced),
+    )
+}
+
+fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    sources: &[crate::cequipment_variant_pool::DivisionSource],
+    groups: Buffer<'_, carmy_upgrades_requests::Row>,
+    requests: Buffer<'_, army_upgrade_request_row::Row>,
+    deliveries: Buffer<'_, cupgrade_delivery::Row>,
+    produced: Buffer<'_, cupgrade_delivery::ProducedRow>,
 ) -> Outcomes {
     let mut groups = Sink::new(groups);
     let mut requests = Sink::new(requests);
@@ -108,7 +153,10 @@ pub fn walk(
                 carmy_upgrades_requests::DELIVERY_ENTRY_STRIDE,
                 "army upgrade delivery vector unreadable or invalid",
             ) {
-                Ok(rows) => rows,
+                Ok(rows) => {
+                    deliveries.prepare(rows.count as usize);
+                    rows
+                }
                 Err(reason) => {
                     deliveries.fail(reason);
                     produced.fail(reason);
@@ -191,14 +239,14 @@ fn vector(
 }
 
 struct Sink<'a, R> {
-    rows: &'a mut [R],
+    rows: Buffer<'a, R>,
     len: usize,
     unread_rows: u32,
     reason: Option<&'static str>,
 }
 
-impl<'a, R> Sink<'a, R> {
-    fn new(rows: &'a mut [R]) -> Self {
+impl<'a, R: Default> Sink<'a, R> {
+    fn new(rows: Buffer<'a, R>) -> Self {
         Self {
             rows,
             len: 0,
@@ -222,7 +270,22 @@ impl<'a, R> Sink<'a, R> {
         }
     }
 
+    fn prepare(&mut self, count: usize) {
+        if self.failed() {
+            return;
+        }
+        let result = self
+            .len
+            .checked_add(count)
+            .ok_or("army upgrade sizing overflow")
+            .and_then(|required| self.rows.ensure(required));
+        if let Err(reason) = result {
+            self.fail(reason);
+        }
+    }
+
     fn push(&mut self, read_row: impl FnOnce() -> Result<R, &'static str>) {
+        self.prepare(1);
         if self.failed() {
             return;
         }
@@ -245,6 +308,7 @@ impl<'a, R> Sink<'a, R> {
         stride: usize,
         mut read_row: impl FnMut(usize, u32) -> Result<R, &'static str>,
     ) {
+        self.prepare(array.count as usize);
         if self.failed() {
             return;
         }

@@ -78,7 +78,11 @@ fn element(array: Array, index: u32, stride: usize) -> Result<usize, &'static st
         .element(index, stride)
         .ok_or("naval air array element overflow")
 }
-fn wing(memory: &impl Memory, base: usize, reference: u64) -> Result<Option<usize>, &'static str> {
+pub(crate) fn wing(
+    memory: &impl Memory,
+    base: usize,
+    reference: u64,
+) -> Result<Option<usize>, &'static str> {
     let Some(secondary) = crate::creference_registry::resolve(memory, base, reference)? else {
         return Ok(None);
     };
@@ -263,21 +267,40 @@ pub fn append_kills(
     plane: usize,
     buffers: &mut crate::cfex_member::DetailBuffers<'_>,
 ) -> Result<[usize; 2], &'static str> {
-    capture_kills(
+    capture_kills_buffer(
         memory,
         base,
         plane,
-        buffers.plane_kills,
+        buffers.plane_kills.suffix(0),
         &mut buffers.plane_kills_len,
         &mut buffers.plane_kills_required,
     )
 }
 
+#[cfg(test)]
 fn capture_kills(
     memory: &impl Memory,
     base: usize,
     plane: usize,
     output: &mut [WingKill],
+    used: &mut usize,
+    demand: &mut usize,
+) -> Result<[usize; 2], &'static str> {
+    capture_kills_buffer(
+        memory,
+        base,
+        plane,
+        crate::walk::Buffer::Fixed(output),
+        used,
+        demand,
+    )
+}
+
+fn capture_kills_buffer(
+    memory: &impl Memory,
+    base: usize,
+    plane: usize,
+    mut output: crate::walk::Buffer<'_, WingKill>,
     used: &mut usize,
     demand: &mut usize,
 ) -> Result<[usize; 2], &'static str> {
@@ -309,7 +332,7 @@ fn capture_kills(
     let end = start
         .checked_add(required)
         .ok_or("naval air kill length overflow")?;
-    if end > output.len() {
+    if !output.ensure(end)? {
         return Err(crate::cfex_member::DETAIL_ARENA_CAPACITY);
     }
     let mut length = start;

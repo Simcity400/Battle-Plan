@@ -23,17 +23,25 @@ pub const SIZE_TOKEN_IDS: [u32; 2] = [0x30d7, 0x4c28];
 
 /// Owned portrait descriptor, with no native pointer or texture-resource cache.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Row {
+pub struct Row<T = crate::msvc_string::Text<256>> {
     pub category: u32,
     pub size: u32,
     pub is_set: u8,
     pub kind: u32,
-    pub identity: crate::msvc_string::Text<256>,
+    pub identity: T,
 }
 pub fn read(
     memory: &impl crate::Memory,
     pointer: usize,
     output: &mut Row,
+) -> Result<(), &'static str> {
+    read_buffer(memory, pointer, output)
+}
+
+pub(crate) fn read_buffer<T: crate::capture_text::Value>(
+    memory: &impl crate::Memory,
+    pointer: usize,
+    output: &mut Row<T>,
 ) -> Result<(), &'static str> {
     use crate::cnaval_combatant::field;
     use crate::msvc_string;
@@ -41,7 +49,7 @@ pub fn read(
     // The descriptor has no value-dependent gate before the string layout.
     // Gather only those three original spans; dependent string reads retain
     // their ordinary validation and first-fault order.
-    if pointer != 0
+    output.identity = if pointer != 0
         && pointer
             .checked_add(IDENTITY + msvc_string::STRIDE)
             .is_some()
@@ -58,27 +66,32 @@ pub fn read(
             &mut [&mut header, &mut length, &mut capacity],
         ) {
             0 => return Err("naval field unreadable"),
-            3 => msvc_string::read_text_with_layout_into(
+            3 => T::from_layout(
                 memory,
                 address,
                 u64::from_le_bytes(length),
                 u64::from_le_bytes(capacity),
-                &mut output.identity,
             ),
-            _ => None,
+            _ => Err("portrait identity layout unreadable"),
         }
     } else {
         // A later address overflow must not hide the original descriptor read.
         header = field::<[u8; 16]>(memory, pointer, 0)?;
-        msvc_string::read_text_prefetched_into(
+        T::read(
             memory,
             pointer
                 .checked_add(IDENTITY)
                 .ok_or("portrait identity address overflow")?,
-            &mut output.identity,
+            true,
         )
     }
-    .ok_or("portrait identity invalid or exceeds256 bytes")?;
+    .map_err(|_| {
+        if T::GROWING {
+            "portrait identity invalid"
+        } else {
+            "portrait identity invalid or exceeds256 bytes"
+        }
+    })?;
     output.category = u32::from_le_bytes(header[..4].try_into().unwrap());
     output.size = u32::from_le_bytes(header[4..8].try_into().unwrap());
     output.is_set = header[8];

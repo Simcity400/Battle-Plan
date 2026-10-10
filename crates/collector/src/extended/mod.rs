@@ -29,13 +29,16 @@ pub(crate) mod bench_world;
 pub(crate) mod daily_intel;
 pub(crate) mod division_land;
 
+pub(crate) mod attack_inputs;
 mod attrition_inputs;
 mod border_inputs;
+pub(crate) mod observer_boundary;
 mod packs;
 mod supply_inputs;
+pub(crate) mod unit_combat_references;
 pub(crate) use packs::{
-    GatedPacks, LatePacks, OrdinaryPacks, RaidLaunchPacks, RaidStatePacks, RaidStateStores,
-    RaidTargetPacks, SlowPacks, SlowStores,
+    FinalInputsReport, FinalInputsRequest, GatedPacks, LatePacks, NavalMissionLoan, OrdinaryPacks,
+    RaidLaunchPacks, RaidStatePacks, RaidStateStores, RaidTargetPacks, SlowPacks, SlowStores,
 };
 
 const MISSING: Outcome = Outcome::Unavailable {
@@ -96,6 +99,35 @@ fn failed_capture(table: TableId, hour: i32, force_full: bool, reason: &'static 
 
 // Native conversion reuse stays within its pack's existing timing scope.
 macro_rules! spool_inputs {
+    (country_counters, $captured:expr, $conversion:expr, $owner:expr, $hour:expr) => {
+        $captured
+            .tables_with_sources(
+                Some(&($owner).attack_map),
+                Some((($owner).visibility.directed_wars(), $hour)),
+            )
+            .map(TableInput::Sampled)
+    };
+    (group_counters, $captured:expr, $conversion:expr, $owner:expr, $hour:expr) => {
+        $captured.tables().map(TableInput::Sampled)
+    };
+    (country_appearance, $captured:expr, $conversion:expr, $owner:expr, $hour:expr) => {
+        $captured
+            .tables_with_attack_and_air(&($owner).attack_map, &($owner).air, $hour)
+            .map(TableInput::Sampled)
+    };
+
+    (division_templates, $captured:expr, $conversion:expr) => {
+        $captured.table_inputs($conversion.template_names_baseline)
+    };
+    (division_presentation, $captured:expr, $conversion:expr, $all:expr, $hour:expr) => {
+        $captured.table_inputs(
+            $conversion.projection.as_deref_mut(),
+            Some((&$all.division_eta_inputs, $hour)),
+        )
+    };
+    ($pack:ident, $captured:expr, $conversion:expr, $all:expr, $hour:expr) => {
+        spool_inputs!($pack, $captured, $conversion)
+    };
     (lexical, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.lexical.as_deref_mut())
     };
@@ -122,7 +154,7 @@ macro_rules! spool_inputs {
         $captured.table_inputs()
     };
     (division_presentation, $captured:expr, $conversion:expr) => {
-        $captured.table_inputs($conversion.projection.as_deref_mut())
+        $captured.table_inputs($conversion.projection.as_deref_mut(), None)
     };
     (production, $captured:expr, $conversion:expr) => {
         $captured.table_inputs($conversion.projection.as_deref_mut())
@@ -161,16 +193,20 @@ macro_rules! packs {
             pub fuel_awards: fuel_awards::Capacities,
             pub division_sources: usize,
             pub variant_registry: usize,
+            pub(super) attack_map: attack_inputs::MapCapacities,
         }
         impl Default for Capacities {
             fn default() -> Self {
-                Self { $($pack: Default::default(),)+ fuel_awards: Default::default(), division_sources: 8192, variant_registry: 8192 }
+                Self { $($pack: Default::default(),)+ fuel_awards: Default::default(), division_sources: 0, variant_registry: 0, attack_map: Default::default() }
             }
         }
         pub struct Captured {
             $($pack: $pack::Captured,)+
             fuel_awards: fuel_awards::Captured,
             divisions: Divisions,
+            attack_map: attack_inputs::Map,
+            final_inputs_ticks: Option<FinalInputsReport>,
+            attack_guard: Result<(), &'static str>,
             unit_inputs: Option<Arc<UnitInputs>>,
             governance_report: Option<governance::CaptureReport>,
             variants_ticks: Option<[u64; production::N]>,
@@ -212,6 +248,9 @@ macro_rules! packs {
                     $($pack: $pack::Captured::with_capacities(&capacity.$pack),)+
                     fuel_awards: fuel_awards::Captured::with_capacities(&capacity.fuel_awards),
                     divisions: Divisions::new(capacity.division_sources),
+                    attack_map: attack_inputs::Map::new(capacity.attack_map),
+                    final_inputs_ticks: None,
+                    attack_guard: Err("selected attack modifier layout unverified"),
                     unit_inputs: None,
                     governance_report: None,
                     variants_ticks: None,
@@ -242,6 +281,7 @@ macro_rules! packs {
                     air_root: None, overhead: [0; TABLE_COUNT],
                 };
                 captured.division_presentation.reserve_sources(capacity.division_sources);
+                captured.plans.reserve_units(capacity.division_sources);
                 captured
             }
             /// Reset before the shared division and map walks, not between
@@ -249,7 +289,8 @@ macro_rules! packs {
             pub fn reset(&mut self) {
                 $(self.$pack.reset();)+
                 self.fuel_awards.reset();
-                self.divisions.reset(); self.registry.reset();
+                self.divisions.reset(); self.registry.reset(); self.attack_map.reset(); self.final_inputs_ticks = None;
+                self.attack_guard = Err("selected attack modifier layout unverified");
                 self.release_unit_inputs(); self.governance_report = None; self.presentation_report = None; self.eta_inputs_report = None;
                 self.variants_ticks = None;
                 self.intel_residual_report = None;
@@ -265,7 +306,7 @@ macro_rules! packs {
                 self.air_root = None; self.overhead = [0; TABLE_COUNT];
             }
             pub fn allocated_bytes(&self) -> usize {
-                0 $(+ self.$pack.allocated_bytes())+ + self.fuel_awards.allocated_bytes() + self.divisions.allocated_bytes() + self.registry.allocated_bytes() + self.spare_bytes()
+                0 $(+ self.$pack.allocated_bytes())+ + self.fuel_awards.allocated_bytes() + self.divisions.allocated_bytes() + self.registry.allocated_bytes() + self.spare_bytes() + self.attack_map.allocated_bytes()
             }
             /// Spool-thread metadata for this buffer's native row and scratch
             /// allocations. Excludes core tables, encoded frames and queues.
@@ -274,25 +315,32 @@ macro_rules! packs {
                     $((stringify!($pack), self.$pack.allocated_bytes()),)+
                     ("fuel_awards", self.fuel_awards.allocated_bytes()),
                     ("division_sources", self.divisions.allocated_bytes()),
+                    ("selected_attack_map", self.attack_map.allocated_bytes()),
                     ("variant_registry", self.registry.allocated_bytes()),
                     ("acquisition_spares", self.spare_bytes()),
                 ])
             }
             pub fn grow(&mut self, capacity: &mut Capacities) {
+                engine::allocation::advisory(|| self.grow_hints(capacity));
+            }
+            fn grow_hints(&mut self, capacity: &mut Capacities) {
                 let _allocation_phase = crate::allocation::enter(crate::allocation::Phase::Extended);
                 $(self.$pack.grow(&mut capacity.$pack);)+
                 self.fuel_awards.grow(&mut capacity.fuel_awards);
                 self.divisions.grow(&mut capacity.division_sources);
                 self.division_presentation.reserve_sources(capacity.division_sources);
+                self.plans.reserve_units(capacity.division_sources);
                 self.division_presentation.grow_name_groups(
                     &mut capacity.division_presentation,
                     self.division_templates.naming_demand(),
                 );
                 self.registry.grow(&mut capacity.variant_registry);
+                self.attack_map.grow(&mut capacity.attack_map);
             }
             /// Spool-thread conversion only. Existing core slots survive.
             pub(crate) fn insert_tables(
                 &self,
+                hour: i32,
                 destination: &mut [TableInput; TABLE_COUNT],
                 conversion: &mut crate::spooling::SpoolConversion<'_, '_>,
             ) -> [i64; PACK_NAMES.len()] {
@@ -301,7 +349,7 @@ macro_rules! packs {
                 let mut slots = costs.iter_mut();
                 $(let started = qpc();
                 if crate::allocation::failed() { return costs; }
-                for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, conversion)) { destination[id.index()] = view; }
+                for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, self.$pack, conversion, self, hour)) { destination[id.index()] = view; }
                 *slots.next().unwrap() = qpc() - started;)+
                 if crate::allocation::failed() { return costs; }
                 if let Some(reason) = self.ordinary_failure {
@@ -407,7 +455,15 @@ pub mod construction;
 pub mod construction_ic;
 pub mod country_appearance;
 pub mod country_counters;
+pub(crate) mod country_directed_wars;
 pub mod country_factories;
+mod country_movement_inputs;
+pub(crate) mod country_naval_movement_inputs;
+pub(crate) mod reserved_visibility;
+pub(crate) use country_naval_movement_inputs::{
+    Capacities as NavalMovementCapacities, SharedCapacities as NavalMovementSharedCapacities,
+    Work as NavalMovementWork,
+};
 pub mod country_stability;
 pub mod country_tactic_unlocks;
 pub mod division_counts;
@@ -461,11 +517,19 @@ pub mod raid_state_inputs;
 pub mod raid_target_statuses;
 pub mod railway_guns;
 pub mod saved_event_targets;
+mod selected_transport_inputs;
 pub mod session;
 pub mod ship_models;
 pub mod slice_reads;
 pub mod state_flags;
 pub mod supply_trains;
+pub(crate) mod transport_convoys;
+pub(crate) mod transport_demand;
+pub(crate) mod transport_mission_shared;
+mod transport_naval_search;
+mod transport_receivers;
+pub(crate) mod transport_risk_ships;
+pub(crate) mod transport_spotting_context;
 pub mod visibility;
 pub mod war_overview;
 pub mod weather;
@@ -551,6 +615,31 @@ packs!(
 );
 
 impl Capacities {
+    pub(crate) fn raise_reserved_visibility(&mut self, slots: usize) {
+        self.country_appearance.raise_reverse_visibility(slots);
+    }
+    /// The States census and its numeric supplement share the same source
+    /// visitor, so its pointer arena must hold the final core States capacity.
+    pub(crate) fn raise_for_states(&mut self, states: usize) {
+        self.state_flags.raise_for_states(states);
+    }
+
+    /// Every range may query any land terrain. Rail manager validation bounds
+    /// both rail supplements by the same positive physical province slots.
+    pub(crate) fn raise_for_fresh_map(
+        &mut self,
+        provinces: usize,
+        terrains: usize,
+    ) -> std::io::Result<()> {
+        self.naval_history.rows[2] = self.naval_history.rows[2].max(provinces.saturating_sub(1));
+        self.attack_map.0.provinces = self.attack_map.0.provinces.max(provinces);
+        // All province definitions bound the observed terrain domain; LAND's
+        // existing hint does not cover every definition used by attack inputs.
+        self.division_presentation.raise_attack_domain(provinces);
+        self.division_eta_inputs
+            .raise_for_fresh_map(provinces, terrains)
+    }
+
     /// Independent off-thread hints must retry after load even if the registry
     /// did not grow. One failed family cannot withhold another family's demand.
     pub(crate) fn presize_live_inputs(
@@ -587,6 +676,21 @@ impl Capacities {
         if let Some(regions) = engine::cgame_state::read_strategic_region_count(memory, base) {
             self.raise_for_regions(regions as usize);
         }
+        match transport_demand::observe(memory, base) {
+            Ok(Some(demand)) => {
+                self.country_appearance.raise_for_transport(&demand);
+                self.naval_mission_inputs
+                    .raise_for_transport(demand.missions);
+                self.air.raise_for_transport(demand.air);
+                if let Some(reason) = demand.refusal {
+                    failure.get_or_insert(reason);
+                }
+            }
+            Ok(None) => {}
+            Err(reason) => {
+                failure.get_or_insert(reason);
+            }
+        }
         failure.map_or(Ok(()), Err)
     }
 
@@ -597,6 +701,10 @@ impl Capacities {
     /// Presize every table whose rows scale with the number of country slots,
     /// so a large mod's first hour is not truncated. Never lowers a capacity.
     pub fn raise_for_countries(&mut self, slots: usize) {
+        // country_scale slots is the largest country/link/tag registry count.
+        self.attack_map.0.countries = self.attack_map.0.countries.max(slots);
+        self.attack_map.0.links = self.attack_map.0.links.max(slots);
+        self.plans.raise_for_countries(slots);
         crate::country_scale::raise(
             &mut self.event_feed.events,
             crate::country_scale::rows(slots, 2),
@@ -622,13 +730,11 @@ impl Capacities {
         self.raid_state_inputs.raise_for_countries(slots);
         self.air_relations.raise_for_countries(slots);
         self.air_histories.raise_for_countries(slots);
-        self.model_inputs.raise_for_countries(slots);
-        self.hired_advisors.raise_for_countries(slots);
+
         self.country_factories.raise_for_countries(slots);
         self.politics.raise_for_countries(slots);
         self.war_overview.raise_for_countries(slots);
         self.division_counts.raise_for_countries(slots);
-        self.industrial_organisations.raise_for_countries(slots);
         self.production_modifiers.raise_for_countries(slots);
         self.country_stability.raise_for_countries(slots);
         self.country_tactic_unlocks.raise_for_countries(slots);
@@ -681,6 +787,8 @@ impl Capacities {
         crate::country_scale::raise(&mut self.intel.rows[9], demand.operation_rows);
         self.operation_outcomes
             .raise_for_operations(demand.operation_rows);
+        self.operation_outcomes
+            .raise_for_descriptions(demand.operation_description_bytes);
         crate::country_scale::raise(&mut self.intel.rows[10], demand.operation_assignments);
         crate::country_scale::raise(
             &mut self.intel.operation_descriptions,
@@ -699,6 +807,8 @@ impl Capacities {
             .raise_for_effect_inputs(demand.timed_ideas, demand.decision_random_items);
         self.country_counters
             .raise_for_effect_rosters(demand.effect_rosters);
+        self.country_counters
+            .raise_for_co_belligerents(demand.co_belligerents);
         self.intel
             .raise_for_captured_operatives(demand.captured_operatives);
         self.construction
@@ -745,36 +855,42 @@ impl Captured {
         self.intel.share_country_intel(home);
     }
 
-    pub(crate) fn capture_operation_outcomes(&mut self) {
-        self.overhead[TableId::OperationCompletions.index()] += self.operation_outcomes.capture();
+    pub(crate) fn country_intel_sample(
+        &self,
+    ) -> Option<Result<replay::rows::ReservedCountryIntelSample, &'static str>> {
+        self.intel.country_intel_sample()
     }
+
+    pub(crate) fn take_combat_progress(&mut self) -> combat_progress::Captured {
+        std::mem::replace(
+            &mut self.combat_progress,
+            combat_progress::Captured::with_capacities(&Default::default()),
+        )
+    }
+
+    pub(crate) fn restore_combat_progress(
+        &mut self,
+        progress: combat_progress::Captured,
+        ticks: u64,
+    ) {
+        self.land_events.lost_casualty_reads(progress.lost_reads());
+        self.combat_progress = progress;
+        self.overhead[TableId::LandCombatProgress.index()] += ticks;
+    }
+
     pub(crate) fn operation_outcomes(&self) -> &operation_outcomes::Captured {
         &self.operation_outcomes
     }
-    /// Freeze this callback's primary activity before any shared source visitor.
-    /// Hand the production line hook log over into this frame, from the
-    /// clocked callback (`line_output::drain`).
-    pub(crate) fn drain_line_output(&mut self) {
-        self.line_output.drain();
-    }
-    pub(crate) fn drain_event_feed(&mut self, hour: i32, partial: bool) {
-        self.event_feed.drain(hour, partial);
-    }
+
     pub(crate) fn discard_event_feed(&mut self) {
         self.event_feed.discard();
     }
     pub(crate) fn event_feed(&self) -> &event_feed::Captured {
         &self.event_feed
     }
-    pub(crate) fn drain_fuel_awards(&mut self) {
-        self.fuel_awards.drain();
-    }
+
     pub(crate) fn fuel_awards(&self) -> &fuel_awards::Captured {
         &self.fuel_awards
-    }
-
-    pub(crate) fn drain_peace_settlements(&mut self, continuous: bool) {
-        self.peace_settlements.drain(continuous);
     }
 
     /// The sample's load signal, which names the session the Combat Log's
@@ -783,21 +899,9 @@ impl Captured {
         self.combat_log.set_signal(signal);
     }
 
-    pub(crate) fn drain_land_events(&mut self, hour: i32, invalidating: bool) -> u64 {
-        let ticks = self.land_events.drain(hour, invalidating);
-        self.overhead[TableId::LandEventCoverage.index()] += ticks;
-        ticks
-    }
-
     /// The production ticks this frame handed over, for the spool's totals.
     pub(crate) fn line_output(&self) -> &line_output::Captured {
         &self.line_output
-    }
-
-    /// Hand the construction line hook log over into this frame, from the
-    /// clocked callback (`construction_ic::drain`).
-    pub(crate) fn drain_construction_ic(&mut self) {
-        self.construction_ic.drain();
     }
 
     /// The construction output this frame handed over, for the spool's totals.
@@ -876,6 +980,44 @@ impl Captured {
         self.division_presentation.observe_naming(work)
     }
 
+    pub(crate) fn observe_fresh_eta_inputs(
+        &self,
+        work: &mut division_eta_inputs::FreshWork,
+    ) -> std::io::Result<()> {
+        work.observe(&self.division_eta_inputs)
+    }
+
+    pub(crate) fn observe_naval_movement(
+        &self,
+        work: &mut NavalMovementWork,
+    ) -> std::io::Result<()> {
+        self.country_counters
+            .observe_naval_movement(work, self.country_appearance.naval_movement())
+    }
+
+    pub(crate) fn observe_reserved_visibility(
+        &self,
+        work: &mut reserved_visibility::Work,
+    ) -> std::io::Result<()> {
+        self.country_appearance.observe_reverse_visibility(work)
+    }
+
+    pub(crate) fn observe_battle_plan_child_fronts(&self, work: &mut plans::ChildFrontWork) {
+        work.observe(&self.plans)
+    }
+
+    pub(crate) fn observe_battle_plan_execution(&self, work: &mut plans::ExecutionWork) {
+        let (bytes, outcome) = self.division_presentation.order_transport_storage();
+        work.observe(&self.plans, bytes, outcome);
+    }
+
+    pub(crate) fn observe_railway_inputs(
+        &self,
+        work: &mut crate::acquisition_states::InputWork,
+    ) -> std::io::Result<()> {
+        self.naval_history.observe_railway_inputs(work)
+    }
+
     pub(crate) fn observe_counter_tooltip_inputs(
         &self,
         work: &mut division_presentation::CounterWork,
@@ -883,6 +1025,7 @@ impl Captured {
         self.division_presentation.observe_counter_inputs(work)?;
         self.group_counters.observe_counter_inputs(work);
         self.railway_guns.observe_supply(&mut work.supply);
+        self.naval_counters.observe_supply(&mut work.supply);
         Ok(())
     }
 
@@ -910,9 +1053,35 @@ impl Captured {
         self.intel.observe_seeds(work);
     }
 
-    /// Seal native observations before the hourly acquisition workers run.
-    pub(crate) fn capture_politics(&mut self) {
-        self.overhead[TableId::PoliticsCaptureCoverage.index()] += self.politics.capture();
+    pub(crate) fn set_attack_guard(&mut self, guard: Result<(), &'static str>) {
+        self.attack_guard = guard;
+    }
+
+    pub(crate) fn guard_selected_retreat(&mut self, layout: Option<&crate::fixed_layout::Layout>) {
+        self.division_presentation.guard_selected_retreat(layout);
+    }
+    pub(crate) fn province_area_matches(
+        &self,
+        province: u32,
+        previous: &replay::rows::Recorded<Option<replay::rows::ProvinceAreaInputs>>,
+    ) -> bool {
+        self.country_counters
+            .province_area_matches(province, previous)
+    }
+    pub(crate) fn province_area(&self, province: u32) -> Option<replay::rows::ProvinceAreaInputs> {
+        self.country_counters.province_area(province)
+    }
+    pub(crate) fn province_attack(&self, province: u32) -> replay::rows::ProvinceAttackInputs {
+        self.attack_map.province(province)
+    }
+    pub(crate) fn observe_attack_inputs(&self, hour: i32, work: &mut attack_inputs::Work) {
+        work.observe(
+            hour,
+            &self.division_presentation.attack,
+            &self.group_counters.attack,
+            &self.attack_map,
+            self.weather.attack_refusals(),
+        );
     }
 
     pub(crate) fn politics(&self) -> &politics::Captured {
@@ -1024,6 +1193,7 @@ impl Captured {
             store.forget();
         }
         let store = request.store.take();
+        let failed = report.is_err();
         self.presentation_report = Some(match report {
             Ok(report) => report,
             Err(failure) => request.captured.fail_owned_capture(match failure {
@@ -1035,6 +1205,9 @@ impl Captured {
                 }
             }),
         });
+        request
+            .captured
+            .stamp_attack_epoch(request.context.hour, failed);
         self.division_presentation = request.captured;
         let mut store = store;
         let bans = self.division_presentation.outcomes()[division_presentation::BANS];
@@ -1159,8 +1332,15 @@ impl Captured {
         }
     }
 
+    pub(crate) fn observe_directed_wars(&self, work: &mut country_directed_wars::Work) {
+        self.visibility.directed_wars().observe(work);
+    }
+
     pub(crate) fn weather_suspend_failure(&self) -> Option<&'static str> {
         self.visibility.weather_suspend_failure()
+    }
+    pub(crate) fn weather_display_failure(&self) -> Option<&'static str> {
+        self.weather.display_failure()
     }
 
     /// Return the research rows and charge their costs to the family report.
@@ -1415,9 +1595,18 @@ impl Captured {
         memory: &impl Memory,
         context: supply_trains::CaptureContext,
     ) -> supply_trains::CaptureReport {
-        self.supply_trains_report
-            .take()
-            .unwrap_or_else(|| self.supply_trains.capture_owned(memory, context))
+        self.supply_trains_report.take().unwrap_or_else(|| {
+            #[cfg(test)]
+            {
+                self.supply_trains.capture_owned(memory, context)
+            }
+            #[cfg(not(test))]
+            {
+                let _ = (memory, context);
+                self.supply_trains
+                    .fail_owned_capture("supply_trains acquisition not supplied")
+            }
+        })
     }
 
     /// Loan one share of the character roster.
@@ -1469,9 +1658,18 @@ impl Captured {
         memory: &impl Memory,
         context: character_portraits::CaptureContext,
     ) -> character_portraits::CaptureReport {
-        self.character_portraits_report
-            .take()
-            .unwrap_or_else(|| self.character_portraits.capture_owned(memory, context))
+        self.character_portraits_report.take().unwrap_or_else(|| {
+            #[cfg(test)]
+            {
+                self.character_portraits.capture_owned(memory, context)
+            }
+            #[cfg(not(test))]
+            {
+                let _ = (memory, context);
+                self.character_portraits
+                    .fail_owned_capture("character_portraits acquisition not supplied")
+            }
+        })
     }
 
     /// Loan the complete ProvinceUnitOrder rows and handle arena to the flat
@@ -1518,9 +1716,18 @@ impl Captured {
         memory: &impl Memory,
         context: province_unit_order::CaptureContext,
     ) -> province_unit_order::CaptureReport {
-        self.province_unit_order_report
-            .take()
-            .unwrap_or_else(|| self.province_unit_order.capture_owned(memory, context))
+        self.province_unit_order_report.take().unwrap_or_else(|| {
+            #[cfg(test)]
+            {
+                self.province_unit_order.capture_owned(memory, context)
+            }
+            #[cfg(not(test))]
+            {
+                let _ = (memory, context);
+                self.province_unit_order
+                    .fail_owned_capture("province_unit_order acquisition not supplied")
+            }
+        })
     }
 
     /// Account for the reusable boxes and any payload they currently own.
@@ -1596,6 +1803,8 @@ impl Captured {
         countries: &Arc<engine::country_memory::Cache>,
         base: usize,
         state: usize,
+        hour: i32,
+        transport_guard: Result<(), &'static str>,
     ) -> crate::acquisition_jobs::AirMissionsRequest {
         let mut pack = self.missions_spare.take().expect("missions spare present");
         std::mem::swap(&mut self.air, &mut pack);
@@ -1604,6 +1813,10 @@ impl Captured {
             base,
             game_state: state,
             parent: self.air_root.unwrap_or(MISSING),
+            hour,
+            transport_guard,
+            transport_admission: crate::transport_admission::current(base, state, hour),
+            transport_regions: self.country_appearance.take_transport_regions(hour),
             pack,
             histories: self.air_histories.take_parts(),
         }
@@ -1620,6 +1833,15 @@ impl Captured {
             request
                 .pack
                 .fail_missions("air mission acquisition failed", &mut request.histories);
+        }
+        if self
+            .country_appearance
+            .restore_transport_regions(request.transport_regions)
+            .is_err()
+        {
+            // Association refusal poisons only this optional current packet;
+            // independent old air rows and source observations still return.
+            request.pack.refuse_transport_regions();
         }
         std::mem::swap(&mut self.air, &mut request.pack);
         self.missions_spare = Some(request.pack);
@@ -1686,15 +1908,18 @@ impl Captured {
     /// Loan the order census and the plans to the Orders job.
     pub(crate) fn take_orders_request(
         &mut self,
+        countries: &Arc<engine::country_memory::Cache>,
         orders: &mut Orders,
         base: usize,
         game_state: usize,
     ) -> crate::acquisition_jobs::OrdersRequest {
         crate::acquisition_jobs::OrdersRequest {
+            countries: Arc::clone(countries),
             base,
             game_state,
             orders: std::mem::replace(orders, Orders::vacant()),
             plans: std::mem::replace(&mut self.plans, plans::Captured::vacant()),
+            group_source: None,
         }
     }
 
@@ -1708,8 +1933,10 @@ impl Captured {
         if !completed {
             request.fail("army order acquisition failed");
         }
-        *orders = request.orders;
-        self.plans = request.plans;
+        // Request Drop owns an unreturned Naval loan on every unwind path.
+        // Swap the capture buffers back instead of moving out of that owner.
+        std::mem::swap(orders, &mut request.orders);
+        std::mem::swap(&mut self.plans, &mut request.plans);
     }
 
     /// The job walks the ship census into `census` first; the ships seed the
@@ -1719,12 +1946,13 @@ impl Captured {
         countries: &Arc<engine::country_memory::Cache>,
         base: usize,
         state: usize,
+        hour: i32,
         census: ShipCensus,
     ) -> crate::acquisition_jobs::ShipModelsRequest {
         self.ship_models_report = None;
         crate::acquisition_jobs::ShipModelsRequest {
             countries: Arc::clone(countries),
-            context: ship_models::CaptureContext { base },
+            context: ship_models::CaptureContext::current(base, state, hour),
             game_state: state,
             captured: std::mem::replace(&mut self.ship_models, ship_models::Captured::vacant()),
             census,
@@ -1749,6 +1977,7 @@ impl Captured {
             request.census.fail(reason);
             self.ship_models_report = Some(request.captured.fail_owned_capture(reason));
         }
+        request.captured.set_context(request.context);
         self.ship_models = request.captured;
         request.census
     }
@@ -1768,7 +1997,7 @@ impl Captured {
         let parts = self
             .ship_models
             .split_details(ship_models::parts_for(self.ship_models.census_len()));
-        let context = ship_models::CaptureContext { base };
+        let context = self.ship_models.capture_context(base);
         for (part, request) in requests.iter_mut().enumerate().take(parts).skip(1) {
             *request = Some(crate::acquisition_jobs::ShipModelDetailsRequest {
                 countries: Arc::clone(countries),
@@ -1873,21 +2102,27 @@ impl Captured {
         memory: &impl Memory,
         context: intel::CaptureContext,
     ) -> intel::CaptureReport {
-        if let Some(mut report) = self.intel_residual_report.take() {
-            let delegated = self.intel.capture_delegated(memory, context);
-            for index in [0, 13, 14] {
-                report.ticks[index] = delegated.ticks[index];
-            }
+        if let Some(report) = self.intel_residual_report.take() {
             report
         } else {
-            let ticks = self.intel.capture(
-                memory,
-                context.base,
-                context.game_state,
-                context.hour,
-                context.force_full,
-            );
-            intel::CaptureReport { ticks }
+            #[cfg(test)]
+            {
+                intel::CaptureReport {
+                    ticks: self.intel.capture(
+                        memory,
+                        context.base,
+                        context.game_state,
+                        context.hour,
+                        context.force_full,
+                    ),
+                }
+            }
+            #[cfg(not(test))]
+            {
+                let _ = memory;
+                self.intel
+                    .fail_residual_capture(context, "residual Intel acquisition not supplied")
+            }
         }
     }
 
@@ -1984,6 +2219,25 @@ impl Captured {
     /// pooled typed rows before the spool ready-queue handoff.
     pub(crate) fn naval_pilot(&mut self) -> &mut naval_history::Captured {
         &mut self.naval_history
+    }
+
+    pub(crate) fn install_reserved_land_certificate(&mut self) {
+        if !self.country_appearance.reserved_land_certificate_ready() {
+            self.naval_history
+                .withhold_reserved_land_certificate("reserved naming singleton prefix unavailable");
+        }
+        self.country_appearance
+            .install_land_theatre_count(self.naval_history.reserved_land_count());
+    }
+
+    pub(crate) fn decode_naval_payload(
+        &mut self,
+        base: usize,
+        job: &naval_history::NavalJob,
+        decode_ticks: &mut [u64; naval_history::NAVAL_PACK_N],
+    ) {
+        naval_history::decode_naval_payload(&mut self.naval_history, base, job, decode_ticks);
+        self.install_reserved_land_certificate();
     }
 
     /// Decode-worker handoff for the hourly session family (copy/decode
@@ -2183,6 +2437,16 @@ impl Captured {
     /// Source copies remain inside the enclosing Divisions measurement. The
     /// shared read group includes equipment and upgrade tables without per-row
     /// timers or repeated source censuses for individual tables.
+    pub(crate) fn install_division_sources(
+        &mut self,
+        rows: &mut Vec<DivisionSource>,
+        outcome: Outcome,
+    ) {
+        std::mem::swap(&mut self.divisions.first, rows);
+        self.divisions.seen = outcome.len();
+        self.divisions.required = outcome.len();
+        self.divisions.outcome = outcome;
+    }
     pub(crate) fn visit_division_source(&mut self, source: DivisionSource) {
         self.divisions.visit_source(source);
     }
@@ -2234,8 +2498,25 @@ impl Captured {
         // worker owns in production. Production assembly never acquires it.
         if self.ordinary_ticks.is_none() && self.ordinary_failure.is_none() {
             let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-            let mut request = self.take_ordinary_request(&countries, base, game_state);
-            request.packs.capture(memory, base, game_state);
+            let mut request = self.take_ordinary_request(
+                &countries,
+                base,
+                game_state,
+                current_hour,
+                Ok(()),
+                NavalMissionLoan {
+                    force_full,
+                    ..Default::default()
+                },
+            );
+            request.packs.capture(
+                memory,
+                base,
+                game_state,
+                request.unit_inputs.as_deref(),
+                (request.hour, &mut request.naval_missions),
+                request.fresh_modifier_guard,
+            );
             self.restore_ordinary_request(request, None);
         }
         if self.presentation_report.is_none() {
@@ -2251,6 +2532,30 @@ impl Captured {
                 None,
             ));
         }
+        let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+        let mut provinces = Vec::new();
+        if self.intel_residual_report.is_none() {
+            self.intel_residual_report = Some(self.intel.capture_residual(
+                memory,
+                intel::CaptureContext {
+                    base,
+                    game_state,
+                    hour: current_hour,
+                    force_full,
+                },
+            ));
+        }
+        let mut final_request = self.take_final_inputs_request(
+            &countries,
+            base,
+            game_state,
+            current_hour,
+            force_full,
+            &mut provinces,
+            Outcome::Rows { len: 0 },
+        );
+        let report = final_request.capture(memory);
+        self.restore_final_inputs_request(final_request, report, None, &mut provinces);
         let mut ticks = self.capture_tables(memory, base, game_state, current_hour, force_full);
         self.capture_tables_late(
             memory,
@@ -2298,6 +2603,7 @@ impl Captured {
                 scatter(&$pack::TABLES, cost, &mut ticks);
             )+};
         }
+        #[cfg(test)]
         macro_rules! staggered {
             ($($pack:ident),+ $(,)?) => {$(
                 let cost = self.$pack.capture(memory, base, game_state, current_hour, force_full);
@@ -2305,16 +2611,14 @@ impl Captured {
             )+};
         }
         // StateFlags was read by the States worker; capture consumes its ticks.
-        ordinary!(
-            weather,
-            state_flags,
-            equipment_destruction,
-            naval_result_sources,
-            experience_gains,
-            event_feed,
-            air_losses,
-            building_bombing
-        );
+        #[cfg(test)]
+        let weather_ticks =
+            self.weather
+                .capture_at(memory, base, game_state, current_hour, self.attack_guard);
+        #[cfg(not(test))]
+        let weather_ticks = self.weather.finish_owned_capture(self.attack_guard);
+        scatter(&weather::TABLES, weather_ticks, &mut ticks);
+        ordinary!(state_flags, event_feed);
         if let Some(done) = self.ordinary_ticks.take() {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
@@ -2329,55 +2633,93 @@ impl Captured {
                 *total += cost;
             }
         } else {
-            staggered!(
-                peace_bids,
-                map_names,
-                division_templates,
-                visibility,
-                faction_theatres,
-                model_inputs,
-                modifier_definitions,
-                hired_advisors,
-                character_inputs,
-                country_tactic_unlocks,
-                logistics,
-                combat_log,
-                country_factories,
-                war_overview,
-                industrial_organisations,
-                production_modifiers
-            );
-            // No loaned fingerprint store: only the hour's slice is read.
-            let cost = self.country_stability.capture(
-                memory,
-                base,
-                game_state,
-                current_hour,
-                force_full,
-                None,
-            );
-            scatter(&country_stability::TABLES, cost, &mut ticks);
+            #[cfg(test)]
+            {
+                staggered!(
+                    peace_bids,
+                    map_names,
+                    division_templates,
+                    faction_theatres,
+                    model_inputs,
+                    modifier_definitions,
+                    hired_advisors,
+                    character_inputs,
+                    country_tactic_unlocks,
+                    logistics,
+                    combat_log,
+                    country_factories,
+                    war_overview,
+                    industrial_organisations,
+                    production_modifiers
+                );
+                scatter(
+                    &visibility::TABLES,
+                    self.visibility.capture_growing(
+                        memory,
+                        base,
+                        game_state,
+                        current_hour,
+                        force_full,
+                    ),
+                    &mut ticks,
+                );
+                // No loaned fingerprint store: only the hour's slice is read.
+                let cost = self.country_stability.capture(
+                    memory,
+                    base,
+                    game_state,
+                    current_hour,
+                    force_full,
+                    None,
+                );
+                scatter(&country_stability::TABLES, cost, &mut ticks);
+            }
+            #[cfg(not(test))]
+            {
+                self.fail_missing_slow(current_hour, force_full);
+            }
         }
         if let Some(done) = self.raid_state_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
             }
         } else {
-            staggered!(raid_state_inputs);
+            #[cfg(test)]
+            {
+                staggered!(raid_state_inputs);
+            }
+            #[cfg(not(test))]
+            {
+                self.fail_missing_raid_state(current_hour, force_full);
+            }
         }
         if let Some(done) = self.raid_targets_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
             }
         } else {
-            staggered!(raid_target_statuses);
+            #[cfg(test)]
+            {
+                staggered!(raid_target_statuses);
+            }
+            #[cfg(not(test))]
+            {
+                self.fail_missing_raid_targets(current_hour, force_full);
+            }
         }
         if let Some(done) = self.raid_launch_ticks.replace([0; TABLE_COUNT]) {
             for (total, cost) in ticks.iter_mut().zip(done) {
                 *total += cost;
             }
         } else {
-            staggered!(raid_launch_inputs);
+            #[cfg(test)]
+            {
+                staggered!(raid_launch_inputs);
+            }
+            #[cfg(not(test))]
+            {
+                self.fail_missing_raid_launch(current_hour, force_full);
+            }
         }
         // The parts' copies are decoded later, off the game thread.
         let cost = if self.air_relations.staged() {
@@ -2391,7 +2733,20 @@ impl Captured {
                 *total += cost;
             }
         } else {
-            staggered!(fog, construction, projects);
+            #[cfg(test)]
+            {
+                scatter(
+                    &fog::TABLES,
+                    self.fog
+                        .capture_growing(memory, base, game_state, current_hour, force_full),
+                    &mut ticks,
+                );
+                staggered!(construction, projects);
+            }
+            #[cfg(not(test))]
+            {
+                self.fail_missing_gated(current_hour, force_full);
+            }
         }
         ticks[TableId::StateBuildings.index()] =
             self.construction.finish_buildings(current_hour, force_full);
@@ -2416,7 +2771,6 @@ impl Captured {
         let supply_report =
             self.acquire_supply_trains(memory, supply_trains::CaptureContext { base, game_state });
         scatter(&supply_trains::TABLES, supply_report.ticks, &mut ticks);
-        staggered!(economy, session, characters);
         let intel_context = intel::CaptureContext {
             base,
             game_state,
@@ -2459,23 +2813,40 @@ impl Captured {
                 *total += cost;
             }
         } else {
-            let mut packs = self.late_spare.take().expect("late spare present");
-            self.swap_late(&mut packs, orders);
-            // Without a loaned held table, RaidAirScores reads every pair.
-            packs.capture(
-                memory,
-                base,
-                game_state,
-                current_hour,
-                force_full,
-                self.unit_inputs.as_deref(),
-                &mut engine::raid_air_scores::Held::default(),
-            );
-            for (total, cost) in ticks.iter_mut().zip(packs.ticks) {
-                *total += cost;
+            #[cfg(test)]
+            {
+                let mut packs = self.late_spare.take().expect("late spare present");
+                self.swap_late(&mut packs, orders);
+                // Without a loaned held table, RaidAirScores reads every pair.
+                packs.capture(
+                    memory,
+                    base,
+                    game_state,
+                    current_hour,
+                    force_full,
+                    self.unit_inputs.as_deref(),
+                    &mut engine::raid_air_scores::Held::default(),
+                );
+                let cost = self.plans.capture_unit_transports(
+                    memory,
+                    base,
+                    game_state,
+                    self.unit_inputs.as_deref(),
+                    &packs.orders,
+                );
+                packs.ticks[TableId::DivisionMovement.index()] += cost;
+                for (total, cost) in ticks.iter_mut().zip(packs.ticks) {
+                    *total += cost;
+                }
+                self.swap_late(&mut packs, orders);
+                self.late_spare = Some(packs);
+                self.plans
+                    .install_order_transport(&mut self.division_presentation);
             }
-            self.swap_late(&mut packs, orders);
-            self.late_spare = Some(packs);
+            #[cfg(not(test))]
+            {
+                self.fail_missing_late(current_hour, force_full, orders);
+            }
         }
         // The parts' copies are decoded later, off the game thread.
         let cost = if self.air_histories.staged() {
@@ -2486,20 +2857,23 @@ impl Captured {
         scatter(&air_histories::TABLES, cost, ticks);
         scatter(&plans::TABLES, self.plans.capture(), ticks);
         let ticks = &mut *ticks;
-        let cost = self.production.acquire(
-            memory,
-            base,
-            game_state,
-            self.divisions.sources(),
-            current_hour,
-            force_full,
-        );
-        scatter(&production::TABLES, cost, ticks);
-        let divisions = self.divisions.sources();
-        let cost = self
-            .new_divisions
-            .capture(memory, base, divisions.rows, divisions.outcome);
-        scatter(&new_divisions::TABLES, cost, ticks);
+        if let Some(report) = self.final_inputs_ticks.take() {
+            let [attack, divisions, experience] = report.snapshots;
+            scatter(&production::TABLES, report.production, ticks);
+            scatter(&economy::TABLES, report.economy, ticks);
+            scatter(&session::TABLES, report.session, ticks);
+            scatter(&characters::TABLES, report.characters, ticks);
+            scatter(&equipment_destruction::TABLES, report.destruction, ticks);
+            scatter(&naval_result_sources::TABLES, report.naval_sources, ticks);
+            scatter(&air_losses::TABLES, report.air_losses, ticks);
+            scatter(&building_bombing::TABLES, report.bombing, ticks);
+            for (table, cost) in intel::TABLES.into_iter().zip(report.intel_delegated) {
+                ticks[table.index()] += cost;
+            }
+            ticks[TableId::CountryCounterInputs.index()] += attack;
+            ticks[TableId::NewDivisionEquipment.index()] += divisions;
+            ticks[TableId::CountryExperienceGains.index()] += experience;
+        }
         let report = self.acquire_presentation();
         scatter(&division_presentation::TABLES, report.ticks, ticks);
         let eta_inputs_report = self.acquire_eta_inputs();
@@ -2531,7 +2905,7 @@ impl Captured {
     /// executed exactly once by the caller before this function. An accepted
     /// panic/stop is terminal: the restored report suppresses any detail retry.
     pub(crate) fn capture_ship_models(&mut self, memory: &impl Memory, base: usize) -> u64 {
-        let context = ship_models::CaptureContext { base };
+        let context = ship_models::CaptureContext::legacy(base);
         let report = self.acquire_ship_models(memory, context);
         let table = TableId::ShipModels;
         if self.ship_models.has_terminal_failure() {
@@ -2795,7 +3169,7 @@ impl Registry {
         }
     }
     fn grow(&mut self, capacity: &mut usize) {
-        *capacity = (*capacity).max(self.rows.rows.capacity());
+        *capacity = (*capacity).max(self.rows.outcome.len());
         self.rows.grow(capacity);
     }
     pub(crate) fn allocated_bytes(&self) -> usize {

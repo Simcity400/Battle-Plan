@@ -1,5 +1,6 @@
 //! Proven field, wire and meaning history; no translation or old decoders.
 use super::TableId;
+use crate::FORMAT_VERSION;
 
 /// Earlier history has not been audited for today's readers.
 pub const PROVEN_FROM: u16 = 91;
@@ -96,7 +97,7 @@ pub struct LastChange {
     pub appended: &'static [AppendedField],
 }
 
-/// All audited row diffs preserve keys, field kinds and prefix order.
+/// Audited changes retain enough framing to skip incompatible rows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeKind {
     Unchanged,
@@ -159,6 +160,50 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         history[i].subject = Subject::Table(TableId::ALL[i]);
         i += 1;
     }
+    history[TableId::ResearchTechnologies.index()] = table(
+        TableId::ResearchTechnologies,
+        FORMAT_VERSION,
+        "technology-occurrences",
+    );
+    // The changed key has the same width; the old payload's five scalar
+    // fields can be skipped by the compatibility reader without decoding rows.
+    history[TableId::ResearchTechnologies.index()].appended = &[
+        AppendedField {
+            index: 5,
+            name: "technology_handle",
+            introduced: FORMAT_VERSION,
+        },
+        AppendedField {
+            index: 6,
+            name: "applied_bonus_count",
+            introduced: FORMAT_VERSION,
+        },
+    ];
+    history[TableId::TechnologyDefinitions.index()] = table(
+        TableId::TechnologyDefinitions,
+        FORMAT_VERSION,
+        "technology-occurrences",
+    );
+    history[TableId::ResearchSlots.index()] = appended_at(
+        TableId::ResearchSlots,
+        FORMAT_VERSION,
+        "technology-occurrences",
+        &[AppendedField {
+            index: 5,
+            name: "database_index",
+            introduced: FORMAT_VERSION,
+        }],
+    );
+    history[TableId::ResearchInputs.index()] = appended_at(
+        TableId::ResearchInputs,
+        FORMAT_VERSION,
+        "technology-occurrences",
+        &[AppendedField {
+            index: 15,
+            name: "database_index",
+            introduced: FORMAT_VERSION,
+        }],
+    );
     let politics = [
         TableId::CountryPowerDaily,
         TableId::CountryPowerChanges,
@@ -276,8 +321,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         table(TableId::LandCombatDetails, 93, "9fb09a565f");
     history[TableId::SimulationFeatures.index()] = appended_at(
         TableId::SimulationFeatures,
-        EFFECT_INPUTS_FORMAT,
-        "ffd3e03cc6",
+        FORMAT_VERSION,
+        "pending political runtime inputs",
         &[
             AppendedField {
                 index: 2,
@@ -289,18 +334,129 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 name: "instant_decisions",
                 introduced: EFFECT_INPUTS_FORMAT,
             },
+            AppendedField {
+                index: 4,
+                name: "runtime_scalars",
+                introduced: FORMAT_VERSION,
+            },
         ],
     );
-    history[TableId::WeatherProvinces.index()] = table(TableId::WeatherProvinces, 93, "9fb09a565f");
+    history[TableId::Provinces.index()] = appended_at(
+        TableId::Provinces,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[
+            AppendedField {
+                index: 7,
+                name: "attack",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 8,
+                name: "selected_areas",
+                introduced: FORMAT_VERSION,
+            },
+        ],
+    );
+    history[TableId::CountryWars.index()] = appended_at(
+        TableId::CountryWars,
+        FORMAT_VERSION,
+        "pending selected route inputs",
+        &[AppendedField {
+            index: 3,
+            name: "ordered",
+            introduced: FORMAT_VERSION,
+        }],
+    );
+    history[TableId::WeatherRegions.index()] = appended_at(
+        TableId::WeatherRegions,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[AppendedField {
+            index: 7,
+            name: "attack",
+            introduced: FORMAT_VERSION,
+        }],
+    );
+    history[TableId::WeatherProvinces.index()] = table(
+        TableId::WeatherProvinces,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+    );
     history[TableId::StateFlags.index()] = table(TableId::StateFlags, 93, "9fb09a565f");
     // WING_NAME extended the meaning of the existing packed entry family.
     history[TableId::RaidTooltipOperands.index()] =
         table(TableId::RaidTooltipOperands, 94, "ccf740b81d");
-    history[TableId::DivisionMovement.index()] = table(TableId::DivisionMovement, 96, "3cb8d1c09b");
+    history[TableId::DivisionMovement.index()] = table(
+        TableId::DivisionMovement,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+    );
     history[TableId::CountryAppearance.index()] = table(
         TableId::CountryAppearance,
         EFFECT_INPUTS_FORMAT,
         "ffd3e03cc6",
+    );
+    history[TableId::States.index()] = appended_at(
+        TableId::States,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[
+            AppendedField {
+                index: 6,
+                name: "continent",
+                introduced: OCCUPATION_GROUP_LAWS_FORMAT,
+            },
+            AppendedField {
+                index: 7,
+                name: "railway_infrastructure",
+                introduced: FORMAT_VERSION,
+            },
+        ],
+    );
+    history[TableId::RailCooldowns.index()] = appended_at(
+        TableId::RailCooldowns,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[
+            AppendedField {
+                index: 1,
+                name: "building",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 2,
+                name: "selection",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 3,
+                name: "selection_hour",
+                introduced: FORMAT_VERSION,
+            },
+        ],
+    );
+    history[TableId::ArmyOrderPlans.index()] = appended_at(
+        TableId::ArmyOrderPlans,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[
+            AppendedField {
+                index: 20,
+                name: "child_fronts",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 21,
+                name: "invasion_transports",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 22,
+                name: "execution",
+                introduced: FORMAT_VERSION,
+            },
+        ],
     );
     history[TableId::DivisionTemplates.index()] =
         table(TableId::DivisionTemplates, 97, "d313f6a6e3");
@@ -329,6 +485,21 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             name: "raw_mud",
             introduced: 93,
         },
+        AppendedField {
+            index: 6,
+            name: "local_hour",
+            introduced: FORMAT_VERSION,
+        },
+        AppendedField {
+            index: 7,
+            name: "night_factor",
+            introduced: FORMAT_VERSION,
+        },
+        AppendedField {
+            index: 8,
+            name: "display",
+            introduced: FORMAT_VERSION,
+        },
     ];
     history[TableId::StateFlags.index()].kind = ChangeKind::AppendedOnly;
     history[TableId::StateFlags.index()].appended = &[
@@ -344,12 +515,61 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         },
     ];
     history[TableId::DivisionMovement.index()].kind = ChangeKind::AppendedOnly;
-    history[TableId::DivisionMovement.index()].appended = &[AppendedField {
-        index: 14,
-        name: "strategic_action",
-        introduced: 96,
-    }];
+    history[TableId::DivisionMovement.index()].appended = &[
+        AppendedField {
+            index: 14,
+            name: "strategic_action",
+            introduced: 96,
+        },
+        AppendedField {
+            index: 15,
+            name: "withdrawal",
+            introduced: FORMAT_VERSION,
+        },
+        AppendedField {
+            index: 16,
+            name: "movement_priority",
+            introduced: FORMAT_VERSION,
+        },
+        AppendedField {
+            index: 17,
+            name: "order_transport",
+            introduced: FORMAT_VERSION,
+        },
+        AppendedField {
+            index: 18,
+            name: "fresh",
+            introduced: FORMAT_VERSION,
+        },
+        AppendedField {
+            index: 19,
+            name: "combat_references",
+            introduced: FORMAT_VERSION,
+        },
+        AppendedField {
+            index: 20,
+            name: "selected",
+            introduced: FORMAT_VERSION,
+        },
+        AppendedField {
+            index: 21,
+            name: "transport",
+            introduced: FORMAT_VERSION,
+        },
+    ];
+    history[TableId::RelationLinks.index()] = appended_at(
+        TableId::RelationLinks,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[AppendedField {
+            index: 1,
+            name: "transport_subject",
+            introduced: FORMAT_VERSION,
+        }],
+    );
     history[TableId::CountryAppearance.index()].kind = ChangeKind::AppendedOnly;
+    history[TableId::CountryAppearance.index()].format = FORMAT_VERSION;
+    history[TableId::CountryAppearance.index()].commit = "pending political runtime inputs";
     history[TableId::CountryAppearance.index()].appended = &[
         AppendedField {
             index: 18,
@@ -365,6 +585,11 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             index: 20,
             name: "original_tag_reference",
             introduced: EFFECT_INPUTS_FORMAT,
+        },
+        AppendedField {
+            index: 21,
+            name: "transport_convoys",
+            introduced: FORMAT_VERSION,
         },
     ];
     history[TableId::DivisionTemplates.index()].kind = ChangeKind::AppendedOnly;
@@ -530,8 +755,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     }
     history[TableId::DivisionStatus.index()] = appended_at(
         TableId::DivisionStatus,
-        EFFECT_INPUTS_FORMAT,
-        "ffd3e03cc6",
+        FORMAT_VERSION,
+        "pending political runtime inputs",
         &[
             AppendedField {
                 index: 16,
@@ -583,12 +808,17 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 name: "name",
                 introduced: EFFECT_INPUTS_FORMAT,
             },
+            AppendedField {
+                index: 26,
+                name: "attack",
+                introduced: FORMAT_VERSION,
+            },
         ],
     );
     history[TableId::OrdersGroupCounterInputs.index()] = appended_at(
         TableId::OrdersGroupCounterInputs,
-        EFFECT_INPUTS_FORMAT,
-        "ffd3e03cc6",
+        FORMAT_VERSION,
+        "pending political runtime inputs",
         &[
             AppendedField {
                 index: 1,
@@ -610,22 +840,34 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 name: "invasion_source_distance",
                 introduced: EFFECT_INPUTS_FORMAT,
             },
+            AppendedField {
+                index: 5,
+                name: "attack",
+                introduced: FORMAT_VERSION,
+            },
         ],
     );
     history[TableId::DivisionTemplateIcons.index()] = appended_at(
         TableId::DivisionTemplateIcons,
-        EFFECT_INPUTS_FORMAT,
-        "ffd3e03cc6",
-        &[AppendedField {
-            index: 13,
-            name: "formation_division_count",
-            introduced: EFFECT_INPUTS_FORMAT,
-        }],
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[
+            AppendedField {
+                index: 13,
+                name: "formation_division_count",
+                introduced: EFFECT_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 14,
+                name: "display_name",
+                introduced: FORMAT_VERSION,
+            },
+        ],
     );
     history[TableId::CountryCounterInputs.index()] = appended_at(
         TableId::CountryCounterInputs,
-        EFFECT_INPUTS_FORMAT,
-        "ffd3e03cc6",
+        FORMAT_VERSION,
+        "pending political runtime inputs",
         &[
             AppendedField {
                 index: 4,
@@ -662,17 +904,47 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 name: "neighbors",
                 introduced: EFFECT_INPUTS_FORMAT,
             },
+            AppendedField {
+                index: 11,
+                name: "co_belligerents",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 12,
+                name: "zero_war",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 13,
+                name: "movement",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 14,
+                name: "zero_subject",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 15,
+                name: "pride_name",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 16,
+                name: "forward_visibility",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 17,
+                name: "attack",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 18,
+                name: "directed_wars",
+                introduced: FORMAT_VERSION,
+            },
         ],
-    );
-    history[TableId::States.index()] = appended_at(
-        TableId::States,
-        OCCUPATION_GROUP_LAWS_FORMAT,
-        "occupation-retained-continent",
-        &[AppendedField {
-            index: 6,
-            name: "continent",
-            introduced: OCCUPATION_GROUP_LAWS_FORMAT,
-        }],
     );
     history[TableId::OccupationSettings.index()] = appended_at(
         TableId::OccupationSettings,
@@ -718,18 +990,99 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     );
     history[TableId::AirWings.index()] = appended_at(
         TableId::AirWings,
-        EFFECT_INPUTS_FORMAT,
-        "ffd3e03cc6",
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[
+            AppendedField {
+                index: 15,
+                name: "name",
+                introduced: EFFECT_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 16,
+                name: "pool_subunit",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 17,
+                name: "raid_reference",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 18,
+                name: "strategic_bombing_raw",
+                introduced: FORMAT_VERSION,
+            },
+        ],
+    );
+    history[TableId::AirMissionInputs.index()] = appended_at(
+        TableId::AirMissionInputs,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
         &[AppendedField {
-            index: 15,
-            name: "name",
-            introduced: EFFECT_INPUTS_FORMAT,
+            index: 6,
+            name: "cas_ratio_raw",
+            introduced: FORMAT_VERSION,
         }],
+    );
+    history[TableId::AirNavalPatrolHistories.index()] = appended_at(
+        TableId::AirNavalPatrolHistories,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[AppendedField {
+            index: 2,
+            name: "scenario_channels",
+            introduced: FORMAT_VERSION,
+        }],
+    );
+    history[TableId::ShipModels.index()] = appended_at(
+        TableId::ShipModels,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[
+            AppendedField {
+                index: 6,
+                name: "subunit_index",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 7,
+                name: "strike",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 8,
+                name: "hull_variant",
+                introduced: FORMAT_VERSION,
+            },
+        ],
+    );
+    history[TableId::TaskForceCounterInputs.index()] = appended_at(
+        TableId::TaskForceCounterInputs,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[
+            AppendedField {
+                index: 10,
+                name: "name",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 11,
+                name: "supply",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 12,
+                name: "port_mission",
+                introduced: FORMAT_VERSION,
+            },
+        ],
     );
     history[TableId::RailwayGunCounterInputs.index()] = appended_at(
         TableId::RailwayGunCounterInputs,
-        EFFECT_INPUTS_FORMAT,
-        "ffd3e03cc6",
+        FORMAT_VERSION,
+        "pending political runtime inputs",
         &[
             AppendedField {
                 index: 23,
@@ -745,6 +1098,63 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 index: 25,
                 name: "supply",
                 introduced: EFFECT_INPUTS_FORMAT,
+            },
+            AppendedField {
+                index: 26,
+                name: "withdrawal",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 27,
+                name: "fresh",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 28,
+                name: "combat_references",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 29,
+                name: "transport",
+                introduced: FORMAT_VERSION,
+            },
+        ],
+    );
+    history[TableId::TaskForceMapMotion.index()] = appended_at(
+        TableId::TaskForceMapMotion,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[
+            AppendedField {
+                index: 4,
+                name: "movement_numerator",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 5,
+                name: "retreat",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 6,
+                name: "withdrawal",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 7,
+                name: "naval_transfer",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 8,
+                name: "combat_links",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 9,
+                name: "fresh",
+                introduced: FORMAT_VERSION,
             },
         ],
     );
@@ -765,8 +1175,8 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
     history[TableId::CapturedOperativeReferences.index()].introduced = EFFECT_INPUTS_FORMAT;
     history[TableId::ReservedCountryNaming.index()] = appended_at(
         TableId::ReservedCountryNaming,
-        WIDGET_CAPTURE_FORMAT,
-        "widget-artwork-predicate",
+        FORMAT_VERSION,
+        "pending political runtime inputs",
         &[
             AppendedField {
                 index: 8,
@@ -798,6 +1208,53 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
                 name: "dynamic_tag_boundary",
                 introduced: WIDGET_CAPTURE_FORMAT,
             },
+            AppendedField {
+                index: 14,
+                name: "faction",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 15,
+                name: "movement",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 16,
+                name: "land_theatre_count",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 17,
+                name: "launch_sources",
+                // The native-null naval discriminator preserves the original
+                // unavailable/list bytes and this historical field boundary.
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 18,
+                name: "reverse_visibility",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 19,
+                name: "country_intel_sample",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 20,
+                name: "attack",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 21,
+                name: "raw_country_observations",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 22,
+                name: "transport_mission_inputs",
+                introduced: FORMAT_VERSION,
+            },
         ],
     );
     history[TableId::ReservedCountryNaming.index()].introduced = EFFECT_INPUTS_FORMAT;
@@ -807,6 +1264,33 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         "ffd3e03cc6",
     );
     history[TableId::AttritionModifierBreakdowns.index()].introduced = EFFECT_INPUTS_FORMAT;
+    history[TableId::AirBases.index()] = appended_at(
+        TableId::AirBases,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[AppendedField {
+            index: 5,
+            name: "carrier",
+            introduced: FORMAT_VERSION,
+        }],
+    );
+    history[TableId::AirBaseRegistrations.index()] = appended_at(
+        TableId::AirBaseRegistrations,
+        FORMAT_VERSION,
+        "pending political runtime inputs",
+        &[
+            AppendedField {
+                index: 2,
+                name: "carrier",
+                introduced: FORMAT_VERSION,
+            },
+            AppendedField {
+                index: 3,
+                name: "transport_planes",
+                introduced: FORMAT_VERSION,
+            },
+        ],
+    );
     history[TableId::CountryProductionModifiers.index()] = table(
         TableId::CountryProductionModifiers,
         PRODUCTION_MODIFIERS_FORMAT,
@@ -923,15 +1407,32 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
             introduced: ECONOMY_INPUTS_FORMAT,
         }],
     );
+    history[TableId::NavalBases.index()] = appended_at(
+        TableId::NavalBases,
+        FORMAT_VERSION,
+        "naval base serialized country tag witnesses (provisional)",
+        &[AppendedField {
+            index: 5,
+            name: "country_tags",
+            introduced: FORMAT_VERSION,
+        }],
+    );
     history[TableId::ConstructionLineOutput.index()] = appended_at(
         TableId::ConstructionLineOutput,
-        CONSTRUCTION_COMPLETION_FORMAT,
-        "construction completion outcomes (provisional)",
-        &[AppendedField {
-            index: 13,
-            name: "completion",
-            introduced: CONSTRUCTION_COMPLETION_FORMAT,
-        }],
+        FORMAT_VERSION,
+        "construction completion and count-reset witnesses (provisional)",
+        &[
+            AppendedField {
+                index: 13,
+                name: "completion",
+                introduced: CONSTRUCTION_COMPLETION_FORMAT,
+            },
+            AppendedField {
+                index: 14,
+                name: "count_reset",
+                introduced: FORMAT_VERSION,
+            },
+        ],
     );
     history[TableId::StateGarrisons.index()] = appended_at(
         TableId::StateGarrisons,
@@ -1138,6 +1639,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn technology_key_changes_refuse_only_the_changed_contracts() {
+        let historical = WIDGET_CAPTURE_FORMAT;
+        for table in [
+            TableId::ResearchTechnologies,
+            TableId::TechnologyDefinitions,
+        ] {
+            assert!(
+                table
+                    .last_change()
+                    .table_gap(table, historical)
+                    .unwrap()
+                    .contains(&format!("{table:?}"))
+            );
+            assert!(
+                table
+                    .last_change()
+                    .table_gap(table, FORMAT_VERSION)
+                    .is_none()
+            );
+        }
+        for table in [
+            TableId::ResearchSlots,
+            TableId::ResearchInputs,
+            TableId::Countries,
+            TableId::Clock,
+        ] {
+            assert!(table.last_change().table_gap(table, historical).is_none());
+        }
+        assert_eq!(
+            TableId::ResearchSlots
+                .last_change()
+                .fields(TableId::ResearchSlots, historical),
+            5
+        );
+        assert_eq!(
+            TableId::ResearchInputs
+                .last_change()
+                .fields(TableId::ResearchInputs, historical),
+            15
+        );
+    }
+
+    #[test]
     fn native_war_operands_are_named_gaps_before_their_introduction() {
         for table in [
             TableId::WarOwnedRelations,
@@ -1185,6 +1729,7 @@ mod tests {
             assert_eq!(entry.subject, Subject::Table(table));
             assert!(!entry.commit.is_empty());
             assert!(entry.introduced <= entry.format);
+            assert!(entry.format <= FORMAT_VERSION);
             assert!(
                 entry
                     .retired

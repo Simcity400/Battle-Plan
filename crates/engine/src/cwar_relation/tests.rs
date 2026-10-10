@@ -174,6 +174,74 @@ fn capture(bytes: &[u8], output: &mut [Row]) -> Outcome {
     walk(&SliceMemory { base: 0, bytes }, 0, GS, output)
 }
 
+#[test]
+fn war_rows_grow_from_owned_headers_on_five_thousand_country_world() {
+    use crate::ccountry::synthetic::World;
+    let mut output = Vec::new();
+    let mut scratch = OwnedSnapshotScratch::try_with_capacity(0).unwrap();
+    for pairs in [2_000_u32, 2_500] {
+        let mut world = World::new(0, 5_000, 0x1100);
+        let mut diplomacies = vec![0; 5_001];
+        for slot in 1..=5_000 {
+            let country = world.object(slot);
+            let diplomacy = world.alloc(0x300);
+            diplomacies[slot as usize] = diplomacy;
+            world.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
+            world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA as u64);
+            world.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
+        }
+        for pair in 0..pairs {
+            let first = pair * 2 + 1;
+            let second = first + 1;
+            let war = world.alloc(0x200);
+            let owned = world.alloc(8);
+            world.u64(war, VTABLE_RVA as u64);
+            world.u32(war + crelation::TYPE_ID, TYPE);
+            world.u32(war + crelation::FIRST_COUNTRY, first);
+            world.u32(war + crelation::SECOND_COUNTRY, second);
+            world.u64(owned, war as u64);
+            for (owner, target, serializable) in [(first, second, true), (second, first, false)] {
+                let diplomacy = diplomacies[owner as usize];
+                let matrix = world.alloc((target as usize + 1) * 8);
+                let status = world.alloc(0x300);
+                world.array(diplomacy + cdiplomacy_status::OWNED_RELATIONS, owned, 1);
+                world.array(diplomacy + cdiplomacy_status::RELATIONS, matrix, target + 1);
+                world.u64(matrix + target as usize * 8, status as u64);
+                world.u64(status, crelation_status::VTABLE_RVA as u64);
+                world.u64(
+                    status + crelation_status::DIPLOMACY_STATUS,
+                    diplomacy as u64,
+                );
+                world.u32(status + crelation_status::TARGET_COUNTRY, target);
+                world.u64(status + crelation_status::WAR_RELATION, war as u64);
+                world.array(status + crelation_status::SUBRELATIONS, owned, 1);
+                if serializable {
+                    world.array(status + crelation_status::SERIALIZABLE_RELATIONS, owned, 1);
+                }
+            }
+        }
+        let memory = world.memory();
+        assert_eq!(
+            row_demand(&memory, 0, world.game_state()),
+            Ok(pairs as usize * 2)
+        );
+        assert_eq!(
+            walk_owned_growing(
+                &memory,
+                &memory,
+                0,
+                world.game_state(),
+                &mut output,
+                &mut scratch
+            ),
+            Outcome::Rows {
+                len: pairs as usize
+            }
+        );
+        assert_eq!(output[pairs as usize - 1].second_country, pairs * 2);
+    }
+}
+
 struct CountedMemory<'a> {
     bytes: &'a [u8],
     guards: Cell<usize>,
@@ -2371,36 +2439,25 @@ fn owned_walk_at_census_scale_grows_past_former_budgets_and_stays_linear() {
 }
 
 #[test]
-fn cold_rescans_past_the_census_budget_fail_cleanly_and_one_growth_suffices() {
-    // The real floor admits every design-scale world; a small override
-    // reaches the limit quickly in this synthetic hub census.
-    const COUNTRIES: usize = 3_000;
+fn fixed_cold_rescans_complete_above_the_former_country_budget() {
+    const COUNTRIES: usize = 6_001;
     let census = war_census(COUNTRIES, COUNTRIES - 1, 0);
     let memory = SliceMemory {
         base: 0,
         bytes: &census.bytes,
     };
-    assert_eq!(rescan_budget(COUNTRIES as u32 + 1), 50_000_000);
-    assert_eq!(rescan_budget(15_001), 150_010_000);
-    let mut scratch = OwnedSnapshotScratch {
-        rescan_override: Some(1_000_000),
-        ..OwnedSnapshotScratch::default()
-    };
+    let mut scratch = OwnedSnapshotScratch::default();
     let mut rows = vec![Row::default(); COUNTRIES];
     assert_eq!(
         walk_owned(&memory, &memory, 0, GS, &mut rows, &mut scratch),
-        Outcome::Unavailable {
-            reason: WAR_MEMBERSHIP.budget
-        }
+        Outcome::Rows { len: COUNTRIES - 1 }
     );
-    assert!(scratch.rescanned_words <= 1_000_000 + census.hub_words);
-    // The failed pass still observed every owned header.
-    assert_eq!(scratch.observed_words, 2 * (COUNTRIES - 1));
+    assert!(scratch.rescanned_words > 50_020_000);
+    assert_eq!(rows[..COUNTRIES - 1], census.rows[..]);
     scratch.grow(0).unwrap();
     assert_eq!(
         walk_owned(&memory, &memory, 0, GS, &mut rows, &mut scratch),
         Outcome::Rows { len: COUNTRIES - 1 }
     );
-    assert_eq!(rows[..COUNTRIES - 1], census.rows[..]);
     assert_eq!(scratch.rescanned_words, 0);
 }

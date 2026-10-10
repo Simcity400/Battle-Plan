@@ -5,7 +5,7 @@ use crate::{
     spooling::unavailable,
     table_capture::{grow_capacity, grow_vec},
 };
-use engine::allocation::{copy_vec, default_vec, map_slice, owned_vec};
+use engine::allocation::{copy_vec, map_slice, owned_vec};
 use engine::walk::Outcome;
 use replay::{
     frame::{TableInput, TableView},
@@ -19,14 +19,10 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("operation completion observations", 0, &[0])];
 const ASSEMBLED: &str = "operation completion observations assembled by spool";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     entries: usize,
-}
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { entries: 1 }
-    }
+    bytes: usize,
 }
 impl Capacities {
     pub fn raise_for_countries(&mut self, slots: usize) {
@@ -35,8 +31,11 @@ impl Capacities {
     pub fn raise_for_operations(&mut self, rows: usize) {
         grow_capacity(&mut self.entries, rows);
     }
+    pub(crate) fn raise_for_descriptions(&mut self, bytes: usize) {
+        grow_capacity(&mut self.bytes, bytes);
+    }
     pub fn prepare(&self) {
-        hooks::resize(self.entries);
+        hooks::presize(self.entries, self.bytes);
     }
 }
 pub struct Captured {
@@ -48,7 +47,7 @@ impl Captured {
     pub fn with_capacities(_capacity: &Capacities) -> Self {
         Self {
             handoff: None,
-            cursors: owned_vec(default_vec(hooks::thread_slots())),
+            cursors: Vec::new(),
             drained_pending: AtomicUsize::new(0),
         }
     }
@@ -64,7 +63,6 @@ impl Captured {
             &mut capacity.entries,
             self.drained_pending.load(Ordering::Relaxed),
         );
-        grow_vec(&mut self.cursors, hooks::thread_slots());
         // Native exact overflow demand is retained even for unavailable hours.
         capacity.prepare();
     }
@@ -74,9 +72,16 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         [unavailable(ASSEMBLED)]
     }
-    pub fn capture(&mut self) -> u64 {
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities::default())
+    }
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        hooks::invalidate();
+        self.handoff = Some(Err(reason));
+    }
+    pub(crate) fn capture_growing(&mut self) -> u64 {
         let started = crate::sampling::qpc();
-        self.handoff = Some(hooks::handoff(&mut self.cursors));
+        self.handoff = Some(hooks::handoff_growing(&mut self.cursors));
         crate::sampling::qpc().saturating_sub(started).max(0) as u64
     }
     #[cfg(test)]

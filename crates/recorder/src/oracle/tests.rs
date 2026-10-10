@@ -1,4 +1,7 @@
 use super::*;
+mod name_serialization;
+mod original_tag_refusal;
+mod template_display_name;
 use replay::{
     frame::Metrics,
     rows::{
@@ -81,7 +84,20 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                 }]));
             tables[TableId::ReservedCountryNaming.index()] =
                 TableView::Complete(TableRows::ReservedCountryNaming(vec![
-                    replay::rows::ReservedCountryNamingRow::default(),
+                    replay::rows::ReservedCountryNamingRow {
+                        // This shared prefix fixture has no physical country census
+                        // or launch-source packet; its save has no admitted emission ledger.
+                        country_array: Recorded::NotRecorded,
+                        launch_sources: Recorded::NotRecorded,
+                        movement: replay::rows::Recorded::Value(Some(
+                            replay::rows::CountryNavalMovementInputs {
+                                sample_hour: hour,
+                                nearest_caches: Some(vec![]),
+                                reserved_theatre: None,
+                            },
+                        )),
+                        ..Default::default()
+                    },
                 ]));
             for (index, table) in [
                 TableView::Complete(TableRows::Clock(vec![ClockRow {
@@ -122,6 +138,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                         owner: 102,
                         controller: 0,
                         victory_points: 0,
+                        selected_areas: Recorded::NotRecorded,
                         ..ProvinceRow::default()
                     },
                     ProvinceRow {
@@ -130,6 +147,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                         owner: 0,
                         controller: 101,
                         victory_points: 0,
+                        selected_areas: Recorded::NotRecorded,
                         ..ProvinceRow::default()
                     },
                 ])),
@@ -137,6 +155,7 @@ countries={GER={politics={political_power=10.00001} command_power=2 stability=0.
                     id: 1,
                     owner: 102,
                     controller: 101,
+                    railway_infrastructure: Recorded::Value(Some(0)),
                     ..StateRow::default()
                 }])),
                 TableView::Complete(TableRows::Divisions(Vec::new())),
@@ -425,7 +444,7 @@ fn state_border_flag_compares_saved_boolean_and_rejects_missing_witness() {
 fn province_names_compare_sparse_add_remove_and_exact_bytes() {
     let (mut frame, mut save, _, _) = fixture();
     frame.hour = 1;
-    save.provinces.get_mut(&2).unwrap().name = Some(vec![b'G', 0, 255]);
+    save.provinces.get_mut(&2).unwrap().name = Some(b"G".to_vec());
     *frame.tables[TableId::ProvinceNames.index()] =
         TableView::Complete(TableRows::ProvinceNames(vec![
             replay::rows::ProvinceNameRow {
@@ -745,6 +764,9 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         full_path: vec![9, 8, 9],
         previous: Some(7),
         movement_progress: Some(Decimal::parse(b"90071992547.40993").unwrap()),
+        withdrawal: false,
+        movement_priority: None,
+        exile: false,
         dig_in: Some(Decimal::parse(b"0.00001").unwrap()),
         dig_in_cap: None,
         max_supply: Some(Decimal::parse(b"0").unwrap()),
@@ -767,6 +789,11 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         path_total: 300,
         path: path.clone(),
         strategic_redeployment: 255,
+        withdrawal: Recorded::Value(Some(0)),
+        movement_priority: Recorded::Value(Some(1)),
+        // This fixture certifies the published movement prefix only.
+        fresh: Recorded::NotRecorded,
+        selected: Recorded::NotRecorded,
         ..Default::default()
     };
     let status = DivisionStatusRow {
@@ -796,13 +823,16 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
     compare_division_movement(&frame, &saved, &mut report).unwrap();
     compare_division_status(&frame, &saved, &tokens, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert!(
-        report
-            .limitations
-            .keys()
-            .any(|s| s.contains("the replayer derives them from this route"))
-    );
-    assert_eq!(report.scalar_checks, 13);
+    assert!(report.limitations.iter().any(|(reason, subjects)| {
+        reason.contains("fresh counter previews use current-hour DivisionMovement.fresh operands")
+            && reason
+                .contains("legacy stored-route ETA uses the retained DivisionEtaInputs companion")
+            && reason.contains("route and progress alone cannot supply")
+            && subjects
+                .iter()
+                .any(|subject| subject == "DivisionMovement ETA companion")
+    }));
+    assert_eq!(report.scalar_checks, 15);
     for full_path in [vec![9, 9, 8], vec![]] {
         let mut changed = saved.clone();
         let presentation = &mut changed.divisions.get_mut(&id).unwrap().presentation;
@@ -976,7 +1006,9 @@ fn division_status_naming_oracle_checks_generator_operands_and_absence() {
             template,
             country: b"GER".to_vec(),
             name: Vec::new(),
+            name_present: false,
             name_key: Vec::new(),
+            name_key_present: false,
             custom_icon: 0,
             custom_icon_nato: false,
             foreign_template_tag: None,
@@ -1090,8 +1122,10 @@ fn division_template_oracle_checks_unused_rosters_composition_and_forced_refresh
         save::DivisionTemplate {
             template,
             country: b"GER".to_vec(),
-            name: vec![b'A', 0, 255],
+            name: b"A".to_vec(), // The text writer omits the captured NUL suffix.
+            name_present: true,
             name_key: b"FALLBACK".to_vec(),
+            name_key_present: true,
             custom_icon: -1,
             custom_icon_nato: false,
             foreign_template_tag: Some(b"---".to_vec()),
@@ -1282,7 +1316,7 @@ fn relations_fixture() -> (
         88,
         save::Faction {
             id: 88,
-            name: Vec::new(),
+            name: None,
             members: vec![b"ENG".to_vec(), b"GER".to_vec()],
             icon: None,
             // A template faction, coloured from its leader's colour.
@@ -1297,7 +1331,7 @@ fn relations_fixture() -> (
         1_u64 << 63,
         save::Faction {
             id: 1_u64 << 63,
-            name: b"Literal".to_vec(),
+            name: Some(b"Literal".to_vec()),
             members: Vec::new(),
             icon: None,
             // No template; an overridden colour with its alpha written, since it is not 1.0.
@@ -1556,10 +1590,12 @@ fn garrison_equipment_dispatch_skips_carried_rows_and_compares_actual_refreshes(
                 base_resources: Err("outside the garrison fixture".into()),
                 railway_adjacency: Err("outside the garrison fixture".into()),
                 buildings: Err("outside the garrison fixture".into()),
+                defines: Err("outside the garrison fixture".into()),
                 raid_graph: Err("outside the garrison fixture".into()),
                 equipment: Ok(&equipment),
                 leader_traits: Err("outside the garrison fixture".into()),
                 intelligence: Err("outside the garrison fixture".into()),
+                sub_units: Err("outside the garrison fixture".into()),
             },
             &mut report,
         );
@@ -1616,9 +1652,11 @@ fn failed_content_reads_preserve_independent_map_and_pack_diagnostics() {
             base_resources: Err("history/states/101-Greenland.txt: malformed resource value".into()),
             railway_adjacency: Err("map/provinces.bmp: malformed adjacency input".into()),
             buildings: Ok(&installed_content::buildings::Buildings::default()),
+            defines: Ok(&installed_content::defines::Defines::new().unwrap()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
+            sub_units: Err("common/units: unused".into()),
             intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
         },
         &mut report,
@@ -1716,9 +1754,11 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             base_resources: Ok(&save::construction::PartialBaseResources::default()),
             railway_adjacency: Err("railway content is outside this fixture".into()),
             buildings: Ok(&installed_content::buildings::Buildings::default()),
+            defines: Ok(&installed_content::defines::Defines::new().unwrap()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
+            sub_units: Err("common/units: unused".into()),
             intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
         },
         &mut report,
@@ -1753,9 +1793,11 @@ fn unavailable_sources_and_failed_groups_do_not_hide_later_independent_mismatche
             base_resources: Ok(&save::construction::PartialBaseResources::default()),
             railway_adjacency: Err("railway content is outside this fixture".into()),
             buildings: Ok(&installed_content::buildings::Buildings::default()),
+            defines: Ok(&installed_content::defines::Defines::new().unwrap()),
             raid_graph: Err("map/adjacencies.csv: unused".into()),
             equipment: Err("common/units/equipment: unused".into()),
             leader_traits: Err("common/country_leader: unused".into()),
+            sub_units: Err("common/units: unused".into()),
             intelligence: Err("common/intelligence_agency_upgrades: unused".into()),
         },
         &mut report,
@@ -2161,10 +2203,12 @@ fn game_score_extended_oracle_compares_every_country_and_records_empty_wings() {
                 base_resources: Err("unused".into()),
                 railway_adjacency: Err("unused".into()),
                 buildings: Err("unused".into()),
+                defines: Err("unused".into()),
                 raid_graph: Err("unused".into()),
                 equipment: Err("unused".into()),
                 leader_traits: Err("unused".into()),
                 intelligence: Err("unused".into()),
+                sub_units: Err("unused".into()),
             },
             &mut report,
         );
@@ -2353,7 +2397,7 @@ fn state_ownership_and_controller_differences_are_independent_of_provinces() {
     assert_eq!(report.provinces, 2);
 }
 
-/// The +0x38 rename compares with the saved `name` (absent is empty);
+/// The +0x38 rename compares with the stored-length-gated saved `name`;
 /// the unsaved +0xE8 owner name is a named limitation, never compared.
 #[test]
 fn state_rename_compares_with_the_saved_name_and_the_owner_name_is_a_limitation() {
@@ -3277,6 +3321,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
     let ace = (7_u64 << 32) | 4713;
     saved.air.wings.push(save::air::Wing {
         id: wing,
+        pool_type: b"fixture_plane".to_vec(),
         name: Some(wing_name.clone()),
         accidents: None,
         experience: Decimal::parse(b"0").unwrap(),
@@ -3285,6 +3330,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
             allow_zero: false,
         },
         ace: Some(ace),
+        raid: None,
     });
     *frame.tables[TableId::AirWings.index()] =
         TableView::Complete(TableRows::AirWings(vec![replay::rows::AirWingRow {
@@ -3400,7 +3446,7 @@ fn air_and_naval_oracle_compares_native_values_and_slot_identity() {
         killer_country: None,
         name: Vec::new(),
         surname: Vec::new(),
-        callsign: Vec::new(),
+        callsign: None,
     }];
     let differences = |frame: &DecodedFrame, saved: &Save| {
         compare(frame, saved, &membership, &equipment)
@@ -3459,6 +3505,10 @@ fn naval_fixture() -> (
             path: vec![3, 7, 4],
             target: None,
             alternate_path: Vec::new(),
+            movement_progress: None,
+            retreat: false,
+            withdrawal: false,
+            exile: false,
         },
     );
     saved.ships.insert(
@@ -3819,6 +3869,7 @@ fn relation_links_match_the_saved_attache_and_air_access_relations() {
         country,
         target_index,
         links,
+        transport_subject: replay::rows::Recorded::NotRecorded,
     };
     // D01 is reference 201 at slot 8, SOV reference 301 at slot 9.
     let exact = vec![row(201, 9, 2), row(301, 8, 1)];
@@ -3876,11 +3927,13 @@ fn relation_links_match_the_saved_military_access_relations() {
                 country: 201,
                 target_index: 9,
                 links: access,
+                transport_subject: replay::rows::Recorded::NotRecorded,
             },
             replay::rows::RelationLinkRow {
                 country: 301,
                 target_index: 8,
                 links: access,
+                transport_subject: replay::rows::Recorded::NotRecorded,
             },
         ]));
     let context = country_context(&frame).unwrap();
@@ -3890,15 +3943,15 @@ fn relation_links_match_the_saved_military_access_relations() {
     assert_eq!(report.compared_tables["RelationLinks"], 2);
 }
 
-/// Nonzero navy access modes compare with the saved `per_region_access`
-/// pairs; a saved zero is an absent row.
+/// Signed-positive navy access modes compare with the saved pairs;
+/// high-bit bytes are omitted and remain explicit save limitations.
 #[test]
 fn naval_region_access_matches_the_saved_pairs() {
     let (mut frame, mut save, _, _) = relation_fixture();
     save.countries
         .get_mut(b"D01".as_slice())
         .unwrap()
-        .naval_region_access = Some(vec![(18, 1), (43, 0), (79, 2)]);
+        .naval_region_access = Some(vec![(18, 1), (79, 2)]);
     let row = |country, region, mode| replay::rows::NavalRegionAccessRow {
         country,
         region,
@@ -3924,6 +3977,62 @@ fn naval_region_access_matches_the_saved_pairs() {
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     let report = run(&mut frame, vec![row(201, 18, 1)]);
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    let report = run(
+        &mut frame,
+        vec![row(201, 18, 1), row(201, 43, 128), row(201, 79, 2)],
+    );
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("omission proves signed nonpositive"))
+    );
+    let report = run(&mut frame, vec![row(201, 18, 255), row(201, 79, 2)]);
+    assert_eq!(
+        report.differences.len(),
+        1,
+        "a saved positive pair still disproves a high-bit current byte"
+    );
+}
+
+#[test]
+fn naval_region_access_refuses_saved_nonpositive_or_duplicate_pairs_and_zero_rows() {
+    let (mut frame, mut save, _, _) = relation_fixture();
+    for pairs in [
+        vec![(18, 0)],
+        vec![(18, 128)],
+        vec![(18, 255)],
+        vec![(18, 1), (18, 2)],
+    ] {
+        save.countries
+            .get_mut(b"D01".as_slice())
+            .unwrap()
+            .naval_region_access = Some(pairs);
+        *frame.tables[TableId::NavalRegionAccess.index()] =
+            TableView::Complete(TableRows::NavalRegionAccess(vec![]));
+        let context = country_context(&frame).unwrap();
+        assert!(
+            visibility::compare_naval_access(&frame, &save, &context, &mut Report::default())
+                .is_err()
+        );
+    }
+    save.countries
+        .get_mut(b"D01".as_slice())
+        .unwrap()
+        .naval_region_access = None;
+    *frame.tables[TableId::NavalRegionAccess.index()] =
+        TableView::Complete(TableRows::NavalRegionAccess(vec![
+            replay::rows::NavalRegionAccessRow {
+                country: 201,
+                region: 18,
+                mode: 0,
+            },
+        ]));
+    let context = country_context(&frame).unwrap();
+    assert!(
+        visibility::compare_naval_access(&frame, &save, &context, &mut Report::default()).is_err()
+    );
 }
 
 /// Each archetype total is the sum of the saved stockpile's variant
@@ -4068,7 +4177,7 @@ fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
         killer_country: None,
         name: Vec::new(),
         surname: Vec::new(),
-        callsign: Vec::new(),
+        callsign: None,
     };
     let (assigned, dead, other) = ((1_u64 << 32) | 7, (2_u64 << 32) | 7, (3_u64 << 32) | 7);
     let wing = (5_u64 << 32) | 69;
@@ -4079,6 +4188,7 @@ fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
     ];
     save.air.wings.push(save::air::Wing {
         id: wing,
+        pool_type: b"fixture_plane".to_vec(),
         name: None,
         accidents: None,
         experience: Decimal::parse(b"0").unwrap(),
@@ -4087,6 +4197,7 @@ fn ace_range_inputs_match_the_saved_rosters_and_wing_references() {
             allow_zero: false,
         },
         ace: Some(assigned),
+        raid: None,
     });
     let row = |canonical_slot, ace, wing, alive| replay::rows::AceRangeInputRow {
         canonical_slot,
@@ -4769,6 +4880,10 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
         strategic_action: replay::rows::Recorded::Value(replay::rows::StrategicAction::Withheld(
             replay::rows::StrategicActionFailure::CountryModifier,
         )),
+        withdrawal: Recorded::Value(Some(0)),
+        movement_priority: Recorded::Value(Some(1)),
+        // This fixture certifies the published movement prefix only.
+        fresh: Recorded::NotRecorded,
         ..Default::default()
     };
     *frame.tables[TableId::DivisionMovement.index()] =
@@ -4776,7 +4891,7 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
     let mut report = Report::default();
     compare_division_movement(&frame, &saved, &mut report).unwrap();
     assert!(report.differences.is_empty(), "{:?}", report.differences);
-    assert_eq!(report.scalar_checks, 6);
+    assert_eq!(report.scalar_checks, 8);
     assert!(report.limitations.iter().any(|(reason, subjects)| {
         reason.contains("strategic-action")
             && subjects

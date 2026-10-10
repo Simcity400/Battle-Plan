@@ -152,7 +152,19 @@ impl Distances {
                 .wrapped_distance(from, to)
                 .ok_or_else(|| format!("naval distance province {from}/{to} is undefined"));
         };
-        if source == target {
+        self.mapped_distance(graph, geometry, source, target)
+    }
+
+    /// 140E93C00 reads the raw matrix for stored nearest-base IDs. It does
+    /// not project ports or fall back to centroid distance, including ID zero.
+    pub fn mapped_distance(
+        &mut self,
+        graph: &ProvinceGraph,
+        geometry: &ProvinceGeometry,
+        from: u32,
+        to: u32,
+    ) -> Result<i64, String> {
+        if from == to {
             return Ok(0);
         }
         // 140A4E4B0 narrows the map's lookup to signed i16. Negative slots
@@ -166,7 +178,7 @@ impl Distances {
                 .filter(|&at| at >= 0)
                 .map(|at| self.indexed[at as usize])
         };
-        let (Some(source), Some(target)) = (index(source), index(target)) else {
+        let (Some(source), Some(target)) = (index(from), index(to)) else {
             return Ok(6_553_500_000);
         };
         if !self.rows.contains_key(&source) {
@@ -239,6 +251,42 @@ impl Distances {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nearest_matrix_keeps_raw_unmapped_ids_while_home_distance_projects_ports() {
+        let graph = ProvinceGraph {
+            edges: [
+                (1, vec![(2, Some(200_000)), (3, Some(100_000))]),
+                (3, vec![(1, Some(100_000))]),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let geometry = ProvinceGeometry {
+            centroids: [(1, [0, 0]), (2, [2, 0]), (3, [1, 1]), (4, [2, 1])].into(),
+            land: [3, 4].into(),
+            width: 10,
+            ..Default::default()
+        };
+        let mut distances = Distances::new(&geometry, &[(3, 1)].into());
+        assert_eq!(distances.distance(&graph, &geometry, 3, 2), Ok(200_000));
+        assert_eq!(
+            distances.mapped_distance(&graph, &geometry, 3, 2),
+            Ok(300_000)
+        );
+        // Current home logic falls back to centroids for a land province
+        // without a port; stored-nearest logic uses the unmapped sentinel.
+        assert!(distances.distance(&graph, &geometry, 4, 2).unwrap() < 6_553_500_000);
+        assert_eq!(
+            distances.mapped_distance(&graph, &geometry, 4, 2),
+            Ok(6_553_500_000)
+        );
+        assert_eq!(
+            distances.mapped_distance(&graph, &geometry, 0, 2),
+            Ok(6_553_500_000)
+        );
+        assert_eq!(distances.mapped_distance(&graph, &geometry, 0, 0), Ok(0));
+    }
+
     #[test]
     fn native_distance_quantises_and_port_land_cannot_bridge_two_seas() {
         let graph = ProvinceGraph {

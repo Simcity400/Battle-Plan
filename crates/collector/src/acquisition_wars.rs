@@ -27,7 +27,16 @@ impl Report {
     }
 }
 impl Request {
+    #[cfg(test)]
     pub(crate) fn run(&mut self, memory: &impl Memory) -> Report {
+        self.run_with(memory, false)
+    }
+
+    pub(crate) fn run_growing(&mut self, memory: &impl Memory) -> Report {
+        self.run_with(memory, true)
+    }
+
+    fn run_with(&mut self, memory: &impl Memory, growing: bool) -> Report {
         let _reads = crate::read_accounting::table(replay::rows::TableId::WarRelations);
         let Self {
             countries,
@@ -40,7 +49,11 @@ impl Request {
         let begin = sampling::qpc();
         *snapshot_sampled = true;
         let table = table.run(|rows| {
-            cwar_relation::walk_owned(memory, &cached, base, game_state, rows, snapshot)
+            if growing {
+                cwar_relation::walk_owned_growing(memory, &cached, base, game_state, rows, snapshot)
+            } else {
+                cwar_relation::walk_owned(memory, &cached, base, game_state, rows, snapshot)
+            }
         });
         Report {
             table,
@@ -117,6 +130,28 @@ mod tests {
                 assert_eq!(report.table.result, Outcome::Rows { len: 2 });
             }
         }
+    }
+
+    #[test]
+    fn growing_owned_wars_fill_the_first_empty_row_buffer() {
+        let bytes = kit::fixture();
+        let memory = kit::memory(&bytes);
+        assert_eq!(
+            request(&bytes, 0).run(&memory).table.result,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 2
+            }
+        );
+        let mut request = request(&bytes, 0);
+        let expected = kit::direct(&memory, 2);
+        let report = request.run_growing(&memory);
+        assert_eq!(report.table.result, Outcome::Rows { len: 2 });
+        assert_eq!(report.table.result, expected.owned_outcome);
+        assert_eq!(&request.table.payload[..2], &expected.owned);
+        assert_eq!(request.table.payload[1].first_country, 3);
+        assert_eq!(request.table.payload[1].second_country, 1);
+        assert!(request.snapshot_sampled);
     }
 
     struct Traced<'a> {

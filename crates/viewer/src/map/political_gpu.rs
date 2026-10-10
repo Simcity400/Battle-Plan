@@ -15,8 +15,8 @@
 //! fields and shared views), the 600 Vulkan comparisons and a retained format-41 frame.
 //!
 //! Sharing: [`Static`] holds what no hour or perspective changes (IDs, kernel, strategic
-//! output) per content and device. Each distinct displayed fill is a [`State`] with its own
-//! country buffers and texture pair; [`View`]s with equal tables share one, and a state is
+//! geometry) per content and device. Each distinct displayed fill is a [`State`] with its own
+//! country/naval buffers and texture pair; [`View`]s with equal tables share one, and a state is
 //! released with the last view showing it. States dispatch through one shared [`Scratch`].
 
 use std::{
@@ -62,6 +62,7 @@ struct Region {
     alpha_offset: u32,
     alpha_count: u32,
     radius: u32,
+    attributes: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -120,6 +121,8 @@ fn zero_buffer(
     }))
 }
 
+const REGION_BYTES: u64 = std::mem::size_of::<Region>() as u64;
+
 fn rgb(color: [u8; 3]) -> u32 {
     u32::from_le_bytes([color[0], color[1], color[2], 0])
 }
@@ -173,7 +176,7 @@ impl Cache {
 }
 
 /// What no hour or perspective changes: the province IDs and boxes, the compiled kernel and the
-/// strategic layer's output, which every fill state copies as its first layer.
+/// initial strategic output. Each fill updates its own naval attributes.
 pub struct Static {
     /// Keeps its own output: every new state copies its first layer from it.
     strategic: PoliticalGpu,
@@ -181,6 +184,7 @@ pub struct Static {
     scratch: Arc<Scratch>,
     size: [u32; 2],
     field: FieldDefines,
+    strategic_keys: Vec<u32>,
     registry: Mutex<Registry>,
     /// Times a registry critical section was checked to exclude other threads.
     #[cfg(test)]
@@ -244,6 +248,7 @@ impl Static {
                 height: map.height,
             }),
             field: *field,
+            strategic_keys: strategic.to_vec(),
             registry: Mutex::new(Registry::default()),
             #[cfg(test)]
             race_checks: std::sync::atomic::AtomicUsize::new(0),
@@ -259,6 +264,18 @@ impl Static {
         let gpu = self
             .strategic
             .layer_with(device, &layer, Some(Arc::clone(&self.scratch)))?;
+        let navy = |_| self.field.navy_neutral;
+        let mut naval_layer = Layer::new(
+            gradient::LayerKind::Fixed(self.field.strategic_thickness),
+            &self.strategic_keys,
+            &navy,
+            &self.field,
+        );
+        naval_layer.region_opacity = 0;
+        naval_layer.no_region_color = self.field.navy_neutral;
+        let naval =
+            self.strategic
+                .layer_with(device, &naval_layer, Some(Arc::clone(&self.scratch)))?;
         let [width, height] = self.size;
         let textures = ["GradientBorderChannel1", "GradientBorderChannel2"].map(|label| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -291,7 +308,11 @@ impl Static {
         queue.submit([encoder.finish()]);
         let state = Arc::new(State {
             textures,
-            fill: Mutex::new(Fill { gpu, shown: None }),
+            fill: Mutex::new(Fill {
+                gpu,
+                naval,
+                shown: None,
+            }),
         });
         let mut registry = self.registry();
         registry.states.retain(|state| state.strong_count() != 0);
@@ -399,7 +420,10 @@ impl Static {
 
 /// Equal tables fill equal bytes. Colours of unused keys make the test conservative, never wrong.
 fn same_fill(a: &Regions, b: &Regions) -> bool {
-    std::ptr::eq(a, b) || (a.country_of == b.country_of && a.country_colors == b.country_colors)
+    std::ptr::eq(a, b)
+        || (a.country_of == b.country_of
+            && a.country_colors == b.country_colors
+            && a.strategic_attributes == b.strategic_attributes)
 }
 
 /// One displayed political fill: a country layer's compute state and the texture pair it fills.
@@ -410,6 +434,7 @@ pub struct State {
 
 struct Fill {
     gpu: PoliticalGpu,
+    naval: PoliticalGpu,
     /// The tables the state was last updated to; `None` until its first update.
     shown: Option<Arc<Regions>>,
 }
@@ -430,7 +455,8 @@ impl State {
                 u64::from(size.width) * u64::from(size.height) * 4
             })
             .sum();
-        textures + self.lock().gpu.own_bytes()
+        let fill = self.lock();
+        textures + fill.gpu.own_bytes() + fill.naval.own_bytes()
     }
 }
 
@@ -511,6 +537,24 @@ impl View {
             };
             let mut fill = state.lock();
             fill.gpu.update_regions(device, queue, regions)?;
+            let navy = |_| self.base.field.navy_neutral;
+            let attributes = |id| {
+                regions
+                    .strategic_attributes
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_default()
+            };
+            let mut layer = Layer::new(
+                gradient::LayerKind::Fixed(self.base.field.strategic_thickness),
+                &self.base.strategic_keys,
+                &navy,
+                &self.base.field,
+            );
+            layer.region_opacity = 0;
+            layer.no_region_color = self.base.field.navy_neutral;
+            layer.region_attributes = Some(&attributes);
+            fill.naval.update(device, queue, &layer)?;
             fill.shown = Some(Arc::clone(regions));
             drop(fill);
             state
@@ -533,10 +577,12 @@ impl View {
             return false;
         };
         let [first, second] = &state.textures;
-        state
-            .lock()
+        let mut fill = state.lock();
+        let naval = fill.naval.encode(encoder, [first, second], 0);
+        let country = fill
             .gpu
-            .encode(encoder, [first, second], first.height() / 2)
+            .encode(encoder, [first, second], first.height() / 2);
+        naval || country
     }
 }
 
@@ -968,7 +1014,10 @@ impl PoliticalGpu {
             && !self.pending
             && self.source_keys == region_of
             && self.keys.iter().all(|(&key, &slot)| {
-                key == 0 || self.regions[slot].color == rgb((layer.region_color)(key))
+                key == 0
+                    || (self.regions[slot].color == rgb((layer.region_color)(key))
+                        && self.regions[slot].attributes
+                            == layer.region_attributes.map_or(0, |read| read(key).packed()))
             })
         {
             self.dispatched_cells = 0;
@@ -996,7 +1045,7 @@ impl PoliticalGpu {
             .filter(|key| !self.keys.contains_key(key))
             .count();
         let region_slots = self.regions.len() + added.saturating_sub(self.free.len() + released);
-        if region_slots as u64 * 16 > storage {
+        if region_slots as u64 * REGION_BYTES > storage {
             return Err(unsupported(format!(
                 "{region_slots} political regions exceed the device storage limit {storage}"
             )));
@@ -1107,6 +1156,7 @@ impl PoliticalGpu {
                 alpha_offset: (alpha_slot * self.alpha_stride / 4) as u32,
                 alpha_count: self.alpha_stride as u32,
                 radius,
+                attributes: layer.region_attributes.map_or(0, |read| read(key).packed()),
             };
             if self.regions[slot] != region {
                 affected[slot] = true;
@@ -1139,16 +1189,20 @@ impl PoliticalGpu {
             self.capacity = self
                 .regions
                 .len()
-                .max((self.capacity * 2).min((storage / 16) as usize));
-            self.region_buffer =
-                zero_buffer(device, "political regions", self.capacity as u64 * 16, rw)?;
+                .max((self.capacity * 2).min((storage / REGION_BYTES) as usize));
+            self.region_buffer = zero_buffer(
+                device,
+                "political regions",
+                self.capacity as u64 * REGION_BYTES,
+                rw,
+            )?;
             queue.write_buffer(&self.region_buffer, 0, bytemuck::cast_slice(&self.regions));
             rebind = true;
         } else {
             for slot in region_changes {
                 queue.write_buffer(
                     &self.region_buffer,
-                    (slot * 16) as u64,
+                    slot as u64 * REGION_BYTES,
                     bytemuck::bytes_of(&self.regions[slot]),
                 );
             }

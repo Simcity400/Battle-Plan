@@ -103,6 +103,39 @@ pub fn walk_country_inputs(
     output: &mut [CountryRow],
     fleets: &mut [FleetCount],
 ) -> CountryCapture {
+    walk_country_inputs_buffer(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(fleets),
+    )
+}
+
+/// Ordinary's worker grows from the original country and fleet headers.
+pub fn walk_country_inputs_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut Vec<CountryRow>,
+    fleets: &mut Vec<FleetCount>,
+) -> CountryCapture {
+    walk_country_inputs_buffer(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(fleets),
+    )
+}
+
+fn walk_country_inputs_buffer(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut output: crate::walk::Buffer<'_, CountryRow>,
+    mut fleets: crate::walk::Buffer<'_, FleetCount>,
+) -> CountryCapture {
     let mut country_len = 0_usize;
     let mut fleet_len = 0_usize;
     let mut fleet_required = 0_usize;
@@ -110,6 +143,7 @@ pub fn walk_country_inputs(
     let mut slot_zero_null = false;
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, state)?;
+        output.ensure(countries.count() as usize)?;
         let mut unread_rows = 0_u32;
         for slot in 0..countries.count() {
             let country = if slot == 0 {
@@ -158,7 +192,13 @@ pub fn walk_country_inputs(
                 fleet_required = fleet_required
                     .checked_add(roster.count as usize)
                     .ok_or("game score fleet demand overflow")?;
-                if roster.count as usize > fleets.len().saturating_sub(fleet_len) {
+                // CalculateNavyScore1406D93E0 sums every original fleet's
+                // signed +C4 task count. Capacity must not omit that witness.
+                if !fleets.ensure(
+                    fleet_len
+                        .checked_add(roster.count as usize)
+                        .ok_or("game score fleet demand overflow")?,
+                )? {
                     return Err("game score fleet witness arena exhausted");
                 }
                 let mut sum = 0_i32;
@@ -547,6 +587,38 @@ pub fn read_first_sites(
     entry: Option<usize>,
     output: &mut [AirSite],
 ) -> AirRead {
+    read_first_sites_buffer(
+        memory,
+        base,
+        canonical_slot,
+        entry,
+        crate::walk::Buffer::Fixed(output),
+    )
+}
+
+pub fn read_first_sites_growing(
+    memory: &impl Memory,
+    base: usize,
+    canonical_slot: u32,
+    entry: Option<usize>,
+    output: &mut Vec<AirSite>,
+) -> AirRead {
+    read_first_sites_buffer(
+        memory,
+        base,
+        canonical_slot,
+        entry,
+        crate::walk::Buffer::Growing(output),
+    )
+}
+
+pub fn read_first_sites_buffer(
+    memory: &impl Memory,
+    base: usize,
+    canonical_slot: u32,
+    entry: Option<usize>,
+    mut output: crate::walk::Buffer<'_, AirSite>,
+) -> AirRead {
     let Some(entry) = entry else {
         return AirRead {
             state: AirState::Absent,
@@ -562,6 +634,7 @@ pub fn read_first_sites(
             .and_then(|at| Array::read(memory, at, 8))
             .ok_or("game score first air-site roster unreadable or invalid")?;
         required = sites.count as usize;
+        output.ensure(required)?;
         if required > output.len() {
             return Err("game score first air-site arena exhausted");
         }

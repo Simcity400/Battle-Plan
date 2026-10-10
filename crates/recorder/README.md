@@ -42,9 +42,19 @@ Game exit finalizes and, without `--once`, waits for another process. Ctrl+C det
 & $recorder detach --out $capture
 ```
 
+The detach command waits for the session's checked completion while the recorder
+controller remains alive and progress continues. During drain it follows collector
+status publications; after collector absence or game exit it follows actual
+metadata, frame and replay-write progress in `finalization-progress.json`. An inactivity
+timeout reports stopped progress and retains the spool. Total finalization time
+has no deadline. Controller exit without completion fails immediately; normal
+game exit can still finish recovery. Completion retains partial/drain failures.
+
 Each process session, in-process load or unexplained hour discontinuity starts a branch. Parentage is probable or unknown; one-second load timestamps can collide. Different campaign IDs produce separate replay files.
 
 Game-score, operation-outcome and politics capture default to enabled. Record-only `--no-game-score`, `--disable-operation-outcomes` and `--disable-politics-capture` preserve named unavailable coverage, never recorded zero.
+
+Finalization uses two streaming spool passes and compresses blocks before the shared decoder size bound. Split hours become self-contained keyframes with original metrics and sample hours; an oversized frame or a split with a truncated table is refused by name. Allocation and I/O failures abort finalization and retain the spool. Repeated finalization compares complete decoded values, availability and metrics before leaving an existing replay unchanged.
 
 ## Inspect and compare
 
@@ -72,7 +82,7 @@ Inspection establishes no save agreement. Set `$oracleHour`/`$branchId` to the r
    ```
 
    This asks the next hourly sample to read every scheduled table; it sends nothing to the game. A keyframe re-encodes held rows and is not a full refresh.
-3. Make a new text save through the game UI while paused at `H`. Avoid state-changing commands between save and sample. Match the instant: a later same-hour save can differ, and allocation counters do not prove unchanged state.
+3. Set the intended game speed before making a new text save through the game UI while paused at `H`. Hold speed and all other state unchanged through the supplying callback; pause separately. If any setting or command changes after the save, repeat the save and refresh request. Match the instant: a later same-hour save can differ, and allocation counters do not prove unchanged state.
 4. Step exactly one game hour, pause and wait for the collector to post `H` at its end-of-hour boundary. Detach and wait for finalization. Retain the session's `status.json` and `completed.json`.
 5. Inspect the replay. Set `$branchId` to its actual branch, `$oracleHour` to `H`, `$saveFile` to the fresh save and `$gameDirectory` to the matching installation. Run the offline oracle:
 
@@ -83,15 +93,25 @@ Inspection establishes no save agreement. Set `$oracleHour`/`$branchId` to the r
 
 6. Report the exit status, `Differences`, coverage, failed/skipped groups, content exclusions and limitations. A complete requested-refresh check needs a successful exit, zero differences, zero table availability issues, zero failed/skipped groups and no membership exclusions. **Never waive a difference.** Retain failing artifacts, investigate, fix and repeat the matched check; report what remains unverified.
 
+[Selected transport comparisons](src/oracle/selected_transport.rs) check the complete saved unit census, exact signed combat count and source province for zero-combat transfers. Convoy comparisons retain original cache observations, nonzero pool order and signed stock; physical navy access uses the native signed-positive projection. Runtime priority, reservations, risk graphs and pointer lifetimes retain named limitations. Missing saved operands and current capture failures remain differences.
+
 ### Load check
 
-With your recorder attached, load through the game menu. Pause at the load hour, make a **new** text save, step one hour, detach and compare on the new `LoadSignal` branch. Loading reruns weather, so the loaded file cannot substitute. Report the first EquipmentDestruction interval's partial coverage; use a requested refresh for the complete check.
+With your recorder attached, load through the game menu. Pause at the load hour, make a **new** text save, step one hour, detach and compare on the new `LoadSignal` branch. Loading reruns weather, so the loaded file cannot substitute. Retain each event family's first-interval coverage verdict; a full refresh cannot supply events from before observation began. Use a fully observed subsequent hour with a requested refresh and a new matched save for the complete check.
 
 ### Comparison boundaries
 
 - Daily/sliced groups compare only their actual reads/owners. Carried groups report their read hour instead of comparing stale rows with current save values. [report.rs](src/oracle/report.rs) owns freshness rules; a sibling table's timing is not proof.
 - Historical appended-field absence, current read refusal and native empty/zero stay distinct. Readable prefixes still compare, and inspection uses source-format byte sizes. See [replay compatibility](../replay/README.md#compatibility-and-recovery).
 - Partial state-history membership skips only dependent joins, names/counts excluded states and makes coverage incomplete. Independent saved fields, identities and locations still compare. History effects are parsed, never executed; see [save parsing](../installed-content/src/save.rs) and [construction comparisons](src/oracle/construction.rs).
+- Template comparisons preserve omitted keys versus emitted empty strings and the native first-NUL prefix. Transport comparisons preserve signed convoy allocation and complete wing pool/raid identity; unavailable historical operands remain limitations, while current reached saved-operand faults remain differences.
+- Stored names compare the native first-NUL text, retaining counted limitations for captured trailing bytes. State, province, faction, unit and ace-callsign names preserve the stored-length gate and omitted versus emitted-empty keys; unconditional name writers require key presence in ordinary saves.
+- Active ideas compare the recorded lexical dictionary's canonical writer spelling in roster order; absent or ambiguous dictionary joins fail the comparison. Advisor-token set membership uses its native case-insensitive hash/key identity, while saved advisor role strings compare exactly. The set's retained spelling depends on unsaved insertion history.
+- Research definition names authenticate against the recorded dictionary entry for the exact serialized technology handle, preserving repeated database occurrences and canonical writer spelling. Missing, ambiguous or contradictory bindings are named differences and fail the comparison.
+- Native omission rules also apply to advisor idea strings, deployment name flags and state resource blocks. An omitted advisor idea string contributes its empty token key. Unowned states retain the nonpositive owner class; their provinces keep absent ownership and independent explicit controllers. Factory sums use captured control where the state writer omits it, with that input dependency reported. Naval-base membership follows saved navy rosters, and each base occurrence compares its ordered country strings, including repeats and zero-level bases. Raw aliases use their own tag-string slots; unreadable saved operands remain differences.
+- Construction self-checks use a line's remaining quantity independently of other target growth: native script effects can add levels without spending the waiting line's IC. Native count-reset observations separate cleared quantity from completed construction, including transfers that lower target levels. Historical prefixes check exact progress and integral completed-cost debits within a witnessed transfer's cleared count. A decrease without completed target levels or a native reset fails. Progress and spending still compare exactly.
+- Current route queries, combat-vector order and retained snow/mud display boundaries have runtime-only operands. Match native observations at their supplying hour; saved-value agreement cannot certify those displays.
+- Naval task-force participant membership and combat identities compare with the save. The first combat's role depends on its unsaved attacker country set and the unit's current logical owner; participant side cannot certify it. Empty versus nonempty recorded combat identities constrain role presence only as a recording consistency check.
 - Domain joins and unsaved limits live in [oracle/](src/oracle/). Self-checks cannot certify runtime caches, events, source splits or displays. Changed unsaved inputs need matched native observations at the same identity and supplying read, plus smoke; later rates, net pool changes and reconstruction cannot replace them.
 
 The [retained naval details oracle](src/oracle/combat_details.rs) compares every readable detail row and reports unexpected rows as differences. A saved result with no detail row makes coverage incomplete after those comparisons; zero differences cannot certify missing HQ inputs. HQ inputs themselves are omitted from the native save.
@@ -158,7 +178,7 @@ Every hour must occur exactly once. Gaps, undated loss, partial/recovered files,
 
 ## Recovery and checking changes
 
-Wait for detach/finalization before reading completion. `status.json`/`completed.json` retain failure/hour, partial and drain facts; draining cannot certify capture success. Partial replays open verified prefixes with visible failure notices.
+Wait for detach/finalization before reading completion. `status.json`/`completed.json` retain failure/hour, partial and drain facts; draining cannot certify capture success. The recorder polls the fixed terminal witness while the collector is loaded, publishes `capture_failed`, and requests detach automatically. Refresh refuses immediately after terminal failure. Authenticated raw-allocation sidecar details supply the attempted family and byte request in status. Finalization still waits for proved collector absence or game exit before recovering the committed prefix. Partial replays open verified prefixes with visible failure notices.
 
 After confirmed collector absence or game exit, set `$sessionDirectory` to a retained session and recover with:
 

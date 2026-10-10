@@ -113,6 +113,38 @@ pub fn preferred(
     country_id: u32,
     token: &mut [u8],
 ) -> Preferred {
+    preferred_buffer(
+        memory,
+        base,
+        country,
+        country_id,
+        crate::walk::Buffer::Fixed(token),
+    )
+}
+
+pub fn preferred_growing(
+    memory: &impl Memory,
+    base: usize,
+    country: usize,
+    country_id: u32,
+    token: &mut Vec<u8>,
+) -> Preferred {
+    preferred_buffer(
+        memory,
+        base,
+        country,
+        country_id,
+        crate::walk::Buffer::Growing(token),
+    )
+}
+
+pub fn preferred_buffer(
+    memory: &impl Memory,
+    base: usize,
+    country: usize,
+    country_id: u32,
+    mut token: crate::walk::Buffer<'_, u8>,
+) -> Preferred {
     let result = (|| {
         let (pointer, tactic_id) = selection(memory, base, country)?;
         let Some(tactic_id) = tactic_id else {
@@ -132,6 +164,7 @@ pub fn preferred(
                 .checked_add(TOKEN)
                 .ok_or("preferred tactic token address overflow")?,
         )?;
+        token.ensure(len)?;
         if len > token.len() {
             return Ok(Preferred {
                 outcome: Outcome::Truncated {

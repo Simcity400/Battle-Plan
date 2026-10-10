@@ -136,6 +136,11 @@ impl<K: Copy + Eq + std::hash::Hash> PoolView<K> {
         std::mem::take(&mut self.active)
     }
 
+    /// Owner requests may change next frame even while the window itself is settled.
+    pub(crate) fn keep_running(&mut self) {
+        self.active = true;
+    }
+
     pub(crate) fn retry(&self) -> Option<Retry> {
         self.pool.as_ref().and_then(Pool::retry)
     }
@@ -453,5 +458,78 @@ mod tests {
             && reason.contains("test_icon draws nothing for")
             && reason.contains("icon")
             && reason.contains("gfx/missing.dds")));
+    }
+
+    #[test]
+    fn shared_region_linger_retains_slot_then_final_sweep_stops_requests_and_running() {
+        use super::super::province_schedule::Schedule;
+        for selected in [false, true] {
+            let resources = fixture();
+            let windows = windows(GUI);
+            let mut context = Context {
+                resources: &resources,
+                windows: &windows,
+                viewport: [2048, 1152],
+                time: Some(1.0),
+            };
+            let mut schedule = Schedule::default();
+            let mut view = PoolView::default();
+            let mut notes = BTreeMap::new();
+            let mut slot = None;
+            let last = if selected { 104 } else { 4 };
+            for frame in 1..=last {
+                if selected && frame == 2 {
+                    schedule.set_selected(std::collections::BTreeSet::from([3]));
+                }
+                if selected && frame == 4 {
+                    schedule.set_selected(std::collections::BTreeSet::new());
+                }
+                let in_view = frame == 1;
+                schedule.advance([3], |_| in_view, false);
+                context.time = Some(frame as f32);
+                let listed = schedule.listed(3);
+                let owners: Vec<_> = listed
+                    .then_some(Owner {
+                        id: 7,
+                        screen: [100.0, 200.0],
+                        dirty: false,
+                    })
+                    .into_iter()
+                    .collect();
+                let drawn = view.present(
+                    &context,
+                    &Plan {
+                        name: "test_icon",
+                        kind: MapIconPool::Ping,
+                        alignment: 0x0A,
+                        owners: &owners,
+                    },
+                    Box::new(|_, _| Ok(())),
+                    |_, _, _, _| Ok(()),
+                    &mut notes,
+                );
+                if listed && !in_view {
+                    view.keep_running();
+                }
+                if frame < last {
+                    assert_eq!(drawn.len(), 1);
+                    let current = view.pool.as_ref().unwrap().slot_of(&7);
+                    assert!(current.is_some());
+                    if let Some(slot) = slot {
+                        assert_eq!(current, Some(slot));
+                    } else {
+                        slot = current;
+                    }
+                    if !in_view {
+                        assert!(view.take_running());
+                    }
+                } else {
+                    assert!(drawn.is_empty());
+                    assert_eq!(view.pool.as_ref().unwrap().slot_of(&7), None);
+                    assert!(!view.take_running());
+                }
+                schedule.take_pending();
+            }
+        }
     }
 }

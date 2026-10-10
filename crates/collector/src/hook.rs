@@ -205,7 +205,7 @@ impl Hook {
         sentinel_len: usize,
     ) -> Result<Self, String> {
         if original[0] != 0xe8 {
-            return Err("call tap requires a five-byte rel32 CALL".into());
+            return Err("call hook requires a five-byte rel32 CALL".into());
         }
         let mut hook = unsafe { Self::new_span(site, callback, original, sentinel_len) }?;
         hook.patch[0] = 0xe8;
@@ -280,8 +280,8 @@ impl Hook {
     /// Prepare protection/ranges before holding threads, validate every site
     /// before any write, and publish the whole family under one suspension.
     pub fn set_family_enabled(hooks: &mut [Self], enabled: bool) -> Result<bool, String> {
-        let mut references =
-            engine::allocation::vec(hooks.len()).map_err(|_| "hook family allocation failed")?;
+        let mut references = publication_storage(hooks.len(), enabled)
+            .map_err(|_| "hook family allocation failed")?;
         references.extend(hooks.iter_mut());
         Self::set_enabled_batch(&mut references, enabled)
     }
@@ -313,18 +313,19 @@ impl Hook {
             return Ok(true);
         }
         let mut threads = Threads::open()?;
-        let previous =
-            engine::allocation::map_slice(hooks, |hook| (hook.enabled, hook.is_enabled()))
-                .map_err(|_| "hook state allocation failed")?;
+        let mut previous = publication_storage(hooks.len(), enabled)
+            .map_err(|_| "hook state allocation failed")?;
+        previous.extend(hooks.iter().map(|hook| (hook.enabled, hook.is_enabled())));
         let selected = |index: usize| enabled || previous[index].1;
-        let ranges = engine::allocation::collect_vec(
+        let mut ranges = publication_storage(hooks.len(), enabled)
+            .map_err(|_| "hook ranges allocation failed")?;
+        ranges.extend(
             hooks
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| selected(*index))
                 .map(|(_, hook)| hook.site..hook.site + hook.sentinel_len),
-        )
-        .map_err(|_| "hook ranges allocation failed")?;
+        );
         let mut protected = 0;
         let mut prepare_error = None;
         let mut publication_failed = false;
@@ -495,6 +496,21 @@ impl Hook {
                 format!("patch refused or verification failed (Windows error {code}){publication}")
             }
         })
+    }
+}
+
+// Restore bookkeeping must remain possible after capture has stopped. These
+// temporary hook-family vectors are prepared before suspension; failed reserves
+// leave owned patches and executable storage intact for a later restore retry.
+pub(crate) fn publication_storage<T>(capacity: usize, enabled: bool) -> io::Result<Vec<T>> {
+    if enabled {
+        engine::allocation::vec(capacity)
+    } else {
+        let mut storage = Vec::new();
+        storage
+            .try_reserve_exact(capacity)
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        Ok(storage)
     }
 }
 
@@ -692,10 +708,16 @@ impl Threads {
     /// the DLL. Every excluded worker is joined before the final full-image check.
     /// Hook patching always uses `open`, with no worker exclusions.
     pub fn open_excluding(excluded_threads: &[u32]) -> Result<Self, String> {
+        // Detach scratch must remain available after the capture allocation gate
+        // stops admission. All growth still finishes before holding threads.
+        let mut excluded = Vec::new();
+        excluded
+            .try_reserve_exact(excluded_threads.len())
+            .map_err(|_| "thread exclusion allocation failed")?;
+        excluded.extend_from_slice(excluded_threads);
         let mut result = Self {
             threads: Vec::new(),
-            excluded: engine::allocation::copy_vec(excluded_threads)
-                .map_err(|_| "thread exclusion allocation failed")?,
+            excluded,
             census: Vec::new(),
             census_required: 0,
             census_short: false,
@@ -759,13 +781,14 @@ impl Threads {
             .ok_or(ERROR_BAD_LENGTH)?;
         let words = bytes.div_ceil(size_of::<usize>());
         let additional = words.saturating_sub(self.census.len());
-        engine::allocation::reserve_exact(&mut self.census, additional)
+        self.census
+            .try_reserve_exact(additional)
             .map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
         self.census.resize(words.max(self.census.len()), 0);
         // Headroom for threads created before every in-process creator is held.
         let headroom = self.threads.len() / 2 + 16;
-        let additional = (self.threads.len() + headroom).saturating_sub(self.threads.capacity());
-        engine::allocation::reserve_exact(&mut self.threads, additional)
+        self.threads
+            .try_reserve_exact(headroom)
             .map_err(|_| ERROR_NOT_ENOUGH_MEMORY)?;
         self.census_short = false;
         self.census_refusal = None;
@@ -891,8 +914,11 @@ impl Threads {
         Ok(false)
     }
 
-    // A detach deadline cannot release an unresolved suspension. Preserve the
-    // first OS error, but return only after every owned hold resumes or exits.
+    /// Return only after every suspension acquired by this owner is resolved.
+    /// A failed OS resume is still reported after recovery; it never permits
+    /// callers to format errors, destroy owners or close unresolved handles.
+    /// Persistent uncertainty retains this controller and all caller storage
+    /// in the resume-only loop, even when an outer detach budget has expired.
     pub fn resume(&mut self) -> Result<(), u32> {
         self.resume_with(
             |handle| {
@@ -902,7 +928,8 @@ impl Threads {
                     Ok(())
                 }
             },
-            // Only a signaled owned handle proves thread exit.
+            // open_excluding owns a stable thread handle with SYNCHRONIZE.
+            // Only a signaled handle proves exit; timeout/WAIT_FAILED do not.
             |handle| unsafe { WaitForSingleObject(handle, 0) } == 0,
             || unsafe { Sleep(1) },
         )
@@ -933,8 +960,9 @@ impl Threads {
                 }
             }
             if self.threads.iter().any(|thread| thread.suspended) {
-                // Keep handles and publication storage until resume or exit;
-                // no allocation, formatting, lock or destruction while held.
+                // No heap use, formatting, locks, destruction or Rust unwind.
+                // Handles and all surrounding publication/runtime roots stay
+                // owned until actual resume or actual thread exit is proved.
                 retry();
             }
         }
@@ -1321,5 +1349,109 @@ mod safety_tests {
         // Synthetic handles must never reach the OS cleanup.
         threads.threads.clear();
         unsafe { ManuallyDrop::drop(&mut threads) };
+    }
+}
+
+#[cfg(test)]
+mod thread_resume_policy_tests {
+    use super::*;
+
+    // These labels never reach Windows. ManuallyDrop also prevents a failed
+    // assertion from passing synthetic handles to the real Threads::drop.
+    fn fixture(count: usize) -> ManuallyDrop<Threads> {
+        ManuallyDrop::new(Threads {
+            threads: (1..=count)
+                .map(|label| Thread {
+                    id: label as u32,
+                    handle: label as HANDLE,
+                    suspended: true,
+                })
+                .collect(),
+            excluded: Vec::new(),
+            census: Vec::new(),
+            census_required: 0,
+            census_short: false,
+            census_refusal: None,
+        })
+    }
+    fn release(mut threads: ManuallyDrop<Threads>) {
+        threads.threads.clear();
+        unsafe { ManuallyDrop::drop(&mut threads) };
+    }
+
+    #[test]
+    fn failed_resume_retains_each_hold_until_recovered_and_preserves_first_error() {
+        let mut threads = fixture(2);
+        let mut calls = [0; 2];
+        let mut waits = 0;
+        let result = threads.resume_with(
+            |handle| {
+                let index = handle as usize - 1;
+                calls[index] += 1;
+                if calls[index] == 1 {
+                    Err(40 + index as u32)
+                } else {
+                    Ok(())
+                }
+            },
+            |_| false,
+            || waits += 1,
+        );
+        assert_eq!(result, Err(41)); // reverse order: the first fault survives
+        assert_eq!(calls, [2, 2]);
+        assert_eq!(waits, 1);
+        assert!(threads.threads.iter().all(|thread| !thread.suspended));
+        release(threads);
+    }
+
+    #[test]
+    fn unresolved_exit_probe_does_not_release_and_proved_exit_settles_only_its_hold() {
+        let mut threads = fixture(2);
+        let mut calls = [0; 2];
+        let mut waits = 0;
+        let result = threads.resume_with(
+            |handle| {
+                let index = handle as usize - 1;
+                calls[index] += 1;
+                if index == 0 && calls[index] == 2 {
+                    Ok(())
+                } else {
+                    Err(6)
+                }
+            },
+            |handle| handle as usize == 2,
+            || waits += 1,
+        );
+        assert_eq!(result, Err(6));
+        assert_eq!(calls, [2, 1]);
+        assert_eq!(waits, 1);
+        assert!(threads.threads.iter().all(|thread| !thread.suspended));
+        release(threads);
+    }
+
+    #[test]
+    fn resume_recovery_never_touches_unacquired_or_already_resolved_holds() {
+        let mut threads = fixture(3);
+        threads.threads[1].suspended = false;
+        let mut calls = [0; 3];
+        let mut waits = 0;
+        let result = threads.resume_with(
+            |handle| {
+                let index = handle as usize - 1;
+                calls[index] += 1;
+                if index == 2 && calls[index] == 1 {
+                    Err(5)
+                } else {
+                    Ok(())
+                }
+            },
+            |_| false,
+            || waits += 1,
+        );
+        assert_eq!(result, Err(5));
+        assert_eq!(calls, [1, 0, 2]);
+        assert_eq!(waits, 1);
+        assert!(threads.threads.iter().all(|thread| !thread.suspended));
+        release(threads);
     }
 }

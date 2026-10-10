@@ -22,7 +22,8 @@ fn earlier_states(
 }
 
 /// `StateResources.pool` against each saved state's `resources` block: the
-/// CState+0x1c0 pool. A zero pool has no saved entry; the accumulator
+/// CState+0x1c0 pool. 1409D4040 emits the block only if a value is positive;
+/// 140BBD5D0 then writes every nonzero value, including negatives. The accumulator
 /// operands of the same rows are not saved. Only states `sampled` at the
 /// frame's hour are compared.
 pub(in crate::oracle) fn state_pools(
@@ -42,9 +43,25 @@ pub(in crate::oracle) fn state_pools(
     );
     let mut seen = BTreeSet::new();
     let mut matched = 0;
+    let emitted: BTreeSet<_> = rows
+        .iter()
+        .filter(|row| row.pool > 0)
+        .map(|row| row.state)
+        .collect();
+    let omitted_negative: BTreeSet<_> = rows
+        .iter()
+        .filter(|row| row.pool < 0 && !emitted.contains(&row.state) && sampled(row.state))
+        .map(|row| row.state)
+        .collect();
+    if !omitted_negative.is_empty() {
+        report.limitation(
+            "1409D4040 omits resource blocks with no positive amounts; those omissions cannot certify the negative pool values",
+            format!("StateResources states {omitted_negative:?}"),
+        );
+    }
     for row in rows
         .iter()
-        .filter(|row| row.pool != 0 && sampled(row.state))
+        .filter(|row| row.pool != 0 && emitted.contains(&row.state) && sampled(row.state))
     {
         let name = match token(names, row.resource) {
             Ok(name) => name,
@@ -123,10 +140,11 @@ pub(in crate::oracle) fn resource_inputs(
         let controller = controllers
             .get(&row.state)
             .ok_or_else(|| invalid(format!("{subject} has no captured state")))?;
-        let tag = required_country_tag(*controller, links)?;
-        let origin = saved
-            .country_resources
-            .get(tag)
+        // 1409C6E20 -> 140BA56A0 resolves raw0 to the reserved country.
+        // Its resources start empty (140C95280); 140CAA9F0 builds origins
+        // from controlled states, which 1409D0BF0 adds only for positive tags.
+        let origin = country_tag(*controller, links)?
+            .and_then(|tag| saved.country_resources.get(tag))
             .is_some_and(|resources| resources.origin_states.contains(&row.state));
         matched += 1;
         value(
@@ -315,7 +333,7 @@ pub(in crate::oracle) fn building_overrides(
             }
         }
     }
-    for (tag, resources) in &saved.country_resources {
+    for (tag, resources) in report.canonical_countries(&saved.country_resources) {
         if resources.building_overrides.is_empty() {
             continue;
         }

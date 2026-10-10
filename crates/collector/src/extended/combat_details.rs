@@ -1,6 +1,6 @@
 //! Hourly combat-window and marker operands. One bounded census feeds the
-//! independent tables. Division destinations grow from their original counts on the
-//! acquisition worker; projection and other capacity growth stay on the spool.
+//! independent tables. Rows and arenas grow from their original counts on the
+//! acquisition worker before publication; projection stays on the spool.
 //!
 //! The pass holds the simulation thread, so the walk reuses what it has read
 //! in the pass instead of reading it again: the census's authenticated
@@ -101,7 +101,13 @@ impl Capacities {
         for (capacity, required) in [
             (&mut self.combats, demand.rows),
             (&mut self.details, demand.rows),
+            (&mut self.combat_sides, demand.rows),
+            (&mut self.sides, demand.rows.saturating_mul(2)),
             (&mut self.census_participants, demand.census_participants),
+            (&mut self.divisions, demand.census_participants),
+            (&mut self.modifier_members, demand.census_participants),
+            (&mut self.division_commanders, demand.census_participants),
+            (&mut self.commander_keys, demand.census_participants),
             (&mut self.rosters, demand.arenas.participants),
             (&mut self.air_counts, demand.arenas.air),
             (&mut self.detail_text, demand.arenas.text),
@@ -127,37 +133,37 @@ impl Capacities {
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            combats: 512,
-            census_participants: 8192,
-            details: 64,
-            divisions: 1024,
-            sides: 128,
-            combat_sides: 512,
-            country_tags: 2048,
-            rosters: 2048,
-            modifier_members: 1024,
-            modifiers: 16384,
-            width_terms: 8192,
-            exile_tags: 64,
-            division_names: 16384,
-            name_templates: 1024,
-            name_groups: 256,
-            reinforcement_modifiers: 16384,
-            supply_terms: 4096,
-            acclimatization: 2048,
-            transport_terms: 1024,
-            division_commanders: 32,
+            combats: 0,
+            census_participants: 0,
+            details: 0,
+            divisions: 0,
+            sides: 0,
+            combat_sides: 0,
+            country_tags: 0,
+            rosters: 0,
+            modifier_members: 0,
+            modifiers: 0,
+            width_terms: 0,
+            exile_tags: 0,
+            division_names: 0,
+            name_templates: 0,
+            name_groups: 0,
+            reinforcement_modifiers: 0,
+            supply_terms: 0,
+            acclimatization: 0,
+            transport_terms: 0,
+            division_commanders: 0,
             commander_names: 2048,
-            commander_keys: 2048,
-            commander_traits: 256,
-            detail_text: 8192,
-            timed_traits: 64,
-            air_counts: 256,
-            learning_traits: 1024,
+            commander_keys: 0,
+            commander_traits: 0,
+            detail_text: 0,
+            timed_traits: 0,
+            air_counts: 0,
+            learning_traits: 0,
         }
     }
 }
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, PartialEq, Eq)]
 struct Detail {
     row: cland_combat::DetailsRow,
     tactic_context: land_tactic_inputs::ContextRow,
@@ -252,9 +258,8 @@ struct Acquired {
     reinforcement: reinforcement::ContextRow,
 }
 
-/// Per-division and per-combat reader storage the walk reuses, sized once at
-/// each reader's bound, instead of zeroing about 15 KB for every division.
-/// Readers write only the prefix they return.
+/// Per-division and per-combat reader storage grows from original headers and
+/// is reused by the walk. Readers write only the prefix they return.
 #[derive(Default)]
 struct Scratch {
     widths: Vec<carmy_combat_inputs::WidthTerm>,
@@ -264,20 +269,6 @@ struct Scratch {
     modifiers: Vec<carmy_combat_inputs::Modifier>,
 }
 impl Scratch {
-    /// Sizes each buffer at its reader's bound; a no-op once sized.
-    fn ensure(&mut self) -> bool {
-        grow_vec(&mut self.widths, carmy_combat_inputs::WIDTH_TERM_LIMIT)
-            && grow_vec(
-                &mut self.reinforcement_modifiers,
-                reinforcement::MODIFIER_LIMIT,
-            )
-            && grow_vec(&mut self.supply, reinforcement::SUPPLY_TERM_LIMIT)
-            && grow_vec(
-                &mut self.acclimatization,
-                reinforcement::ACCLIMATIZATION_LIMIT,
-            )
-            && grow_vec(&mut self.modifiers, carmy_combat_inputs::MODIFIER_LIMIT)
-    }
     fn allocated_bytes(&self) -> usize {
         self.widths.capacity() * size_of::<carmy_combat_inputs::WidthTerm>()
             + self.reinforcement_modifiers.capacity() * size_of::<reinforcement::ModifierTerm>()
@@ -299,8 +290,8 @@ type DivisionRead = (
 /// naming memo and name arena, and the exile tags past the arena's length.
 struct DivisionOutputs<'r, 'n> {
     name_groups: &'r mut engine::cname_group_member::GroupKeys,
-    names: &'r mut engine::cname_group_member::Names<'n>,
-    exile_tags: &'r mut [u32],
+    names: &'r mut engine::cname_group_member::NameArena<'n>,
+    exile_tags: engine::walk::Buffer<'r, u32>,
     transport_terms: &'r mut Vec<reinforcement::TransportTerm>,
     transport_start: usize,
 }
@@ -321,7 +312,7 @@ fn read_division<M: Memory, C: Memory>(
     pointer: usize,
     handle: u64,
 ) -> Result<DivisionRead, &'static str> {
-    let stats = carmy_combat_inputs::capture_stats(
+    let stats = carmy_combat_inputs::capture_stats_buffer(
         memory,
         base,
         sources,
@@ -333,28 +324,33 @@ fn read_division<M: Memory, C: Memory>(
     let countries = countries.as_ref().map_err(|reason| *reason)?;
     // 1415CA660 evaluates the exile frames for committed entries only.
     let exile = match role {
-        1 => carmy_combat_inputs::capture_exile(memory, countries, pointer, outputs.exile_tags)?,
+        1 => carmy_combat_inputs::capture_exile_buffer(
+            memory,
+            countries,
+            pointer,
+            outputs.exile_tags,
+        )?,
         _ => carmy_combat_inputs::Exile::Absent,
     };
-    let context = carmy_combat_inputs::capture_context(
+    let context = carmy_combat_inputs::capture_context_buffer(
         memory,
         base,
         countries,
         sources,
         pointer,
         handle,
-        &mut scratch.widths,
+        engine::walk::Buffer::Growing(&mut scratch.widths),
     )?;
-    let row = reinforcement::capture_context(
+    let row = reinforcement::capture_context_buffer(
         memory,
         base,
         state,
         sources,
         pointer,
         handle,
-        &mut scratch.reinforcement_modifiers,
-        &mut scratch.supply,
-        &mut scratch.acclimatization,
+        engine::walk::Buffer::Growing(&mut scratch.reinforcement_modifiers),
+        engine::walk::Buffer::Growing(&mut scratch.supply),
+        engine::walk::Buffer::Growing(&mut scratch.acclimatization),
         outputs.transport_terms,
         outputs.transport_start,
     )?;
@@ -369,7 +365,7 @@ struct Destination<'a> {
     images: &'a mut Images,
     scratch: &'a mut Scratch,
     name_groups: &'a mut engine::cname_group_member::GroupKeys,
-    names: engine::cname_group_member::Names<'a>,
+    names: engine::cname_group_member::NameArena<'a>,
     /// Tests only: read as main's readers read, sharing nothing between
     /// readers (no census members, selections, pass shares or division
     /// image) nor between divisions (no shared sources).
@@ -380,33 +376,33 @@ struct Destination<'a> {
     /// for growth and its divisions are omitted this hour.
     commander_names: engine::cname_group_member::Names<'a>,
     commander_progress: Progress,
-    commander_keys: &'a mut [CommanderKey],
+    commander_keys: &'a mut Vec<CommanderKey>,
     commander_key_count: usize,
     required_commander_keys: usize,
-    details: &'a mut [Detail],
+    details: &'a mut Vec<Detail>,
     divisions: &'a mut Vec<Division>,
-    sides: &'a mut [ModifierSide],
-    combat_sides: &'a mut [CombatSides],
-    country_tags: &'a mut [u32],
+    sides: &'a mut Vec<ModifierSide>,
+    combat_sides: &'a mut Vec<CombatSides>,
+    country_tags: &'a mut Vec<u32>,
     country_tags_progress: Progress,
     /// Nodes one country set can hold: the live country count plus tag 0.
     country_set_limit: Result<usize, &'static str>,
-    rosters: &'a mut [u64],
-    commander_traits: &'a mut [cland_combat::CommanderTrait],
-    detail_text: &'a mut [u8],
-    timed_traits: &'a mut [cland_combat::CommanderTimedTrait],
-    air_counts: &'a mut [i32],
-    learning_traits: &'a mut [cland_combat::CommanderLearningTrait],
+    rosters: &'a mut Vec<u64>,
+    commander_traits: &'a mut Vec<cland_combat::CommanderTrait>,
+    detail_text: &'a mut Vec<u8>,
+    timed_traits: &'a mut Vec<cland_combat::CommanderTimedTrait>,
+    air_counts: &'a mut Vec<i32>,
+    learning_traits: &'a mut Vec<cland_combat::CommanderLearningTrait>,
     unit_scratch: &'a mut Vec<usize>,
     /// Stored entries of committed details, and every entry read; the
     /// participant counts live in `arenas[0]`.
     detail_used: cland_combat::DetailCounts,
     detail_required: cland_combat::DetailCounts,
-    members: &'a mut [ModifierMember],
-    modifiers: &'a mut [carmy_combat_inputs::Modifier],
+    members: &'a mut Vec<ModifierMember>,
+    modifiers: &'a mut Vec<carmy_combat_inputs::Modifier>,
     width_terms: &'a mut Vec<carmy_combat_inputs::WidthTerm>,
     width_progress: Progress,
-    exile_tags: &'a mut [u32],
+    exile_tags: &'a mut Vec<u32>,
     exile_progress: Progress,
     reinforcement_modifiers: &'a mut Vec<reinforcement::ModifierTerm>,
     supply_terms: &'a mut Vec<reinforcement::SupplyTerm>,
@@ -418,6 +414,30 @@ struct Destination<'a> {
     ticks: [u64; N],
 }
 impl Destination<'_> {
+    fn reserve_commander_keys(&mut self, required: usize) -> bool {
+        if required <= self.commander_keys.len() {
+            return true;
+        }
+        let previous = std::mem::take(self.commander_keys);
+        if !grow_vec(
+            self.commander_keys,
+            required.max(previous.len().saturating_mul(2)),
+        ) {
+            return false;
+        }
+        for key in previous.into_iter().filter(|key| key.handle != 0) {
+            let hash = key.handle.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let hash = (hash ^ (hash >> 32)) as usize;
+            for probe in 0..self.commander_keys.len() {
+                let slot = hash.wrapping_add(probe) % self.commander_keys.len();
+                if self.commander_keys[slot].handle == 0 {
+                    self.commander_keys[slot] = key;
+                    break;
+                }
+            }
+        }
+        true
+    }
     fn commander(&mut self, memory: &impl Memory, base: usize, handle: u64) -> Option<usize> {
         if handle == 0 {
             return None;
@@ -452,10 +472,11 @@ impl Destination<'_> {
                     if !grow_vec(self.division_commanders, index + 1) {
                         return None;
                     }
+                    let name_len = row.name_token.1;
                     self.division_commanders[index] = row;
                     self.commander_progress.len += 1;
                     // The token was written uncommitted at the arena's length.
-                    self.commander_names.len += row.name_token.1;
+                    self.commander_names.len += name_len;
                     self.commander_keys[slot].index = index;
                     return Some(index);
                 }
@@ -577,6 +598,11 @@ impl Destination<'_> {
         if !grow_vec(self.divisions, self.progress[1].required + bound) {
             return;
         }
+        if !self.reserve_commander_keys(self.progress[1].required.saturating_add(bound))
+            || !grow_vec(self.sides, self.progress[2].required.saturating_add(2))
+        {
+            return;
+        }
         // A side's committed and reserve lists are subsets of its full
         // participants, so the larger census count bounds the role scratch.
         if !grow_vec(
@@ -677,9 +703,8 @@ impl Destination<'_> {
                             // past its admitted length; the reader grows it on
                             // this worker, one successfully read term at a time.
                             let transport_start = self.reinforcement_progress[3].len;
-                            // Exile tags go straight into the preallocated arena
-                            // past its admitted length; an overflow is counted
-                            // for the spool's growth, never allocated here.
+                            // Exile tags grow from their original list headers
+                            // and commit only with the containing division.
                             let exile_start = self.exile_progress.len;
                             let result = read_division(
                                 divisional,
@@ -691,7 +716,10 @@ impl Destination<'_> {
                                 DivisionOutputs {
                                     name_groups: self.name_groups,
                                     names: &mut self.names,
-                                    exile_tags: &mut self.exile_tags[exile_start..],
+                                    exile_tags: engine::walk::Buffer::GrowingFrom(
+                                        self.exile_tags,
+                                        exile_start,
+                                    ),
                                     transport_terms: self.transport_terms,
                                     transport_start,
                                 },
@@ -776,16 +804,16 @@ impl Destination<'_> {
             }
         };
         let start = self.country_tags_progress.len;
-        match cland_combat::read_country_sets(
+        match cland_combat::read_country_sets_buffer(
             memory,
             base,
             source,
             limit,
-            &mut self.country_tags[start..],
+            engine::walk::Buffer::GrowingFrom(self.country_tags, start),
         ) {
             Ok((mut row, count)) => {
                 self.country_tags_progress.required += count;
-                if self.progress[3].len == self.combat_sides.len() {
+                if !grow_vec(self.combat_sides, self.progress[3].len + 1) {
                     return;
                 }
                 row.start = start;
@@ -815,13 +843,13 @@ impl Destination<'_> {
         }
         let at = self.detail_used;
         let roster = self.arenas[0].len;
-        let mut arenas = cland_combat::DetailArenas::new(
-            &mut self.rosters[roster..],
-            &mut self.air_counts[at.air..],
-            &mut self.detail_text[at.text..],
-            &mut self.commander_traits[at.traits..],
-            &mut self.timed_traits[at.timed..],
-            &mut self.learning_traits[at.learning..],
+        let mut arenas = cland_combat::DetailArenas::with_buffers(
+            engine::walk::Buffer::GrowingFrom(self.rosters, roster),
+            engine::walk::Buffer::GrowingFrom(self.air_counts, at.air),
+            engine::walk::Buffer::GrowingFrom(self.detail_text, at.text),
+            engine::walk::Buffer::GrowingFrom(self.commander_traits, at.traits),
+            engine::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
+            engine::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
         );
         let result = cland_combat::read_details(
             memory,
@@ -856,9 +884,7 @@ impl Destination<'_> {
                     self.progress[0].failure = Some(reason);
                     return;
                 }
-                // A detail whose lists did not all fit is never published;
-                // its demand grows the arenas for the next hour.
-                if self.progress[0].len == self.details.len() || !complete {
+                if !grow_vec(self.details, self.progress[0].len + 1) || !complete {
                     return;
                 }
                 let text = at.text;
@@ -922,14 +948,20 @@ impl Destination<'_> {
             return;
         }
         let scratch = &mut self.scratch.modifiers;
-        match carmy_combat_inputs::capture_modifiers(memory, base, pointer, handle, scratch) {
+        match carmy_combat_inputs::capture_modifiers_buffer(
+            memory,
+            base,
+            pointer,
+            handle,
+            engine::walk::Buffer::Growing(scratch),
+        ) {
             Ok(count) => {
                 self.arenas[2].required += count;
                 let Some(side) = side else {
                     return;
                 };
-                if self.arenas[1].len == self.members.len()
-                    || count > self.modifiers.len().saturating_sub(self.arenas[2].len)
+                if !grow_vec(self.members, self.arenas[1].len + 1)
+                    || !grow_vec(self.modifiers, self.arenas[2].len + count)
                 {
                     // Omit the whole side during projection, never its last entries.
                     self.sides[side].len = usize::MAX;
@@ -1111,15 +1143,7 @@ impl Captured {
             required_census_participants: 0,
             sources: Sources::new(),
             images: Images::default(),
-            // Sized with the capture, off the game thread; a vacant
-            // placeholder stays allocation-free and is sized if it is walked.
-            scratch: if c.combats == 0 {
-                Scratch::default()
-            } else {
-                let mut scratch = Scratch::default();
-                scratch.ensure();
-                scratch
-            },
+            scratch: Scratch::default(),
             #[cfg(test)]
             reference: false,
         }
@@ -1173,7 +1197,23 @@ impl Captured {
                 })
                 .sum::<usize>()
             + self.details.allocated_bytes()
+            + self
+                .details
+                .rows
+                .iter()
+                .flat_map(|row| &row.row.sides)
+                .map(|side| side.presentation.allocated_bytes())
+                .sum::<usize>()
             + self.division_commanders.allocated_bytes()
+            + self
+                .division_commanders
+                .first
+                .iter()
+                .map(|row| {
+                    row.trait_text.capacity()
+                        + row.traits.capacity() * size_of::<engine::cland_combat::CommanderTrait>()
+                })
+                .sum::<usize>()
             + self.commander_names.allocated_bytes()
             + self.commander_keys.capacity() * size_of::<CommanderKey>()
             + self.divisions.allocated_bytes()
@@ -1203,20 +1243,18 @@ impl Captured {
             + self.scratch.allocated_bytes()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
-        c.division_commanders = c
-            .division_commanders
-            .max(self.division_commanders.first.capacity());
-        c.divisions = c.divisions.max(self.divisions.rows.capacity());
-        c.width_terms = c.width_terms.max(self.width_terms.first.capacity());
-        c.exile_tags = c.exile_tags.max(self.exile_tags.first.capacity());
-        c.division_names = c.division_names.max(self.division_names.first.capacity());
-        c.commander_names = c.commander_names.max(self.commander_names.first.capacity());
+        c.division_commanders = c.division_commanders.max(self.division_commanders.len);
+        c.divisions = c.divisions.max(self.divisions.outcome.len());
+        c.width_terms = c.width_terms.max(self.width_terms.len);
+        c.exile_tags = c.exile_tags.max(self.exile_tags.len);
+        c.division_names = c.division_names.max(self.division_names.len);
+        c.commander_names = c.commander_names.max(self.commander_names.len);
         c.reinforcement_modifiers = c
             .reinforcement_modifiers
-            .max(self.reinforcement_modifiers.first.capacity());
-        c.supply_terms = c.supply_terms.max(self.supply_terms.first.capacity());
-        c.acclimatization = c.acclimatization.max(self.acclimatization.first.capacity());
-        c.transport_terms = c.transport_terms.max(self.transport_terms.first.capacity());
+            .max(self.reinforcement_modifiers.len);
+        c.supply_terms = c.supply_terms.max(self.supply_terms.len);
+        c.acclimatization = c.acclimatization.max(self.acclimatization.len);
+        c.transport_terms = c.transport_terms.max(self.transport_terms.len);
         self.division_commanders.grow(&mut c.division_commanders);
         self.commander_names.grow(&mut c.commander_names);
         grow_capacity(&mut c.commander_keys, self.required_commander_keys);
@@ -1278,7 +1316,7 @@ impl Captured {
         state: usize,
     ) -> ([Outcome; N], [u64; N]) {
         self.sources.clear();
-        if crate::allocation::failed() || !self.scratch.ensure() {
+        if crate::allocation::failed() {
             return (
                 [Outcome::Unavailable {
                     reason: "collector allocation failed",
@@ -1291,17 +1329,8 @@ impl Captured {
         self.name_cache.reset();
         let started = qpc();
         let commander_started = qpc();
-        // walk_with visits a combat only after every participant fits in this
-        // owned census. Each visited participant has at most one commander, so
-        // this bounds all distinct nonzero keys before the first insertion.
-        if !grow_vec(&mut self.commander_keys, self.census_participants.len()) {
-            return (
-                [Outcome::Unavailable {
-                    reason: "collector allocation failed",
-                }; N],
-                [0; N],
-            );
-        }
+        // visit reserves commander keys from each original participant count,
+        // preserving every earlier key and refusal when the table expands.
         self.commander_keys.fill(CommanderKey::default());
         let commander_ticks = elapsed(commander_started);
         let mut destination = Destination {
@@ -1310,8 +1339,8 @@ impl Captured {
             images: &mut self.images,
             scratch: &mut self.scratch,
             name_groups: &mut self.name_cache,
-            names: engine::cname_group_member::Names {
-                bytes: &mut self.division_names.first,
+            names: engine::cname_group_member::NameArena {
+                bytes: engine::walk::Buffer::Growing(&mut self.division_names.first),
                 len: 0,
                 required: 0,
             },
@@ -1359,7 +1388,7 @@ impl Captured {
             arenas: [Progress::default(); N],
             ticks: [0, commander_ticks, 0, 0, 0],
         };
-        let census = cland_combat::walk_members(
+        let census = cland_combat::walk_members_growing(
             memory,
             base,
             state,

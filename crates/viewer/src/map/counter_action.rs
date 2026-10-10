@@ -7,6 +7,7 @@
 //! 0 shows the first frame. The sprite and placement remain authored GUI facts.
 
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     io,
 };
@@ -19,7 +20,7 @@ use replay::{
     },
 };
 
-use super::{tables::rows, visibility::Relations};
+use super::{directed_wars::Owner, tables::rows};
 
 pub(super) type Action = Result<u8, &'static str>;
 
@@ -97,25 +98,23 @@ pub(super) fn route_tail(
 /// `140BF0EF0`: ordinary-route destination controller, raw identity first,
 /// then canonical country identity and active war (`1406F3A00`).
 pub(super) struct DestinationHostility<'a> {
+    frame: &'a DecodedFrame,
     controllers: BTreeMap<u32, u32>,
     links: &'a BTreeMap<u32, u32>,
-    relations: Result<&'a Relations, &'static str>,
+    owners: RefCell<BTreeMap<u32, Result<Owner<'a>, String>>>,
 }
 
 impl<'a> DestinationHostility<'a> {
-    pub(super) fn read(
-        frame: &DecodedFrame,
-        links: &'a BTreeMap<u32, u32>,
-        relations: Result<&'a Relations, &'static str>,
-    ) -> io::Result<Self> {
+    pub(super) fn read(frame: &'a DecodedFrame, links: &'a BTreeMap<u32, u32>) -> io::Result<Self> {
         Ok(Self {
+            frame,
             controllers: rows::<tables::Provinces>(frame)?
                 .rows()
                 .iter()
                 .map(|row| (row.id, row.controller))
                 .collect(),
             links,
-            relations,
+            owners: RefCell::default(),
         })
     }
 
@@ -125,6 +124,10 @@ impl<'a> DestinationHostility<'a> {
         total: u32,
         owner: Option<u32>,
     ) -> Result<bool, &'static str> {
+        // 140BF0EF0 tests the signed ordinary count before looking up its tail.
+        if (total as i32) <= 0 {
+            return Ok(false);
+        }
         if path.len() != total as usize {
             return Err("last ordinary-route province hostility");
         }
@@ -146,15 +149,17 @@ impl<'a> DestinationHostility<'a> {
         if controller == owner {
             return Ok(false);
         }
-        let controller = *self
-            .links
-            .get(&controller)
-            .ok_or("action controller CountryLinks")?;
-        let owner = *self.links.get(&owner).ok_or("action owner CountryLinks")?;
-        if controller == owner {
-            return Ok(false);
-        }
-        Ok(self.relations?.at_war(controller, owner))
+        // 140BF0EF0 -> 1406F3A00 receives the destination controller and
+        // targets the unit's raw logical owner. Reverse truth is no evidence.
+        let mut owners = self.owners.borrow_mut();
+        let receiver = owners
+            .entry(controller)
+            .or_insert_with(|| Owner::new(self.frame, controller));
+        receiver
+            .as_ref()
+            .map_err(|_| "action destination directed-war receiver unavailable")?
+            .at_war(owner)
+            .map_err(|_| "action destination directed-war operands unavailable")
     }
 }
 
@@ -297,7 +302,52 @@ impl Actions {
     }
 }
 
-/// `1413CB9C0/1413CBD30 -> 140BEA140` add both the combat-side member
+/// `140BEF850` scans the unit's +1A8 references and each attacker's +38
+/// country list in order. Fresh packets retain that order and its early return.
+/// NavalCombatDetails already owns the naval side's ordered primary list.
+/// This action path does not call combat vf12 or inspect side unit membership.
+fn recorded_standing(
+    frame: &DecodedFrame,
+    packet: &replay::rows::UnitCombatReferences,
+    owner: u32,
+    links: &BTreeMap<u32, u32>,
+) -> Option<bool> {
+    for reference in &packet.entries {
+        let countries = match reference.kind {
+            0 | 1 => {
+                let sides = rows::<tables::LandCombatSides>(frame).ok()?;
+                let side = sides
+                    .rows()
+                    .iter()
+                    .find(|side| side.combat == reference.combat)?;
+                &side.attacker_primary
+            }
+            2 => {
+                // CNavalCombat+28 -> CCombatant+38 is the same native
+                // list, captured by naval_combat_summary_inputs::countries.
+                let naval = rows::<tables::NavalCombatDetails>(frame).ok()?;
+                let combat = naval
+                    .rows()
+                    .iter()
+                    .find(|combat| combat.combat == reference.combat)?;
+                &combat.sides[0].summary.countries
+            }
+            _ => return None,
+        };
+        for &country in countries {
+            if country == owner {
+                return Some(true);
+            }
+            if country != 0 && owner != 0 && links.get(&country)? == links.get(&owner)? {
+                return Some(true);
+            }
+        }
+    }
+    Some(false)
+}
+
+/// Historical inverse proof: `1413CB9C0/1413CBD30 -> 140BEA140` add both the
+/// combat-side member
 /// and the unit's combat pointer; removal (`1413CE250/140BF48D0`) removes
 /// both. `LandCombats` plus the attacker's primary +0x38 country set can
 /// therefore prove any-attacking. A negative also requires every reference
@@ -309,6 +359,7 @@ fn standing_attacks(
     links: &BTreeMap<u32, u32>,
     own: Option<&BTreeSet<u64>>,
 ) -> io::Result<BTreeMap<u64, Option<bool>>> {
+    let mut result = BTreeMap::new();
     let wanted: BTreeSet<u64> = movements
         .iter()
         .filter(|movement| {
@@ -316,10 +367,25 @@ fn standing_attacks(
                 && (movement.path_total as i32) <= 0
                 && (movement.combat_count as i32) > 0
         })
-        .map(|movement| movement.division)
+        .filter_map(|movement| {
+            use replay::rows::Recorded;
+            let attack = match &movement.combat_references {
+                Recorded::NotRecorded => return Some(movement.division),
+                Recorded::Value(Some(packet))
+                    if packet.valid_at(frame.hour, movement.combat_count) =>
+                {
+                    owners
+                        .get(&movement.division)
+                        .and_then(|&owner| recorded_standing(frame, packet, owner, links))
+                }
+                Recorded::Value(_) => None,
+            };
+            result.insert(movement.division, attack);
+            None
+        })
         .collect();
     if wanted.is_empty() {
-        return Ok(BTreeMap::new());
+        return Ok(result);
     }
     let combats = rows::<tables::LandCombats>(frame)?;
     let sides = rows::<tables::LandCombatSides>(frame)?;
@@ -336,42 +402,44 @@ fn standing_attacks(
             }
         }
     }
-    Ok(movements
-        .iter()
-        .filter(|movement| wanted.contains(&movement.division))
-        .map(|movement| {
-            let result = (|| {
-                let owner = *owners.get(&movement.division)?;
-                let references = membership.get(&movement.division)?;
-                let mut unknown = false;
-                for reference in references {
-                    let Some(countries) = sides.get(reference) else {
-                        unknown = true;
-                        continue;
-                    };
-                    for &country in *countries {
-                        if country == owner {
-                            return Some(true);
-                        }
-                        if country != 0 && owner != 0 {
-                            match (links.get(&country), links.get(&owner)) {
-                                (Some(country), Some(owner)) if country == owner => {
-                                    return Some(true);
+    result.extend(
+        movements
+            .iter()
+            .filter(|movement| wanted.contains(&movement.division))
+            .map(|movement| {
+                let result = (|| {
+                    let owner = *owners.get(&movement.division)?;
+                    let references = membership.get(&movement.division)?;
+                    let mut unknown = false;
+                    for reference in references {
+                        let Some(countries) = sides.get(reference) else {
+                            unknown = true;
+                            continue;
+                        };
+                        for &country in *countries {
+                            if country == owner {
+                                return Some(true);
+                            }
+                            if country != 0 && owner != 0 {
+                                match (links.get(&country), links.get(&owner)) {
+                                    (Some(country), Some(owner)) if country == owner => {
+                                        return Some(true);
+                                    }
+                                    (Some(_), Some(_)) => {}
+                                    _ => unknown = true,
                                 }
-                                (Some(_), Some(_)) => {}
-                                _ => unknown = true,
                             }
                         }
                     }
-                }
-                (!unknown
-                    && combats.is_complete()
-                    && references.len() == movement.combat_count as usize)
-                    .then_some(false)
-            })();
-            (movement.division, result)
-        })
-        .collect())
+                    (!unknown
+                        && combats.is_complete()
+                        && references.len() == movement.combat_count as usize)
+                        .then_some(false)
+                })();
+                (movement.division, result)
+            }),
+    );
+    Ok(result)
 }
 
 /// A fixed-key failure affects only the two strategic-redeployment actions.
@@ -443,21 +511,103 @@ mod tests {
         rows::{DivisionRow, LandCombatRow, LandCombatSideRow, ProvinceRow, TableId, TableRows},
     };
 
-    fn read_actions(
-        frame: &DecodedFrame,
-        links: &BTreeMap<u32, u32>,
-        relations: Result<&Relations, &'static str>,
-    ) -> io::Result<Actions> {
-        Actions::read(
-            frame,
-            &DestinationHostility::read(frame, links, relations)?,
-            None,
-        )
+    fn read_actions(frame: &DecodedFrame, links: &BTreeMap<u32, u32>) -> io::Result<Actions> {
+        Actions::read(frame, &DestinationHostility::read(frame, links)?, None)
     }
 
     fn set(frame: &mut DecodedFrame, table: TableRows) {
         let index = table.table().index();
         *frame.tables[index] = TableView::Complete(table);
+    }
+
+    fn directed_fixture(
+        frame: &mut DecodedFrame,
+        countries: &[(u32, u32)],
+        cells: &[(u32, u32, bool)],
+    ) {
+        use replay::rows::{
+            CountryCounterInputRow, CountryLinkRow, CountryRow, DirectedWars, Recorded, WarCell,
+        };
+        set(
+            frame,
+            TableRows::CountryLinks(
+                countries
+                    .iter()
+                    .map(|&(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+                    .collect(),
+            ),
+        );
+        set(
+            frame,
+            TableRows::Countries(
+                countries
+                    .iter()
+                    .map(|&(id, canonical_slot)| CountryRow {
+                        id,
+                        canonical_slot,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        let sample_hour = frame.hour;
+        set(
+            frame,
+            TableRows::CountryCounterInputs(
+                countries
+                    .iter()
+                    .map(|&(country, slot)| CountryCounterInputRow {
+                        country,
+                        directed_wars: Recorded::Value(Some(DirectedWars {
+                            sample_hour,
+                            receiver_raw_id: country as i32,
+                            receiver_slot: slot,
+                            matrix_count: 4,
+                            cells: cells
+                                .iter()
+                                .filter(|&&(raw, _, _)| raw == country)
+                                .map(|&(_, target_slot, active)| WarCell {
+                                    target_slot,
+                                    active,
+                                })
+                                .collect(),
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+    }
+
+    #[test]
+    fn destination_hostility_uses_controller_to_logical_direction_and_refuses_missing_cells() {
+        let mut frame = frame();
+        set(
+            &mut frame,
+            TableRows::Provinces(vec![ProvinceRow {
+                id: 20,
+                controller: 200,
+                ..Default::default()
+            }]),
+        );
+        directed_fixture(
+            &mut frame,
+            &[(100, 1), (200, 2)],
+            &[(100, 2, true), (200, 1, false)],
+        );
+        let links = BTreeMap::from([(100, 1), (101, 1), (200, 2)]);
+        let hostility = DestinationHostility::read(&frame, &links).unwrap();
+        assert_eq!(hostility.destination_enemy(&[20], 1, Some(100)), Ok(false));
+        assert_eq!(hostility.destination_enemy(&[], u32::MAX, None), Ok(false));
+        // Reverse true cannot supply an absent controller->owner cell.
+        directed_fixture(&mut frame, &[(100, 1), (200, 2)], &[(100, 2, true)]);
+        let hostility = DestinationHostility::read(&frame, &links).unwrap();
+        assert_eq!(
+            hostility.destination_enemy(&[20], 1, Some(100)),
+            Err("action destination directed-war operands unavailable")
+        );
+        assert_eq!(hostility.destination_enemy(&[20], 1, Some(200)), Ok(false));
     }
 
     fn moving() -> DivisionMovementRow {
@@ -640,17 +790,15 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        let hostility =
-            DestinationHostility::read(&frame, &links, Err("WarRelations missing")).unwrap();
+        let hostility = DestinationHostility::read(&frame, &links).unwrap();
         assert_eq!(hostility.destination_enemy(&[20], 1, Some(100)), Ok(false));
         assert_eq!(hostility.destination_enemy(&[u32::MAX], 1, None), Ok(false));
         assert!(hostility.destination_enemy(&[20], 2, Some(100)).is_err());
         let links = BTreeMap::from([(100, 1), (200, 2)]);
-        let hostility =
-            DestinationHostility::read(&frame, &links, Err("WarRelations missing")).unwrap();
+        let hostility = DestinationHostility::read(&frame, &links).unwrap();
         assert_eq!(
             hostility.destination_enemy(&[20], 1, Some(200)),
-            Err("WarRelations missing")
+            Err("action destination directed-war receiver unavailable")
         );
     }
 
@@ -751,11 +899,12 @@ mod tests {
         set(&mut frame, TableRows::NavalCombatTransfers(vec![]));
         set(&mut frame, TableRows::NavalTransferUnits(vec![]));
         let links = BTreeMap::from([(100, 1), (200, 2), (300, 3)]);
-        let relations = Relations::read(&frame, &links).unwrap();
-        assert_eq!(
-            read_actions(&frame, &links, Ok(&relations)).unwrap().get(7),
-            Ok(8)
+        directed_fixture(
+            &mut frame,
+            &[(100, 1), (200, 2), (300, 3)],
+            &[(200, 1, true)],
         );
+        assert_eq!(read_actions(&frame, &links).unwrap().get(7), Ok(8));
         set(
             &mut frame,
             TableRows::NavalCombatTransfers(vec![NavalCombatTransferRow {
@@ -770,10 +919,7 @@ mod tests {
                 units: vec![7],
             }]),
         );
-        assert_eq!(
-            read_actions(&frame, &links, Ok(&relations)).unwrap().get(7),
-            Ok(9)
-        );
+        assert_eq!(read_actions(&frame, &links).unwrap().get(7), Ok(9));
     }
 
     #[test]
@@ -799,15 +945,15 @@ mod tests {
             }]),
         );
         let links = BTreeMap::from([(100, 1)]);
-        let actions = read_actions(&frame, &links, Err("relations")).unwrap();
+        let actions = read_actions(&frame, &links).unwrap();
         assert_eq!(actions.get(7), Err("naval-transfer combat membership"));
         set(&mut frame, TableRows::NavalCombatTransfers(vec![]));
         set(&mut frame, TableRows::NavalTransferUnits(vec![]));
-        let actions = read_actions(&frame, &links, Err("relations")).unwrap();
+        let actions = read_actions(&frame, &links).unwrap();
         assert_eq!(actions.get(7), Ok(7));
         row.path_total = 300;
         set(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
-        let actions = read_actions(&frame, &links, Err("relations")).unwrap();
+        let actions = read_actions(&frame, &links).unwrap();
         assert_eq!(
             actions.get(7),
             Err("last ordinary-route province hostility")
@@ -817,7 +963,7 @@ mod tests {
         *frame.tables[TableId::NavalCombatTransfers.index()] = TableView::Unavailable {
             reason: "not recorded".into(),
         };
-        let actions = read_actions(&frame, &BTreeMap::new(), Err("relations")).unwrap();
+        let actions = read_actions(&frame, &BTreeMap::new()).unwrap();
         assert_eq!(actions.get(7), Ok(3));
     }
 
@@ -831,7 +977,7 @@ mod tests {
             row.path = vec![last];
             row.naval_transfer = 1;
             set(&mut frame, TableRows::DivisionMovement(vec![row]));
-            let actions = read_actions(&frame, &BTreeMap::new(), Err("relations")).unwrap();
+            let actions = read_actions(&frame, &BTreeMap::new()).unwrap();
             assert_eq!(actions.get(7), Ok(7));
         }
     }
@@ -843,6 +989,9 @@ mod tests {
             division: 7,
             combat_count: 2,
             combat_role: 2,
+            // This exercises historical inverse proofs. A current refused packet
+            // must not fall back to LandCombats membership.
+            combat_references: replay::rows::Recorded::NotRecorded,
             ..Default::default()
         };
         let combats = vec![
@@ -937,6 +1086,257 @@ mod tests {
             actions[&7],
             Some(true),
             "raw equality proves true without links"
+        );
+    }
+
+    #[test]
+    fn current_standing_references_keep_native_order_and_never_retry_a_refused_packet() {
+        use replay::rows::{Recorded, UnitCombatReference, UnitCombatReferences};
+        let mut frame = frame();
+        set(
+            &mut frame,
+            TableRows::LandCombatSides(vec![LandCombatSideRow {
+                combat: 40,
+                attacker_primary: vec![100],
+                ..Default::default()
+            }]),
+        );
+        let owners = BTreeMap::from([(7, 100)]);
+        let links = BTreeMap::new();
+        let packet = |entries| UnitCombatReferences {
+            sample_hour: 10,
+            entries,
+        };
+        let mut movement = DivisionMovementRow {
+            division: 7,
+            combat_count: 2,
+            combat_references: Recorded::Value(Some(packet(vec![
+                UnitCombatReference {
+                    combat: 40,
+                    kind: 1,
+                },
+                UnitCombatReference {
+                    combat: 41,
+                    kind: 2,
+                },
+            ]))),
+            ..Default::default()
+        };
+        let check = |frame: &DecodedFrame, movement: &DivisionMovementRow| {
+            standing_attacks(frame, std::slice::from_ref(movement), &owners, &links, None).unwrap()
+                [&7]
+        };
+        assert_eq!(check(&frame, &movement), Some(true));
+        if let Recorded::Value(Some(packet)) = &mut movement.combat_references {
+            packet.entries.reverse();
+        }
+        assert_eq!(check(&frame, &movement), None); // Reached missing naval details.
+        movement.combat_references = Recorded::Value(None);
+        set(
+            &mut frame,
+            TableRows::LandCombats(vec![LandCombatRow {
+                id: 40,
+                attackers: vec![7],
+                ..Default::default()
+            }]),
+        );
+        assert_eq!(check(&frame, &movement), None); // Inverse truth cannot repair refusal.
+        movement.combat_references = Recorded::Value(Some(packet(vec![
+            UnitCombatReference {
+                combat: 40,
+                kind: 0,
+            },
+            UnitCombatReference {
+                combat: 40,
+                kind: 0,
+            },
+        ])));
+        let mut stale = frame.clone();
+        stale.hour = 11;
+        assert_eq!(check(&stale, &movement), None);
+        set(
+            &mut frame,
+            TableRows::LandCombatSides(vec![LandCombatSideRow {
+                combat: 40,
+                attacker_primary: vec![0],
+                ..Default::default()
+            }]),
+        );
+        assert_eq!(check(&frame, &movement), Some(false)); // Repeats do not become a set.
+    }
+
+    #[test]
+    fn current_standing_naval_uses_only_ordered_attacker_primary_countries() {
+        use replay::rows::{
+            NavalCombatDetailsRow, Recorded, UnitCombatReference, UnitCombatReferences,
+        };
+        let mut frame = frame();
+        let movement = DivisionMovementRow {
+            division: 7,
+            combat_count: 1,
+            combat_references: Recorded::Value(Some(UnitCombatReferences {
+                sample_hour: frame.hour,
+                entries: vec![UnitCombatReference {
+                    combat: 41,
+                    kind: 2,
+                }],
+            })),
+            ..Default::default()
+        };
+        let mut naval = NavalCombatDetailsRow {
+            combat: 41,
+            duration: i32::MIN,
+            custom_sea: Some(Vec::new()),
+            ..Default::default()
+        };
+        naval.sides[0].summary.secondary_countries = vec![100];
+        naval.sides[1].summary.countries = vec![100];
+        let links = BTreeMap::from([(100, 1), (101, 1), (200, 2)]);
+        let check = |frame: &DecodedFrame, owner, links: &BTreeMap<u32, u32>| {
+            let owners = BTreeMap::from([(7, owner)]);
+            let attacking =
+                standing_attacks(frame, std::slice::from_ref(&movement), &owners, links, None)
+                    .unwrap()[&7];
+            action_code(&movement, attacking, Err("unreached hostility"), None)
+        };
+        for (countries, owner, expected) in [
+            (vec![0, 200], 100, 2),
+            (vec![0, 200, 101], 100, 5),
+            (vec![0], 100, 2),
+            (vec![0], 0, 5),
+        ] {
+            naval.sides[0].summary.countries = countries;
+            set(
+                &mut frame,
+                TableRows::NavalCombatDetails(vec![naval.clone()]),
+            );
+            assert_eq!(check(&frame, owner, &links), Ok(expected));
+        }
+        // Neither duration nor task-force membership is part of 140BEF850.
+        // Raw equality returns before resolving aliases or any later country.
+        naval.sides[0].summary.countries = vec![100, 999];
+        set(
+            &mut frame,
+            TableRows::NavalCombatDetails(vec![naval.clone()]),
+        );
+        assert_eq!(check(&frame, 100, &BTreeMap::new()), Ok(5));
+        naval.sides[0].summary.countries.reverse();
+        set(&mut frame, TableRows::NavalCombatDetails(vec![naval]));
+        assert_eq!(
+            check(&frame, 100, &links),
+            Err("division combat-reference attacker countries")
+        );
+    }
+
+    #[test]
+    fn current_standing_naval_preserves_mixed_reference_order_and_partial_row_proofs() {
+        use replay::rows::{
+            NavalCombatDetailsRow, Recorded, UnitCombatReference, UnitCombatReferences,
+        };
+        let mut frame = frame();
+        let owners = BTreeMap::from([(7, 100)]);
+        let links = BTreeMap::from([(100, 1), (200, 2)]);
+        let mut movement = DivisionMovementRow {
+            division: 7,
+            combat_count: 3,
+            combat_references: Recorded::Value(Some(UnitCombatReferences {
+                sample_hour: frame.hour,
+                entries: vec![
+                    UnitCombatReference {
+                        combat: 41,
+                        kind: 2,
+                    },
+                    UnitCombatReference {
+                        combat: 41,
+                        kind: 2,
+                    },
+                    UnitCombatReference {
+                        combat: 40,
+                        kind: 0,
+                    },
+                ],
+            })),
+            ..Default::default()
+        };
+        let mut naval = NavalCombatDetailsRow {
+            combat: 41,
+            custom_sea: Some(Vec::new()),
+            ..Default::default()
+        };
+        naval.sides[0].summary.countries = vec![0, 200];
+        *frame.tables[TableId::NavalCombatDetails.index()] = TableView::Truncated {
+            rows: TableRows::NavalCombatDetails(vec![naval]),
+            missing: 1,
+        };
+        set(
+            &mut frame,
+            TableRows::LandCombatSides(vec![LandCombatSideRow {
+                combat: 40,
+                attacker_primary: vec![100],
+                ..Default::default()
+            }]),
+        );
+        let check = |frame: &DecodedFrame, movement: &DivisionMovementRow| {
+            standing_attacks(frame, std::slice::from_ref(movement), &owners, &links, None).unwrap()
+                [&7]
+        };
+        assert_eq!(check(&frame, &movement), Some(true));
+        movement.combat_count = 2;
+        if let Recorded::Value(Some(packet)) = &mut movement.combat_references {
+            packet.entries.pop();
+        }
+        // A present row's complete primary list proves a negative even if
+        // another combat did not fit. Ordered repeated references still count.
+        assert_eq!(check(&frame, &movement), Some(false));
+        movement.combat_count = 3;
+        if let Recorded::Value(Some(packet)) = &mut movement.combat_references {
+            packet.entries.push(UnitCombatReference {
+                combat: 40,
+                kind: 0,
+            });
+        }
+        *frame.tables[TableId::NavalCombatDetails.index()] = TableView::Unavailable {
+            reason: "naval list capture failed".into(),
+        };
+        assert_eq!(check(&frame, &movement), None);
+        if let Recorded::Value(Some(packet)) = &mut movement.combat_references {
+            packet.entries.reverse();
+        }
+        assert_eq!(check(&frame, &movement), Some(true)); // Land hit precedes naval failure.
+        let mut stale = frame.clone();
+        stale.hour += 1;
+        assert_eq!(check(&stale, &movement), None);
+    }
+
+    #[test]
+    fn current_standing_naval_country_list_scales_to_live_country_count() {
+        use replay::rows::{NavalCombatDetailsRow, UnitCombatReference, UnitCombatReferences};
+        let mut frame = frame();
+        let mut naval = NavalCombatDetailsRow {
+            combat: 41,
+            custom_sea: Some(Vec::new()),
+            ..Default::default()
+        };
+        naval.sides[0].summary.countries = (1..=5_000).collect();
+        set(&mut frame, TableRows::NavalCombatDetails(vec![naval]));
+        let packet = UnitCombatReferences {
+            sample_hour: frame.hour,
+            entries: vec![UnitCombatReference {
+                combat: 41,
+                kind: 2,
+            }],
+        };
+        let links = (1..=5_000).map(|country| (country, country)).collect();
+        assert_eq!(
+            recorded_standing(&frame, &packet, 5_000, &links),
+            Some(true)
+        );
+        assert_eq!(recorded_standing(&frame, &packet, 5_001, &links), None);
+        let mut links = links;
+        links.insert(5_001, 5_001);
+        assert_eq!(
+            recorded_standing(&frame, &packet, 5_001, &links),
+            Some(false)
         );
     }
 }

@@ -295,6 +295,7 @@ mod tests {
             country: 7,
             index: 0,
             technology_handle: 22,
+            database_index: replay::rows::Recorded::Value(22),
             technology_present: 1,
             token: b"radio".to_vec(),
             cost_raw: 100_000,

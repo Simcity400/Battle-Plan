@@ -12,8 +12,8 @@ pub const TOKEN: usize = 0x20;
 
 /// The registered categories as (pointer, token), sorted by pointer. Read once
 /// per capture: an entry's category pointer is authenticated by membership and
-/// resolved to its token without another read. The owner reserves the storage;
-/// a registry longer than it is refused and its length reported.
+/// resolved to its token without another read. Workers reserve the original
+/// registry count before payload; fixed readers report any storage shortage.
 #[derive(Debug, Default)]
 pub struct Categories {
     entries: Vec<(usize, u32)>,
@@ -47,6 +47,25 @@ impl Categories {
         base: usize,
         required: &mut usize,
     ) -> Result<(), &'static str> {
+        self.load_buffer(memory, base, required, false)
+    }
+
+    pub fn load_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        required: &mut usize,
+    ) -> Result<(), &'static str> {
+        self.load_buffer(memory, base, required, true)
+    }
+
+    fn load_buffer(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        required: &mut usize,
+        growing: bool,
+    ) -> Result<(), &'static str> {
         self.entries.clear();
         let registry = base
             .checked_add(REGISTRY_RVA)
@@ -58,6 +77,10 @@ impl Categories {
             Array::read(memory, registry, 8).ok_or("acclimatization category registry invalid")?;
         let count = array.count as usize;
         *required = (*required).max(count);
+        if growing {
+            crate::allocation::reserve(&mut self.entries, count)
+                .map_err(|_| "acclimatization category allocation failed")?;
+        }
         if count > self.entries.capacity() {
             return Err("acclimatization category capacity exceeded");
         }

@@ -1,0 +1,401 @@
+//! Additional CAirBase inventory inputs for 140C45850, pinned a729.
+//!
+//! These helpers run inside the existing registration observation. They do
+//! not walk another base, country, pool or wing roster. The registration
+//! owner supplies its exact indexed-container certificates and copied pool
+//! header; dense countries, retained host bytes and both fuel scalars fail
+//! independently of the existing capacity/membership row.
+//! All scratch and output storage is caller-owned. Fixed acquisition does not
+//! allocate; worker arenas grow from their original native headers.
+
+use crate::{
+    Memory, cair_wing_pool, ccountry, ccountry_air_container, cname_group_member,
+    cpdx_array::{self, Array},
+    creference_registry, cship, cstrategic_air, csub_unit_definition as definition, read,
+    walk::Buffer,
+};
+
+/// 140C427A0 compares this signed word when grouping pool pointers. It is
+/// distinct from the content database index at definition+58C.
+const TYPE_INDEX: usize = 0x60;
+
+/// One indexed slot authenticated by the existing registration reader before
+/// following its pool vector. Clear the whole used slice for each base.
+/// Null slots and slots not yet authenticated have no certificate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexedContainer {
+    pub base: u64,
+    pub pointer: usize,
+    pub country: u32,
+    pub slot: u32,
+}
+
+/// One dense +48 occurrence; repeats and native order are retained.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CountryOccurrence {
+    pub country: u32,
+    pub slot: u32,
+}
+
+/// Caller-owned dense-country arena for one base. `len` is an accepted
+/// prefix, never a complete vector after an error. `required` is the live
+/// header's full demand even when the arena is too small.
+pub(crate) struct DenseCountries<'a> {
+    pub rows: Buffer<'a, CountryOccurrence>,
+    pub len: usize,
+    pub required: usize,
+}
+
+/// Copy 140C449F0's exact dense occurrence order and authenticate every
+/// occurrence against this base's indexed registration. The raw country is
+/// read at the dense occurrence; the existing resolver is reused for positive
+/// linked countries. This is O(indexed slots + dense occurrences), with no
+/// pointer sorting, deduplication, pool rewalk or reconstructed country list.
+///
+/// `indexed` must cover the base's complete +30 vector, with certificates
+/// installed only after its container vtable/raw country/slot check. It is
+/// cleared at each base and retained only until this helper returns. Caller
+/// passes the already authenticated base pointer and its full handle.
+pub(super) fn dense_countries<M: Memory>(
+    memory: &M,
+    air_base: usize,
+    base_handle: u64,
+    countries: &ccountry::Reader<'_, M>,
+    resolved: &mut super::Resolver<'_>,
+    indexed: &[Option<IndexedContainer>],
+    output: &mut DenseCountries<'_>,
+) -> Result<(), &'static str> {
+    output.len = 0;
+    output.required = 0;
+    let dense = dense_header(memory, air_base)?;
+    output.required = dense.count as usize;
+    // 140C449F0 copies every +48 dense occurrence, including repeats.
+    output.rows.ensure(output.required)?;
+    cpdx_array::pointers(
+        memory,
+        dense,
+        "carrier dense country pointer unreadable or overflow",
+        |_, pointer| {
+            if pointer == 0 {
+                return Err("carrier dense country occurrence is null");
+            }
+            let country = field(memory, pointer, ccountry_air_container::COUNTRY)?;
+            let slot = country_slot(countries, resolved, country)?;
+            let certificate = indexed
+                .get(slot as usize)
+                .and_then(|value| *value)
+                .ok_or("carrier dense country has no authenticated indexed registration")?;
+            if certificate.base != base_handle
+                || certificate.pointer != pointer
+                || certificate.country != country
+                || certificate.slot != slot
+            {
+                return Err("carrier dense country differs from indexed registration");
+            }
+            if let Some(row) = output.rows.get_mut(output.len) {
+                *row = CountryOccurrence { country, slot };
+                output.len += 1;
+            }
+            Ok(())
+        },
+    )?;
+    if output.len != output.required {
+        return Err("carrier dense country arena too short");
+    }
+    Ok(())
+}
+
+/// Storage demand from the exact +48 header only. This does not certify an
+/// indexed registration or follow any dense occurrence; no output is admitted
+/// when the caller lacks the indexed certificates needed by dense_countries.
+pub(super) fn dense_demand(memory: &impl Memory, air_base: usize) -> Result<usize, &'static str> {
+    dense_header(memory, air_base).map(|dense| dense.count as usize)
+}
+
+fn dense_header(memory: &impl Memory, air_base: usize) -> Result<Array, &'static str> {
+    field::<[u8; 16]>(memory, air_base, super::REGISTERED_CONTAINERS).and_then(|bytes| {
+        Array::from_header(bytes, 8).ok_or("carrier dense country header invalid")
+    })
+}
+
+fn country_slot<M: Memory>(
+    countries: &ccountry::Reader<'_, M>,
+    resolved: &mut super::Resolver<'_>,
+    raw: u32,
+) -> Result<u32, &'static str> {
+    // The native indexed getter uses zero for raw zero and readable unlinked
+    // references. A failed/out-of-range link stays a refusal, never slot zero.
+    if raw == 0 || countries.link(raw)?.is_none() {
+        Ok(0)
+    } else {
+        Ok(resolved.resolve(countries, raw)?.canonical_slot)
+    }
+}
+
+/// 140C44DB0 consumes both scalars even when no pool or active wing exists.
+/// Each result retains its independent failure; the second is still read if
+/// the first fails. The caller supplies its authenticated container pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerFuel {
+    pub demand: Result<i64, &'static str>,
+    pub allocated: Result<i64, &'static str>,
+}
+
+pub(crate) fn container_fuel(memory: &impl Memory, container: usize) -> ContainerFuel {
+    ContainerFuel {
+        demand: field(memory, container, ccountry_air_container::FUEL_DEMAND_RAW),
+        allocated: field(
+            memory,
+            container,
+            ccountry_air_container::FUEL_ALLOCATED_RAW,
+        ),
+    }
+}
+
+/// Authenticated subtype identity. The pointer is transient query context for
+/// the same-observation fuel reader and must never be encoded or deferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DefinitionIdentity {
+    pub pointer: usize,
+    pub type_index: i32,
+    /// Exact recorded-content entry: real positive +58C, native null slot0.
+    /// Tokens are not unique content identities and cannot replace this index.
+    pub subunit_index: u32,
+}
+
+/// Inventory of one existing registered pool, including an empty one.
+/// These wing boundaries refer to the existing flattened native wing arena.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PoolMetadata {
+    /// Same-observation addresses for the passive fuel query only.
+    pub pool: usize,
+    pub owner: usize,
+    pub base_reference: u64,
+    pub definition: DefinitionIdentity,
+    pub members: Array,
+    pub wings_start: usize,
+    pub wings_len: u32,
+}
+
+/// Exact pool observation supplied by the existing registration pass after
+/// validating its copied vtable and decoding its copied wing-array header.
+pub(crate) struct PoolObservation {
+    pub pointer: usize,
+    pub registration: IndexedContainer,
+    pub members: Array,
+    pub wings_start: usize,
+}
+
+/// Acquire only fields missing from the registration reader's copied pool
+/// identity/header. The caller has already checked this pool's vtable and
+/// decoded `members` from that exact observation; no wing is read here.
+///
+/// Stage this metadata before the existing wing loop, then admit it only when
+/// that loop has copied all members into the registration's accepted wing
+/// slice. Failure/truncation of that membership must withhold dependent pool
+/// metadata, while independently acquired dense countries/names/scalars stay.
+pub(super) fn pool_metadata<M: Memory>(
+    memory: &M,
+    image: usize,
+    observed: PoolObservation,
+    countries: &ccountry::Reader<'_, M>,
+    resolved: &mut super::Resolver<'_>,
+    database: &mut Option<Result<definition::Database, &'static str>>,
+) -> Result<PoolMetadata, &'static str> {
+    let PoolObservation {
+        pointer: pool,
+        registration,
+        members,
+        wings_start,
+    } = observed;
+    if field::<u64>(memory, pool, cair_wing_pool::AIR_BASE_REFERENCE)? != registration.base {
+        return Err("carrier registered pool belongs to another base");
+    }
+    let owner = pointer(memory, pool, cair_wing_pool::OWNER)?;
+    if field::<u64>(memory, owner, 0)?
+        != image
+            .checked_add(cstrategic_air::VTABLE_RVA)
+            .ok_or("carrier module address overflow")? as u64
+    {
+        return Err("carrier registered pool owner identity mismatch");
+    }
+    let owner_country = field(memory, owner, cstrategic_air::COUNTRY)?;
+    if country_slot(countries, resolved, owner_country)? != registration.slot {
+        return Err("carrier registered pool country differs from its container");
+    }
+    let definition = pool_definition(memory, image, pool, database)?;
+    wings_start
+        .checked_add(members.count as usize)
+        .ok_or("carrier pool wing boundary overflow")?;
+    Ok(PoolMetadata {
+        pool,
+        owner,
+        base_reference: registration.base,
+        definition,
+        members,
+        wings_start,
+        wings_len: members.count,
+    })
+}
+
+/// The real/null header law matches the existing transport pool reader.
+/// Copy constructor1403C5F70 copies NAME+18 and DB index+58C together into
+/// country-local clones; return that authenticated content index, never a
+/// first-match token lookup. Capture +60 separately as the native grouping key.
+fn pool_definition(
+    memory: &impl Memory,
+    image: usize,
+    pool: usize,
+    database: &mut Option<Result<definition::Database, &'static str>>,
+) -> Result<DefinitionIdentity, &'static str> {
+    let pointer = pointer(memory, pool, cair_wing_pool::DEFINITION)?;
+    let (subunit_token, real) = definition_header(memory, image, pointer)?;
+    let database = *database.get_or_insert_with(|| definition::Database::read(memory, image));
+    let database = database?;
+    let subunit_index = if real {
+        let index = field(memory, pointer, definition::DATABASE_INDEX)?;
+        let global = database.entry(memory, index)?;
+        let (token, global_real) = definition_header(memory, image, global)?;
+        if !global_real || token != subunit_token {
+            return Err("carrier pool definition differs from its content database entry");
+        }
+        index as u32
+    } else {
+        // RegisterNullSubUnitDefinitions140AB54B0 constructs DAT1433212A0
+        // then registers it in vector40's first entry. Pool constructor
+        // 140F45290 obtains that exact singleton through140B8F770. A matching
+        // vtable/token at another address does not prove the native null entry.
+        let singleton = image
+            .checked_add(definition::NULL_OBJECT_RVA)
+            .and_then(|at| read::<u64>(memory, at))
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or("carrier null definition singleton unreadable")?;
+        let null = database
+            .vector()
+            .element(0, 8)
+            .and_then(|at| read::<u64>(memory, at))
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or("carrier null definition content entry unreadable")?;
+        if pointer != singleton || pointer != null {
+            return Err("carrier null definition differs from the native content singleton");
+        }
+        0
+    };
+    Ok(DefinitionIdentity {
+        pointer,
+        type_index: field(memory, pointer, TYPE_INDEX)?,
+        subunit_index,
+    })
+}
+
+fn definition_header(
+    memory: &impl Memory,
+    image: usize,
+    pointer: usize,
+) -> Result<(u32, bool), &'static str> {
+    let bytes = field::<[u8; 17]>(memory, pointer, 0)?;
+    let vtable = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+    let token = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let expected = |rva| {
+        image
+            .checked_add(rva)
+            .map(|value| value as u64)
+            .ok_or("carrier module address overflow")
+    };
+    match bytes[16] {
+        1 if vtable == expected(definition::VTABLE_RVA)? => Ok((token, true)),
+        0 if vtable == expected(definition::NULL_VTABLE_RVA)?
+            && token == definition::NULL_TOKEN =>
+        {
+            Ok((token, false))
+        }
+        _ => Err("carrier pool definition identity mismatch"),
+    }
+}
+
+/// 140C44FC0 resolves this base's full host reference and calls CShip's retained
+/// getter. Null/known-stale references are known empty text. Resolution/cache
+/// acquisition failures stay errors, independently from other base inputs.
+/// Raw bytes are copied uncommitted, exactly as cship::cached_name; caller
+/// advances the byte cursor only when it admits the selected base's packet.
+/// `source` is this observation's authenticated base row. `resolver` must
+/// have been constructed with `image` for this same observation; neither its
+/// headers nor this row may be carried across callbacks or off-hour hints.
+#[cfg(test)]
+pub(crate) fn host_name(
+    memory: &impl Memory,
+    image: usize,
+    source: &super::Row,
+    resolver: &mut creference_registry::ScopedResolver,
+    names: &mut cname_group_member::Names<'_>,
+) -> Result<Option<cname_group_member::Span>, &'static str> {
+    let mut arena = cname_group_member::NameArena {
+        bytes: Buffer::Fixed(names.bytes),
+        len: names.len,
+        required: names.required,
+    };
+    let result = host_name_buffer(memory, image, source, resolver, &mut arena);
+    names.len = arena.len;
+    names.required = arena.required;
+    result
+}
+
+pub(crate) fn host_name_buffer(
+    memory: &impl Memory,
+    image: usize,
+    source: &super::Row,
+    resolver: &mut creference_registry::ScopedResolver,
+    names: &mut cname_group_member::NameArena<'_>,
+) -> Result<Option<cname_group_member::Span>, &'static str> {
+    if source.state.is_some() {
+        return Err("carrier host-name query reached a state base");
+    }
+    if names.len > names.bytes.len() {
+        return Err("carrier host-name arena cursor invalid");
+    }
+    let Some(ship) = resolver.resolve(memory, source.host)? else {
+        return Ok(Some((names.len, 0)));
+    };
+    cship::cached_name_buffer(memory, image, ship, source.host, names)
+}
+
+/// Sparse off-hour sizing hint with the same selected full host reference.
+/// A later capture always performs its own same-observation read again.
+/// Its resolver is constructed with `image` for this hint only, with no
+/// retained headers reused by the later callback's resolver.
+pub(crate) fn host_name_demand(
+    memory: &impl Memory,
+    image: usize,
+    source: &super::Row,
+    resolver: &mut creference_registry::ScopedResolver,
+) -> Result<usize, &'static str> {
+    if source.state.is_some() {
+        return Err("carrier host-name query reached a state base");
+    }
+    let Some(ship) = resolver.resolve(memory, source.host)? else {
+        return Ok(0);
+    };
+    cship::cached_name_demand(memory, image, ship, source.host)
+}
+
+fn field<T: crate::memory::Raw>(
+    memory: &impl Memory,
+    pointer: usize,
+    offset: usize,
+) -> Result<T, &'static str> {
+    pointer
+        .checked_add(offset)
+        .filter(|_| pointer != 0)
+        .and_then(|address| read(memory, address))
+        .ok_or("carrier inventory field unreadable or address overflow")
+}
+
+fn pointer(memory: &impl Memory, object: usize, offset: usize) -> Result<usize, &'static str> {
+    usize::try_from(field::<u64>(memory, object, offset)?)
+        .ok()
+        .filter(|pointer| *pointer != 0)
+        .ok_or("carrier inventory pointer invalid or null")
+}
+
+#[cfg(test)]
+mod tests;

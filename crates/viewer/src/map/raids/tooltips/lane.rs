@@ -7,13 +7,14 @@ use replay::frame::DecodedFrame;
 use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Clone)]
-struct Request {
-    content: Arc<Content>,
+struct Request<C = Arc<Content>> {
+    content: C,
     frame: Arc<DecodedFrame>,
     ours: u32,
+    nato: bool,
     key: Key,
 }
-impl Request {
+impl<C> Request<Arc<C>> {
     fn same(&self, other: &Self) -> bool {
         self.same_icon(other) && Arc::ptr_eq(&self.frame, &other.frame)
     }
@@ -22,6 +23,7 @@ impl Request {
     fn same_icon(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.content, &other.content)
             && self.ours == other.ours
+            && self.nato == other.nato
             && self.key == other.key
     }
 }
@@ -45,6 +47,7 @@ impl Lane {
         content: Arc<Content>,
         frame: Arc<DecodedFrame>,
         ours: u32,
+        nato: bool,
         key: Key,
         ctx: &egui::Context,
     ) -> Option<Arc<Tooltip>> {
@@ -60,6 +63,7 @@ impl Lane {
             content,
             frame,
             ours,
+            nato,
             key,
         };
         let mut state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -103,7 +107,13 @@ fn run(shared: Shared, ctx: egui::Context) {
             state.wanted.clone().expect("pending request")
         };
         let request = held.insert(next);
-        let result = super::build(&request.content, &request.frame, request.ours, &request.key);
+        let result = super::build(
+            &request.content,
+            &request.frame,
+            request.ours,
+            request.nato,
+            &request.key,
+        );
         let mut state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
         if state
             .wanted
@@ -119,6 +129,59 @@ fn run(shared: Shared, ctx: egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raid_request_keeps_old_hour_text_only_under_the_same_viewer_nato_choice() {
+        let frame = Arc::new(DecodedFrame {
+            branch: 0,
+            hour: 10,
+            tables: std::array::from_fn(|_| {
+                replay::frame::TableView::Unavailable {
+                    reason: "not sampled".into(),
+                }
+                .into()
+            }),
+            metrics: Default::default(),
+        });
+        let old = Request {
+            content: Arc::new(()),
+            frame,
+            ours: 7,
+            nato: false,
+            key: Key::Raid {
+                id: 1,
+                reference_type: 4,
+                incoming: false,
+            },
+        };
+        assert!(old.same(&old.clone()));
+        let mut next = old.clone();
+        next.frame = Arc::new((*old.frame).clone());
+        Arc::make_mut(&mut next.frame).hour = 11;
+        assert!(
+            old.same_icon(&next),
+            "playback may retain the old hour's text"
+        );
+        assert!(!old.same(&next), "the new hour must still build");
+        next.nato = true;
+        assert!(!old.same_icon(&next), "a toggle must clear old icon frames");
+        assert!(!old.same(&next), "an in-flight old result must not publish");
+        next.frame = Arc::clone(&old.frame);
+        assert!(
+            !old.same(&next),
+            "the toggle rebuilds even at the same hour"
+        );
+        next.nato = false;
+        next.ours = 8;
+        assert!(!old.same_icon(&next));
+        next.ours = old.ours;
+        next.content = Arc::new(());
+        assert!(
+            !old.same_icon(&next),
+            "another content object never shares text"
+        );
+    }
+
     #[test]
     fn dropping_an_idle_lane_wakes_and_stops_its_worker() {
         let shared = Arc::new((Mutex::new(State::default()), Condvar::new()));

@@ -164,6 +164,8 @@ pub struct DeploymentLine {
     pub name_order: Option<i32>,
     /// Name-object `type` word at +0x08, which 1409BCC70 writes unconditionally.
     pub name_type: Option<i32>,
+    /// 1409BCC70 emits `is_name_ordered=no` only when +0xa8 is clear.
+    pub name_ordered: Option<bool>,
     /// Custom division name held in the name object's +0x88 string. Identified
     /// but not recorded; its presence is retained so the oracle can say so.
     pub name_override: Option<Vec<u8>>,
@@ -248,6 +250,9 @@ pub struct Variant {
     /// Serialize 140BD4770 emits token 0xEE only for a nonzero +0x41C,
     /// zero-extended at 140BD47FE. Omission proves zero, not +0x41D.
     pub version: Option<u8>,
+    /// BD4770 writes nonzero signed +4B0 as token4002. Registrar14010CC9A
+    /// reads142AA8908 and binds literal142AA33B8 at14010CCBD.
+    pub organisation_marker: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -322,6 +327,13 @@ pub struct Pool {
 }
 
 pub fn parse(items: &[Item]) -> io::Result<Pack> {
+    parse_with_countries(items, super::CountriesView::from_root(items)?)
+}
+
+pub(super) fn parse_with_countries(
+    items: &[Item],
+    countries: super::CountriesView<'_>,
+) -> io::Result<Pack> {
     let variants = field(items, b"equipments")?
         .map(|value| {
             let mut result = BTreeMap::new();
@@ -346,10 +358,11 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
             Ok(result)
         })
         .transpose()?;
-    let divisions = field(items, b"countries")?
-        .map(|value| {
+    let divisions = countries
+        .is_present()
+        .then(|| {
             let mut result = BTreeMap::new();
-            for country in block(value)? {
+            for country in countries.iter() {
                 let tag = country
                     .key
                     .as_ref()
@@ -394,10 +407,11 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
             Ok(result)
         })
         .transpose()?;
-    let countries = field(items, b"countries")?
-        .map(|value| {
+    let countries = countries
+        .is_present()
+        .then(|| {
             let mut result = BTreeMap::new();
-            for country in block(value)? {
+            for country in countries.iter() {
                 let tag = country
                     .key
                     .as_ref()
@@ -554,7 +568,9 @@ fn parse_deployment(items: &[Item]) -> io::Result<Vec<Conveyor>> {
                 field(fields, b"division_template_id")?
                     .ok_or_else(|| invalid("saved conveyor lacks its division template"))?,
             )?,
-            name: bytes(fields, b"name")?.unwrap_or_default(),
+            // 1414247D0 always emits +0x28, including empty first-NUL text.
+            name: bytes(fields, b"name")?
+                .ok_or_else(|| invalid("deployment conveyor lacks its unconditional name field"))?,
             amount: integer(&required_bytes(fields, b"amount")?)?,
             location: integer(&required_bytes(fields, b"location")?)?,
             priority: integer(&required_bytes(fields, b"priority")?)?,
@@ -582,6 +598,12 @@ fn parse_deployment_line(items: &[Item]) -> io::Result<DeploymentLine> {
             .transpose()?
             .flatten()
             .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        name_ordered: name
+            .map(|name| field(name, b"is_name_ordered"))
+            .transpose()?
+            .flatten()
+            .map(boolean)
             .transpose()?,
         name_override: name
             .map(|name| bytes(name, b"override"))
@@ -694,6 +716,9 @@ fn parse_variant(id: u64, definition: &[u8], items: &[Item]) -> io::Result<Varia
         modules,
         upgrades,
         version: field(items, b"version")?
+            .map(|value| integer(scalar(value)?))
+            .transpose()?,
+        organisation_marker: field(items, b"number_of_design_team_traits")?
             .map(|value| integer(scalar(value)?))
             .transpose()?,
     })

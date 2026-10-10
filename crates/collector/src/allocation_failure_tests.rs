@@ -202,6 +202,12 @@ fn persistent_null_allocator_survives_prepared_buffers() {
 }
 
 #[test]
+fn raw_hints_are_advisory_and_capture_failure_keeps_request_details() {
+    let output = child("raw-advisory", "raw", 1);
+    successful(&output, "raw-advisory", "raw", 1);
+}
+
+#[test]
 fn fuel_history_growth_writes_the_terminal_witness() {
     let output = child("fuel-history", "extended", 1);
     successful(&output, "fuel-history", "extended", 1);
@@ -290,6 +296,7 @@ fn allocation_safety_child() {
             )
             .unwrap();
         }
+        "raw-advisory" => raw_advisory_and_details().unwrap(),
         "null" => prepared_buffers_null(phase, ordinal).unwrap(),
         "concurrent-watermark" => allocation::concurrent_watermark_exercise().unwrap(),
         #[cfg(feature = "alloc-fault-injection")]
@@ -346,6 +353,45 @@ fn deferred_failure() -> io::Result<()> {
     Ok(())
 }
 
+fn raw_advisory_and_details() -> io::Result<()> {
+    allocation::reset();
+    allocation::install_hooks();
+    let root = case_root(Phase::Raw, 1, false).join("raw-details");
+    fs::create_dir_all(&root)?;
+    let witness_file = File::create(root.join(replay::witness::WITNESS_FILE_NAME))?;
+    allocation::prepare(&witness_file, 1, 1000);
+    let _details = allocation::prepare_details(&root).unwrap();
+    context(Some(21));
+    let mut raw = crate::raw::RawLog::<1>::default();
+    {
+        let _scope = allocation::enter(Phase::Raw);
+        with_allocations_denied(|| {
+            raw.presize(64, 4096);
+            raw.initialize_read_plan(64, 16, 4096);
+        });
+        assert!(
+            !allocation::failed(),
+            "optional sizing must not stop capture"
+        );
+        assert_eq!((raw.spans.capacity(), raw.bytes.capacity()), (0, 0));
+        raw.enable_worker_growth();
+        with_allocations_denied(|| raw.reserve(4096));
+    }
+    let witness = allocation::failure().unwrap();
+    assert_eq!(
+        (witness.phase, witness.code, witness.failed_hour),
+        (Phase::Raw as u8, Code::Reserve as u8, Some(21))
+    );
+    let detail: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("collector-failure-detail.json"))?).unwrap();
+    assert_eq!(detail["session"], 1);
+    assert_eq!(detail["process_start_time"], 1000);
+    assert_eq!(detail["family"], "raw bytes");
+    assert_eq!(detail["requested_bytes"], 4096);
+    allocation::clear_handle();
+    Ok(())
+}
+
 fn prepared_buffers_null(phase: Phase, ordinal: usize) -> io::Result<()> {
     use replay::rows::{StateCoreRow, TableRows};
     allocation::reset();
@@ -355,10 +401,8 @@ fn prepared_buffers_null(phase: Phase, ordinal: usize) -> io::Result<()> {
             let mut raw = crate::raw::RawLog::<1>::new(4, 64);
             raw.reserve(4096);
             prepared_null(phase, ordinal, || {
-                raw.initialize_read_plan(32, 8, 64);
-                if !allocation::failed() {
-                    raw.grow();
-                }
+                raw.enable_worker_growth();
+                raw.reserve(4096);
                 verdict(true)
             })
         }
@@ -755,7 +799,15 @@ fn exercise_pipeline(
         }
         last_attempted_hour = hour;
         callback_calls += 1;
-        let entry = if idle { None } else { frame.clock };
+        // The fixture campaign is fixed; copy only clock scalars before the mutable frame lease.
+        let entry = if idle {
+            None
+        } else {
+            frame
+                .clock
+                .as_ref()
+                .map(|clock| clock.with_campaign_id(CAMPAIGN.as_slice()))
+        };
         unsafe {
             crate::sampling::synthetic_callback(
                 &shared,
@@ -920,10 +972,14 @@ fn exercise_pipeline(
     unsafe {
         crate::sampling::synthetic_callback(
             &shared,
-            frame.clock.map(|mut clock| {
-                clock.hour = last_attempted_hour + 1;
-                clock
-            }),
+            frame
+                .clock
+                .as_ref()
+                .map(engine::cgame_state::Clock::borrowed)
+                .map(|mut clock| {
+                    clock.hour = last_attempted_hour + 1;
+                    clock
+                }),
             || {
                 if failed {
                     admitted_after_failure = true;

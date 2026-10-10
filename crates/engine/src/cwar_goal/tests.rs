@@ -211,3 +211,31 @@ fn native_goal_ordinal_and_first_guarded_failure_survive_reordered_members() {
         }
     );
 }
+
+#[test]
+fn growing_goals_capture_5000_countries_and_expand_claims_in_the_same_hour() {
+    let (mut world, goals) = fixture(5_000);
+    let (mut rows, mut states) = (Vec::new(), Vec::new());
+    let first = walk_growing(
+        &world.memory(),
+        world.module,
+        world.game_state(),
+        &mut rows,
+        &mut states,
+    );
+    assert_eq!(first.outcome, Outcome::Rows { len: 5_000 });
+    assert_eq!(first.state_len, 20_000);
+    let expanded = world.alloc(4_000 * 8);
+    world.array(goals[0] + STATES, expanded, 4_000);
+    let second = walk_growing(
+        &world.memory(),
+        world.module,
+        world.game_state(),
+        &mut rows,
+        &mut states,
+    );
+    assert_eq!(second.outcome, Outcome::Rows { len: 5_000 });
+    assert_eq!(second.state_len, 23_996);
+    assert_eq!(rows[0].state_count, 4_000);
+    assert!(states[..4_000].iter().all(|&state| state == 0));
+}

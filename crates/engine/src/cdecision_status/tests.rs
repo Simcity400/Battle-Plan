@@ -32,9 +32,9 @@ fn decision_random_items_preserve_full_store_and_signed_words_at_5000_countries(
             bytes: 50_000
         })
     );
-    let mut rows = vec![RandomItemRow::default(); 10_000];
-    let mut tokens = vec![0; 50_000];
-    let walk = walk_random_items(
+    let mut rows = vec![RandomItemRow::default(); 1];
+    let mut tokens = vec![0; 1];
+    let walk = walk_random_items_growing(
         &world.memory(),
         IMAGE,
         world.game_state(),
@@ -42,7 +42,7 @@ fn decision_random_items_preserve_full_store_and_signed_words_at_5000_countries(
         &mut tokens,
     );
     assert_eq!(walk.outcome, Outcome::Rows { len: 10_000 });
-    for (index, row) in rows.iter().enumerate() {
+    for (index, row) in rows[..walk.outcome.len()].iter().enumerate() {
         assert_eq!(
             (row.country, row.ordinal),
             (index as u32 / 2 + 1, index as u32 % 2)
@@ -150,6 +150,117 @@ fn run(bytes: &[u8], output: &mut [Row], tokens: &mut [u8]) -> Walk {
         output,
         tokens,
     )
+}
+
+#[test]
+fn every_decision_container_and_token_arena_grows_from_original_mod_sized_headers() {
+    let mut bytes = empty();
+    let sources = [RE_ENABLE, REMOVE, ACTIVE_TIMED, TARGETED, TARGETED_TIMED];
+    for index in 0..sources.len() {
+        let record = RECORD_ADDRESS + index * 0x80;
+        let (vtable, definition, days) = match index {
+            0 | 1 => (
+                cdecision_cooldown::VTABLE_RVA,
+                cdecision_cooldown::DEFINITION,
+                cdecision_cooldown::DAYS,
+            ),
+            2 => (
+                ctimed_decision::VTABLE_RVA,
+                ctimed_decision::DEFINITION,
+                ctimed_decision::DAYS,
+            ),
+            _ => (
+                ctargeted_decision::VTABLE_RVA,
+                ctargeted_decision::DEFINITION,
+                ctargeted_decision::DAYS,
+            ),
+        };
+        qword(&mut bytes, record, IMAGE + vtable);
+        qword(&mut bytes, record + definition, DEFINITION_ADDRESS);
+        word(&mut bytes, record + days, i32::MIN + index as i32);
+        if index == 2 {
+            word(&mut bytes, record + ctimed_decision::STATE, i32::MAX - 2);
+        } else if index >= 3 {
+            word(
+                &mut bytes,
+                record + ctargeted_decision::STATE,
+                i32::MAX - index as i32,
+            );
+            word(&mut bytes, record + ctargeted_decision::NUMERIC_TARGET, -1);
+            put(&mut bytes, record + ctargeted_decision::IGNORE, &[1]);
+        }
+    }
+    let install = |bytes: &mut Vec<u8>, count: usize| {
+        let base = 0x8000;
+        bytes.resize(base + sources.len() * count * 8 - COUNTRY_ADDRESS, 0);
+        for (index, &source) in sources.iter().enumerate() {
+            let data = base + index * count * 8;
+            qword(bytes, STATUS_ADDRESS + source, data);
+            word(bytes, STATUS_ADDRESS + source + 8, count as i32);
+            word(bytes, STATUS_ADDRESS + source + 12, count as i32);
+            for ordinal in 0..count {
+                qword(bytes, data + ordinal * 8, RECORD_ADDRESS + index * 0x80);
+            }
+        }
+    };
+    install(&mut bytes, 2);
+    let mut rows = Vec::new();
+    let mut tokens = Vec::new();
+    let first = walk_growing(
+        &SliceMemory {
+            base: COUNTRY_ADDRESS,
+            bytes: &bytes,
+        },
+        IMAGE,
+        COUNTRY_ADDRESS,
+        &mut rows,
+        &mut tokens,
+    );
+    assert_eq!(first.outcome, Outcome::Rows { len: 10 });
+    assert_eq!((first.bytes_len, first.required_bytes), (50, 50));
+    install(&mut bytes, 5_000);
+    let fixed = run(&bytes, &mut rows[..10], &mut tokens[..50]);
+    assert_eq!(
+        fixed.outcome,
+        Outcome::Truncated {
+            len: 10,
+            unread_rows: 24_990
+        }
+    );
+    assert_eq!(fixed.required_bytes, 125_000);
+    let later = walk_growing(
+        &SliceMemory {
+            base: COUNTRY_ADDRESS,
+            bytes: &bytes,
+        },
+        IMAGE,
+        COUNTRY_ADDRESS,
+        &mut rows,
+        &mut tokens,
+    );
+    assert_eq!(later.outcome, Outcome::Rows { len: 25_000 });
+    assert_eq!((later.bytes_len, later.required_bytes), (125_000, 125_000));
+    assert_eq!(
+        later.counts,
+        Some(Counts {
+            re_enable: 5_000,
+            remove: 5_000,
+            timed: 5_000,
+            targeted: 5_000,
+            targeted_timed: 5_000,
+            taken: 0
+        })
+    );
+    for (index, row) in rows[..25_000].iter().enumerate() {
+        let container = index / 5_000;
+        assert_eq!(row.container as usize, container);
+        assert_eq!(row.ordinal as usize, index % 5_000);
+        assert_eq!(row.days, i32::MIN + container as i32);
+        assert_eq!(
+            &tokens[row.token_start..row.token_start + row.token_len],
+            b"test\xff"
+        );
+    }
 }
 
 #[test]

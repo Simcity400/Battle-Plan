@@ -42,7 +42,7 @@ use crate::{
     cstrategic_air,
     memory::{RecordField, RecordLayout, RecordSources},
     read_slice,
-    walk::Outcome,
+    walk::{Buffer, Outcome},
 };
 
 /// One wing from this hour's complete AirWings census, joined by its embedded
@@ -58,6 +58,8 @@ pub struct WingIdentity {
     pub air_base: u64,
     pub base_override: u64,
     pub country_override: i32,
+    pub ace: u64,
+    pub planes: i32,
 }
 
 impl WingIdentity {
@@ -78,6 +80,8 @@ impl WingIdentity {
             air_base: row.air_base,
             base_override: row.base_override,
             country_override: row.country_override,
+            ace: row.ace,
+            planes: row.planes,
         })
     }
 
@@ -155,9 +159,140 @@ pub fn walk_with_diagnostic(
     output: &mut [Row],
     failure: &mut FailureContext,
 ) -> Outcome {
+    walk_with_transport(
+        memory,
+        base,
+        game_state,
+        wings,
+        output,
+        failure,
+        &mut NoTransport,
+    )
+}
+
+/// One occurrence in the original regional mission-pointer pass.
+pub struct MissionObservation<'a> {
+    pub slot: u32,
+    pub region: u32,
+    pub ordinal: u32,
+    pub pointer: usize,
+    pub original: Result<&'a WingIdentity, &'static str>,
+}
+
+/// Observer of this exact original manager/header/mission-pointer pass.
+/// It must memoize original failures and retire every native address before
+/// the loan returns. Optional transport failures never change strict rows.
+pub trait TransportObserver {
+    fn slot(&mut self, _original: cstrategic_air::SlotObservation) {}
+    fn root(&mut self, _slot: u32, _pointer: usize, _outer: Result<Array, &'static str>) {}
+    fn region(&mut self, _slot: u32, _region: u32, _original: Result<Array, &'static str>) {}
+    fn inactive_region(&mut self, slot: u32, region: u32, original: Result<Array, &'static str>) {
+        self.region(slot, region, original);
+    }
+    fn mission<M: Memory>(
+        &mut self,
+        _memory: &M,
+        _countries: &ccountry::Reader<'_, M>,
+        _wings: &[WingIdentity],
+        _mission: MissionObservation<'_>,
+    ) {
+    }
+    fn complete_regions(&self, _slot: u32) -> bool {
+        false
+    }
+    fn region_attempted(&self, _slot: u32, _region: u32) -> bool {
+        false
+    }
+    fn retire(&mut self) {}
+}
+
+struct TransportRetirement<F: FnMut()>(F);
+impl<F: FnMut()> Drop for TransportRetirement<F> {
+    fn drop(&mut self) {
+        (self.0)();
+    }
+}
+
+struct NoTransport;
+impl TransportObserver for NoTransport {}
+
+/// Adds independent transport observations without a replacement census.
+pub fn walk_with_transport(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    wings: &[WingIdentity],
+    output: &mut [Row],
+    failure: &mut FailureContext,
+    observer: &mut impl TransportObserver,
+) -> Outcome {
+    walk_with_transport_buffer(
+        memory,
+        base,
+        game_state,
+        wings,
+        Buffer::Fixed(output),
+        failure,
+        observer,
+    )
+}
+
+/// Worker-owned rows grow from the same regional headers the census follows.
+pub fn walk_with_transport_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    wings: &[WingIdentity],
+    output: &mut Vec<Row>,
+    failure: &mut FailureContext,
+    observer: &mut impl TransportObserver,
+) -> Outcome {
+    walk_with_transport_buffer(
+        memory,
+        base,
+        game_state,
+        wings,
+        Buffer::Growing(output),
+        failure,
+        observer,
+    )
+}
+
+pub fn walk_with_diagnostic_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    wings: &[WingIdentity],
+    output: &mut Vec<Row>,
+    failure: &mut FailureContext,
+) -> Outcome {
+    walk_with_transport_growing(
+        memory,
+        base,
+        game_state,
+        wings,
+        output,
+        failure,
+        &mut NoTransport,
+    )
+}
+
+fn walk_with_transport_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    wings: &[WingIdentity],
+    mut output: Buffer<'_, Row>,
+    failure: &mut FailureContext,
+    observer: &mut impl TransportObserver,
+) -> Outcome {
+    let observer = std::cell::RefCell::new(observer);
     *failure = FailureContext::default();
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
+        // Declared after the original reader: successful, failed and unwound
+        // passes retire observer controls before that reader's loan ends.
+        let _retirement = TransportRetirement(|| observer.borrow_mut().retire());
         let mut len = 0;
         let mut unread_rows = 0_u32;
         // Roots are visited in slot order and their headers gathered
@@ -178,6 +313,19 @@ pub fn walk_with_diagnostic(
                     .get_mut(..roots.len() * HEADERS)
                     .unwrap(),
             );
+            for (index, &(_, slot)) in roots.iter().enumerate() {
+                let outer = if index < copied {
+                    header(
+                        &headers[index],
+                        cstrategic_air::REGIONAL_MISSIONS,
+                        crate::cpdx_array::STRIDE,
+                    )
+                    .ok_or("transport original air region domain invalid")
+                } else {
+                    Err("transport original air root headers unreadable")
+                };
+                observer.borrow_mut().root(slot, roots[index].0, outer);
+            }
             if copied != roots.len() {
                 failure.country_slot = roots.get(copied).map(|&(_, slot)| slot);
                 return Err("regional mission headers unreadable");
@@ -189,24 +337,53 @@ pub fn walk_with_diagnostic(
                     canonical_slot,
                     bytes,
                     wings,
-                    output,
+                    &mut output,
                     &mut len,
                     &mut unread_rows,
                     failure,
+                    &mut **observer.borrow_mut(),
                 )?;
+                // Active headers were acquired above in the original walk.
+                // Only originally unattempted physical headers are borrowed.
+                let outer = header(
+                    bytes,
+                    cstrategic_air::REGIONAL_MISSIONS,
+                    crate::cpdx_array::STRIDE,
+                )
+                .expect("strict air root domain validated");
+                if observer.borrow().complete_regions(canonical_slot) {
+                    for region in 0..outer.count {
+                        if observer.borrow().region_attempted(canonical_slot, region) {
+                            continue;
+                        }
+                        let original = outer
+                            .element(region, crate::cpdx_array::STRIDE)
+                            .and_then(|at| Array::read(memory, at, 8))
+                            .ok_or("transport original inactive air region header invalid");
+                        observer
+                            .borrow_mut()
+                            .inactive_region(canonical_slot, region, original);
+                    }
+                }
                 *failure = FailureContext::default();
             }
             Ok(())
         };
-        cstrategic_air::visit(memory, base, game_state, |root| {
-            roots[pending] = (root.address, root.canonical_slot);
-            pending += 1;
-            if pending == BATCH {
-                flush(&roots)?;
-                pending = 0;
-            }
-            Ok(())
-        })?;
+        cstrategic_air::visit_with_slots(
+            memory,
+            base,
+            game_state,
+            |root| {
+                roots[pending] = (root.address, root.canonical_slot);
+                pending += 1;
+                if pending == BATCH {
+                    flush(&roots)?;
+                    pending = 0;
+                }
+                Ok(())
+            },
+            |original| observer.borrow_mut().slot(original),
+        )?;
         flush(&roots[..pending])?;
         Ok(if unread_rows == 0 {
             Outcome::Rows { len }
@@ -219,16 +396,17 @@ pub fn walk_with_diagnostic(
 
 /// One country air object's registrations from its gathered headers.
 #[allow(clippy::too_many_arguments)]
-fn root_missions(
-    memory: &impl Memory,
-    countries: &ccountry::Reader<'_, impl Memory>,
+fn root_missions<M: Memory>(
+    memory: &M,
+    countries: &ccountry::Reader<'_, M>,
     canonical_slot: u32,
     bytes: &[u8; HEADERS],
     wings: &[WingIdentity],
-    output: &mut [Row],
+    output: &mut Buffer<'_, Row>,
     len: &mut usize,
     unread_rows: &mut u32,
     failure: &mut FailureContext,
+    observer: &mut impl TransportObserver,
 ) -> Result<(), &'static str> {
     failure.country_slot = Some(canonical_slot);
     let (Some(outer), Some(all), Some(regions)) = (
@@ -263,7 +441,15 @@ fn root_missions(
             let missions = outer
                 .element(region, crate::cpdx_array::STRIDE)
                 .and_then(|at| Array::read(memory, at, 8))
-                .ok_or("active mission region vector missing or invalid")?;
+                .ok_or("active mission region vector missing or invalid");
+            observer.region(canonical_slot, region, missions);
+            let missions = missions?;
+            // RegisterMission@140C4E360 appends every occurrence to this
+            // regional vector; grow before visiting its original members.
+            output.ensure(
+                len.checked_add(missions.count as usize)
+                    .ok_or("regional mission row count overflow")?,
+            )?;
             registered = registered
                 .checked_add(missions.count)
                 .ok_or("regional mission count overflow")?;
@@ -282,7 +468,20 @@ fn root_missions(
                     let wing = wings
                         .binary_search_by_key(&pointer, |wing| wing.mission_pointer)
                         .map(|index| &wings[index])
-                        .map_err(|_| "registered mission missing from AirWings")?;
+                        .map_err(|_| "registered mission missing from AirWings");
+                    observer.mission(
+                        memory,
+                        countries,
+                        wings,
+                        MissionObservation {
+                            slot: canonical_slot,
+                            region,
+                            ordinal: batch + index as u32,
+                            pointer,
+                            original: wing,
+                        },
+                    );
+                    let wing = wing?;
                     if wing.region != Some(region)
                         || countries.link(wing.owner)? != Some(canonical_slot)
                     {
@@ -398,6 +597,61 @@ mod tests {
     }
     fn capture(bytes: &[u8], wings: &[WingIdentity], output: &mut [Row]) -> Outcome {
         walk(&SliceMemory { base: 0, bytes }, 0, GS, wings, output)
+    }
+
+    #[test]
+    fn original_regional_headers_grow_first_and_later_mod_membership() {
+        let (mut bytes, _) = fixture();
+        let mut output = Vec::new();
+        for count in [5_000u32, 12_345] {
+            let members = bytes.len();
+            bytes.resize(members + count as usize * 8, 0);
+            let wings: Vec<_> = (0..count)
+                .map(|index| wing(0x10_0000 + index as usize * 0x200, 100 + u64::from(index)))
+                .collect();
+            for (index, wing) in wings.iter().enumerate() {
+                put64(&mut bytes, members + index * 8, wing.mission_pointer as u64);
+            }
+            array(&mut bytes, REGIONS + 5 * 0x18, members, count);
+            array(
+                &mut bytes,
+                OWNER + cstrategic_air::ALL_ACTIVE_MISSIONS,
+                members,
+                count,
+            );
+            let result = walk_with_diagnostic_growing(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                GS,
+                &wings,
+                &mut output,
+                &mut Default::default(),
+            );
+            assert_eq!(
+                result,
+                Outcome::Rows {
+                    len: count as usize
+                }
+            );
+            assert_eq!(
+                output[count as usize - 1],
+                Row {
+                    wing: 99 + u64::from(count),
+                    ordinal: count - 1
+                }
+            );
+            let mut fixed = [Row::default()];
+            assert_eq!(
+                capture(&bytes, &wings, &mut fixed),
+                Outcome::Truncated {
+                    len: 1,
+                    unread_rows: count - 1
+                }
+            );
+        }
     }
 
     #[test]
@@ -602,5 +856,45 @@ mod tests {
         assert_eq!(identity.effective_country(), 9);
         identity.country_override = -1;
         assert_eq!(identity.effective_country(), 3);
+    }
+
+    #[test]
+    fn transport_controls_retire_before_original_success_and_failure_returns() {
+        #[derive(Default)]
+        struct Observer {
+            roots: usize,
+            retired: bool,
+        }
+        impl TransportObserver for Observer {
+            fn root(&mut self, _: u32, _: usize, _: Result<Array, &'static str>) {
+                assert!(!self.retired);
+                self.roots += 1;
+            }
+            fn retire(&mut self) {
+                self.retired = true;
+            }
+        }
+        for fail in [false, true] {
+            let (mut bytes, wings) = fixture();
+            if fail {
+                put64(&mut bytes, MEMBERS, 0xdead_beef);
+            }
+            let mut observer = Observer::default();
+            let result = walk_with_transport(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                GS,
+                &wings,
+                &mut [Row::default(); 2],
+                &mut FailureContext::default(),
+                &mut observer,
+            );
+            assert_eq!(matches!(result, Outcome::Unavailable { .. }), fail);
+            assert_eq!(observer.roots, 1);
+            assert!(observer.retired);
+        }
     }
 }

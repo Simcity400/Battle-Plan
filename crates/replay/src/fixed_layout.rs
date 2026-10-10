@@ -60,6 +60,47 @@ pub const NAVAL_TRANSFER: Family = Family {
     tables: &[TableId::DivisionEtaInputs],
 };
 
+/// Fresh task-force counter speed and range; guard only the derived suffix
+/// components so stored motion and independent raw operands remain available.
+pub const TASK_FORCE_COUNTER_ETA: Family = Family {
+    name: "fresh task-force counter ETA",
+    keys: &[
+        keys::NAVAL_SPEED_FACTOR,
+        keys::NAVAL_RANGE,
+        keys::NAVAL_RANGE_FACTOR,
+        keys::NAVY_WEATHER_PENALTY,
+        keys::UNDERWAY_REPLENISHMENT_RANGE_FACTOR,
+    ],
+    tokens: &[],
+    tables: &[],
+};
+
+/// Original selected transport modifier graph, independently guarded from
+/// the established ETA keys. A mismatch withholds only reached risk leaves.
+pub const TRANSPORT_RISK: Family = Family {
+    name: "selected transport risk",
+    keys: &[
+        keys::NAVAL_COORDINATION,
+        keys::NAVAL_SPEED_FACTOR,
+        keys::NAVAL_DETECTION,
+        keys::SPOTTING_CHANCE,
+        keys::NIGHT_SPOTTING_CHANCE,
+        keys::NAVY_VISIBILITY,
+        keys::SPOTTING_CHANCE_AGAINST,
+    ],
+    tokens: &[],
+    tables: &[],
+};
+
+/// F49710/F4B6E0 uses a separate air-wing, ace and country modifier graph.
+/// Guard its reached leaves independently from the naval receiver family.
+pub const TRANSPORT_AIR: Family = Family {
+    name: "selected transport air normalization",
+    keys: &engine::transport_air_normalization::KEYS,
+    tokens: &[],
+    tables: &[],
+};
+
 /// `141927730` reads the current variant's stat 0x3E through this token.
 /// Its guard withholds only a railway gun's ETA suffix, preserving the row.
 pub const RAILWAY_SPEED: Family = Family {
@@ -110,6 +151,39 @@ pub const ATTRITION: Family = Family {
         TableId::DivisionStatus,
         TableId::AttritionModifierBreakdowns,
     ],
+};
+
+/// 14129F040's cached region attack uses the native 0xAD modifier slot.
+/// Field-local capture and playback guard; no table-wide refusal.
+pub const SELECTED_ATTACK_WEATHER_ATTACK: Family = Family {
+    name: "selected attack weather attack",
+    keys: &[keys::ARMY_ATTACK_FACTOR],
+    tokens: &[],
+    tables: &[],
+};
+
+/// 14129F040's cached region breakthrough uses the native 0x1DD slot.
+pub const SELECTED_ATTACK_WEATHER_BREAKTHROUGH: Family = Family {
+    name: "selected attack weather breakthrough",
+    keys: &[keys::BREAKTHROUGH_FACTOR],
+    tokens: &[],
+    tables: &[],
+};
+
+/// 14129F040's country night term uses native 0x103.
+pub const SELECTED_ATTACK_NIGHT: Family = Family {
+    name: "selected attack night",
+    keys: &[keys::LAND_NIGHT_ATTACK],
+    tokens: &[],
+    tables: &[],
+};
+
+/// 14129F040's country/state fort term uses native 0x272.
+pub const SELECTED_ATTACK_FORT: Family = Family {
+    name: "selected attack fort",
+    keys: &[keys::LAND_BUNKER_EFFECTIVENESS_FACTOR],
+    tokens: &[],
+    tables: &[],
 };
 
 pub const RETREAT_BANS: Family = Family {
@@ -325,6 +399,24 @@ pub const INVASION_PREPARATION: Family = Family {
     tables: &[TableId::InvasionPreparations],
 };
 
+/// `141016930`'s type4 preparation terms in ArmyOrderPlans.execution.
+/// A field-local refusal preserves the stored route and progress prefix.
+pub const PARADROP_PREPARATION: Family = Family {
+    name: "paradrop preparation",
+    keys: &[keys::AIR_INVASION_PREPARATION, keys::AIR_INVASION_PREP_DAYS],
+    tokens: &[],
+    tables: &[],
+};
+
+/// `140BEE920`'s country/commander transport-weight terms, reached by
+/// `14101DC30`. Refusal stays in DivisionMovement.order_transport.
+pub const PARADROP_TRANSPORT: Family = Family {
+    name: "paradrop transport weight",
+    keys: &[keys::PARATROOPER_WEIGHT_FACTOR],
+    tokens: &[],
+    tables: &[],
+};
+
 /// The naval mission icon's active counts and efficiencies (140FA2AC0,
 /// 140F99450, 140F98DE0): combined task-force keys, mission-owner escort,
 /// roster-owner weather and expeditionary/roster-owner underway range.
@@ -415,10 +507,17 @@ pub const FAMILIES: &[Family] = &[
     MOVEMENT,
     STRATEGIC_ACTION,
     NAVAL_TRANSFER,
+    TASK_FORCE_COUNTER_ETA,
+    TRANSPORT_RISK,
+    TRANSPORT_AIR,
     RAILWAY_SPEED,
     LAND_COMBAT_DIVISIONS,
     DIVISION_STATUS,
     ATTRITION,
+    SELECTED_ATTACK_WEATHER_ATTACK,
+    SELECTED_ATTACK_WEATHER_BREAKTHROUGH,
+    SELECTED_ATTACK_NIGHT,
+    SELECTED_ATTACK_FORT,
     RETREAT_BANS,
     SHIP_ORGANISATION,
     NAVAL_WEAPONS,
@@ -439,6 +538,8 @@ pub const FAMILIES: &[Family] = &[
     RAID_INTEL,
     RAID_SUCCESS,
     INVASION_PREPARATION,
+    PARADROP_PREPARATION,
+    PARADROP_TRANSPORT,
     NAVAL_MISSIONS,
     RESEARCH_IDLE,
     ORACLE_FIXED15,
@@ -493,6 +594,8 @@ mod tests {
     };
 
     fn fixture() -> DecodedFrame {
+        let mut keys = keys::ALL.to_vec();
+        keys.sort_unstable_by_key(|key| key.index);
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 0,
@@ -506,8 +609,7 @@ mod tests {
         };
         *frame.tables[TableId::ModifierDefinitions.index()] =
             TableView::Complete(TableRows::ModifierDefinitions(
-                keys::ALL
-                    .iter()
+                keys.iter()
                     .map(|key| ModifierDefinitionRow {
                         index: key.index,
                         token: key.index + 1,
@@ -517,8 +619,7 @@ mod tests {
             ));
         *frame.tables[TableId::LexicalTokens.index()] =
             TableView::Complete(TableRows::LexicalTokens(
-                keys::ALL
-                    .iter()
+                keys.iter()
                     .map(|key| LexicalTokenRow {
                         token: key.index + 1,
                         literal: key.name.as_bytes().to_vec(),
@@ -612,12 +713,15 @@ mod tests {
     #[test]
     fn mismatch_fixture_refuses_each_viewer_literal_by_name() {
         for family in [
+            TASK_FORCE_COUNTER_ETA,
             PRODUCTION_MODIFIERS,
             NAVAL_WEAPONS,
             SHIP_ORGANISATION,
             NAVAL_POSITIONING,
             NAVAL_ANTI_AIR,
             NAVAL_BREAKDOWNS,
+            PARADROP_PREPARATION,
+            PARADROP_TRANSPORT,
         ] {
             for &key in family.keys {
                 let mut frame = fixture();

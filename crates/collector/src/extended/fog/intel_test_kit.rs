@@ -103,7 +103,7 @@ fn collect_split(memory: &impl Memory, cap: usize) -> (Split, IntelCopyReport, I
         wings: 8,
     };
     let mut captured = Captured::with_capacities(&capacities);
-    let mut first = IntelJob::new();
+    let mut first = IntelJob::with_storage(cap, 0);
     let report = copy_intel_refresh_with_divisions(memory, ctx, &mut first, None);
     assert!(report.raw_ok);
     let mut ticks = [0u64; 1];

@@ -454,8 +454,15 @@ fn buildings<K: Ord>(
 }
 
 pub fn parse(items: &[Item]) -> io::Result<Pack> {
+    parse_with_countries(items, super::CountriesView::from_root(items)?)
+}
+
+pub(super) fn parse_with_countries(
+    items: &[Item],
+    countries: super::CountriesView<'_>,
+) -> io::Result<Pack> {
     let mut pack = Pack::default();
-    for item in required_block(items, b"countries")? {
+    for item in countries.required()? {
         let country = item
             .key
             .as_deref()

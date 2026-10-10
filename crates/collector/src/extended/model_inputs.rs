@@ -24,27 +24,38 @@ pub const TABLES: [TableId; N] = [
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     local_rows: usize,
     requirements: usize,
     rosters: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            local_rows: 256,
-            requirements: 1024,
-            rosters: 8192,
-        }
-    }
-}
 
 impl Capacities {
-    /// Every country holds two rosters, tens of variants for a small country.
-    /// Never lowers.
-    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
-        self.rosters = self.rosters.max(slots.saturating_mul(32));
+    /// Serialize@140E5D3B0 (+A0/+E8) and AddEquipmentVariant@140E48C70 (+B8)
+    /// provide three independent live roster counts, with duplicates retained.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        self.rosters = self.rosters.max(
+            match cproduction_status::walk_available_equipment(memory, base, state, &mut []) {
+                Outcome::Rows { len } => len,
+                Outcome::Truncated { len, unread_rows } => len
+                    .checked_add(unread_rows as usize)
+                    .ok_or("equipment roster sizing overflow")?,
+                Outcome::Unavailable { reason } => return Err(reason),
+            },
+        );
+        let local = cdeployment_status::walk_local_subunits(memory, base, state, &mut [], &mut []);
+        if let Outcome::Unavailable { reason } = local.outcome {
+            return Err(reason);
+        }
+        self.local_rows = self.local_rows.max(local.required_rows);
+        self.requirements = self.requirements.max(local.required_requirements);
+        Ok(())
     }
 }
 
@@ -111,7 +122,7 @@ impl Captured {
         if should_walk(TABLES[0], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[0]);
             let started = qpc();
-            let walk = cdeployment_status::walk_local_subunits(
+            let walk = cdeployment_status::walk_local_subunits_growing(
                 memory,
                 base,
                 game_state,
@@ -129,7 +140,7 @@ impl Captured {
         if should_walk(TABLES[1], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let started = qpc();
-            self.rosters.outcome = cproduction_status::walk_available_equipment(
+            self.rosters.outcome = cproduction_status::walk_available_equipment_growing(
                 memory,
                 base,
                 game_state,
@@ -253,5 +264,148 @@ mod tests {
             captured.local_table(),
             TableView::Unavailable { .. }
         ));
+    }
+
+    #[test]
+    fn five_thousand_countries_use_live_three_roster_demand_and_same_hour_growth() {
+        use engine::{ccountry, cequipment_variant, cgame_state, csub_unit_definition};
+        const COUNTRIES: usize = 5_000;
+        const STATE: usize = 0x1000;
+        const FIRST: usize = 0x20000;
+        const STRIDE: usize = 0x1800;
+        const DATABASE: usize = 0x11000;
+        let variant = FIRST + COUNTRIES * STRIDE;
+        let pointers = variant + 0x100;
+        let mut bytes = vec![0; pointers + 64 * 8];
+        let word = |bytes: &mut [u8], at: usize, value: u64| {
+            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        let array = |bytes: &mut [u8], at: usize, data: usize, count: usize| {
+            word(bytes, at, data as u64);
+            bytes[at + 8..at + 12].copy_from_slice(&(count as u32).to_le_bytes());
+            bytes[at + 12..at + 16].copy_from_slice(&(count as u32).to_le_bytes());
+        };
+        array(
+            &mut bytes,
+            STATE + cgame_state::COUNTRIES,
+            0x2000,
+            COUNTRIES + 1,
+        );
+        array(
+            &mut bytes,
+            STATE + cgame_state::COUNTRY_LINKS,
+            0xc000,
+            COUNTRIES + 1,
+        );
+        array(
+            &mut bytes,
+            DATABASE + csub_unit_definition::DATABASE_VECTOR,
+            pointers,
+            1,
+        );
+        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+        word(
+            &mut bytes,
+            variant + cequipment_variant::TYPE,
+            0x8000_0001_0000_0046,
+        );
+        for index in 0..64 {
+            word(&mut bytes, pointers + index * 8, variant as u64);
+        }
+        for index in 0..COUNTRIES {
+            let id = index + 1;
+            let country = FIRST + index * STRIDE;
+            let production = country + 0x1000;
+            let deployment = country + 0x1400;
+            word(&mut bytes, 0x2000 + id * 8, country as u64);
+            bytes[0xc000 + id * 4..0xc004 + id * 4].copy_from_slice(&(id as u32).to_le_bytes());
+            word(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+            bytes[country + ccountry::ID..country + ccountry::ID + 4]
+                .copy_from_slice(&(id as u32).to_le_bytes());
+            word(
+                &mut bytes,
+                country + ccountry::PRODUCTION_STATUS,
+                production as u64,
+            );
+            word(
+                &mut bytes,
+                production,
+                cproduction_status::VTABLE_RVA as u64,
+            );
+            word(
+                &mut bytes,
+                production + cproduction_status::COUNTRY,
+                country as u64,
+            );
+            for (offset, count) in [
+                (cproduction_status::AVAILABLE_EQUIPMENT, 13),
+                (cproduction_status::FOREIGN_EQUIPMENT, 9),
+                (cproduction_status::BEST_VARIANT_CANDIDATES, 31),
+            ] {
+                array(&mut bytes, production + offset, pointers, count);
+            }
+            word(
+                &mut bytes,
+                country + ccountry::DEPLOYMENT_MANAGER,
+                deployment as u64,
+            );
+            word(
+                &mut bytes,
+                deployment,
+                cdeployment_status::VTABLE_RVA as u64,
+            );
+            word(
+                &mut bytes,
+                deployment + cdeployment_status::OWNER,
+                country as u64,
+            );
+        }
+        struct Fixture<'a>(&'a [u8]);
+        impl Memory for Fixture<'_> {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                if at == csub_unit_definition::DATABASE_RVA && output.len() == 8 {
+                    output.copy_from_slice(&(DATABASE as u64).to_le_bytes());
+                    return true;
+                }
+                engine::memory::SliceMemory {
+                    base: 0,
+                    bytes: self.0,
+                }
+                .copy(at, output)
+            }
+        }
+        let memory = Fixture(&bytes);
+        let mut capacity = Capacities::default();
+        capacity.presize(&memory, 0, STATE).unwrap();
+        assert!(capacity.rosters >= COUNTRIES * 53);
+        let mut captured = Captured::with_capacities(&capacity);
+        captured.capture(&memory, 0, STATE, 0, true);
+        assert_eq!(
+            captured.rosters.outcome,
+            Outcome::Rows {
+                len: COUNTRIES * 53
+            }
+        );
+        assert_eq!(
+            captured.rosters.rows[COUNTRIES * 53 - 1].country,
+            COUNTRIES as u32
+        );
+        // Demand grows with no country-count change or presize poll. The
+        // original changed header supplies enough space in this same capture.
+        array(
+            &mut bytes,
+            FIRST + 0x1000 + cproduction_status::BEST_VARIANT_CANDIDATES,
+            pointers,
+            64,
+        );
+        let memory = Fixture(&bytes);
+        captured.capture(&memory, 0, STATE, 24, true);
+        assert_eq!(
+            captured.rosters.outcome,
+            Outcome::Rows {
+                len: COUNTRIES * 53 + 33
+            }
+        );
+        assert_eq!(captured.rosters.rows[13 + 9 + 63].ordinal, 63);
     }
 }

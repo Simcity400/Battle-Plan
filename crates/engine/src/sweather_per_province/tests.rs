@@ -118,6 +118,87 @@ fn a_dense_census_costs_one_guarded_gather_per_batch_not_one_per_row() {
 }
 
 #[test]
+fn clock_records_preserve_signed_words_and_never_commit_a_failed_pair() {
+    for (hour, night) in [(i32::MIN, i64::MIN), (0, 0), (i32::MAX, i64::MAX)] {
+        let mut record = [0; CLOCK_RECORD_BYTES];
+        record[..8].copy_from_slice(&night.to_le_bytes());
+        record[8..].copy_from_slice(&hour.to_le_bytes());
+        let mut row = Row {
+            local_hour: 7,
+            night_factor: 19,
+            snow: 31,
+            ..Default::default()
+        };
+        let before = row;
+        assert_eq!(
+            fill_clock_record(&record, 1, &mut row),
+            Err("weather clock fields unreadable")
+        );
+        assert_eq!(row, before);
+        assert!(fill_clock_record(&record[..11], 2, &mut row).is_err());
+        assert_eq!(row, before);
+        fill_clock_record(&record, CLOCK_FIELDS.len(), &mut row).unwrap();
+        assert_eq!(
+            (row.local_hour, row.night_factor, row.snow),
+            (hour, night, 31)
+        );
+    }
+}
+
+#[test]
+fn clock_join_copies_only_twelve_bytes_per_admitted_slot_and_checks_live_counts() {
+    use crate::read_census::ReadCensus;
+    const ROWS: usize = 130;
+    let mut bytes = vec![0; ROWS * CLOCK_STRIDE];
+    for index in 0..ROWS {
+        let start = index * CLOCK_STRIDE;
+        bytes[start + CLOCK_LOCAL_HOUR..start + CLOCK_LOCAL_HOUR + 4]
+            .copy_from_slice(&(index as i32 - 17).to_le_bytes());
+        bytes[start + CLOCK_NIGHT_FACTOR..start + CLOCK_NIGHT_FACTOR + 8]
+            .copy_from_slice(&(-(index as i64) - 11).to_le_bytes());
+    }
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let census = ReadCensus::new(&memory);
+    let array = Array {
+        data: 0x1000,
+        count: ROWS as u32,
+    };
+    let mut rows = [Row::default(); 65];
+    assert_eq!(
+        fill_clocks(&census, array, ROWS as u32 - 1, &mut rows),
+        Err("weather clock array differs from the province array")
+    );
+    assert_eq!(census.calls(), 0);
+    fill_clocks(&census, array, ROWS as u32, &mut rows).unwrap();
+    assert_eq!(
+        (
+            rows[0].local_hour,
+            rows[64].local_hour,
+            rows[64].night_factor
+        ),
+        (-17, 47, -75)
+    );
+    assert_eq!(census.calls(), 2);
+    assert_eq!(census.spans(), rows.len() * CLOCK_FIELDS.len());
+    assert_eq!(census.bytes(), rows.len() * CLOCK_RECORD_BYTES);
+    let short = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes[..CLOCK_LOCAL_HOUR + 3],
+    };
+    assert_eq!(
+        fill_clocks(&short, array, ROWS as u32, &mut rows[..1]),
+        Err("weather clock fields unreadable")
+    );
+    assert_eq!(
+        fill_clocks(&census, Array { data: 0, count: 0 }, 0, &mut []),
+        Ok(())
+    );
+}
+
+#[test]
 fn display_bytes_join_by_slot_and_a_foreign_count_refuses() {
     let memory = SliceMemory {
         base: 0x1000,

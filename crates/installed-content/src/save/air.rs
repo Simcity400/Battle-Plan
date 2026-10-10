@@ -54,7 +54,9 @@ pub struct Ace {
     pub killer_country: Option<Vec<u8>>,
     pub name: Vec<u8>,
     pub surname: Vec<u8>,
-    pub callsign: Vec<u8>,
+    /// CAce::Serialize@14060F1F0 gates +0x130 on stored length +0x140;
+    /// an emitted empty first-NUL prefix differs from omission.
+    pub callsign: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +74,10 @@ pub struct EquipmentPool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wing {
     pub id: u64,
+    /// F53E70 unconditionally writes the containing pool definition's token
+    /// as `definition` (0x2FE3), not `type`; every wing retains it for the
+    /// recorded-content index join. 1424ADCE0 has no empty-token omission gate.
+    pub pool_type: Vec<u8>,
     /// F539B0 writes primary+998 as `name` outside checksum mode.
     /// 1424ADF40 -> 1424AF5A0 escapes quotes/backslashes; the parser decodes them.
     /// Missing text remains distinct from a successfully saved empty name.
@@ -82,6 +88,9 @@ pub struct Wing {
     pub equipment: EquipmentPool,
     /// The wing writer emits this only when its full reference resolves.
     pub ace: Option<u64>,
+    /// F539B0 writes primary+A2C as `raid` only when that full reference
+    /// resolves. Omission does not reveal the exact null or stale bits.
+    pub raid: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,7 +162,12 @@ fn optional_flag(items: &[Item], name: &[u8], default: bool) -> io::Result<bool>
 }
 
 fn exact_bytes(items: &[Item], name: &[u8]) -> io::Result<Vec<u8>> {
-    bytes(items, name)?.ok_or_else(|| invalid("missing serialized air string"))
+    bytes(items, name)?.ok_or_else(|| {
+        invalid(format!(
+            "missing serialized air string {}",
+            String::from_utf8_lossy(name)
+        ))
+    })
 }
 
 /// Several native u32 bit fields use the signed integer text writer.
@@ -223,7 +237,7 @@ fn parse_ace(country: &[u8], ordinal: u32, fields: &[Item]) -> io::Result<Ace> {
         killer_country: bytes(fields, b"killer_country")?,
         name: exact_bytes(fields, b"name")?,
         surname: exact_bytes(fields, b"surname")?,
-        callsign: bytes(fields, b"callsign")?.unwrap_or_default(),
+        callsign: bytes(fields, b"callsign")?,
     })
 }
 
@@ -252,9 +266,10 @@ fn parse_equipment(fields: &[Item]) -> io::Result<EquipmentPool> {
     })
 }
 
-fn parse_wing(fields: &[Item]) -> io::Result<Wing> {
+fn parse_wing(pool_type: &[u8], fields: &[Item]) -> io::Result<Wing> {
     Ok(Wing {
         id: object_id(fields)?,
+        pool_type: pool_type.to_vec(),
         name: bytes(fields, b"name")?,
         accidents: field(fields, b"air_accidents")?
             .map(|v| integer(scalar(v)?))
@@ -263,6 +278,7 @@ fn parse_wing(fields: &[Item]) -> io::Result<Wing> {
             .ok_or_else(|| invalid("air wing lacks experience"))?,
         equipment: parse_equipment(required_block(fields, b"equipment")?)?,
         ace: field(fields, b"ace")?.map(typed_handle).transpose()?,
+        raid: field(fields, b"raid")?.map(typed_handle).transpose()?,
     })
 }
 
@@ -409,20 +425,25 @@ fn parse_daily_statistics(
 }
 
 pub fn parse(items: &[Item]) -> io::Result<Pack> {
+    parse_with_countries(items, super::CountriesView::from_root(items)?)
+}
+
+pub(super) fn parse_with_countries(
+    items: &[Item],
+    countries: super::CountriesView<'_>,
+) -> io::Result<Pack> {
     let mut pack = Pack::default();
-    if let Some(countries) = field(items, b"countries")? {
-        for country in block(countries)? {
-            let tag = country
-                .key
-                .as_deref()
-                .ok_or_else(|| invalid("air ace country lacks tag"))?;
-            for (ordinal, ace) in repeated(block(&country.value)?, b"ace").enumerate() {
-                pack.aces.push(parse_ace(
-                    tag,
-                    u32::try_from(ordinal).map_err(|_| invalid("air ace ordinal exceeds u32"))?,
-                    block(ace)?,
-                )?);
-            }
+    for country in countries.iter() {
+        let tag = country
+            .key
+            .as_deref()
+            .ok_or_else(|| invalid("air ace country lacks tag"))?;
+        for (ordinal, ace) in repeated(block(&country.value)?, b"ace").enumerate() {
+            pack.aces.push(parse_ace(
+                tag,
+                u32::try_from(ordinal).map_err(|_| invalid("air ace ordinal exceeds u32"))?,
+                block(ace)?,
+            )?);
         }
     }
     let Some(air) = field(items, b"strategic_air")? else {
@@ -439,8 +460,10 @@ pub fn parse(items: &[Item]) -> io::Result<Pack> {
             continue;
         }
         for pool in repeated(fields, b"air_wing_pool") {
-            for wing in repeated(block(pool)?, b"air_wings") {
-                pack.wings.push(parse_wing(block(wing)?)?);
+            let pool = block(pool)?;
+            let pool_type = exact_bytes(pool, b"definition")?;
+            for wing in repeated(pool, b"air_wings") {
+                pack.wings.push(parse_wing(&pool_type, block(wing)?)?);
             }
         }
         if let Some(history) = field(fields, b"combat_history")? {
@@ -485,10 +508,62 @@ mod tests {
     use crate::parser;
 
     #[test]
+    fn ace_callsign_preserves_omitted_and_emitted_empty_keys() {
+        for (field, expected) in [
+            ("", None),
+            ("callsign=\"\"", Some(b"".as_slice())),
+            ("callsign=Custom", Some(b"Custom".as_slice())),
+        ] {
+            let doc = parser::parse(
+                format!("id={{id=1 type=8}} name=N surname=S portrait=0 {field}").as_bytes(),
+            )
+            .unwrap();
+            let ace = parse_ace(b"AAA", 0, &doc.items).unwrap();
+            assert_eq!(ace.callsign.as_deref(), expected);
+        }
+    }
+
+    #[test]
+    fn pool_definition_uses_native_key_and_retains_wing_values() {
+        let doc = parser::parse(
+            br#"strategic_air={TST={
+                air_wing_pool={
+                    definition=fixture_aircraft
+                    air_wings={
+                        id={ id=17 type=23 }
+                        experience=0.125
+                        name="Synthetic \\wing"
+                        equipment={
+                            equipment={ id={ id=31 type=29 } amount=0 }
+                            equipment={ id={ id=32 type=29 } amount=3.25 }
+                            allow_zero_entries=yes
+                        }
+                    }
+                }
+            }}"#,
+        )
+        .unwrap();
+        let pack = parse(&doc.items).unwrap();
+        let [wing] = pack.wings.as_slice() else {
+            panic!("expected one synthetic wing");
+        };
+        assert_eq!(wing.pool_type, b"fixture_aircraft");
+        assert_eq!(wing.id, (17_u64 << 32) | 23);
+        assert_eq!(wing.name.as_deref(), Some(b"Synthetic \\wing".as_slice()));
+        assert_eq!(wing.experience.raw, 12_500);
+        assert!(wing.equipment.allow_zero);
+        assert_eq!(wing.equipment.entries.len(), 2);
+        assert_eq!(wing.equipment.entries[0].variant, (31_u64 << 32) | 29);
+        assert_eq!(wing.equipment.entries[0].amount.raw, 0);
+        assert_eq!(wing.equipment.entries[1].variant, (32_u64 << 32) | 29);
+        assert_eq!(wing.equipment.entries[1].amount.raw, 325_000);
+    }
+
+    #[test]
     fn wing_name_preserves_exact_bytes_and_distinguishes_empty_from_absent() {
         let parse_name = |text: &[u8]| {
             let doc = parser::parse(text).unwrap();
-            parse_wing(&doc.items).unwrap().name
+            parse_wing(b"fixture_plane", &doc.items).unwrap().name
         };
         let fields = b"id={id=1 type=69} experience=0 equipment={allow_zero_entries=no}";
         assert_eq!(parse_name(fields), None);
@@ -507,7 +582,65 @@ mod tests {
         let mut duplicate = fields.to_vec();
         duplicate.extend_from_slice(br#" name="A" name="B""#);
         let doc = parser::parse(&duplicate).unwrap();
-        assert!(parse_wing(&doc.items).is_err());
+        assert!(parse_wing(b"fixture_plane", &doc.items).is_err());
+    }
+
+    #[test]
+    fn pool_type_and_live_raid_keep_exact_saved_bytes_and_both_handle_words() {
+        let doc = parser::parse(
+            br#"strategic_air={CUSTOM={
+            air_wing_pool={definition=ModTransport air_wings={id={id=1 type=69}
+                experience=0 equipment={allow_zero_entries=no}
+                raid={id=4294967295 type=2147483732}}
+                air_wings={id={id=2 type=69} experience=0
+                    equipment={allow_zero_entries=no}}}
+            air_wing_pool={definition=none air_wings={id={id=3 type=69}
+                experience=0 equipment={allow_zero_entries=no}}}
+        }}"#,
+        )
+        .unwrap();
+        let pack = parse(&doc.items).unwrap();
+        assert_eq!(pack.wings[0].pool_type, b"ModTransport");
+        assert_eq!(pack.wings[1].pool_type, b"ModTransport");
+        assert_eq!(pack.wings[2].pool_type, b"none");
+        assert_eq!(
+            pack.wings[0].raid,
+            Some((u64::from(u32::MAX) << 32) | 2_147_483_732)
+        );
+        assert_eq!(pack.wings[1].raid, None);
+        assert_eq!(pack.wings[2].raid, None);
+    }
+
+    #[test]
+    fn pool_type_presence_and_live_raid_corruption_are_never_defaulted() {
+        let text = "strategic_air={CUSTOM={air_wing_pool={definition=ModTransport \
+            air_wings={id={id=1 type=69} experience=0 \
+            equipment={allow_zero_entries=no} raid={id=1 type=84}}}}}";
+        for malformed in [
+            text.replace("definition=ModTransport", ""),
+            text.replace("definition=ModTransport", "type=ModTransport"),
+            text.replace(
+                "definition=ModTransport",
+                "definition=ModTransport definition=Other",
+            ),
+            text.replace("definition=ModTransport", "definition={}"),
+            text.replace("raid={id=1 type=84}", "raid={id=0 type=0}"),
+            text.replace("raid={id=1 type=84}", "raid={id=1}"),
+            text.replace("raid={id=1 type=84}", "raid={id=4294967296 type=84}"),
+            text.replace(
+                "raid={id=1 type=84}",
+                "raid={id=1 type=84} raid={id=2 type=84}",
+            ),
+        ] {
+            let doc = parser::parse(malformed.as_bytes()).unwrap();
+            assert!(parse(&doc.items).is_err(), "{malformed}");
+        }
+        let missing =
+            parser::parse(text.replace("definition=ModTransport", "").as_bytes()).unwrap();
+        assert_eq!(
+            parse(&missing.items).unwrap_err().to_string(),
+            "missing serialized air string definition"
+        );
     }
 
     #[test]
@@ -533,7 +666,7 @@ mod tests {
         assert_eq!(pack.aces[0].id, u64::MAX);
         assert!(pack.aces[0].alive);
         assert!(!pack.aces[0].handled);
-        assert!(pack.aces[0].callsign.is_empty());
+        assert!(pack.aces[0].callsign.is_none());
         assert!(!pack.aces[0].female);
         assert_eq!(pack.aces[0].portrait, 0);
         assert_eq!(pack.aces[0].modifier, None);

@@ -157,6 +157,9 @@ fn dump_no_animation_skin_keeps_the_rest_of_the_frame() {
             nodes: vec![entity_animation::Node {
                 mesh: Arc::default(),
                 native: Some(Arc::new(mesh_pose::Source {
+                    pdxmesh: true,
+                    entity_locators: Vec::new(),
+                    binary_locators: Vec::new(),
                     skeleton: if skin {
                         vec![mesh::NativeJoint {
                             name: "joint".into(),

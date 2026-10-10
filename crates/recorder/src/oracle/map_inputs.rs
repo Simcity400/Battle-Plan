@@ -1,6 +1,8 @@
 //! Saved operands for the three hourly map input tables.
 use super::*;
 
+mod reserved_launch;
+
 fn eq<T: PartialEq + std::fmt::Debug>(report: &mut Report, label: &str, actual: T, expected: T) {
     report.scalar_checks += 1;
     if actual != expected {
@@ -13,8 +15,225 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::ReservedCountryNaming, |r| {
         reserved_naming(frame, r)
     });
+    report.attempt("ReservedCountryNaming saved original tag", |r| {
+        reserved_original_tag(frame, save, r)
+    });
+    report.attempt("ReservedCountryNaming movement", |r| {
+        reserved_movement(frame, r)
+    });
+    report.attempt("ReservedCountryNaming launch sources", |r| {
+        reserved_launch::compare(frame, save, r)
+    });
     report.attempt_table(TableId::ArmyIconInputs, |r| armies(frame, save, r));
     report.attempt_table(TableId::ShipModels, |r| ships(frame, save, r));
+}
+
+/// Own navy selection uses canonical owner slots; foreign values remain raw
+/// physical manager slots. Both complete task-force tables must agree before
+/// absence certifies no demand; a genuinely empty census needs no province join.
+/// The fresh owner loan also serves stationary task forces' range/port inputs
+/// (141534980/1415349B0); its capture no longer has a route/target gate.
+pub(super) fn navy_owner_slots(frame: &DecodedFrame) -> io::Result<BTreeSet<u32>> {
+    let motions = frame.complete::<tables::TaskForceMapMotion>()?;
+    let mut forces = BTreeMap::new();
+    for row in frame.complete::<tables::TaskForces>()? {
+        if row.id == 0 || forces.insert(row.id, row).is_some() {
+            return Err(invalid(
+                "naval movement demand has a null or duplicate task-force identity",
+            ));
+        }
+    }
+    let mut identities = BTreeSet::new();
+    let mut references = BTreeSet::new();
+    for row in motions {
+        if row.task_force == 0 || !identities.insert(row.task_force) {
+            return Err(invalid(
+                "naval movement demand has a null or duplicate motion identity",
+            ));
+        }
+        references.extend(row.path.iter().copied().filter(|&id| id != 0));
+        if row.target != 0 {
+            references.insert(row.target);
+        }
+    }
+    if identities != forces.keys().copied().collect() {
+        return Err(invalid(
+            "naval movement demand task-force and motion censuses disagree",
+        ));
+    }
+    if !references.is_empty() {
+        let provinces: BTreeSet<_> = frame
+            .complete::<tables::Provinces>()?
+            .iter()
+            .map(|row| row.id)
+            .collect();
+        if references.iter().any(|id| !provinces.contains(id)) {
+            return Err(invalid(
+                "naval movement demand names an unknown route/target province",
+            ));
+        }
+    }
+    if identities.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let mut links = BTreeMap::new();
+    for row in frame.complete::<tables::CountryLinks>()? {
+        if links.insert(row.id, row.canonical_slot).is_some() {
+            return Err(invalid("naval movement demand has duplicate country links"));
+        }
+    }
+    identities
+        .into_iter()
+        .map(|id| {
+            let force = forces
+                .get(&id)
+                .ok_or_else(|| invalid("naval movement demand has no task-force row"))?;
+            let slot = links
+                .get(&force.roster_owner)
+                .copied()
+                .filter(|&slot| slot != 0)
+                .ok_or_else(|| {
+                    invalid("naval movement demand has no positive roster-owner link")
+                })?;
+            Ok(slot)
+        })
+        .collect()
+}
+
+fn reserved_movement(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::ReservedCountryNaming>()?;
+    if rows.len() != 1 {
+        return Err(invalid(
+            "ReservedCountryNaming movement requires one reserved row",
+        ));
+    }
+    let label = "ReservedCountryNaming.movement";
+    let Some(packet) = report.recorded(&rows[0].movement, label, label) else {
+        return Ok(());
+    };
+    let Some(packet) = packet else {
+        report.difference(
+            label,
+            "unavailable",
+            "required current-hour shared movement packet",
+        );
+        return Ok(());
+    };
+    eq(
+        report,
+        &format!("{label}.sample_hour"),
+        packet.sample_hour,
+        frame.hour,
+    );
+    if packet.sample_hour != frame.hour {
+        return Ok(());
+    }
+    match &packet.nearest_caches {
+        None => report.difference(
+            format!("{label}.nearest_caches"),
+            "unavailable",
+            "required physical cache domain",
+        ),
+        Some(caches) => {
+            report.attempt(&format!("{label}.nearest_caches"), |report| {
+                if caches.windows(2).any(|pair| pair[0].slot >= pair[1].slot) {
+                    return Err(invalid(
+                        "physical nearest-cache slots are not unique and increasing",
+                    ));
+                }
+                for cache in caches {
+                    match &cache.nearest_bases {
+                        None => report.difference(
+                            format!("{label}.nearest slot {}", cache.slot),
+                            "unavailable",
+                            "required native cache vector",
+                        ),
+                        Some(bases) if !cache.present && !bases.is_empty() => report.difference(
+                            format!("{label}.nearest slot {}", cache.slot),
+                            bases,
+                            "empty for observed null navy",
+                        ),
+                        Some(_) => {}
+                    }
+                }
+                let mut expected = navy_owner_slots(frame)?;
+                if !expected.is_empty() {
+                    let owners = frame.complete::<tables::CountryCounterInputs>()?;
+                    let links: BTreeMap<_, _> = frame
+                        .complete::<tables::CountryLinks>()?
+                        .iter()
+                        .map(|row| (row.id, row.canonical_slot))
+                        .collect();
+                    let own_slots = expected.clone();
+                    for slot in own_slots {
+                        let mut navies = owners
+                            .iter()
+                            .filter(|owner| links.get(&owner.country) == Some(&slot))
+                            .filter_map(|owner| match &owner.movement {
+                                replay::rows::Recorded::Value(Some(packet))
+                                    if packet.sample_hour == frame.hour =>
+                                {
+                                    packet.naval.as_ref()
+                                }
+                                _ => None,
+                            });
+                        let naval = navies.next().ok_or_else(|| {
+                            invalid(
+                                "physical nearest-cache closure has no current owner navy packet",
+                            )
+                        })?;
+                        if navies.next().is_some() {
+                            return Err(invalid(
+                                "physical nearest-cache closure has duplicate owner navy packets",
+                            ));
+                        }
+                        if naval.navy_slot != slot {
+                            return Err(invalid(
+                                "physical nearest-cache owner slot disagrees with its country link",
+                            ));
+                        }
+                        let foreign = naval.foreign_navy_slots.as_ref().ok_or_else(|| {
+                            invalid("physical nearest-cache foreign dependency domain unavailable")
+                        })?;
+                        expected.extend(foreign.iter().copied());
+                    }
+                }
+                let actual: BTreeSet<_> = caches.iter().map(|cache| cache.slot).collect();
+                eq(
+                    report,
+                    &format!("{label}.nearest physical domain"),
+                    actual,
+                    expected,
+                );
+                Ok(())
+            });
+        }
+    }
+    match &packet.reserved_theatre {
+        Some(theatre) => {
+            report.attempt(&format!("{label}.reserved_theatre"), |report| {
+                super::country_rosters::compare_theatre_areas(
+                    frame,
+                    theatre,
+                    &format!("{label}.reserved_theatre"),
+                    report,
+                )
+            });
+        }
+        None => {
+            report.attempt(&format!("{label}.reserved_theatre demand"), |report| {
+                if navy_owner_slots(frame)?.is_empty() {
+                    report.limitation("complete task-force motion proves no admitted roster-owner demand, so reserved theatre membership was not reached", format!("{label}.reserved_theatre"));
+                } else {
+                    report.difference(format!("{label}.reserved_theatre"), "unavailable", "required demanded controller-area membership");
+                }
+                Ok(())
+            });
+        }
+    }
+    report.compared(label, 1);
+    report.limitation("stored nearest-base entries are a runtime physical-navy cache, preserving null pointers separately from authenticated base province zero and retained array occurrences; saved bases, diplomacy and current territory do not certify this cache's exact contents or refresh state", format!("{label}.nearest runtime contents"));
+    Ok(())
 }
 
 fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
@@ -35,8 +254,8 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
             "ReservedCountryNaming.original_tag: 1 guarded read or arena refusal",
         );
     }
-    report.limitation("CCountry::Serialize@14070C580 is reached through the positive-country save census; reserved slot zero naming operands and stored-length built witness have no proved save counterpart", "ReservedCountryNaming: singleton decoded, naming and built remain unverified");
-    report.limitation("CCountry+0x130C original presence and exact tag_string@140BA5C20 bytes are runtime operands for the reserved object; CGameState::Write@1401F2A20 starts its +0x310 country census at slot one (1401F4185/1401F4190), so the save omits slot zero", "ReservedCountryNaming.original_tag: exact original presence/bytes are unsaved and remain unverified");
+    report.limitation("CGameState::Write@1401F2A20 skips physical slot zero but writes positive physical aliases of the reserved object; its original_tag emission is compared separately through the admitted full-save ledger, while stored-length built and other naming caches remain runtime witnesses", "ReservedCountryNaming: singleton decoded, built and other naming caches remain unverified");
+    report.limitation("CGameState::Write@1401F2A20 starts its +0x310 country census at slot one (1401F4185/1401F4190), so the save omits slot zero; a positive physical reserved alias supplies saved original_tag presence/bytes only through the admitted full-save ledger", "ReservedCountryNaming.original_tag: saved comparison requires an admitted physical alias");
     if let Some(None) = report.recorded(
         &rows[0].original_tag_reference,
         "ReservedCountryNaming.original_tag_reference",
@@ -47,7 +266,7 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
             "ReservedCountryNaming.original_tag_reference: guarded read refusal",
         );
     }
-    report.limitation("the positive-country save census omits reserved slot zero, including its exact signed +0x130C reference", "ReservedCountryNaming.original_tag_reference: unsaved");
+    report.limitation("CCountry::Serialize@14070C580 writes original_tag bytes only for a signed positive +0x130C reference; even a saved positive physical reserved alias cannot certify that reference's exact magnitude or alias identity", "ReservedCountryNaming.original_tag_reference: unsaved raw identity");
     if let Some(None) = report.recorded(
         &rows[0].original_tag_buckets,
         "ReservedCountryNaming.original_tag_buckets",
@@ -77,7 +296,21 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
     ) {
         report.limitation("reserved country owned-state count unreadable at capture; other naming operands remain available", "ReservedCountryNaming.owned_state_count: guarded read refusal");
     }
-    report.limitation("CGameState::Write@1401F2A20 begins its country census at physical slot one and omits reserved Country0, so its exact signed +0x484 getter operand has no fresh-save counterpart", "ReservedCountryNaming.owned_state_count: unsaved reserved getter operand");
+    report.limitation("CCountry::Write@14070C580 does not directly serialize the exact signed +0x484 getter operand, even when a positive physical alias emits the reserved country; that owned-state count still requires a matched native witness", "ReservedCountryNaming.owned_state_count: unsaved reserved getter operand");
+    if let Some(None) = report.recorded(
+        &rows[0].faction,
+        "ReservedCountryNaming.faction",
+        "reserved country faction identity",
+    ) {
+        report.limitation(
+            "reserved country faction identity unreadable at capture; naming and other operands remain independent",
+            "ReservedCountryNaming.faction: guarded read refusal",
+        );
+    }
+    report.limitation(
+        "saved global faction membership cannot independently certify the reserved object's stored diplomacy faction operand; an authenticated null or full native faction handle still needs a matched VM witness",
+        "ReservedCountryNaming.faction: unsaved reserved faction operand",
+    );
     if let Some(None) = report.recorded(
         &rows[0].dynamic_tag_boundary,
         "ReservedCountryNaming.dynamic_tag_boundary",
@@ -91,6 +324,125 @@ fn reserved_naming(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> 
     report.limitation("CountryDatabase+0x88 is a runtime signed slot boundary read by 140BA61F0; CGameState::Write and CCountry::Serialize do not serialize it, so fresh-save original-tag text cannot certify this predicate", "ReservedCountryNaming.dynamic_tag_boundary: unsaved native predicate; matched-hour memory needed");
     Ok(())
 }
+
+fn reserved_original_tag(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+    let [row] = frame.complete::<tables::ReservedCountryNaming>()? else {
+        return Err(invalid(
+            "reserved original tag requires one complete naming row",
+        ));
+    };
+    let Some(emissions) = save.country_emissions.as_deref() else {
+        if report
+            .recorded(
+                &row.country_array,
+                "ReservedCountryNaming.country_array",
+                "reserved original tag physical emission join",
+            )
+            .is_some()
+        {
+            return Err(invalid(
+                "reserved original tag requires the admitted full country emission ledger",
+            ));
+        }
+        report.limitation(
+            "historical absent physical country census cannot establish a saved reserved original_tag counterpart",
+            "ReservedCountryNaming.original_tag: physical emission join unavailable",
+        );
+        return Ok(());
+    };
+    let mut count = 0;
+    for emission in emissions
+        .iter()
+        .filter(|entry| entry.identity.actual == save::ActualCountry::Reserved)
+    {
+        let identity = &emission.identity;
+        if identity.own_id != 0 || identity.physical_slot == 0 || identity.tag != row.tag {
+            return Err(invalid(
+                "reserved original tag emission has an inconsistent admitted identity",
+            ));
+        }
+        let saved = save.countries.get(identity.tag.as_slice()).ok_or_else(|| {
+            invalid("admitted reserved original tag emission lacks its saved country")
+        })?;
+        let label = format!(
+            "reserved country physical slot {}.original_tag",
+            identity.physical_slot
+        );
+        count += 1;
+        let Some(reference) = report.recorded(
+            &row.original_tag_reference,
+            "ReservedCountryNaming.original_tag_reference",
+            format!("{label}.reference"),
+        ) else {
+            continue;
+        };
+        let Some(reference) = reference else {
+            report.difference(
+                &label,
+                "unavailable reference",
+                "required reached saved emission gate",
+            );
+            continue;
+        };
+        report.limitation(
+            "saved original_tag presence/text cannot certify the exact signed reference magnitude or alias identity",
+            format!("{label}.reference={reference}"),
+        );
+        if *reference <= 0 {
+            eq(report, &label, None::<&[u8]>, saved.original_tag.as_deref());
+            continue;
+        }
+        match report.recorded(
+            &row.original_tag,
+            "ReservedCountryNaming.original_tag",
+            &label,
+        ) {
+            Some(Some(bytes)) => {
+                let comparable = installed_content::parser::c_string(bytes);
+                if comparable.len() < bytes.len() {
+                    report.limitation("native text serialization ends at the first NUL; captured trailing original-tag bytes are not save-comparable", &label);
+                }
+                eq(
+                    report,
+                    &label,
+                    Some(comparable),
+                    saved.original_tag.as_deref(),
+                );
+            }
+            bytes => {
+                eq(
+                    report,
+                    &format!("{label} presence"),
+                    true,
+                    saved.original_tag.is_some(),
+                );
+                if matches!(bytes, Some(None)) {
+                    report.difference(
+                        &label,
+                        "unavailable bytes",
+                        "required positive-reference saved text",
+                    );
+                }
+            }
+        }
+    }
+    if count == 0 {
+        report.limitation(
+            "the admitted physical country census has no positive physical actual0 occurrence, so no saved reserved original_tag counterpart exists",
+            "ReservedCountryNaming.original_tag: matched native witness required",
+        );
+    }
+    report.compared("reserved original tag saved emissions", count);
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "map_inputs/reserved_original_tag_tests.rs"]
+mod reserved_original_tag_tests;
+
+#[cfg(test)]
+#[path = "map_inputs/movement_tests.rs"]
+mod movement_tests;
 
 #[cfg(test)]
 mod original_tag_tests {
@@ -148,13 +500,14 @@ mod original_tag_tests {
             (i32::MIN, Some(Vec::new()), None, 0),
             (0, Some(Vec::new()), Some(Vec::new()), 1),
             (7, Some(Vec::new()), Some(Vec::new()), 0),
-            (7, Some(Vec::new()), None, 1),
+            (7, Some(Vec::new()), None, 2),
             (7, Some(b"OWN".to_vec()), Some(b"OWN".to_vec()), 0),
             (7, Some(b"OTHER".to_vec()), Some(b"OTHER".to_vec()), 0),
             (-1, Some(Vec::new()), Some(b"OWN".to_vec()), 1),
-            (7, Some(b"OWN".to_vec()), None, 1),
+            (7, Some(b"OWN".to_vec()), None, 2),
             (7, Some(b"OTHER".to_vec()), Some(b"OWN".to_vec()), 1),
-            (7, Some(vec![b'A', 0, b'B']), Some(b"A".to_vec()), 1),
+            (7, Some(vec![b'A', 0, b'B']), Some(b"A".to_vec()), 0),
+            (7, Some(b"\0suffix".to_vec()), Some(Vec::new()), 0),
         ] {
             let row = CountryAppearanceRow {
                 original_tag: Recorded::Value(actual),
@@ -168,18 +521,10 @@ mod original_tag_tests {
             let mut report = Report::default();
             original_tag(&row, &saved, "OWN", &mut report);
             assert_eq!(report.differences.len(), differences);
-            assert_eq!(report.scalar_checks, 1);
+            assert_eq!(report.scalar_checks, if reference > 0 { 2 } else { 1 });
         }
-        for (value, reason) in [
-            (
-                Recorded::Value(None),
-                "country original tag unreadable at capture; existing appearance remains available",
-            ),
-            (
-                Recorded::NotRecorded,
-                "CountryAppearance.original_tag not recorded",
-            ),
-        ] {
+        for value in [Recorded::Value(None), Recorded::NotRecorded] {
+            let historical = matches!(value, Recorded::NotRecorded);
             let row = CountryAppearanceRow {
                 original_tag: value,
                 original_tag_reference: Recorded::Value(Some(7)),
@@ -187,24 +532,22 @@ mod original_tag_tests {
             };
             let mut report = Report::default();
             original_tag(&row, &save::Country::default(), "OWN", &mut report);
-            assert!(report.limitations.contains_key(reason));
-            assert_eq!(report.scalar_checks, 0);
-            assert!(report.differences.is_empty());
+            assert_eq!(
+                report
+                    .limitations
+                    .contains_key("CountryAppearance.original_tag not recorded"),
+                historical
+            );
+            assert_eq!(report.scalar_checks, 1);
+            assert_eq!(report.differences.len(), if historical { 1 } else { 2 });
+            assert!(report.outcome().is_err());
         }
     }
 
     #[test]
     fn raw_reference_and_native_domain_oracles_preserve_gaps_and_refusals() {
-        for (value, reason) in [
-            (
-                Recorded::Value(None),
-                "country original tag reference unreadable at capture; existing appearance remains available",
-            ),
-            (
-                Recorded::NotRecorded,
-                "CountryAppearance.original_tag_reference not recorded",
-            ),
-        ] {
+        for value in [Recorded::Value(None), Recorded::NotRecorded] {
+            let historical = matches!(value, Recorded::NotRecorded);
             let row = replay::rows::CountryAppearanceRow {
                 original_tag: Recorded::Value(Some(b"OWN".to_vec())),
                 original_tag_reference: value,
@@ -212,9 +555,15 @@ mod original_tag_tests {
             };
             let mut report = Report::default();
             original_tag(&row, &save::Country::default(), "OWN", &mut report);
-            assert!(report.limitations.contains_key(reason));
+            assert_eq!(
+                report
+                    .limitations
+                    .contains_key("CountryAppearance.original_tag_reference not recorded"),
+                historical
+            );
             assert_eq!(report.scalar_checks, 0);
-            assert!(report.differences.is_empty());
+            assert_eq!(report.differences.is_empty(), historical);
+            assert_eq!(report.outcome().is_ok(), historical);
         }
         let (mut frame, _, _, _) = super::super::tests::fixture();
         for absent in [false, true] {
@@ -347,13 +696,22 @@ mod original_tag_tests {
     }
 }
 
-fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+#[cfg(test)]
+#[path = "map_inputs/zero_faction_tests.rs"]
+mod zero_faction_tests;
+
+pub(super) fn countries(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+    report.record_country_emissions(save);
     let identities: BTreeMap<_, _> = frame
         .complete::<tables::Countries>()?
         .iter()
         .map(|row| (row.id, row))
         .collect();
-    let mut remaining: BTreeSet<_> = save.countries.keys().map(Vec::as_slice).collect();
+    let mut remaining: BTreeSet<_> = report
+        .canonical_countries(&save.countries)
+        .into_iter()
+        .map(|(tag, _)| tag.as_slice())
+        .collect();
     let mut seen = BTreeSet::new();
     let rows = frame.complete::<tables::CountryAppearance>()?;
     for row in rows {
@@ -417,17 +775,6 @@ fn original_tag(
     label: &str,
     report: &mut Report,
 ) {
-    let bytes = report.recorded(
-        &row.original_tag,
-        "CountryAppearance.original_tag",
-        format!("{label}.original_tag"),
-    );
-    if matches!(bytes, Some(None)) {
-        report.limitation(
-            "country original tag unreadable at capture; existing appearance remains available",
-            format!("{label}.original_tag: guarded read or arena refusal"),
-        );
-    }
     let Some(reference) = report.recorded(
         &row.original_tag_reference,
         "CountryAppearance.original_tag_reference",
@@ -436,13 +783,40 @@ fn original_tag(
         return;
     };
     let Some(reference) = reference else {
-        report.limitation("country original tag reference unreadable at capture; existing appearance remains available", format!("{label}.original_tag_reference: guarded read refusal"));
+        report.difference(
+            format!("{label}.original_tag_reference"),
+            "capture refused",
+            "saved emission gate",
+        );
         return;
     };
     report.limitation("CCountry::Serialize@14070C580 emits original tag bytes only for signed positive +0x130C; it does not serialize the raw reference magnitude or alias identity, including exact nonpositive values", format!("{label}.original_tag_reference={reference}: unsaved raw identity"));
     let actual = if *reference > 0 {
-        let Some(Some(bytes)) = bytes else { return };
-        Some(bytes.as_slice())
+        eq(
+            report,
+            &format!("{label}.original_tag presence"),
+            true,
+            saved.original_tag.is_some(),
+        );
+        let bytes = report.recorded(
+            &row.original_tag,
+            "CountryAppearance.original_tag",
+            format!("{label}.original_tag"),
+        );
+        let Some(bytes) = bytes else { return };
+        let Some(bytes) = bytes else {
+            report.difference(
+                format!("{label}.original_tag"),
+                "capture refused",
+                &saved.original_tag,
+            );
+            return;
+        };
+        let comparable = installed_content::parser::c_string(bytes);
+        if comparable.len() < bytes.len() {
+            report.limitation("native text serialization ends at the first NUL; captured trailing original-tag bytes are not save-comparable", format!("{label}.original_tag"));
+        }
+        Some(comparable)
     } else {
         None
     };
@@ -571,6 +945,19 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
             return Err(invalid("null or duplicate ShipModels ship"));
         }
         let label = format!("ShipModels {}", row.ship);
+        let index_label = format!("{label}.subunit_index");
+        if let Some(index) =
+            report.recorded(&row.subunit_index, "ShipModels.subunit_index", &index_label)
+        {
+            if index.is_none() {
+                report.limitation(
+                    "ship subunit index unreadable at capture; model prefix remains available",
+                    &index_label,
+                );
+            } else {
+                report.limitation("CShip::Serialize@140C2EF80 saves the subunit token, not the signed CShip+0x60C index; token equality cannot distinguish rejected-name aliases. The index/name pairing requires an independent matched native and write witness, still pending", &index_label);
+            }
+        }
         let Some(saved) = save.ships.get(&row.ship) else {
             report.difference(label, "present", "absent");
             continue;
@@ -595,6 +982,7 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
         } else {
             report.limitation("FFDB00 omits zero-quantity entries unless allow_zero_entries is enabled; an empty or all-negative saved pool cannot identify the native maximum when omitted zeros may exist, so this ship's selected variant is not compared", format!("{label}.variant"));
         }
+        ship_tooltip_suffixes(row, save, report);
     }
     for id in remaining {
         report.difference(format!("ShipModels {id}"), "absent", "present");
@@ -611,10 +999,242 @@ fn ships(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<(
     Ok(())
 }
 
+fn ship_tooltip_suffixes(row: &replay::rows::ShipModelRow, save: &Save, r: &mut Report) {
+    let label = format!("ShipModels {}", row.ship);
+    let strike_label = format!("{label}.strike");
+    if let Some(strike) = r.recorded(&row.strike, "ShipModels.strike", &strike_label) {
+        match strike {
+            None => r.difference(
+                &strike_label,
+                "capture refused",
+                "native weapon cache packet",
+            ),
+            Some(strike) => {
+                for (name, value) in [
+                    ("light_attack", strike.light_attack),
+                    ("heavy_attack", strike.heavy_attack),
+                    ("light_piercing", strike.light_piercing),
+                    ("torpedo_attack", strike.torpedo_attack),
+                    (
+                        "torpedo_cooldown_modifier",
+                        strike.torpedo_cooldown_modifier,
+                    ),
+                ] {
+                    if value.is_none() {
+                        r.difference(
+                            format!("{strike_label}.{name}"),
+                            "capture refused",
+                            "native scalar",
+                        );
+                    }
+                }
+                r.limitation("CShip::Serialize@140C2EF80 does not write the four cached weapon bases or the effective fleet-leader torpedo cooldown modifier; all five require an independent matched native/cache-writer witness, still pending", &strike_label);
+            }
+        }
+    }
+    let hull_label = format!("{label}.hull_variant");
+    let Some(hull) = r.recorded(&row.hull_variant, "ShipModels.hull_variant", &hull_label) else {
+        return;
+    };
+    if row.variant == 0 {
+        if hull.is_some() {
+            r.difference(
+                &hull_label,
+                "present",
+                "unreached for null selected variant",
+            );
+        }
+        return;
+    }
+    let Some(hull) = hull else {
+        r.difference(
+            &hull_label,
+            "capture refused",
+            "native selected-variant packet",
+        );
+        return;
+    };
+    for (name, missing) in [
+        ("definition_index", hull.definition_index.is_none()),
+        ("module_count", hull.module_count.is_none()),
+        ("upgrade_level_sum", hull.upgrade_level_sum.is_none()),
+        ("module_priority_sum", hull.module_priority_sum.is_none()),
+        ("version", hull.version.is_none()),
+        ("organisation_marker", hull.organisation_marker.is_none()),
+    ] {
+        if missing {
+            r.difference(
+                format!("{hull_label}.{name}"),
+                "capture refused",
+                "native scalar",
+            );
+        }
+    }
+    // The saved registry is fresh at the oracle hour. A carried daily
+    // VariantDefinitions/Modules row cannot certify this current tuple.
+    let Some(variants) = &save.production.variants else {
+        r.difference(
+            &hull_label,
+            "present",
+            "save lacks equipment variant registry",
+        );
+        return;
+    };
+    let Some(expected) = variants.get(&row.variant) else {
+        r.difference(
+            &hull_label,
+            row.variant,
+            "selected variant absent from saved registry",
+        );
+        return;
+    };
+    if let Some(version) = hull.version {
+        eq(
+            r,
+            &format!("{hull_label}.version"),
+            (version != 0).then_some(version),
+            expected.version,
+        );
+    }
+    if let Some(marker) = hull.organisation_marker {
+        eq(
+            r,
+            &format!("{hull_label}.organisation_marker"),
+            (marker != 0).then_some(marker),
+            expected.organisation_marker,
+        );
+    }
+    if let Some(sum) = hull.upgrade_level_sum {
+        // BD0D50 resets +414 then adds every upgrade byte, with i32 wrap.
+        let saved_sum = expected
+            .upgrades
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .fold(0_i32, |sum, upgrade| {
+                sum.wrapping_add(i32::from(upgrade.level))
+            });
+        eq(
+            r,
+            &format!("{hull_label}.upgrade_level_sum"),
+            sum,
+            saved_sum,
+        );
+    }
+    r.limitation("the general equipment definition ordinal is not serialized; its authenticated recorded-content index/name join and runtime writers require independent evidence, not a guessed token ordinal", format!("{hull_label}.definition_index"));
+    r.limitation("module serialization191E6F0 can omit inactive assignments; neither current +C4 count nor +418 priority sum is universally reconstructible from the saved modules. Existing serialized-module comparisons remain exact on their refresh hours; these current caches need an independent matched native/cache-writer witness, still pending", format!("{hull_label}.module_count/module_priority_sum"));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::rows::{ArmyIconInputRow, CountryAppearanceRow, ShipModelRow};
+    use replay::rows::{ArmyIconInputRow, CountryAppearanceRow, Recorded, ShipModelRow};
+
+    #[test]
+    fn ship_tooltip_suffixes_use_current_saved_variant_and_keep_runtime_caches_explicit() {
+        use replay::rows::{HullVariantInputs, ShipStrikeInputs};
+        let (_, mut saved, _, _) = super::super::tests::fixture();
+        let doc = installed_content::parser::parse(
+            br#"equipments={type={id={id=3 type=70}
+            version=255 number_of_design_team_traits=-2147483648
+            upgrades={upgrades={{engine 255} {engine 0}}}
+        }}"#,
+        )
+        .unwrap();
+        saved.production = save::production::parse(&doc.items).unwrap();
+        let strike = ShipStrikeInputs {
+            light_attack: Some(i64::MIN),
+            heavy_attack: Some(0),
+            light_piercing: Some(i64::MAX),
+            torpedo_attack: Some(-1),
+            torpedo_cooldown_modifier: Some(0),
+        };
+        let hull = HullVariantInputs {
+            definition_index: Some(-1),
+            module_count: Some(9),
+            upgrade_level_sum: Some(255),
+            module_priority_sum: Some(i32::MIN),
+            version: Some(255),
+            organisation_marker: Some(i32::MIN),
+        };
+        let mut row = ShipModelRow {
+            ship: 9,
+            variant: (3 << 32) | 70,
+            strike: Recorded::Value(Some(strike)),
+            hull_variant: Recorded::Value(Some(hull)),
+            ..Default::default()
+        };
+        let mut report = Report::default();
+        ship_tooltip_suffixes(&row, &saved, &mut report);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("omit inactive assignments"))
+        );
+        row.hull_variant = Recorded::Value(Some(HullVariantInputs {
+            version: Some(0),
+            organisation_marker: Some(0),
+            upgrade_level_sum: Some(256),
+            ..hull
+        }));
+        let mut report = Report::default();
+        ship_tooltip_suffixes(&row, &saved, &mut report);
+        assert_eq!(report.differences.len(), 3);
+        // Zero omission is compared, not inferred from daily rows or a names token.
+        let doc = installed_content::parser::parse(b"equipments={type={id={id=3 type=70}}}").unwrap();
+        saved.production = save::production::parse(&doc.items).unwrap();
+        row.hull_variant = Recorded::Value(Some(HullVariantInputs {
+            version: Some(0),
+            organisation_marker: Some(0),
+            upgrade_level_sum: Some(0),
+            ..hull
+        }));
+        let mut report = Report::default();
+        ship_tooltip_suffixes(&row, &saved, &mut report);
+        assert!(report.differences.is_empty());
+        row.strike = Recorded::Value(Some(ShipStrikeInputs {
+            light_attack: None,
+            ..strike
+        }));
+        row.hull_variant = Recorded::Value(Some(HullVariantInputs {
+            version: None,
+            ..hull
+        }));
+        let mut report = Report::default();
+        ship_tooltip_suffixes(&row, &saved, &mut report);
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("light_attack"))
+        );
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("hull_variant.version"))
+        );
+        row.strike = Recorded::NotRecorded;
+        row.hull_variant = Recorded::NotRecorded;
+        let mut old = Report::default();
+        ship_tooltip_suffixes(&row, &saved, &mut old);
+        assert!(old.differences.is_empty());
+        assert!(
+            old.limitations
+                .contains_key("ShipModels.strike not recorded")
+        );
+        assert!(
+            old.limitations
+                .contains_key("ShipModels.hull_variant not recorded")
+        );
+        row.variant = 0;
+        row.hull_variant = Recorded::Value(None);
+        let mut null = Report::default();
+        ship_tooltip_suffixes(&row, &saved, &mut null);
+        assert!(null.differences.is_empty());
+    }
 
     fn pool(source: &[u8]) -> save::production::Pool {
         let doc = installed_content::parser::parse(source).unwrap();
@@ -693,6 +1313,8 @@ mod tests {
                 country: 101,
                 cosmetic_tag: b"GER_cosmetic".to_vec(),
                 red: u32::MAX,
+                // 14070C580 omits original_tag for the observed zero reference.
+                original_tag_reference: Recorded::Value(Some(0)),
                 ..Default::default()
             }]));
         *frame.tables[TableId::ArmyIconInputs.index()] =
@@ -706,13 +1328,69 @@ mod tests {
                 ship,
                 variant: (3_u64 << 32) | 70,
                 counter: Some(Default::default()),
+                // This fixture compares the original map fields and saved pool.
+                strike: Recorded::NotRecorded,
+                hull_variant: Recorded::NotRecorded,
                 ..Default::default()
             }]));
         let mut report = Report::default();
+        // Count historical fields once, even when multiple consumers demand them.
+        report.record_tables(&frame);
         compare(&frame, &saved, &mut report);
         assert!(report.differences.is_empty(), "{:?}", report.differences);
-        assert!(report.failed_comparisons.is_empty());
-        assert_eq!(report.compared_tables.len(), 4);
+        assert!(
+            report.failed_comparisons.is_empty(),
+            "{:?}",
+            report.failed_comparisons
+        );
+        assert_eq!(report.compared_tables.len(), 5);
+        for field in [
+            "ReservedCountryNaming.launch_sources",
+            "ReservedCountryNaming.country_array",
+            "ShipModels.strike",
+            "ShipModels.hull_variant",
+        ] {
+            assert_eq!(
+                report.limitations[&format!("{field} not recorded")].len(),
+                1
+            );
+        }
+        for index in [
+            Recorded::NotRecorded,
+            Recorded::Value(None),
+            Recorded::Value(Some(0)),
+            Recorded::Value(Some(i32::MIN)),
+        ] {
+            let TableView::Complete(TableRows::ShipModels(rows)) =
+                &mut *frame.tables[TableId::ShipModels.index()]
+            else {
+                panic!("complete ship model fixture")
+            };
+            rows[0].subunit_index = index;
+            let mut report = Report::default();
+            ships(&frame, &saved, &mut report).unwrap();
+            assert!(report.differences.is_empty());
+            assert_eq!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|r| r.contains("subunit_index not recorded")),
+                matches!(index, Recorded::NotRecorded),
+            );
+            assert_eq!(
+                report.limitations.contains_key(
+                    "ship subunit index unreadable at capture; model prefix remains available"
+                ),
+                matches!(index, Recorded::Value(None)),
+            );
+            assert_eq!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|r| r.contains("token equality cannot distinguish rejected-name aliases")),
+                matches!(index, Recorded::Value(Some(_))),
+            );
+        }
         saved
             .countries
             .get_mut(b"GER".as_slice())
@@ -791,6 +1469,8 @@ mod tests {
                     country: 101,
                     leader_ideology: ideology.to_vec(),
                     leader_character: character,
+                    // The saved country has no emitted original_tag.
+                    original_tag_reference: Recorded::Value(Some(0)),
                     ..Default::default()
                 }]));
             let mut report = Report::default();

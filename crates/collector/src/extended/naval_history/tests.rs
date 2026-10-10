@@ -1,5 +1,222 @@
 use super::*;
 
+#[test]
+fn growing_naval_history_raw_jobs_decode_full_first_and_later_mod_populations() {
+    let capacity = Capacities {
+        rows: [0; N],
+        sunk_names: 0,
+        ..Default::default()
+    };
+    let mut captured = Captured::with_capacities(&capacity);
+    let mut supremacy = SupremacyJob::new();
+    let mut sunk = SunkJob::new();
+    for count in [5_000_usize, 12_000] {
+        let bytes = supremacy_test_kit::mod_fixture(count);
+        let report = copy_supremacy_refresh_growing(
+            &supremacy_test_kit::memory(&bytes),
+            SupremacyCopyContext {
+                base: supremacy_test_kit::BASE,
+                game_state: supremacy_test_kit::GAME_STATE,
+                hour: 0,
+                force_full: true,
+            },
+            &mut supremacy,
+        );
+        assert!(report.raw_ok);
+        captured.supremacy.rows.truncate(0);
+        captured.decode_supremacy_payload(supremacy_test_kit::BASE, &supremacy, &mut [0]);
+        assert_eq!(captured.supremacy.outcome, Outcome::Rows { len: count });
+
+        let bytes = sunk_test_kit::mod_fixture(count);
+        let report = copy_sunk_refresh_growing(
+            &sunk_test_kit::memory(&bytes),
+            SunkCopyContext {
+                base: sunk_test_kit::BASE,
+                game_state: sunk_test_kit::GAME_STATE,
+                hour: sunk_test_kit::HOUR,
+                force_full: true,
+            },
+            &mut sunk,
+        );
+        assert!(report.raw_ok);
+        captured.sunk.rows.truncate(0);
+        captured.sunk_names.first.truncate(0);
+        captured.decode_sunk_payload(sunk_test_kit::BASE, &sunk, &mut [0]);
+        assert_eq!(captured.sunk.outcome, Outcome::Rows { len: count });
+        assert_eq!(captured.sunk_names.len, captured.sunk_names.required);
+        assert!(captured.sunk_names.len > count);
+    }
+}
+
+#[test]
+fn railway_optional_projection_status_and_failed_growth_keep_their_domains() {
+    use crailway_manager::fresh_inputs::{RailwayBuildingRow, RailwayBuildingState};
+    let mut captured = Captured::vacant();
+    captured.cooldowns.rows = vec![
+        cprovince_railway_info::Row {
+            province: 7,
+            cooldown_ticks: 9,
+        },
+        cprovince_railway_info::Row {
+            province: 3,
+            cooldown_ticks: 0,
+        },
+        cprovince_railway_info::Row {
+            province: 1,
+            cooldown_ticks: -1,
+        },
+    ];
+    captured.cooldowns.outcome = Outcome::Rows { len: 3 };
+    captured.rail_buildings.rows = vec![
+        RailwayBuildingRow {
+            province: 1,
+            building: Err("rail health unreadable"),
+            ..Default::default()
+        },
+        RailwayBuildingRow {
+            province: 3,
+            building: Ok(Some(RailwayBuildingState { building: None })),
+            ..Default::default()
+        },
+        RailwayBuildingRow {
+            province: 7,
+            building: Ok(None),
+            ..Default::default()
+        },
+    ];
+    captured.rail_buildings.outcome = Outcome::Rows { len: 3 };
+    captured.rail_buildings_required = 5;
+    let tables = captured.tables();
+    let TableView::Complete(TableRows::RailCooldowns(cooldowns)) = &tables[2] else {
+        panic!("cooldowns were denied by an optional field");
+    };
+    assert_eq!(
+        cooldowns.iter().map(|row| row.province).collect::<Vec<_>>(),
+        [1, 3, 7]
+    );
+    assert_eq!(cooldowns[0].cooldown_ticks, -1);
+    assert_eq!(cooldowns[0].building, rows::Recorded::Value(None));
+    assert_eq!(
+        cooldowns[1].building,
+        rows::Recorded::Value(Some(rows::RailwayBuildingState { building: None }))
+    );
+    assert_eq!(cooldowns[2].building, rows::Recorded::Value(None));
+    let mut work = crate::acquisition_states::InputWork::default();
+    captured.observe_railway_inputs(&mut work).unwrap();
+    let status = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(status["captured"], 1);
+    assert_eq!(status["unqueried"], 1);
+    assert_eq!(status["refused"], 1);
+    assert_eq!(status["refusals"]["rail health unreadable"], 1);
+    captured.fail_late_capture(0, false, "late worker failed");
+    assert_eq!(captured.rail_buildings_required, 5);
+    assert_eq!(captured.railway_building(3), None);
+    let mut capacity = Capacities {
+        rows: [0; N],
+        theatre_names: 0,
+        sunk_names: 0,
+        orders_sources: 0,
+        wing_sources: 0,
+        roster_scratch: 0,
+        rail_levels: 0,
+    };
+    captured.grow(&mut capacity);
+    assert!(capacity.rows[2] >= 5);
+    assert_eq!(captured.cooldowns.rows.len(), capacity.rows[2]);
+    assert_eq!(captured.rail_buildings.rows.len(), capacity.rows[2]);
+    captured.reset();
+    assert_eq!(captured.rail_buildings_required, 0);
+    assert_eq!(captured.railway_building(3), None);
+}
+
+#[test]
+fn selected_railway_projection_counts_refusals_and_retains_arena_demand_through_failure() {
+    use crailway_manager::{
+        fresh_inputs::RailwayBuildingRow,
+        selected_inputs::{LevelSpan, SelectionRow},
+    };
+    let mut captured = Captured::vacant();
+    captured.cooldowns.rows = vec![cprovince_railway_info::Row {
+        province: 1,
+        cooldown_ticks: 0,
+    }];
+    captured.cooldowns.outcome = Outcome::Rows { len: 1 };
+    captured.rail_buildings.rows = vec![RailwayBuildingRow {
+        province: 1,
+        building: Err("ETA-only healthy value unavailable"),
+        selection: Some(SelectionRow {
+            levels: Ok(LevelSpan {
+                first: 0,
+                len: 3,
+                positive: false,
+            }),
+            pair_count: Ok(-2),
+            building_level: Ok(Some(Some(-3))),
+        }),
+    }];
+    captured.rail_buildings.outcome = Outcome::Rows { len: 1 };
+    captured.rail_buildings_required = 2;
+    captured.rail_levels.first = vec![0, -1, i32::MIN];
+    captured.rail_levels.len = 3;
+    captured.rail_levels.required = 9;
+    captured.rail_hour = Some(12);
+    let tables = captured.tables();
+    let TableView::Complete(TableRows::RailCooldowns(rows)) = &tables[2] else {
+        panic!()
+    };
+    assert_eq!(rows[0].building, None.into());
+    assert_eq!(
+        rows[0].selection,
+        Some(rows::RailwaySelectionInputs {
+            levels: Some(vec![0, -1, i32::MIN]),
+            pair_count: Some(-2),
+            building_level: Some(Some(-3)),
+        })
+        .into()
+    );
+    assert_eq!(rows[0].selection_hour, Some(12).into());
+    let mut work = crate::acquisition_states::InputWork::default();
+    captured.observe_railway_inputs(&mut work).unwrap();
+    let status = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(status["captured"], 3);
+    assert_eq!(status["refusals"]["ETA-only healthy value unavailable"], 1);
+    captured.rail_buildings.rows[0]
+        .selection
+        .as_mut()
+        .unwrap()
+        .levels = Err("selected railway level capacity insufficient");
+    assert_eq!(captured.railway_selection(1).unwrap().levels, None);
+    captured.observe_railway_inputs(&mut work).unwrap();
+    let status = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(
+        status["refusals"]["selected railway level capacity insufficient"],
+        1
+    );
+    captured.fail_late_capture(12, true, "late failed");
+    assert_eq!(captured.railway_selection(1), None);
+    assert_eq!(captured.rail_levels.required, 9);
+    let mut capacities = Capacities {
+        rows: [0; N],
+        theatre_names: 0,
+        sunk_names: 0,
+        orders_sources: 0,
+        wing_sources: 0,
+        roster_scratch: 0,
+        rail_levels: 0,
+    };
+    captured.grow(&mut capacities);
+    assert!(capacities.rail_levels >= 9);
+    assert!(captured.rail_levels.first.len() >= 9);
+    assert!(capacities.rows[2] >= 2);
+    captured.reset();
+    assert_eq!(
+        (captured.rail_levels.len, captured.rail_levels.required),
+        (0, 0)
+    );
+    assert_eq!(captured.rail_hour, None);
+    assert_eq!(captured.railway_selection(1), None);
+}
+
 fn owned_failure_fixture() -> Captured {
     Captured::with_capacities(&Capacities {
         rows: [1; N],
@@ -8,20 +225,21 @@ fn owned_failure_fixture() -> Captured {
         orders_sources: 1,
         wing_sources: 1,
         roster_scratch: 8,
+        rail_levels: 0,
     })
 }
 
-/// The OOB theatre memo keeps first-seen root order, whatever the
-/// addresses' order, exactly as the former sorted-insert memo did.
+/// Country hints size only the original roster, without a guessed OOB ratio.
 #[test]
-fn a_large_registry_presizes_the_order_of_battle_theatres() {
+fn a_large_registry_presizes_only_the_native_country_snapshot() {
     let _hint = crate::country_scale::hint_guard();
     crate::country_scale::note_slots(5_000);
     let mut job = NavalJob::new();
     job.presize_countries();
-    let want = crate::country_scale::rows(5_000, 1) * OOB_THEATRE_REFERENCES_PER_COUNTRY;
-    assert!(job.oob_theatres.capacity() >= want);
-    assert!(job.oob_theatre_positions.capacity() >= want);
+    assert!(job.roster.capacity() >= crate::country_scale::census_rows(0));
+    assert_eq!(job.roots.capacity(), 0);
+    assert_eq!(job.oob_theatres.capacity(), 0);
+    assert_eq!(job.oob_theatre_positions.capacity(), 0);
 }
 
 /// The registry census snapshot holds only a complete census that fits,
@@ -197,7 +415,7 @@ fn shared_naval_projection_preserves_truncated_prefix_and_growth() {
     let memory = kit::memory(&bytes);
     let mut naval = NavalJob::default();
     naval.wing_sources.reserve_exact(1);
-    let mut wings = AirWingJob::new();
+    let mut wings = AirWingJob::fixture();
     let context = AirWingCopyContext {
         hour: 0,
         force_full: true,
@@ -209,7 +427,7 @@ fn shared_naval_projection_preserves_truncated_prefix_and_growth() {
         game_score: false,
     };
     assert!(crate::extended::air::copy_air_refresh(&memory, context, &mut wings).raw_ok);
-    naval.install_wings(&wings);
+    naval.install_wings(&mut wings);
     assert_eq!(naval.wing_sources.len(), 1);
     assert_eq!(
         naval.wing_outcome,
@@ -225,11 +443,144 @@ fn shared_naval_projection_preserves_truncated_prefix_and_growth() {
 }
 
 #[test]
+fn first_hour_naval_memberships_handoff_all_wings_at_5000_countries() {
+    use crate::{extended::air, unit_scale_tests::fixture};
+    const WINGS: usize = 12_000;
+    let world = fixture::build(fixture::Shape {
+        countries: 5000,
+        divisions: 0,
+        wings: WINGS,
+        planes: WINGS,
+        ships: 0,
+    });
+    let mut wings = air::AirWingJob::default();
+    let mut naval = NavalJob::default();
+    naval.wing_sources.reserve_exact(1);
+    let context = air::AirWingCopyContext {
+        hour: 0,
+        force_full: true,
+        base: world.base,
+        game_state: world.state,
+        limits: [1; 3],
+        naval_limit: naval.wing_limit(),
+        game_score: false,
+    };
+    assert!(air::copy_air_refresh_growing(&world.live(), context, &mut wings).raw_ok);
+    assert_eq!(wings.naval_membership_outcome, Outcome::Rows { len: WINGS });
+    let original_rows = wings.naval_memberships[..WINGS].to_vec();
+    let prepared = wings.naval_memberships.as_ptr();
+    let parked = naval.wing_sources.as_ptr();
+    naval.install_wings(&mut wings);
+    assert_eq!(naval.wing_sources.as_ptr(), prepared);
+    assert_eq!(wings.naval_memberships.as_ptr(), parked);
+    assert_eq!(naval.wing_outcome, Some(Outcome::Rows { len: WINGS }));
+    assert_eq!(naval.wing_sources, original_rows);
+    assert_eq!(naval.wing_required, WINGS);
+
+    let mut captured = Captured::with_capacities(&Capacities {
+        wing_sources: 1,
+        ..Default::default()
+    });
+    let parked = captured.wing_sources.rows.as_ptr();
+    captured.install_owned_wings(&mut naval);
+    assert_eq!(captured.wing_sources.rows.as_ptr(), prepared);
+    assert_eq!(naval.wing_sources.as_ptr(), parked);
+    assert_eq!(captured.wing_sources.outcome, Outcome::Rows { len: WINGS });
+    assert_eq!(captured.wing_sources.rows[..WINGS], original_rows);
+    assert!(captured.wings_finished);
+}
+
+#[test]
+fn naval_decode_grows_shared_memberships_from_the_original_census() {
+    use super::naval_test_kit as kit;
+    use crate::extended::air;
+    use engine::{cair_wing, cair_wing_pool, cstrategic_air};
+    let mut bytes = kit::fixture();
+    let pointer = |bytes: &mut [u8], address: usize, value: usize| {
+        bytes[address..address + 8].copy_from_slice(&(value as u64).to_le_bytes());
+    };
+    let array = |bytes: &mut [u8], address: usize, data: usize, count: u32| {
+        pointer(bytes, address, data);
+        bytes[address + 8..address + 12].copy_from_slice(&count.to_le_bytes());
+        bytes[address + 12..address + 16].copy_from_slice(&count.to_le_bytes());
+    };
+    const OWNER: usize = 0x70000;
+    const POOL: usize = 0x71000;
+    const WINGS: usize = 0x72000;
+    // The fixture's original manager has country slots but no air owners.
+    pointer(&mut bytes, 0x41008, OWNER);
+    pointer(&mut bytes, OWNER, cstrategic_air::VTABLE_RVA);
+    bytes[OWNER + cstrategic_air::COUNTRY..OWNER + cstrategic_air::COUNTRY + 4]
+        .copy_from_slice(&1_u32.to_le_bytes());
+    array(&mut bytes, OWNER + cstrategic_air::POOLS, 0x72100, 1);
+    pointer(&mut bytes, 0x72100, POOL);
+    pointer(&mut bytes, POOL, cair_wing_pool::VTABLE_RVA);
+    pointer(&mut bytes, POOL + cair_wing_pool::OWNER, OWNER);
+    array(&mut bytes, POOL + cair_wing_pool::WINGS, WINGS, 2);
+    for (ordinal, wing) in [0x73000, 0x75000].into_iter().enumerate() {
+        pointer(&mut bytes, WINGS + ordinal * 8, wing);
+        pointer(&mut bytes, wing, cair_wing::VTABLE_RVA);
+        pointer(
+            &mut bytes,
+            wing + cair_wing::SECONDARY,
+            cair_wing::SECONDARY_VTABLE_RVA,
+        );
+        pointer(
+            &mut bytes,
+            wing + cair_wing::REFERENCE_TYPE,
+            ((ordinal + 1) << 32) | cair_wing::TYPE as usize,
+        );
+        pointer(&mut bytes, wing + cair_wing::POOL, POOL);
+    }
+    let memory = kit::memory(&bytes);
+    let mut wings = air::AirWingJob::default();
+    assert!(
+        air::copy_air_refresh_growing(
+            &memory,
+            air::AirWingCopyContext {
+                hour: 0,
+                force_full: true,
+                base: kit::BASE,
+                game_state: kit::GAME_STATE,
+                limits: [1; 3],
+                naval_limit: 0,
+                game_score: false,
+            },
+            &mut wings,
+        )
+        .raw_ok
+    );
+    let mut job = NavalJob::fixture();
+    job.install_wings(&mut wings);
+    assert_eq!(job.wing_outcome, Some(Outcome::Rows { len: 2 }));
+    assert!(
+        super::copy_naval_refresh(
+            &memory,
+            NavalCopyContext {
+                hour: 0,
+                force_full: true,
+                base: kit::BASE,
+                game_state: kit::GAME_STATE,
+            },
+            &mut job,
+        )
+        .raw_ok
+    );
+    let mut captured = Captured::with_capacities(&Capacities {
+        wing_sources: 1,
+        ..Default::default()
+    });
+    super::decode_naval_payload(&mut captured, kit::BASE, &job, &mut [0; NAVAL_PACK_N]);
+    assert_eq!(captured.wing_sources.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(captured.wing_sources.rows[..2], job.wing_sources);
+}
+
+#[test]
 fn naval_decode_bounds_shared_memberships_to_frame_capacity() {
     use super::naval_test_kit as kit;
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
-    let mut job = NavalJob::new();
+    let mut job = NavalJob::fixture();
     kit::stage_wings(&memory, &mut job);
     let context = NavalCopyContext {
         hour: 0,
@@ -270,7 +621,7 @@ fn shared_wing_fallback_charges_acquisition_and_installation() {
     use crate::extended::air::{AirWingCopyContext, AirWingJob, wing_test_kit as kit};
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
-    let mut wings = AirWingJob::new();
+    let mut wings = AirWingJob::fixture();
     let context = AirWingCopyContext {
         hour: 0,
         force_full: true,
@@ -304,6 +655,7 @@ fn small() -> Captured {
         orders_sources: 2,
         wing_sources: 2,
         roster_scratch: 8,
+        rail_levels: 0,
     })
 }
 
@@ -463,7 +815,7 @@ fn hourly_land_theatre_headers_need_no_daily_details_or_wing_storage() {
     let bytes = kit::fixture();
     let expected = kit::direct(&kit::memory(&bytes));
     let memory = NoTheatreDetails(kit::memory(&bytes));
-    let mut job = NavalJob::new();
+    let mut job = NavalJob::fixture();
     job.wing_sources = Vec::new();
     let mut captured = Captured::with_capacities(&Capacities {
         rows: [8; N],
@@ -472,6 +824,7 @@ fn hourly_land_theatre_headers_need_no_daily_details_or_wing_storage() {
         orders_sources: 0,
         wing_sources: 0,
         roster_scratch: 0,
+        rail_levels: 0,
     });
     for hour in (0..24).filter(|hour| *hour != 13) {
         job.clear();
@@ -605,7 +958,7 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
     let hourly = |memory: &dyn Fn(&mut NavalJob) -> NavalCopyReport, job: &mut NavalJob| {
         let copy = memory(job);
         assert!(copy.raw_ok);
-        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut captured = Captured::with_capacities(&Capacities::fixture());
         captured.prepare_hour(1, false);
         decode_naval_payload(&mut captured, kit::BASE, job, &mut [0; NAVAL_PACK_N]);
         let len = captured.land.outcome.len();
@@ -646,7 +999,7 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
         );
 
         // Hourly: the land theatre headers alone.
-        let mut plain = NavalJob::new();
+        let mut plain = NavalJob::fixture();
         let expected = hourly(&|job| copy_naval_refresh(&memory, context, job), &mut plain);
         assert_eq!(
             (expected.0, &expected.1[..]),
@@ -656,7 +1009,7 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
             ),
             "{case}"
         );
-        let mut job = NavalJob::new();
+        let mut job = NavalJob::fixture();
         let actual = hourly(&|job| copy_naval_refresh(&roster, context, job), &mut job);
         assert_eq!(actual, expected, "{case}");
         if has_roster {
@@ -681,7 +1034,7 @@ fn roster_land_theatres_match_the_census_copy_and_the_typed_walk() {
                 assert!(spans.contains(&(LTAB + 12)), "{case}");
             }
             // Without room for the roster the census copy is taken.
-            let mut tight = NavalJob::new();
+            let mut tight = NavalJob::fixture();
             tight.roster = ccountry::RosterSnapshot::try_with_capacity(0).unwrap();
             let short = hourly(&|job| copy_naval_refresh(&roster, context, job), &mut tight);
             assert_eq!(short, expected, "{case}");
@@ -699,7 +1052,7 @@ fn hourly_land_theatre_owner_fault_does_not_publish_a_header() {
     let mut bytes = kit::fixture();
     bytes[kit::THEATRE + ctheatre::OWNER..kit::THEATRE + ctheatre::OWNER + 4].fill(0);
     let memory = kit::memory(&bytes);
-    let mut job = NavalJob::new();
+    let mut job = NavalJob::fixture();
     let copy = copy_naval_refresh(
         &memory,
         NavalCopyContext {
@@ -711,7 +1064,7 @@ fn hourly_land_theatre_owner_fault_does_not_publish_a_header() {
         &mut job,
     );
     assert!(copy.raw_ok);
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&Capacities::fixture());
     captured.prepare_hour(1, false);
     decode_naval_payload(&mut captured, kit::BASE, &job, &mut [0; NAVAL_PACK_N]);
     assert!(matches!(captured.land.outcome, Outcome::Unavailable { .. }));
@@ -844,7 +1197,7 @@ fn naval_copy_sizes_cover_documented_read_set() {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
     };
-    let mut first = NavalJob::new();
+    let mut first = NavalJob::fixture();
     kit::stage_wings(&memory, &mut first);
     let report = super::copy_naval_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
@@ -879,6 +1232,7 @@ fn naval_truncation_matrix_matches_direct_with_same_caps() {
             orders_sources: 64,
             wing_sources: 64,
             roster_scratch: 64,
+            rail_levels: 0,
         };
         let direct = kit::direct_with(&memory, &capacity);
         let (split, report, _) = kit::split_with(&memory, &capacity);
@@ -893,6 +1247,7 @@ fn naval_truncation_matrix_matches_direct_with_same_caps() {
         orders_sources: 64,
         wing_sources: 64,
         roster_scratch: 64,
+        rail_levels: 0,
     };
     let (split, _, _) = kit::split_with(&memory, &capacity);
     assert_eq!(split.land_outcome, Outcome::Rows { len: 1 });
@@ -1143,25 +1498,10 @@ fn supremacy_staging_overflow_falls_back_to_typed_walk() {
 }
 
 #[test]
-fn supremacy_pools_cover_appendix_worst_case() {
-    // Worst-case caps proof: the steady-state pools exceed a
-    // conservative span/byte estimate built from the appendix census (49
-    // supremacy rows over a handful of regions), so live refreshes never
-    // take the overflow fallback in steady state.
-    use super::SupremacyJob;
+fn supremacy_starts_empty_before_original_worker_demand() {
     let job = SupremacyJob::new();
-    let spans = 1 + 10 * 6 + 49 * 2;
-    assert!(
-        job.log.spans.capacity() >= spans,
-        "span cap {} < worst case {spans}",
-        job.log.spans.capacity()
-    );
-    let bytes = 10 * 64 + 49 * 128;
-    assert!(
-        job.log.bytes.capacity() >= bytes,
-        "byte cap {} < worst case {bytes}",
-        job.log.bytes.capacity()
-    );
+    assert_eq!(job.log.spans.capacity(), 0);
+    assert_eq!(job.log.bytes.capacity(), 0);
 }
 
 #[test]
@@ -1363,25 +1703,10 @@ fn sunk_staging_overflow_falls_back_to_typed_walk() {
 }
 
 #[test]
-fn sunk_pools_cover_appendix_worst_case() {
-    // Worst-case caps proof: the steady-state pools exceed a
-    // conservative span/byte estimate built from the appendix census
-    // (one row with ~371 retained entries and names), so live refreshes
-    // never take the overflow fallback in steady state.
-    use super::SunkJob;
+fn sunk_starts_empty_before_original_worker_demand() {
     let job = SunkJob::new();
-    let spans = 1 + 371 * 12;
-    assert!(
-        job.log.spans.capacity() >= spans,
-        "span cap {} < worst case {spans}",
-        job.log.spans.capacity()
-    );
-    let bytes = 371 * 512;
-    assert!(
-        job.log.bytes.capacity() >= bytes,
-        "byte cap {} < worst case {bytes}",
-        job.log.bytes.capacity()
-    );
+    assert_eq!(job.log.spans.capacity(), 0);
+    assert_eq!(job.log.bytes.capacity(), 0);
 }
 
 #[test]
@@ -1417,4 +1742,154 @@ fn sunk_copy_sizes_cover_documented_read_set() {
             "missing size {required} in {sizes:?}"
         );
     }
+}
+
+#[test]
+fn worker_roots_snapshot_holds_5000_country_roots_and_later_mod_demand() {
+    let mut job = NavalJob::default();
+    for count in [5000, 30000] {
+        let roots = vec![corders_group::Root::default(); count];
+        job.capture_roots_growing(&roots, Outcome::Rows { len: count });
+        assert_eq!(job.roots_len, Some(count));
+        assert_eq!(job.roots, roots);
+    }
+}
+
+#[test]
+fn growing_theatre_job_publishes_first_payload_from_empty_raw_and_typed_arenas() {
+    let mut bytes = naval_test_kit::fixture();
+    let command_name = 0x62000 + corders_group::NAME;
+    bytes[command_name..command_name + 3].copy_from_slice(b"OOB");
+    bytes[command_name + 16..command_name + 24].copy_from_slice(&3_u64.to_le_bytes());
+    bytes[command_name + 24..command_name + 32].copy_from_slice(&15_u64.to_le_bytes());
+    let memory = engine::memory::SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let mut job = NavalJob::new();
+    naval_test_kit::stage_wings(&memory, &mut job);
+    let report = copy_naval_refresh_growing(
+        &memory,
+        NavalCopyContext {
+            base: naval_test_kit::BASE,
+            game_state: naval_test_kit::GAME_STATE,
+            hour: 0,
+            force_full: true,
+        },
+        &mut job,
+    );
+    assert!(report.raw_ok);
+    assert!(!job.log.overflowed);
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    decode_naval_payload(
+        &mut captured,
+        naval_test_kit::BASE,
+        &job,
+        &mut [0; NAVAL_PACK_N],
+    );
+    assert_eq!(captured.land.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(captured.land_groups.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(captured.land_members.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(captured.groups.outcome, Outcome::Rows { len: 1 });
+    assert!(captured.theatre_names.len > 0);
+    assert!(captured.group_names.len > 0);
+}
+
+#[test]
+fn attempted_root_census_failure_is_terminal_for_naval_copy_and_decode() {
+    struct NoRegistry<'a> {
+        inner: engine::memory::SliceMemory<'a>,
+        attempts: std::cell::Cell<usize>,
+    }
+    impl Memory for NoRegistry<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let root = engine::creference_registry::LOW_ROOTS_RVA
+                + corders_group::REFERENCE_TYPE as usize * 8;
+            if address == root {
+                self.attempts.set(self.attempts.get() + 1);
+                return false;
+            }
+            self.inner.copy(address, output)
+        }
+    }
+    let bytes = naval_test_kit::fixture();
+    let memory = NoRegistry {
+        inner: engine::memory::SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        },
+        attempts: Default::default(),
+    };
+    for rejected in [false, true] {
+        let reason = if rejected {
+            "root producer rejected"
+        } else {
+            "original root read failed"
+        };
+        let mut job = NavalJob::default();
+        if rejected {
+            job.fail_roots(reason);
+        } else {
+            job.capture_roots_growing(&[], Outcome::Unavailable { reason });
+        }
+        naval_test_kit::stage_wings(&memory, &mut job);
+        assert!(
+            copy_naval_refresh_growing(
+                &memory,
+                NavalCopyContext {
+                    base: naval_test_kit::BASE,
+                    game_state: naval_test_kit::GAME_STATE,
+                    hour: 0,
+                    force_full: true,
+                },
+                &mut job
+            )
+            .raw_ok
+        );
+        assert_eq!(memory.attempts.get(), 0);
+        let mut captured = Captured::vacant();
+        decode_naval_payload(
+            &mut captured,
+            naval_test_kit::BASE,
+            &job,
+            &mut [0; NAVAL_PACK_N],
+        );
+        for outcome in [
+            captured.groups.outcome,
+            captured.group_members.outcome,
+            captured.group_children.outcome,
+            captured.orders_sources.outcome,
+        ] {
+            assert_eq!(outcome, Outcome::Unavailable { reason });
+        }
+        assert_eq!(captured.land.outcome, Outcome::Rows { len: 1 });
+        job.clear();
+        assert_eq!(job.roots_outcome, None);
+    }
+}
+
+#[test]
+fn naval_history_cold_defaults_allocate_no_content_storage() {
+    let capacity = Capacities::default();
+    assert_eq!(capacity.rows, [0; N]);
+    assert_eq!(
+        (
+            capacity.theatre_names,
+            capacity.sunk_names,
+            capacity.orders_sources,
+            capacity.wing_sources,
+            capacity.roster_scratch,
+            capacity.rail_levels
+        ),
+        (0, 0, 0, 0, 0, 0)
+    );
+    assert_eq!(Captured::with_capacities(&capacity).allocated_bytes(), 0);
+    let job = NavalJob::new();
+    assert_eq!(job.log.bytes.capacity(), 0);
+    assert_eq!(job.log.spans.capacity(), 0);
+    assert_eq!(job.roster.capacity(), 0);
+    assert_eq!(job.roots.capacity(), 0);
+    assert_eq!(job.oob_theatres.capacity(), 0);
+    assert_eq!(job.oob_theatre_positions.capacity(), 0);
+    assert_eq!(job.wing_sources.capacity(), 0);
 }

@@ -41,6 +41,8 @@ fn localisation() -> Localisation {
         (KEY_DIVISIONS_SHORT, "$DIV$ Divs"),
         (KEY_EMPTY_SHORT, "No Divs"),
         (KEY_PARATROOPERS, "$DIV$ Paras"),
+        (KEY_INVASION_TRANSPORTS, " ($TR$ convoys)"),
+        (KEY_PARADROP_TRANSPORTS, " ($TR$ planes)"),
         ("o_strat_offensive_ru", "Strategic Offensive Operation"),
     ]
     .into_iter()
@@ -133,6 +135,116 @@ fn the_variants_follow_the_count_the_type_and_the_group_kind() {
     assert_eq!(
         broken.text(Variant::Full),
         Err("the order's unique name is not UTF-8".into())
+    );
+}
+
+#[test]
+fn extended_transports_append_to_full_only_after_the_strict_point_threshold() {
+    let loc = localisation();
+    let composer = Composer {
+        localisation: &loc,
+        order_type: super::super::TYPE_INVASION,
+        name: OrderName {
+            unique: b"Landing",
+            ..Default::default()
+        },
+        group_name: b"Army",
+        army_group: false,
+        count: 2,
+    };
+    let reads = std::cell::Cell::new(0);
+    let supplied = || {
+        reads.set(reads.get() + 1);
+        Ok(-3)
+    };
+    assert_eq!(
+        composer
+            .drawn_with_transports(Variant::Full, 5, 5, &supplied)
+            .as_deref(),
+        Ok("Landing - 2 Divs - Army")
+    );
+    assert_eq!(
+        composer
+            .drawn_with_transports(Variant::Middle, 6, 5, &supplied)
+            .as_deref(),
+        Ok("2 Divs")
+    );
+    assert_eq!(
+        composer
+            .drawn_with_transports(Variant::Short, 6, 5, &supplied)
+            .as_deref(),
+        Ok("2 Divs")
+    );
+    assert_eq!(reads.get(), 0);
+    assert_eq!(
+        composer
+            .drawn_with_transports(Variant::Full, 6, 5, &supplied)
+            .as_deref(),
+        Ok("Landing - 2 Divs - Army (-3 convoys)")
+    );
+    assert_eq!(reads.get(), 1);
+
+    // A native zero count is appended even when the assigned-member count
+    // is zero; the suffix is outside the count-dependent composition.
+    let drop = Composer {
+        order_type: super::super::TYPE_PARADROP,
+        count: 0,
+        ..composer
+    };
+    assert_eq!(
+        drop.drawn_with_transports(Variant::Full, 6, 5, &|| Ok(0))
+            .as_deref(),
+        Ok("No divisions (0 planes)")
+    );
+    let line = Composer {
+        order_type: super::super::TYPE_LINE,
+        ..composer
+    };
+    assert_eq!(
+        line.drawn_with_transports(Variant::Full, 6, 5, &|| {
+            Err("a line must not read transport inputs".into())
+        })
+        .as_deref(),
+        Ok("2 Divs - Army")
+    );
+}
+
+#[test]
+fn a_missing_transport_operand_refuses_only_the_full_variant_that_uses_it() {
+    let loc = localisation();
+    let composer = Composer {
+        localisation: &loc,
+        order_type: super::super::TYPE_PARADROP,
+        name: OrderName::default(),
+        group_name: b"Army",
+        army_group: false,
+        count: 2,
+    };
+    let missing = || Err("the source transport-wing inputs were not recorded".into());
+    assert_eq!(
+        composer.drawn_with_transports(Variant::Full, 7, 5, &missing),
+        Err("the source transport-wing inputs were not recorded".into())
+    );
+    assert_eq!(
+        composer
+            .drawn_with_transports(Variant::Middle, 7, 5, &missing)
+            .as_deref(),
+        Ok("2 Divs")
+    );
+
+    // Unsupported content in the appended suffix is handled by the same
+    // map-text refusal as a control in the ordinary label.
+    let loc = [(KEY_PARADROP_TRANSPORTS.into(), "\u{14}".into())]
+        .into_iter()
+        .collect();
+    let composer = Composer {
+        localisation: &loc,
+        ..composer
+    };
+    assert!(
+        composer
+            .drawn_with_transports(Variant::Full, 7, 5, &|| Ok(2))
+            .is_err()
     );
 }
 

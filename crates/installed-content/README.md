@@ -19,6 +19,8 @@ Read the [project rules](../../AGENTS.md) before changing a reader. Consumers sh
 
 A catalogue retains definitions, source identity and diagnostics. Duplicate handling, case sensitivity, defaults and enumeration order follow its native database, not a universal merge rule. Reuse catalogues and stack-scoped caches. Presentation and its shared [catalogue](../dashboard/src/catalogue.rs) belong to [dashboard](../dashboard/README.md).
 
+Idea lookup shares the lexer's ASCII case identity and selects the first matching database entry; rereading a held group replaces that entry in place. Advisor lookup, ambiguity and coverage share its native folded string identity. Retain authored spellings for names and assets; localisation and sprite names keep their own case rules. Equipment graphics contexts retain a null archetype separately from a real empty equipment name: the null object's sentinel hash cannot match an authored empty pool key, while a real empty name can.
+
 ## Recorded content stack
 
 Resolve every content fact through `ResolvedLayers`: **vanilla, DLC, then mods in recorded order**. Later layers win file lookup; `replace_path` hides lower layers under its path. File overlays do not determine database duplicate rules. Support folder/archive layers and the engine's built-in virtual roots.
@@ -65,6 +67,8 @@ Preserve palettes and image origins, authored mip chains, cube faces, glyph metr
 
 [PdxShader](src/pdxshader/program.rs) preserves native effect/include order and hashes resolved inputs. Missing sources or unsupported declarations never select an unrelated effect. Compilation, GPU caches and bindings belong to [shader-pipeline](../shader-pipeline/README.md).
 
+Artwork uses `program::read_reported`: ordinary uncovered-source reads join the shared read warnings, and missing-include notes join the stack's lazy shader diagnostics. Reporting consumers retain both after rendering.
+
 Explicit cosmetic overlays verify recorded layers first, then alter a presentation copy. Checksum-manifest eligibility is separate from renderer compatibility. Report unsupported content and warn that selected artwork is not recorded verification. The selector neither downloads content nor changes enabled mods.
 
 ## Native GUI reader
@@ -79,6 +83,8 @@ Map readers share definition rows, raster loading, geometry and adjacencies. Res
 
 World interfaces supply recorded movement/raid facts. Missing admission inputs stay unknown; do not infer port sea access or runtime caches from nearby assets. [raids/target.rs](src/raids/target.rs) shares target/name joins. The [raid tooltip contract](../viewer/src/map/raids/tooltips/README.md) owns consumer and capture rules.
 
+[Selected movement searches](src/unit_path/selected.rs) use recorded current-hour world operands and preserve native neighbour order and caller-specific admission. Missing runtime facts remain refusals.
+
 ## Refusals and save honesty
 
 Keep absence, valid emptiness, native recovery, parse failure and unsupported content distinct. Preserve producer-assigned `DiagnosticKind` and named, counted diagnostics. Refuse unsupported fields/classes/definitions with file/line context; never drop them or substitute vanilla defaults.
@@ -87,12 +93,20 @@ Keep absence, valid emptiness, native recovery, parse failure and unsupported co
 
 Saves follow native omission, ordering, duplicate and representation rules. Preserve exact integers, fixed-point values and optional presence; do not invent unsaved caches. Partial state membership distinguishes assigned, unassigned and unknown provinces independently of resource failures. The [recorder oracle](../recorder/README.md) owns comparison limits and finalization.
 
+An omitted state owner certifies the native signed nonpositive class and also suppresses the state controller. Province control retains absent ownership for those states, preserves each explicit positive province controller and keeps omitted controllers absent. A missing state or unknown membership remains a separate join failure or exclusion.
+
+`SaveDocument` projects serializer output: a bare `=fixed5` directly inside any saved `variables` block retains an empty literal key, distinct from an anonymous value or an omitted map. Other tree readers keep their existing grammar. This preserves the writer's state; native text-load recovery consumes that malformed assignment differently and does not round-trip the empty name.
+
+Technology description catalogues retain every indexed declaration in native order, while case-insensitive name lookup selects the first. Saved technologies retain ordered repeated keys because the native serializer filters each instance independently.
+
 ## Adding or changing a reader
 
 1. Identify the native loader, file order, lexer mode, field and lookup rules. Cite addresses beside code.
 2. Extend the owning module/shared dispatch. Use `ResolvedLayers`, load-point names and native conversions.
 3. Preserve order, defaults, redefinitions and required operands; propagate diagnostics and uncertain suffixes through lookups.
 4. Add synthetic regressions for changed behaviour, layered replacements and reached mod forms. Reuse helpers (`test-support` exposes cross-crate fixtures) and update affected consumers together.
+
+[Selected transport](src/unit_path/selected/transport.rs) preserves early returns, per-occurrence rounding and independent output buffers. [Saved transfer inputs](src/save/counter_inputs.rs) keep source province and ordered combat references separate from the target. [Mission cache reads](src/save/naval_missions/spotting_cache.rs) use recorded lexical keys and the authenticated physical-country projection; omission constrains only the nonpositive writer branch. Air pools require their saved definition token. Orders-group and plan names distinguish an omitted key from emitted empty first-NUL text.
 
 ## Checking changes
 
@@ -101,3 +115,5 @@ Follow [AGENTS.md](../../AGENTS.md) for wrapped, crate-scoped format/clippy/affe
 Real-game tests are ignored and read-only. Set `BATTLE_PLAN_GAME_DIR` to the game folder; run the relevant filtered installed-content test with `-- --ignored --nocapture` through the wrapper. Examples: `every_shipped_gui_file_reads`, `every_shipped_gfx_file_reads`, `vanilla_state_history_reads_without_diagnostics`. Check each test's environment: corpus audits may require `BATTLE_PLAN_WORKSHOP_DIR`; special projects use `BATTLE_PLAN_SP_GAME`/`BATTLE_PLAN_SP_WORKSHOP`. Missing variables can skip a test, so confirm it read files.
 
 Compare relevant DLC/mod diagnostics with the [viewer corpus workflow](../viewer/README.md#mod-corpus-check); identity support alone does not prove reader coverage. Asset changes follow [rendering rules](../viewer/README.md#rendering-rules); integration follows the [recorder fresh-save/smoke workflow](../recorder/README.md). Commit synthetic inputs; keep installed content, captures and audits outside Git under [shared storage rules](../../AGENTS.md).
+
+The [template save reader](src/save/units.rs), state, province and faction names, and ace callsigns preserve key presence separately from bytes: emitted empty text differs from an omitted key. Comparisons follow each native stored-length gate and first-NUL prefix. Unconditional deployment and air-group names require the saved key even when its text is empty.

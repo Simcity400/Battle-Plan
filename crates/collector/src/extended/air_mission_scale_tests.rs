@@ -660,23 +660,33 @@ impl Scale {
     /// registered missions captured without history parts (as the Late job
     /// does when no AirMissions job ran), then the pack's capture.
     fn hour(&self, census: &[cair_wing::Source], air: &mut Captured) -> [Outcome; N] {
-        let job = AirWingJob {
+        let mut job = AirWingJob {
             sources: census.to_vec(),
             source_outcome: Outcome::Rows { len: census.len() },
+            identities: census
+                .iter()
+                .map(|source| WingIdentity::new(source.pointer, source.pool, &source.row).unwrap())
+                .collect(),
+            identity_outcome: Outcome::Rows { len: census.len() },
             ..Default::default()
         };
         let parent = Outcome::Rows { len: census.len() };
         air.reset();
         air.prepare_hour(HOUR, false);
-        air.install_owned_mission_identities(&job);
+        air.install_owned_mission_identities(&mut job);
         air.finish_wings(parent);
         air.capture_missions(
             &self.world,
             BASE,
             self.world.game_state,
-            parent,
-            &mut [],
-            &crate::history_changes::Unobserved,
+            MissionSources {
+                parent,
+                histories: &mut [],
+                changes: &crate::history_changes::Unobserved,
+                transport_regions: Err("test transport region loan not supplied"),
+                transport_guard: Err("test transport air guard not supplied"),
+                transport_admission: Err("test transport original callback admission not supplied"),
+            },
         );
         air.capture(
             &self.world,
@@ -784,7 +794,7 @@ fn witness_rows(witnesses: &[Witness]) -> Vec<AirReferenceWitnessRow> {
                 base_kind: Some(base.kind),
                 state: base.state,
                 province: base.province,
-                host: base.state.is_none().then_some(base.host),
+                host: Some(base.host),
                 host_owner,
                 host_without_task_force,
             })
@@ -825,28 +835,34 @@ fn registrations_at_5000_countries_are_complete_and_gathered_64_air_objects_at_a
     assert!(regions > 3_000, "{regions}");
 
     let mut air = Captured::with_capacities(&ample());
-    let job = AirWingJob {
+    let mut job = AirWingJob {
         sources: scale.census.clone(),
         source_outcome: Outcome::Rows {
             len: scale.census.len(),
         },
         ..Default::default()
     };
-    air.install_owned_mission_identities(&job);
+    air.install_owned_mission_identities(&mut job);
     let mut wings = air.identities.first[..scale.census.len()].to_vec();
     wings.sort_unstable_by_key(|wing| wing.mission_pointer);
 
     let memory = Counted::new(&scale.world);
-    let mut rows = vec![cair_regional_mission::Row::default(); expected.len()];
-    let walk =
-        cair_regional_mission::walk(&memory, BASE, scale.world.game_state, &wings, &mut rows);
+    let mut rows = Vec::new();
+    let walk = cair_regional_mission::walk_with_diagnostic_growing(
+        &memory,
+        BASE,
+        scale.world.game_state,
+        &wings,
+        &mut rows,
+        &mut Default::default(),
+    );
     assert_eq!(
         walk,
         Outcome::Rows {
             len: expected.len()
         }
     );
-    assert_eq!(rows, expected);
+    assert_eq!(&rows[..expected.len()], expected);
     // The roster's slot pointers and identities per 64 slots, then the
     // headers of 64 country air objects per gather: one for each 64 objects.
     let slots = COUNTRIES as usize + 1;
@@ -918,99 +934,21 @@ fn registrations_at_5000_countries_are_complete_and_gathered_64_air_objects_at_a
     }
 }
 
-/// The pack at 5,000 countries from its default capacities: the census
-/// outgrows the identity arena, then the registrations theirs, then the
-/// witnesses and mine pairs theirs; each growth completes the next hour,
-/// and the joins never publish rows over an incomplete registration census.
+/// Cold worker storage captures every mission, witness and mine pair on its
+/// first 5,000-country hour. Larger later content needs no unpublished retry.
 #[test]
-fn mission_tables_grow_from_the_defaults_to_5000_countries() {
+fn mission_tables_grow_before_the_first_5000_country_publication() {
     let scale = Scale::new();
     let registrations = scale.registrations();
     let witnesses = scale.witnesses();
     let mines = scale.mines();
     let mut capacity = Capacities::default();
-    assert!(scale.census.len() > capacity.wings);
-    assert!(registrations.len() > capacity.rows[7]);
-    assert!(witnesses.len() > capacity.rows[8]);
-    assert!(mines.len() > capacity.rows[9]);
+    capacity.rows[7..].fill(0);
+    capacity.wings = 0;
     let mut air = Captured::with_capacities(&capacity);
     let joins = Outcome::Unavailable {
         reason: "air mission joins lack the complete registration census",
     };
-
-    let outcomes = scale.hour(&scale.census, &mut air);
-    assert_eq!(
-        outcomes[7..10],
-        [
-            Outcome::Unavailable {
-                reason: "registered missions lack the complete wing census"
-            },
-            joins,
-            joins
-        ]
-    );
-    air.grow(&mut capacity);
-    assert!(capacity.wings >= scale.census.len());
-
-    let outcomes = scale.hour(&scale.census, &mut air);
-    let rows = capacity.rows[7];
-    assert_eq!(
-        outcomes[7..10],
-        [
-            Outcome::Truncated {
-                len: rows,
-                unread_rows: (registrations.len() - rows) as u32
-            },
-            joins,
-            joins
-        ]
-    );
-    assert_eq!(air.registrations.rows[..rows], registrations[..rows]);
-    air.grow(&mut capacity);
-    assert!(capacity.rows[7] >= registrations.len());
-
-    let outcomes = scale.hour(&scale.census, &mut air);
-    let (probes, pairs) = (capacity.rows[8], capacity.rows[9]);
-    assert_eq!(
-        outcomes[7..10],
-        [
-            Outcome::Rows {
-                len: registrations.len()
-            },
-            Outcome::Truncated {
-                len: probes,
-                unread_rows: (witnesses.len() - probes) as u32
-            },
-            Outcome::Truncated {
-                len: pairs,
-                unread_rows: (mines.len() - pairs) as u32
-            }
-        ]
-    );
-    let tables = air.tables();
-    let TableView::Truncated { rows, missing } = &tables[8] else {
-        panic!("truncated witnesses expected");
-    };
-    assert_eq!(
-        (
-            rows.rows::<tables::AirReferenceWitnesses>().unwrap(),
-            *missing
-        ),
-        (
-            &witness_rows(&witnesses[..probes])[..],
-            (witnesses.len() - probes) as u32
-        )
-    );
-    let TableView::Truncated { rows, missing } = &tables[9] else {
-        panic!("truncated mine levels expected");
-    };
-    assert_eq!(
-        (rows.rows::<tables::NavalMineLevels>().unwrap(), *missing),
-        (&mines[..pairs], (mines.len() - pairs) as u32)
-    );
-    air.grow(&mut capacity);
-    assert!(capacity.rows[8] >= witnesses.len() && capacity.rows[9] >= mines.len());
-
     let outcomes = scale.hour(&scale.census, &mut air);
     // AirBases is complete and empty, so every witness keeps its fields.
     assert_eq!(outcomes[1], Outcome::Rows { len: 0 });
@@ -1042,6 +980,15 @@ fn mission_tables_grow_from_the_defaults_to_5000_countries() {
         witness_rows(&witnesses)
     );
     assert_eq!(complete::<tables::NavalMineLevels>(&tables[9]), mines);
+
+    // Content can grow without a population change. Discard only output
+    // preparation and prove that a later hour publishes the complete demand.
+    air.registrations.rows.clear();
+    air.references.rows.clear();
+    air.mines.rows.clear();
+    air.handles.clear();
+    let later = scale.hour(&scale.census, &mut air);
+    assert_eq!(later[7..10], outcomes[7..10]);
 
     // A registered wing missing from the census fails the registrations,
     // and the joins with them.

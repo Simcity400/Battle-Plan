@@ -16,6 +16,48 @@ use super::*;
 use crate::province_graph::Crossing as Authored;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[test]
+fn transport_exposure_uses_first_native_distance_non_neighbour_unity_and_embark_define() {
+    let graph = MoveGraph {
+        index: vec![NONE, 0, 1, 2],
+        ids: vec![1, 2, 3],
+        kinds: vec![Some(0), Some(0), Some(1)],
+        ranges: vec![Some((0, 2)), Some((2, 2)), Some((2, 2))],
+        edges: vec![
+            Edge {
+                to: 1,
+                distance: Some(-31),
+                cost: Cost::Moving,
+                crossing: NONE,
+            },
+            Edge {
+                to: 1,
+                distance: Some(99),
+                cost: Cost::Moving,
+                crossing: NONE,
+            },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(graph.transport_exposure_distance(1, 2, 700_000), Ok(-31));
+    assert_eq!(
+        graph.transport_exposure_distance(2, 1, 700_000),
+        Ok(100_000)
+    );
+    assert_eq!(
+        graph.transport_exposure_distance(1, 3, 700_000),
+        Ok(700_000)
+    );
+    assert_eq!(
+        graph.transport_exposure_distance(3, 1, 700_000),
+        Ok(100_000)
+    );
+    assert!(graph.transport_exposure_distance(4, 1, 700_000).is_err());
+    let mut refused = graph;
+    refused.edges[0].distance = None;
+    assert!(refused.transport_exposure_distance(1, 2, 700_000).is_err());
+}
+
 #[derive(Default)]
 struct World {
     cost_friendly: BTreeSet<(Country, Country)>,
@@ -23,6 +65,7 @@ struct World {
     state_owners: BTreeMap<u32, Country>,
     wars: BTreeSet<(Country, Country)>,
     access: BTreeSet<(Country, Country)>,
+    docking: BTreeSet<(Country, Country)>,
     factions: BTreeMap<Country, u64>,
     overlords: BTreeMap<Country, Country>,
     occupy_non_war: BTreeSet<Country>,
@@ -38,6 +81,14 @@ struct World {
     modes: BTreeMap<(Country, u32), u8>,
     /// Provinces whose controller is not recorded.
     unknown: BTreeSet<u32>,
+    /// Override the raw-positive gate while canonical controllers stay linked.
+    raw_positive: Option<BTreeSet<u32>>,
+    raw_owner_positive: Option<BTreeSet<u32>>,
+    rail_connections: BTreeSet<(u32, u32)>,
+    railway_groups: BTreeMap<u64, u64>,
+    task_force_access: BTreeSet<(u64, u32)>,
+    submarines: BTreeSet<u64>,
+    task_force_hostile_allows: BTreeSet<(u64, u32)>,
 }
 
 impl MoveWorld for World {
@@ -49,6 +100,9 @@ impl MoveWorld for World {
     }
     fn military_access(&self, a: Country, b: Country) -> Fact<bool> {
         Ok(self.access.contains(&(a, b)))
+    }
+    fn docking_rights(&self, a: Country, b: Country) -> Fact<bool> {
+        Ok(self.docking.contains(&(a, b)))
     }
     fn subject_tie(&self, a: Country, b: Country) -> Fact<bool> {
         Ok(self.overlords.get(&a) == Some(&b) || self.overlords.get(&b) == Some(&a))
@@ -71,8 +125,20 @@ impl MoveWorld for World {
         }
         Ok(self.controllers.get(&province).copied().unwrap_or(0))
     }
+    fn controller_raw_positive(&self, province: u32) -> Fact<bool> {
+        if let Some(positive) = &self.raw_positive {
+            return Ok(positive.contains(&province));
+        }
+        Ok(self.controller(province)? as i32 > 0)
+    }
     fn state_owner(&self, province: u32) -> Fact<Country> {
         Ok(self.state_owners.get(&province).copied().unwrap_or(0))
+    }
+    fn state_owner_raw_positive(&self, province: u32) -> Fact<bool> {
+        if let Some(positive) = &self.raw_owner_positive {
+            return Ok(positive.contains(&province));
+        }
+        Ok(self.state_owner(province)? as i32 > 0)
     }
     fn demilitarized(&self, _: u32) -> Fact<bool> {
         Ok(false)
@@ -98,6 +164,24 @@ impl MoveWorld for World {
     }
     fn naval_base_active(&self, province: u32) -> Fact<bool> {
         Ok(self.bases.get(&province).copied().unwrap_or(false))
+    }
+    fn counter_rail_connected(&self, from: u32, to: u32) -> Fact<bool> {
+        Ok(self.rail_connections.contains(&(from, to)))
+    }
+    fn counter_railway_orders_group(&self, handle: u64) -> Fact<u64> {
+        self.railway_groups
+            .get(&handle)
+            .copied()
+            .ok_or_else(|| format!("railway gun {handle} orders group is unavailable"))
+    }
+    fn counter_task_force_access(&self, handle: u64, to: u32) -> Fact<bool> {
+        Ok(self.task_force_access.contains(&(handle, to)))
+    }
+    fn counter_task_force_submarine(&self, handle: u64) -> Fact<bool> {
+        Ok(self.submarines.contains(&handle))
+    }
+    fn counter_task_force_hostile_allows(&self, handle: u64, to: u32) -> Fact<bool> {
+        Ok(self.task_force_hostile_allows.contains(&(handle, to)))
     }
     fn port_sea(&self, province: u32) -> Fact<u32> {
         Ok(self.ports.get(&province).copied().unwrap_or(0))
@@ -183,6 +267,33 @@ fn invasion_costs_keep_the_native_non_admissible_heuristic_and_zero_slot() {
         }
         .invasion_route(&army, Some(1), 3, 3),
         Ok(vec![3])
+    );
+}
+
+#[test]
+fn invasion_unsupported_content_is_refused_before_destination_admission() {
+    let (mut graph, mut geometry) = map();
+    let mut world = world();
+    world.unknown.insert(2);
+    let moves = MoveGraph::new(&graph, &geometry);
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .invasion_route(&army(), None, 99, 2),
+        Err("unit path source 99 is undefined".into())
+    );
+    geometry.centroids.insert(65_536, [0, 0]);
+    graph.edges.insert(65_536, vec![]);
+    let moves = MoveGraph::new(&graph, &geometry);
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .invasion_route(&army(), None, 1, 2),
+        Err("unit path province id exceeds the native u16 node representation".into())
     );
 }
 
@@ -355,6 +466,608 @@ fn army() -> Army {
         organisation: 500_000,
         ..Army::default()
     }
+}
+
+#[test]
+fn counter_route_excludes_source_and_retains_equal_endpoint_success() {
+    let (graph, geometry) = map();
+    let moves = MoveGraph::new(&graph, &geometry);
+    let world = world();
+    let mover = Mover {
+        graph: &moves,
+        world: &world,
+    };
+    assert_eq!(
+        mover.counter_route(&army(), 1, 4, CounterRequest::default()),
+        Ok(vec![2, 3, 4])
+    );
+    assert_eq!(
+        mover.native_route(&army(), 1, 1, None, |_, _| Ok(true)),
+        Ok(Some(vec![]))
+    );
+    assert_eq!(
+        mover.counter_route(&army(), 1, 1, CounterRequest::default()),
+        Ok(vec![])
+    );
+}
+
+#[test]
+fn transport_risk_route_uses_one_forced_search_without_counter_fallback() {
+    let (graph, geometry) = map();
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.ports.extend([(1, 5), (3, 5)]);
+    let mover = Mover {
+        graph: &moves,
+        world: &world,
+    };
+    // The ordinary counter route succeeds on land. E8B8E0's +29 path cannot
+    // use land-to-land edges and does not retry as an ordinary counter route.
+    assert_eq!(
+        mover.counter_route(&army(), 1, 4, CounterRequest::default()),
+        Ok(vec![2, 3, 4])
+    );
+    assert_eq!(
+        mover.transport_risk_route(&army(), 1, 4, CounterClass::Army),
+        Ok(None)
+    );
+    assert_eq!(
+        mover.transport_risk_route(&army(), 1, 3, CounterClass::Army),
+        Ok(Some(vec![5, 3]))
+    );
+    assert_eq!(
+        mover.transport_risk_route(&army(), 1, 1, CounterClass::Army),
+        Ok(Some(vec![]))
+    );
+    // A planned source is legal here, independently of actual vf70 location.
+    assert_eq!(
+        mover.transport_risk_route(&army(), 3, 1, CounterClass::Railway(7)),
+        Ok(Some(vec![5, 1]))
+    );
+    // E15A20's +28 is zero even for a stored exiled unit.
+    let exiled = Army {
+        exiled: true,
+        ..army()
+    };
+    assert_eq!(
+        mover.transport_risk_route(&exiled, 1, 3, CounterClass::Army),
+        Ok(Some(vec![5, 3]))
+    );
+}
+
+#[test]
+fn local_counter_mode_falls_back_from_rail_admission_but_strategic_does_not() {
+    let (graph, geometry) = map();
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.controllers.insert(2, 2);
+    world.wars.insert((1, 2));
+    let mover = Mover {
+        graph: &moves,
+        world: &world,
+    };
+    assert_eq!(
+        mover.counter_route(
+            &army(),
+            1,
+            2,
+            CounterRequest {
+                local_option: true,
+                strategic: false,
+                ..Default::default()
+            }
+        ),
+        Ok(vec![2])
+    );
+    assert_eq!(
+        mover.counter_route(
+            &army(),
+            1,
+            2,
+            CounterRequest {
+                local_option: false,
+                strategic: true,
+                ..Default::default()
+            }
+        ),
+        Ok(vec![])
+    );
+}
+
+#[test]
+fn forced_counter_route_sea_postfilter_uses_base_presence_not_active_level() {
+    let (mut graph, mut geometry) = map();
+    geometry.centroids.insert(6, [60, 5]);
+    geometry.land.insert(6);
+    graph.edges.get_mut(&5).unwrap().push((6, Some(50_000)));
+    graph.edges.insert(6, vec![(5, Some(50_000))]);
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.controllers.insert(6, 1);
+    world.state_owners.insert(6, 1);
+    world.ports.extend([(1, 5), (6, 5)]);
+    let request = CounterRequest {
+        local_option: true,
+        strategic: false,
+        ..Default::default()
+    };
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .counter_route(&army(), 1, 6, CounterRequest::default()),
+        Ok(vec![5, 6])
+    );
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .counter_route(&army(), 1, 6, request),
+        Ok(vec![])
+    );
+    world.bases.extend([(1, false), (6, false)]);
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .counter_route(&army(), 1, 6, request),
+        Ok(vec![5, 6])
+    );
+}
+
+#[test]
+fn exiled_counter_landing_skips_access_and_visible_fleet_operands() {
+    let (mut graph, mut geometry) = map();
+    geometry.centroids.insert(6, [60, 5]);
+    geometry.land.insert(6);
+    graph.edges.insert(5, vec![(6, Some(50_000))]);
+    graph.edges.insert(6, vec![]);
+    cross(
+        &mut graph,
+        5,
+        6,
+        Authored {
+            kind: SEA_CROSSING,
+            through: 5,
+            rule: None,
+        },
+    );
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.unknown.insert(6);
+    world.straits.insert(5, StraitFleet::Visible);
+    let army = Army {
+        location: 5,
+        exiled: true,
+        ..army()
+    };
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .counter_route(&army, 5, 6, CounterRequest::default()),
+        Ok(vec![6])
+    );
+}
+
+#[test]
+fn native_land_mass_ignores_cost_and_rules_but_excludes_kind_four() {
+    let (mut graph, geometry) = map();
+    graph.edges.get_mut(&2).unwrap()[1].1 = None;
+    graph.edges.get_mut(&3).unwrap()[0].1 = Some(0);
+    cross(&mut graph, 2, 3, ruled("SHUT"));
+    let moves = MoveGraph::new(&graph, &geometry);
+    assert_eq!(moves.land_mass(1), moves.land_mass(4));
+    cross(
+        &mut graph,
+        2,
+        3,
+        Authored {
+            kind: IMPASSABLE,
+            through: -1,
+            rule: None,
+        },
+    );
+    let moves = MoveGraph::new(&graph, &geometry);
+    assert_ne!(moves.land_mass(1).unwrap(), moves.land_mass(4).unwrap());
+}
+
+#[test]
+fn raw_positive_controller_linked_to_zero_still_reaches_native_war_gate() {
+    let (graph, geometry) = map();
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.controllers.extend([(1, 2), (2, 0)]);
+    world.wars.insert((0, 1));
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .crosses_other_war(1, 1, 2),
+        Ok(false)
+    );
+    world.raw_positive = Some(BTreeSet::from([1, 2]));
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .crosses_other_war(1, 1, 2),
+        Ok(true)
+    );
+}
+
+#[test]
+fn positive_raw_state_owner_linked_to_zero_does_not_exempt_foreign_access() {
+    let (graph, geometry) = map();
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.state_owners.insert(2, 0);
+    world.controllers.insert(2, 3);
+    world.raw_owner_positive = Some(BTreeSet::from([2]));
+    let access = |world: &World| {
+        let mover = Mover {
+            graph: &moves,
+            world,
+        };
+        (
+            mover.has_province_access(1, 2),
+            mover.move_access(1, 2),
+            mover.naval_move_access(1, 2),
+        )
+    };
+    assert_eq!(access(&world), (Ok(false), Ok(false), Ok(false)));
+    world.docking.insert((1, 3));
+    assert_eq!(access(&world), (Ok(false), Ok(false), Ok(true)));
+    world.docking.clear();
+    world.raw_owner_positive = Some(BTreeSet::new());
+    world.unknown.insert(2); // nonpositive owner skips controller/relation demand
+    assert_eq!(access(&world), (Ok(true), Ok(true), Ok(true)));
+}
+
+#[test]
+fn railway_counter_requires_directed_connections_but_transfer_uses_port_links() {
+    let (graph, geometry) = map();
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    let request = CounterRequest {
+        class: CounterClass::Railway(77),
+        ..Default::default()
+    };
+    let route = |world: &World, unit: &Army, from, to| {
+        Mover {
+            graph: &moves,
+            world,
+        }
+        .counter_route(unit, from, to, request)
+    };
+    assert_eq!(route(&world, &army(), 1, 4), Ok(vec![]));
+    world.rail_connections.extend([(1, 2), (2, 3), (3, 4)]);
+    assert_eq!(route(&world, &army(), 1, 4), Ok(vec![2, 3, 4]));
+    let reverse = Army {
+        location: 4,
+        ..army()
+    };
+    assert_eq!(route(&world, &reverse, 4, 1), Ok(vec![]));
+    // Forced sea transfer neither demands rail nodes nor an orders group.
+    world.rail_connections.clear();
+    world.ports.insert(1, 5);
+    assert_eq!(route(&world, &army(), 1, 5), Ok(vec![5]));
+}
+
+#[test]
+fn railway_counter_reads_actual_group_only_at_the_border_conflict_gate() {
+    let (graph, geometry) = map();
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.rail_connections.insert((1, 2));
+    let request = CounterRequest {
+        class: CounterClass::Railway(77),
+        ..Default::default()
+    };
+    let route = |world: &World| {
+        Mover {
+            graph: &moves,
+            world,
+        }
+        .counter_route(&army(), 1, 2, request)
+    };
+    assert_eq!(route(&world), Ok(vec![2]));
+    world.conflicts.insert(2, vec![8]);
+    assert_eq!(
+        route(&world),
+        Err("railway gun 77 orders group is unavailable".into())
+    );
+    world.railway_groups.insert(77, 0);
+    assert_eq!(route(&world), Ok(vec![]));
+    world.railway_groups.insert(77, 8);
+    assert_eq!(route(&world), Ok(vec![2]));
+    world.railway_groups.clear();
+    world.conflicts.insert(1, vec![]);
+    assert_eq!(route(&world), Ok(vec![2]));
+}
+
+#[test]
+fn railway_mode_two_skips_army_region_policy_but_keeps_war_and_combat_gates() {
+    let (mut graph, mut geometry) = map();
+    geometry.centroids.insert(6, [60, 5]);
+    graph.edges.insert(5, vec![(6, Some(50_000))]);
+    graph.edges.insert(6, vec![]);
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.regions.extend([(5, 1), (6, 2)]);
+    world.modes.insert((1, 2), 2);
+    let unit = Army {
+        location: 5,
+        naval_transfer: true,
+        ..army()
+    };
+    let route = |world: &World, class| {
+        Mover {
+            graph: &moves,
+            world,
+        }
+        .counter_route(
+            &unit,
+            5,
+            6,
+            CounterRequest {
+                class,
+                strategic: true,
+                local_option: false,
+            },
+        )
+    };
+    assert_eq!(route(&world, CounterClass::Army), Ok(vec![]));
+    assert_eq!(route(&world, CounterClass::Railway(77)), Ok(vec![6]));
+    world.combats.insert(6);
+    assert_eq!(route(&world, CounterClass::Railway(77)), Ok(vec![]));
+    world.combats.clear();
+    world.controllers.insert(6, 2);
+    world.wars.insert((1, 2));
+    assert_eq!(route(&world, CounterClass::Railway(77)), Ok(vec![]));
+}
+
+#[test]
+fn task_force_counter_uses_naval_output_and_directional_docking_rights() {
+    let (mut graph, mut geometry) = map();
+    geometry.centroids.insert(6, [60, 5]);
+    graph
+        .edges
+        .insert(5, vec![(6, Some(50_000)), (3, Some(50_000))]);
+    graph.edges.insert(6, vec![]);
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.controllers.extend([(3, 3), (6, 3)]);
+    world.state_owners.extend([(3, 3), (6, 3)]);
+    world.ports.insert(3, 5);
+    world.task_force_access.extend([(77, 3), (77, 6)]);
+    let unit = Army {
+        location: 5,
+        ..army()
+    };
+    let request = CounterRequest {
+        class: CounterClass::TaskForce(77),
+        ..Default::default()
+    };
+    let route = |world: &World, to| {
+        Mover {
+            graph: &moves,
+            world,
+        }
+        .counter_route(&unit, 5, to, request)
+    };
+    assert_eq!(route(&world, 6), Ok(vec![6])); // foreign sea needs no land access
+    assert_eq!(route(&world, 3), Ok(vec![]));
+    world.occupy_non_war.insert(1);
+    world.enemies.extend([(1, vec![9]), (3, vec![9])]);
+    world.docking.insert((3, 1));
+    assert_eq!(route(&world, 3), Ok(vec![]));
+    world.docking.insert((1, 3));
+    assert_eq!(route(&world, 3), Ok(vec![3]));
+    geometry.lake.insert(6);
+    let moves = MoveGraph::new(&graph, &geometry);
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .counter_route(&unit, 5, 6, request),
+        Ok(vec![])
+    );
+}
+
+#[test]
+fn task_force_land_mass_exclusion_survives_forced_and_active_transfer() {
+    let (mut graph, mut geometry) = map();
+    geometry.centroids.insert(6, [60, 5]);
+    geometry.land.insert(6);
+    graph.edges.insert(6, vec![(5, Some(50_000))]);
+    graph.edges.get_mut(&5).unwrap().push((6, Some(50_000)));
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.controllers.insert(6, 1);
+    world.state_owners.insert(6, 1);
+    world.ports.extend([(1, 5), (6, 5)]);
+    world.task_force_access.extend([(77, 5), (77, 6)]);
+    let mover = Mover {
+        graph: &moves,
+        world: &world,
+    };
+    assert_eq!(
+        mover.counter_route(&army(), 1, 6, CounterRequest::default()),
+        Ok(vec![5, 6])
+    );
+    for naval_transfer in [false, true] {
+        let unit = Army {
+            naval_transfer,
+            ..army()
+        };
+        assert_eq!(
+            mover.counter_route(
+                &unit,
+                1,
+                6,
+                CounterRequest {
+                    class: CounterClass::TaskForce(77),
+                    ..Default::default()
+                }
+            ),
+            Ok(vec![])
+        );
+    }
+    // Even on one land mass, task forces cannot use ordinary land edges.
+    world.task_force_access.insert((77, 2));
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .counter_route(
+            &army(),
+            1,
+            2,
+            CounterRequest {
+                class: CounterClass::TaskForce(77),
+                ..Default::default()
+            }
+        ),
+        Ok(vec![])
+    );
+}
+
+#[test]
+fn task_force_counter_rule_selects_submarines_and_exile_keeps_class_gates() {
+    let (mut graph, mut geometry) = map();
+    geometry.centroids.insert(6, [60, 5]);
+    graph.edges.insert(5, vec![(6, Some(50_000))]);
+    graph.edges.insert(6, vec![]);
+    graph.rules.extend(
+        crate::adjacency_rules::parse(
+            b"adjacency_rule = {
+        name = SUB_ONLY is_friend = { always = yes }
+        friend = { army = no navy = no submarine = yes }
+    }",
+        )
+        .unwrap(),
+    );
+    cross(&mut graph, 5, 6, ruled("SUB_ONLY"));
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.task_force_access.insert((77, 6));
+    let unit = Army {
+        location: 5,
+        ..army()
+    };
+    let request = CounterRequest {
+        class: CounterClass::TaskForce(77),
+        ..Default::default()
+    };
+    let route = |world: &World| {
+        Mover {
+            graph: &moves,
+            world,
+        }
+        .counter_route(&unit, 5, 6, request)
+    };
+    assert_eq!(route(&world), Ok(vec![]));
+    world.submarines.insert(77); // also the native result for an empty roster
+    assert_eq!(route(&world), Ok(vec![6]));
+    // A visible strait still blocks a task force, unless exile bypasses it.
+    cross(
+        &mut graph,
+        5,
+        6,
+        Authored {
+            kind: SEA_CROSSING,
+            through: 5,
+            rule: None,
+        },
+    );
+    let moves = MoveGraph::new(&graph, &geometry);
+    world.straits.insert(5, StraitFleet::Visible);
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .counter_route(&unit, 5, 6, request),
+        Ok(vec![])
+    );
+    world.task_force_access.clear();
+    let exiled = Army {
+        exiled: true,
+        ..unit
+    };
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .counter_route(&exiled, 5, 6, request),
+        Ok(vec![6])
+    );
+    world.ports.insert(1, 5);
+    let exiled = Army {
+        exiled: true,
+        ..army()
+    };
+    assert_eq!(
+        Mover {
+            graph: &moves,
+            world: &world
+        }
+        .counter_route(&exiled, 1, 5, request),
+        Ok(vec![])
+    );
+}
+
+#[test]
+fn task_force_mode_two_uses_hostile_gate_and_preserves_local_fallback() {
+    let (mut graph, mut geometry) = map();
+    geometry.centroids.insert(6, [60, 5]);
+    graph.edges.insert(5, vec![(6, Some(50_000))]);
+    graph.edges.insert(6, vec![]);
+    let moves = MoveGraph::new(&graph, &geometry);
+    let mut world = world();
+    world.task_force_access.insert((77, 6));
+    world.controllers.insert(6, 3);
+    world.state_owners.insert(6, 3);
+    world.wars.insert((1, 3));
+    world.combats.insert(6);
+    world.regions.extend([(5, 1), (6, 2)]);
+    world.modes.insert((1, 2), 2);
+    let unit = Army {
+        location: 5,
+        ..army()
+    };
+    let route = |world: &World, strategic| {
+        Mover {
+            graph: &moves,
+            world,
+        }
+        .counter_route(
+            &unit,
+            5,
+            6,
+            CounterRequest {
+                class: CounterClass::TaskForce(77),
+                strategic,
+                local_option: !strategic,
+            },
+        )
+    };
+    assert_eq!(route(&world, true), Ok(vec![]));
+    assert_eq!(route(&world, false), Ok(vec![6]));
+    world.task_force_hostile_allows.insert((77, 6));
+    assert_eq!(route(&world, true), Ok(vec![6])); // no army war/combat/region test
+    world.task_force_access.clear();
+    assert_eq!(route(&world, true), Ok(vec![])); // actual vf70 remains mandatory
 }
 
 fn reaches(
@@ -982,4 +1695,76 @@ fn the_reach_equals_a_plain_flood_fill_on_random_graphs() {
     }
     // Every answer occurs often enough to test.
     assert!(outcomes.iter().all(|&count| count > 100), "{outcomes:?}");
+}
+
+// Append to existing installed-content/src/unit_path/tests.rs. All UNRUN.
+
+#[test]
+fn selected_first_neighbour_does_not_demand_distance_or_other_crossing_fields() {
+    let (mut graph, geometry) = map();
+    graph
+        .edges
+        .insert(1, vec![(2, None), (3, Some(1)), (2, Some(99))]);
+    graph.crossings.insert(
+        (1, 2),
+        Authored {
+            kind: 3,
+            ..Default::default()
+        },
+    );
+    let moves = MoveGraph::new(&graph, &geometry);
+    assert_eq!(
+        moves.selected_neighbour(1, 2),
+        Ok(Some(SelectedNeighbour { through: Ok(None) }))
+    );
+    assert_eq!(moves.selected_neighbour(1, 99), Ok(None));
+    assert!(moves.selected_neighbour(99, 2).is_err());
+    assert_eq!(moves.selected_neighbour_index(1, 2), Ok(Some(0)));
+    assert_eq!(moves.selected_neighbour_index(1, 3), Ok(Some(1)));
+    assert_eq!(moves.selected_neighbour_index(1, 99), Ok(None));
+    assert!(moves.selected_neighbour_index(99, 2).is_err());
+}
+
+#[test]
+fn selected_strait_sea_through_is_shared_and_invalid_through_is_refused() {
+    let (mut graph, geometry) = map();
+    graph.crossings.insert(
+        (1, 2),
+        Authored {
+            kind: SEA_CROSSING,
+            through: 5,
+            ..Default::default()
+        },
+    );
+    let moves = MoveGraph::new(&graph, &geometry);
+    assert_eq!(
+        moves.selected_neighbour(1, 2),
+        Ok(Some(SelectedNeighbour {
+            through: Ok(Some(5))
+        }))
+    );
+    graph.crossings.get_mut(&(1, 2)).unwrap().through = -3;
+    let moves = MoveGraph::new(&graph, &geometry);
+    let selected = moves.selected_neighbour(1, 2).unwrap().unwrap();
+    assert!(selected.through.is_err());
+}
+
+#[test]
+fn selected_non_sea_or_land_lake_through_never_requests_fleet() {
+    let (mut graph, geometry) = map();
+    for (kind, through) in [(2, 5), (SEA_CROSSING, 0), (SEA_CROSSING, 1)] {
+        graph.crossings.insert(
+            (1, 2),
+            Authored {
+                kind,
+                through,
+                ..Default::default()
+            },
+        );
+        let moves = MoveGraph::new(&graph, &geometry);
+        assert_eq!(
+            moves.selected_neighbour(1, 2).unwrap().unwrap().through,
+            Ok(None)
+        );
+    }
 }

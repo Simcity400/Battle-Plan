@@ -697,3 +697,91 @@ fn core_identity_collisions_failures_and_next_walk_use_original_sources() {
     assert_eq!(census.rows[0].template, expected_collision[1]);
     assert_eq!(census.rows[0].orders_group, expected_collision[2]);
 }
+
+#[test]
+fn worker_first_inputs_and_later_mod_rosters_fit_original_headers_for_5000_countries() {
+    for countries in [1500, 5000] {
+        let mut census = Census::new_worker();
+        for per in [1, 4] {
+            let bytes = many::world(countries, per);
+            let memory = Observed {
+                bytes: &bytes,
+                reads: RefCell::new(Vec::new()),
+                fault: None,
+                fault_at: None,
+            };
+            census.capture_inputs_growing(&memory, 0, many::GAME_STATE);
+            let required = (countries * per) as usize;
+            assert!(!census.overflowed);
+            let inputs = census.unit_inputs().unwrap();
+            assert_eq!(inputs.outcome(), Outcome::Rows { len: required });
+            assert_eq!(
+                inputs.intel_sources().outcome,
+                Outcome::Rows { len: required }
+            );
+            assert_eq!(inputs.seeds().len(), required);
+            assert_eq!(census.required_counts, countries as usize + 1);
+            assert!(census.counts.len() > countries as usize);
+            for slot in 1..=countries {
+                assert_eq!(
+                    memory
+                        .reads
+                        .borrow()
+                        .iter()
+                        .filter(|&&(at, _)| at == many::country(slot) + ccountry::DIVISIONS)
+                        .count(),
+                    1
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn growing_inputs_keep_original_fault_precedence_and_read_trace() {
+    let bytes = many::world(4, 2);
+    let direct = Observed {
+        bytes: &bytes,
+        reads: RefCell::new(Vec::new()),
+        fault: None,
+        fault_at: None,
+    };
+    let mut fixed = Census::new();
+    fixed.capture_inputs(&direct, 0, many::GAME_STATE);
+    let count = direct.reads.borrow().len();
+    for ordinal in 0..count {
+        let fixed_memory = Observed {
+            bytes: &bytes,
+            reads: RefCell::new(Vec::new()),
+            fault: None,
+            fault_at: Some(ordinal),
+        };
+        let growing_memory = Observed {
+            bytes: &bytes,
+            reads: RefCell::new(Vec::new()),
+            fault: None,
+            fault_at: Some(ordinal),
+        };
+        let mut fixed = Census::new();
+        let mut growing = Census::new();
+        growing.counts.clear();
+        growing.entries = Vec::new();
+        growing.unit_inputs = Some(Arc::new(UnitInputs::new(0)));
+        fixed.capture_inputs(&fixed_memory, 0, many::GAME_STATE);
+        growing.capture_inputs_growing(&growing_memory, 0, many::GAME_STATE);
+        assert_eq!(
+            growing.census_result, fixed.census_result,
+            "fault {ordinal}"
+        );
+        assert_eq!(
+            growing.unit_inputs().unwrap().outcome(),
+            fixed.unit_inputs().unwrap().outcome(),
+            "fault {ordinal}"
+        );
+        assert_eq!(
+            *growing_memory.reads.borrow(),
+            *fixed_memory.reads.borrow(),
+            "fault {ordinal}"
+        );
+    }
+}

@@ -275,6 +275,86 @@ fn meshless_aircraft_use_the_shared_actor_player() {
 }
 
 #[test]
+fn lazy_explicit_aircraft_keep_named_counted_attachment_and_audio_diagnostics() {
+    let layers = ResolvedLayers::default();
+    let map = MapData {
+        width: 1,
+        height: 1,
+        province_ids: vec![0],
+        definitions: Default::default(),
+        country_colors: Default::default(),
+    };
+    let defines = Defines::new().unwrap();
+    let mut assets = AircraftAssets::load(
+        &layers,
+        Decode::default(),
+        &map,
+        &defines,
+        &BTreeMap::new(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assets.roster = Arc::new(roster(
+        r#"
+        entity = { name = OddAircraft
+            attach = { left = AbsentFlap }
+            attach = { right = AbsentFlap }
+            state = { name = idle
+                event = { sound = { soundeffect = hum } }
+                event = { sound = { soundeffect = buzz } }
+            }
+        }
+    "#,
+    ));
+    let selected = super::super::aircraft_model::resolve_lazy(
+        &replay::rows::VariantDefinitionRow {
+            explicit_entity: b"OddAircraft".to_vec(),
+            ..Default::default()
+        },
+        0,
+        &|| panic!("unreached designer"),
+        &|| panic!("unreached graphical override"),
+        &|| panic!("unreached equipment ladder"),
+        &|name| assets.roster.descriptors.entities.contains_key(name),
+    )
+    .unwrap()
+    .unwrap();
+    let slot = assets.resolve(&selected).unwrap();
+    assert_eq!(assets.library().meshes[slot].name, "OddAircraft");
+    let diagnostics = assets.refusals();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|line| { line.contains("OddAircraft -> AbsentFlap") && line.contains("(2)") }),
+        "{diagnostics:?}"
+    );
+    let typed = assets.lazy_diagnostics();
+    assert!(typed.iter().any(|(kind, line)| {
+        *kind == installed_content::DiagnosticKind::Refused
+            && line.contains("AbsentFlap")
+            && line.contains("(2)")
+    }));
+    assert!(typed.iter().any(|(kind, line)| {
+        *kind == installed_content::DiagnosticKind::Warning
+            && line.contains("OddAircraft (2 sound events refused)")
+    }));
+    let report = AircraftPlan::default().report(&assets);
+    assert!(
+        report
+            .iter()
+            .any(|line| line.contains("AbsentFlap") && line.contains("(2)"))
+    );
+    assert!(
+        report
+            .iter()
+            .any(|line| line.contains("OddAircraft (2 sound events refused)"))
+    );
+    assert_eq!(assets.resolve(&selected), Ok(slot));
+    assert_eq!(assets.refusals(), diagnostics);
+    assert_eq!(assets.lazy_diagnostics(), typed);
+}
+
+#[test]
 fn a_plane_attachment_cycle_is_refused_by_name() {
     let roster = roster(
         "entity = { name = plane attach = { root = child } }
@@ -708,7 +788,6 @@ fn wing_batch_discards_remainder_after_choosing_triples() {
             limit: 2,
         },
         single: 1,
-        refusal: None,
     };
     let batches = |planes| fighters.batches(fighters.sizing.units(planes));
     assert_eq!(batches(0), None);
@@ -717,15 +796,13 @@ fn wing_batch_discards_remainder_after_choosing_triples() {
     assert_eq!(batches(100), Some((3, 1)));
     assert_eq!(batches(400), Some((3, 4)));
     // A modded transport step of two singles drops the odd unit; the
-    // loops that compare it with their wings refuse it.
+    // loops that compare it with their wings use the grouped array count.
     let paired = SteppedFamily {
         single: 2,
         ..fighters
     };
     assert_eq!(paired.batches(1), None);
     assert_eq!(paired.batches(2), Some((1, 1)));
-    assert_eq!(paired.counting_wings("refused").refusal, Some("refused"));
-    assert_eq!(fighters.counting_wings("refused"), fighters);
     // A negative division factor floors every positive count to one unit.
     let negative = FamilyDefines {
         factor: -30,
@@ -774,60 +851,6 @@ fn naval_patrol_follows_141237d20() {
 }
 
 #[test]
-fn only_the_a_side_flies_naval_patrol_as_kamikaze() {
-    let patrol = AIR_MISSION_NAVAL_PATROL | 1;
-    assert_eq!(scenario_mission("fighter", "patrol", patrol, 0), "kamikaze");
-    // The B loop's kinds 0/1: the same key, and so the same cap, as any
-    // fighter patrol.
-    let b = scenario_mission("fighter", "patrol", patrol, 1);
-    assert_eq!(rig_key(&format!("fighter_3_{b}"), 0), "fighter_3_patrol");
-    assert_eq!(scenario_mission("fighter", "patrol", 1, 0), "patrol");
-}
-
-/// `14122EFD0`'s kamikaze path ends on too few units without the cap
-/// check (`141232056`), unlike the other viewer/A fighters and scouts.
-#[test]
-fn a_zero_unit_kamikaze_wing_ends_its_loop_unchecked() {
-    let fighters = SteppedFamily {
-        sizing: FamilyDefines {
-            factor: 30,
-            triple: 3,
-            limit: 2,
-        },
-        single: 1,
-        refusal: None,
-    };
-    let patrol = AIR_MISSION_NAVAL_PATROL | 1;
-    assert_eq!(fighters.batches(fighters.sizing.units(0)), None);
-    assert!(!runs_single_cap(Category::Fighter, 0, patrol));
-    assert!(runs_single_cap(Category::Fighter, 0, 1));
-    assert!(!runs_single_cap(Category::Fighter, 1, 1));
-    assert!(runs_single_cap(Category::Scout, 0, patrol));
-    assert!(!runs_single_cap(Category::Transport, 0, 0));
-}
-
-/// `14122EFD0`'s unpaired bomber loops go on after a refused batch
-/// (`141231AF2 -> 141231B6E`); the stepped loops break.
-#[test]
-fn a_refused_unpaired_bomber_skips_only_itself() {
-    let mut caps = Caps::default();
-    let bombers = (5, 0, 0);
-    assert!(caps.admit(bombers, "bomber", "bomber_1_CAS", 1, 1));
-    assert!(!caps.admit(bombers, "bomber", "bomber_1_CAS", 1, 1));
-    assert!(!caps.stopped.contains(&bombers));
-    // The next bomber, of a kind whose cap is free, still flies.
-    assert!(caps.admit(bombers, "bomber", "bomber_3_bombing", 1, 1));
-    // A refused fighter batch ends that side's fighter loop, whatever
-    // kind its next wing would fly.
-    let fighters = (5, 0, 1);
-    assert!(caps.admit(fighters, "fighter", "fighter_1_patrol", 1, 2));
-    assert!(!caps.admit(fighters, "fighter", "fighter_1_patrol", 1, 1));
-    assert!(caps.stopped.contains(&fighters));
-    // The cap is checked before the batch, so a batch can exceed it.
-    assert_eq!(caps.counts[&(5, "fighter_1_patrol".to_owned())], 2);
-}
-
-#[test]
 fn region_draws_keep_first_listings_like_add_province() {
     assert_eq!(first_listings(&[5, 3, 5, 9, 3]), [5, 3, 9]);
 }
@@ -844,21 +867,21 @@ fn a_full_side_skips_the_next_grouping_call() {
     };
     let mut groups = Groups::default();
     for _ in 0..GROUP_CAPACITY {
-        assert!(groups.admit(&visit(0, 0), 1));
+        assert!(groups.admit(&visit(0, 0), 1, 0));
     }
-    assert!(!groups.admit(&visit(0, 0), 1));
+    assert!(!groups.admit(&visit(0, 0), 1, 0));
     // Other groups of the same call still fill.
-    assert!(groups.admit(&visit(0, 0), 4));
+    assert!(groups.admit(&visit(0, 0), 4, 0));
     groups.counts[0] = [GROUP_CAPACITY; 5];
     // A new call on a full side is skipped whole; side B is separate.
-    assert!(!groups.admit(&visit(1, 0), 4));
-    assert!(groups.admit(&visit(2, 1), 1));
+    assert!(!groups.admit(&visit(1, 0), 4, 0));
+    assert!(groups.admit(&visit(2, 1), 1, 0));
     // A new region starts empty.
     let other = Visit {
         region: 6,
         ..visit(3, 0)
     };
-    assert!(groups.admit(&other, 1));
+    assert!(groups.admit(&other, 1, 0));
 }
 
 #[test]
@@ -868,15 +891,15 @@ fn take_off_and_landing_scale_with_the_content_distances() {
         triple: 3,
         limit: 2,
     };
-    let stepped = SteppedFamily {
-        sizing,
-        single: 1,
-        refusal: None,
-    };
+    let stepped = SteppedFamily { sizing, single: 1 };
     let mut defines = FlightDefines {
         fighter: stepped,
         scout: stepped,
         bomber: sizing,
+        bomber_single: 1,
+        dogfight: stepped,
+        fire_threshold: 300_000,
+        carpet_threshold: 200_000,
         transport: stepped,
         training: stepped,
         clock_speed: 0.22,
@@ -899,28 +922,6 @@ fn take_off_and_landing_scale_with_the_content_distances() {
     assert!(defines.takeoff_scale(0.0).is_nan());
     assert_eq!(defines.takeoff_scale(0.5), 1.0);
     assert!(defines.landing_scale(1.0).is_nan());
-}
-
-#[test]
-fn supported_missions_follow_priority_and_training_is_separate() {
-    assert_eq!(
-        family(air_reachability::category(4, 0, 0).unwrap(), 4),
-        Some(("fighter", "patrol"))
-    );
-    assert_eq!(
-        family(air_reachability::category(2 | 8, 17, 0).unwrap(), 2 | 8),
-        Some(("bomber", "CAS"))
-    );
-    assert_eq!(
-        family(air_reachability::category(1 << 14, 17, 0).unwrap(), 1 << 14),
-        Some(("scout", "patrol"))
-    );
-    assert_eq!(
-        family(air_reachability::category(1 << 10, 17, 0).unwrap(), 1 << 10),
-        Some(("transport", "supplying"))
-    );
-    assert_eq!(air_reachability::category(1 << 10, 0, 0), None);
-    assert_eq!(air_reachability::category(0, 0, 0), None);
 }
 
 #[test]
@@ -979,4 +980,330 @@ fn the_initial_gate_uses_the_wings_own_operands() {
     assert!(passes_initial_gate(&wing));
 }
 
+mod paired;
 mod training;
+
+#[test]
+fn bit17_base_equipment_has_only_the_coarse_group_call_gate() {
+    let wing = AirWingRow {
+        mission_mask: 0x20000,
+        ..Default::default()
+    };
+    let visit = Visit {
+        call: 0,
+        side: 0,
+        own: true,
+        region: 7,
+        wing: &wing,
+    };
+    let mut groups = Groups::default();
+    for _ in 0..GROUP_CAPACITY + 1 {
+        assert!(groups.admit(&visit, 2, 0));
+    }
+    assert_eq!(groups.counts[0][2], GROUP_CAPACITY + 1);
+    // Its earlier bomber-definition arm still applies the local cap.
+    let overlapping = AirWingRow {
+        mission_mask: 0x20002,
+        ..wing.clone()
+    };
+    assert!(!groups.admit(
+        &Visit {
+            wing: &overlapping,
+            ..visit
+        },
+        2,
+        9
+    ));
+    assert!(groups.admit(
+        &Visit {
+            wing: &overlapping,
+            ..visit
+        },
+        2,
+        0
+    ));
+    groups.counts[0][..4].fill(GROUP_CAPACITY);
+    assert!(!groups.admit(&Visit { call: 1, ..visit }, 2, 0));
+}
+
+#[test]
+fn first_window_history_distinguishes_older_absence_from_captured_zero() {
+    use replay::{
+        frame::TableView,
+        rows::{AirNavalPatrolHistoryRow, Recorded, TableId, TableRows},
+    };
+    let (mut frame, _) = bloc_war(2);
+    assert_eq!(
+        ScenarioHistory::read(&frame, 1).unwrap().err(),
+        Some("first-window aircraft scenario channels were not recorded")
+    );
+    let witness = AirNavalPatrolHistoryRow::availability_witness(1);
+    *frame.tables[TableId::AirNavalPatrolHistories.index()] =
+        TableView::Complete(TableRows::AirNavalPatrolHistories(vec![witness.clone()]));
+    assert_eq!(
+        ScenarioHistory::read(&frame, 1)
+            .unwrap()
+            .unwrap()
+            .region(7)
+            .unwrap(),
+        [0; 8]
+    );
+    let older = AirNavalPatrolHistoryRow {
+        country: 1,
+        region: 7,
+        scenario_channels: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    *frame.tables[TableId::AirNavalPatrolHistories.index()] =
+        TableView::Complete(TableRows::AirNavalPatrolHistories(vec![older, witness]));
+    let history = ScenarioHistory::read(&frame, 1).unwrap().unwrap();
+    assert_eq!(
+        history.region(7),
+        Err("first-window aircraft scenario channels were not recorded")
+    );
+    assert_eq!(history.region(8), Ok([0; 8]));
+}
+
+#[test]
+fn refused_scenario_history_keeps_other_regions_and_original_naval_channels() {
+    use replay::{
+        frame::TableView,
+        rows::{AirNavalPatrolHistoryRow, Recorded, TableId, TableRows},
+    };
+    let (mut frame, _) = bloc_war(2);
+    let refused = AirNavalPatrolHistoryRow {
+        country: 1,
+        region: 7,
+        index: 0,
+        enemy_ships_sunk_raw: 300_000,
+        our_fighters_lost_raw: 200_000,
+        scenario_channels: Recorded::Value(None),
+    };
+    let healthy = AirNavalPatrolHistoryRow {
+        country: 1,
+        region: 8,
+        index: 0,
+        our_fighters_lost_raw: 22,
+        scenario_channels: Recorded::Value(Some([1, 2, 3, 4, 5, 6, 7])),
+        ..Default::default()
+    };
+    *frame.tables[TableId::AirNavalPatrolHistories.index()] =
+        TableView::Complete(TableRows::AirNavalPatrolHistories(vec![
+            refused,
+            healthy,
+            AirNavalPatrolHistoryRow::availability_witness(1),
+        ]));
+    let history = ScenarioHistory::read(&frame, 1).unwrap().unwrap();
+    assert_eq!(
+        history.region(7),
+        Err("first-window aircraft scenario channels unavailable")
+    );
+    assert_eq!(history.region(8), Ok([1, 2, 22, 3, 4, 5, 6, 7]));
+    let naval = NavalPatrolSources::read(&frame).unwrap().unwrap();
+    assert_eq!(naval.sums[&(1, 7)], (300_000, 200_000));
+    assert_eq!(naval.sums[&(1, 8)], (0, 22));
+}
+
+#[test]
+fn first_window_history_saturates_each_channel_after_each_ordered_record() {
+    use replay::{
+        frame::TableView,
+        rows::{AirNavalPatrolHistoryRow, Recorded, TableId, TableRows},
+    };
+    let (mut frame, _) = bloc_war(2);
+    let limit = engine::air_kamikaze::SUM_LIMIT;
+    let rows = vec![
+        AirNavalPatrolHistoryRow {
+            country: 1,
+            region: 7,
+            index: 2,
+            our_fighters_lost_raw: -20,
+            scenario_channels: Recorded::Value(Some([-20; 7])),
+            ..Default::default()
+        },
+        AirNavalPatrolHistoryRow {
+            country: 1,
+            region: 7,
+            index: 0,
+            our_fighters_lost_raw: limit,
+            scenario_channels: Recorded::Value(Some([limit; 7])),
+            ..Default::default()
+        },
+        AirNavalPatrolHistoryRow {
+            country: 1,
+            region: 7,
+            index: 1,
+            our_fighters_lost_raw: 10,
+            scenario_channels: Recorded::Value(Some([10; 7])),
+            ..Default::default()
+        },
+        AirNavalPatrolHistoryRow::availability_witness(1),
+    ];
+    *frame.tables[TableId::AirNavalPatrolHistories.index()] =
+        TableView::Complete(TableRows::AirNavalPatrolHistories(rows));
+    assert_eq!(
+        ScenarioHistory::read(&frame, 1)
+            .unwrap()
+            .unwrap()
+            .region(7)
+            .unwrap(),
+        [limit - 20; 8]
+    );
+}
+
+#[test]
+fn paired_rig_callbacks_use_defending_side_local_ordinals() {
+    use super::super::entity_animation::{Clip, Node, Rig as ActorRig};
+    let descriptors = mesh::parse_descriptors(br#"
+        entity = { name = actor state = { name = idle } state = { name = success } state = { name = fail } }
+        entity = { name = scenario state = { name = default
+            event = { time = 2 id = d_1_success }
+            event = { time = 3 id = d_2_fail }
+            event = { time = 4 id = a_2_success }
+            event = { time = 5 id = idle }
+            event = { time = 6 id = d_9_success }
+        } }
+    "#, "synthetic.asset").unwrap();
+    let actor = descriptors.inherit("actor").unwrap();
+    let actor = ActorRig {
+        nodes: vec![Node {
+            mesh: Arc::new(mesh::Mesh::default()),
+            native: None,
+            clips: actor
+                .states
+                .values()
+                .flatten()
+                .map(|state| Clip {
+                    state: (*state).clone(),
+                    animation: None,
+                })
+                .collect(),
+            default: "idle".into(),
+            follows_parent: false,
+            parent: None,
+            scale: 1.0,
+            mesh_scale: 1.0,
+            skin_base: None,
+            rigid: 0,
+            locators: BTreeMap::new(),
+        }],
+        ..Default::default()
+    };
+    let bones = scenario_bones(14);
+    let rig = Rig {
+        sides: bones.iter().map(|bone| bone.0).collect(),
+        tracks: vec![Vec::new(); 6],
+        fps: 1.0,
+        duration: 10.0,
+        speed: 2.0,
+        events: descriptors.inherit("scenario").unwrap().states["default"][0]
+            .events
+            .clone(),
+    };
+    let route = Route {
+        points: Vec::new(),
+        arcs: Vec::new(),
+    };
+    let flight = Flight {
+        mesh: 0,
+        wing: 1,
+        region: 7,
+        rig: String::new(),
+        track: 4,
+        origin: [0.0; 3],
+        yaw: 0.0,
+        outgoing: route.clone(),
+        incoming: route,
+        travel: 3.0,
+        delay: 1.0,
+        group_travel: 4.0,
+        phase: 0.0,
+        requests: Arc::default(),
+    };
+    let requests = flight_requests(&flight, &rig, &actor, 2.0);
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.state.as_str())
+            .collect::<Vec<_>>(),
+        ["fail", "idle", "success"]
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.time)
+            .collect::<Vec<_>>(),
+        [2.25, 2.75, 3.0]
+    );
+    assert_eq!(rig_key(scenario_name(14), 3), "fighter_3_vs_fighter_3_fail");
+    assert_eq!(
+        scenario_bones(13),
+        [(0, "fighter1".into()), (1, "fighter2".into())]
+    );
+}
+
+#[test]
+fn strategic_threshold_conversion_uses_native_f32_rounding() {
+    assert_eq!(threshold_raw(0.000005), 1);
+    assert_eq!(threshold_raw(-0.000005), -1);
+    assert_eq!(threshold_raw(1.5), 150_000);
+    assert_eq!(threshold_raw(f32::NAN), i64::MIN);
+    assert_eq!(threshold_raw(f32::INFINITY), i64::MIN);
+}
+
+#[test]
+// Animation's private channel storage requires constructing this fixture via Default.
+#[allow(clippy::field_reassign_with_default)]
+fn scenario_tracks_bind_native_source_ordinals_without_animation_name_aliases() {
+    use super::super::mesh_pose::Source;
+    let source = Source {
+        pdxmesh: true,
+        skeleton: vec![
+            mesh::NativeJoint {
+                name: "root".into(),
+                parent: 255,
+                inverse_bind: [0.0; 12],
+            },
+            mesh::NativeJoint {
+                name: "attachment".into(),
+                parent: 0,
+                inverse_bind: [0.0; 12],
+            },
+        ],
+        entity_locators: Vec::new(),
+        binary_locators: Vec::new(),
+        mesh_scale: 2.0,
+        entity_scale: 3.0,
+        frozen: None,
+        game_data: None,
+    };
+    let mut animation = mesh::Animation::default();
+    animation.samples = 2;
+    animation.fps = 1.0;
+    animation.joints = vec![
+        mesh::AnimationJoint {
+            name: "different_root".into(),
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+            ..Default::default()
+        },
+        mesh::AnimationJoint {
+            name: "different_child".into(),
+            translation: [3.0, 4.0, 5.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: 1.0,
+            ..Default::default()
+        },
+    ];
+    let tracks = scenario_tracks(&source, &animation, &[(0, "attachment".into())]).unwrap();
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(tracks[0].len(), 2);
+    assert_eq!(tracks[0][0].translation, [18.0, 24.0, 30.0]);
+    assert_eq!(tracks[0][0].basis[0], [3.0, 0.0, 0.0]);
+    let error = scenario_tracks(&source, &animation, &[(0, "absent".into())]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("attachment node absent is absent")
+    );
+}

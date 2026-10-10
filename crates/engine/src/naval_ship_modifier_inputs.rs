@@ -9,9 +9,14 @@
 //! setters140C15310/140C16150/140C15E50/140C16CA0 are separate writers too.
 //! Complete source-selection and receiver-lifetime coverage is not certified;
 //! equal source pointers/counts cannot certify unchanged values.
-use crate::{Memory, cnaval_combatant::field, cpdx_array::Array, msvc_string::Text};
+use crate::{
+    Memory,
+    capture_text::{Owned, Value},
+    cnaval_combatant::field,
+    cpdx_array::Array,
+};
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ContextRow {
     pub task_force: u64,
     pub country: u32,
@@ -28,7 +33,7 @@ pub struct ContextRow {
     pub air_base: u64,
     pub air_base_maximum: i32,
     pub air_detection_base: i64,
-    pub terrain_name: Text<256>,
+    pub terrain_name: Owned,
     pub sources: [usize; 2],
 }
 
@@ -92,6 +97,28 @@ pub fn capture_influence(
     Ok([start, capture.buffers.lengths[0] - start])
 }
 
+/// 141610780 reaches four skill-definition accumulators for each resolved
+/// naval HQ influence. Count the same visitor's source and term headers only.
+pub fn influence_demand(
+    memory: &impl Memory,
+    base: usize,
+    wrapper: usize,
+) -> Result<[usize; 2], &'static str> {
+    let mut demand = [0usize; 2];
+    visit_influence(memory, base, wrapper, 0, &mut |_, accumulator| {
+        demand[0] = demand[0]
+            .checked_add(1)
+            .ok_or("naval influence demand overflow")?;
+        if let Some(accumulator) = accumulator {
+            demand[1] = demand[1]
+                .checked_add(array(memory, accumulator, 0, 16)?.count as usize)
+                .ok_or("naval influence demand overflow")?;
+        }
+        Ok(())
+    })?;
+    Ok(demand)
+}
+
 fn ptr(memory: &impl Memory, p: usize, o: usize) -> Result<usize, &'static str> {
     field::<u64>(memory, p, o).map(|n| n as usize)
 }
@@ -99,6 +126,26 @@ fn add(p: usize, o: usize) -> Result<usize, &'static str> {
     p.checked_add(o)
         .filter(|_| p != 0)
         .ok_or("naval weapon pointer invalid")
+}
+// 141471D80 concatenates exact std::string segments; 141593150/1403BCA00
+// select the fallback by native name. Neither chooses a name-byte bound.
+fn text<const TERMINAL: bool>(
+    memory: &impl Memory,
+    address: usize,
+    reason: &'static str,
+) -> Result<Owned, &'static str> {
+    let result = if TERMINAL {
+        Owned::read(memory, address, false)
+    } else {
+        Owned::read_hint(memory, address, false)
+    };
+    result.map_err(|error| {
+        if error == "string allocation failed" {
+            error
+        } else {
+            reason
+        }
+    })
 }
 fn auth(memory: &impl Memory, base: usize, p: usize, rva: usize) -> Result<(), &'static str> {
     if p == 0 || field::<u64>(memory, p, 0)? != add(base, rva)? as u64 {
@@ -271,7 +318,33 @@ pub(crate) fn terrain(
     base: usize,
     definition: usize,
 ) -> Result<usize, &'static str> {
-    let terrain = ptr(memory, ptr(memory, definition, 0x30)?, 0x130)?;
+    terrain_with_policy::<true>(memory, base, definition)
+}
+
+pub(crate) fn terrain_with_policy<const TERMINAL: bool>(
+    memory: &impl Memory,
+    base: usize,
+    definition: usize,
+) -> Result<usize, &'static str> {
+    terrain_from_template_with_policy::<TERMINAL>(memory, base, ptr(memory, definition, 0x30)?)
+}
+
+/// The same native terrain selector, consuming a template pointer already
+/// acquired by the caller. This avoids reacquiring that selecting control.
+pub(crate) fn terrain_from_template(
+    memory: &impl Memory,
+    base: usize,
+    template: usize,
+) -> Result<usize, &'static str> {
+    terrain_from_template_with_policy::<true>(memory, base, template)
+}
+
+fn terrain_from_template_with_policy<const TERMINAL: bool>(
+    memory: &impl Memory,
+    base: usize,
+    template: usize,
+) -> Result<usize, &'static str> {
+    let terrain = ptr(memory, template, 0x130)?;
     if terrain != 0 && field::<u8>(memory, terrain, 0x10)? != 0 {
         auth(memory, base, terrain, crate::cterrain_type::VTABLE_RVA)?;
         return Ok(terrain);
@@ -288,8 +361,7 @@ pub(crate) fn terrain(
             continue;
         }
         auth(memory, base, p, crate::cterrain_type::VTABLE_RVA)?;
-        let name: Text<256> = crate::msvc_string::read_text(memory, add(p, 0x18)?)
-            .ok_or("naval terrain name invalid")?;
+        let name = text::<TERMINAL>(memory, add(p, 0x18)?, "naval terrain name invalid")?;
         if name.as_bytes() == key && found.replace(p).is_some() {
             return Err("naval terrain duplicate fallback");
         }
@@ -329,7 +401,7 @@ pub(crate) fn selected_class(
 ///141471D80 constructs prefix+lexer(type)+suffix and maps its lexer id through
 /// the immutable modifier-key dictionary. We compare the raw string segments
 /// while walking that bounded dictionary; no engine lexer method or lock runs.
-pub(crate) fn doctrine_keys(
+pub(crate) fn doctrine_keys<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
     selector: u32,
@@ -342,25 +414,34 @@ pub(crate) fn doctrine_keys(
     let _ = lexer::PreparedWitness::from_header(witness)?;
     let maximum = field::<u32>(memory, base, lexer::MAX_TOKEN_ID_RVA)?;
     let table = ptr(memory, base, lexer::TOKEN_NAMES_RVA)?;
-    let text = |token: u32| -> Result<Text<256>, &'static str> {
+    let token_text = |token: u32| -> Result<Owned, &'static str> {
         if token > maximum {
             return Err("naval doctrine token outside dictionary");
         }
-        crate::msvc_string::read_text(memory, add(table, token as usize * 32)?)
-            .ok_or("naval doctrine token string invalid")
+        text::<TERMINAL>(
+            memory,
+            add(table, token as usize * 32)?,
+            "naval doctrine token string invalid",
+        )
     };
-    let selected = text(selector)?;
+    let selected = token_text(selector)?;
     let generators = [
         ptr(memory, base, 0x0337_2490)?,
         ptr(memory, base, 0x0337_2488)?,
     ];
-    let mut prefixes = [Text::<256>::default(); 2];
-    let mut suffixes = [Text::<256>::default(); 2];
+    let mut prefixes = std::array::from_fn::<_, 2, _>(|_| Owned::default());
+    let mut suffixes = std::array::from_fn::<_, 2, _>(|_| Owned::default());
     for lane in 0..2 {
-        prefixes[lane] = crate::msvc_string::read_text(memory, add(generators[lane], 0x10)?)
-            .ok_or("naval doctrine prefix invalid")?;
-        suffixes[lane] = crate::msvc_string::read_text(memory, add(generators[lane], 0x30)?)
-            .ok_or("naval doctrine suffix invalid")?;
+        prefixes[lane] = text::<TERMINAL>(
+            memory,
+            add(generators[lane], 0x10)?,
+            "naval doctrine prefix invalid",
+        )?;
+        suffixes[lane] = text::<TERMINAL>(
+            memory,
+            add(generators[lane], 0x30)?,
+            "naval doctrine suffix invalid",
+        )?;
     }
     let head = ptr(memory, base, 0x0306_ebd8)?;
     let mut node = ptr(memory, head, 8)?;
@@ -372,13 +453,18 @@ pub(crate) fn doctrine_keys(
         if ptr(memory, node, 0)? != previous {
             return Err("naval doctrine modifier dictionary link invalid");
         }
-        let name = text(field(memory, node, 0x10)?)?;
+        let name = token_text(field(memory, node, 0x10)?)?;
         for lane in 0..2 {
             let p = prefixes[lane].as_bytes();
             let s = selected.as_bytes();
             let t = suffixes[lane].as_bytes();
             let n = name.as_bytes();
-            if n.len() == p.len() + s.len() + t.len()
+            let length = p
+                .len()
+                .checked_add(s.len())
+                .and_then(|len| len.checked_add(t.len()))
+                .ok_or("naval doctrine key length overflow")?;
+            if n.len() == length
                 && n.starts_with(p)
                 && n.ends_with(t)
                 && &n[p.len()..p.len() + s.len()] == s
@@ -451,11 +537,10 @@ fn visit_modifier(
     )
 }
 
-fn visit_doctrine(
+fn visit_doctrine<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
     task: usize,
-    operands: bool,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<(), &'static str> {
     // P: 140D5B220 walks task+640 in successor order; 140D51B60 resets
@@ -475,25 +560,17 @@ fn visit_doctrine(
         }
         previous = Some(key);
         let modifier = ptr(memory, node, 0x30)?;
-        let dynamic_keys = if operands {
-            doctrine_keys(memory, base, key as u32)?
-        } else {
-            [0; 2]
-        };
+        let dynamic_keys = doctrine_keys::<TERMINAL>(memory, base, key as u32)?;
         emit(
             SourceRow {
                 scope: 4,
                 index,
                 selector: key as u32,
                 dynamic_keys,
-                weights: if operands {
-                    [
-                        i64::from(field::<i32>(memory, node, 0x2c)?),
-                        i64::from(field::<i32>(memory, node, 0x28)?),
-                    ]
-                } else {
-                    [0; 2]
-                },
+                weights: [
+                    i64::from(field::<i32>(memory, node, 0x2c)?),
+                    i64::from(field::<i32>(memory, node, 0x28)?),
+                ],
                 ..Default::default()
             },
             Some(add(modifier, 0x10)?),
@@ -523,46 +600,29 @@ pub(crate) fn read(
             required: &mut buffers.weapon_required,
         },
     };
-    let mut row = visit_sources(
-        memory,
-        base,
-        game,
-        ship,
-        side,
-        SourceMode::Operands,
-        &mut |row, accumulator| capture.source(row, accumulator),
-    )?;
+    let mut row =
+        visit_sources::<true>(memory, base, game, ship, side, &mut |row, accumulator| {
+            capture.source(row, accumulator)
+        })?;
     row.sources = [start, capture.buffers.lengths[0] - start];
     Ok(row)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SourceMode {
-    Operands,
-    Accumulators,
-}
-
 /// Shared 140C29020 source selection, in native order, without reading
 /// accumulator entries. Capture and off-thread sizing supply separate visitors.
-pub(crate) fn visit_sources(
+pub(crate) fn visit_sources<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
     game: usize,
     ship: usize,
     side: usize,
-    mode: SourceMode,
     emit: &mut impl FnMut(SourceRow, Option<usize>) -> Result<(), &'static str>,
 ) -> Result<ContextRow, &'static str> {
     use crate::{ccountry, cnavy_leader, cship, ctask_force, cunit};
-    let operands = mode == SourceMode::Operands;
     auth(memory, base, ship, cship::VTABLE_RVA)?;
     let task = ptr(memory, ship, 0x728)?;
     auth(memory, base, task, ctask_force::VTABLE_RVA)?;
-    let task_ref = if operands {
-        field(memory, task, cunit::HANDLE)?
-    } else {
-        0
-    };
+    let task_ref = field(memory, task, cunit::HANDLE)?;
     let country_id = field(memory, task, cunit::ROSTER_OWNER)?;
     let country = ccountry::Reader::new(memory, base, game)?.resolve(country_id)?;
     let fleet = ptr(memory, task, 0x340)?;
@@ -579,11 +639,7 @@ pub(crate) fn visit_sources(
         0
     } else {
         auth(memory, base, leader, cnavy_leader::VTABLE_RVA)?;
-        if operands {
-            field(memory, leader, 8)?
-        } else {
-            0
-        }
+        field(memory, leader, 8)?
     };
     let mut row = ContextRow {
         task_force: task_ref,
@@ -593,42 +649,40 @@ pub(crate) fn visit_sources(
         subunit: field(memory, ship, 0x60c)?,
         ..Default::default()
     };
-    if operands {
-        row.weather_factor = field(memory, ship, 0x270)?;
-        row.fuel = [field(memory, task, 0x4f8)?, field(memory, task, 0x500)?];
-        row.formation_flags = field(memory, ship, 0x628)?;
-        row.detection_base = field(memory, ship, 0x1b8)?;
-        row.air_detection_base = field(memory, ship, 0x1e0)?;
-        for (index, offset) in [0x1e8, 0x1f8, 0x210, 0x208, 0x318].into_iter().enumerate() {
-            row.weapon_bases[index] = field(memory, ship, offset)?;
-        }
-        let air_base = ptr(memory, ship, 0x730)?;
-        if air_base != 0 {
-            auth(memory, base, air_base, crate::cair_base::VTABLE_RVA)?;
-            row.air_base = field(memory, air_base, crate::cair_base::HANDLE)?;
-            row.air_base_maximum = field(memory, air_base, crate::cair_base::CAPACITY)?;
-        }
-        let equipment = add(ship, crate::cship::EQUIPMENT_POOL)?;
-        let variants = crate::cequipment_variant_pool::entries(memory, base, equipment)?;
-        for index in 0..variants.count {
-            let entry = element(variants, index, 16)?;
-            let variant = ptr(memory, entry, 0)?;
-            auth(memory, base, variant, crate::cequipment_variant::VTABLE_RVA)?;
-            emit(
-                SourceRow {
-                    scope: 27,
-                    index,
-                    reference: field(memory, variant, 8)?,
-                    weights: [
-                        field(memory, entry, 8)?,
-                        field::<u64>(memory, variant, crate::cequipment_variant::CLASSIFIER_FLAGS)?
-                            as i64,
-                    ],
-                    ..Default::default()
-                },
-                None,
-            )?;
-        }
+    row.weather_factor = field(memory, ship, 0x270)?;
+    row.fuel = [field(memory, task, 0x4f8)?, field(memory, task, 0x500)?];
+    row.formation_flags = field(memory, ship, 0x628)?;
+    row.detection_base = field(memory, ship, 0x1b8)?;
+    row.air_detection_base = field(memory, ship, 0x1e0)?;
+    for (index, offset) in [0x1e8, 0x1f8, 0x210, 0x208, 0x318].into_iter().enumerate() {
+        row.weapon_bases[index] = field(memory, ship, offset)?;
+    }
+    let air_base = ptr(memory, ship, 0x730)?;
+    if air_base != 0 {
+        auth(memory, base, air_base, crate::cair_base::VTABLE_RVA)?;
+        row.air_base = field(memory, air_base, crate::cair_base::HANDLE)?;
+        row.air_base_maximum = field(memory, air_base, crate::cair_base::CAPACITY)?;
+    }
+    let equipment = add(ship, crate::cship::EQUIPMENT_POOL)?;
+    let variants = crate::cequipment_variant_pool::entries(memory, base, equipment)?;
+    for index in 0..variants.count {
+        let entry = element(variants, index, 16)?;
+        let variant = ptr(memory, entry, 0)?;
+        auth(memory, base, variant, crate::cequipment_variant::VTABLE_RVA)?;
+        emit(
+            SourceRow {
+                scope: 27,
+                index,
+                reference: field(memory, variant, 8)?,
+                weights: [
+                    field(memory, entry, 8)?,
+                    field::<u64>(memory, variant, crate::cequipment_variant::CLASSIFIER_FLAGS)?
+                        as i64,
+                ],
+                ..Default::default()
+            },
+            None,
+        )?;
     }
     visit_modifier(emit, 0, add(country.pointer, 0x5a8)?)?;
     let pride = field::<u64>(memory, country.pointer, 0x250)?;
@@ -641,101 +695,98 @@ pub(crate) fn visit_sources(
     // accumulator and copied label independently of ship experience.
     let medals = ptr(memory, ship, 0x8f8)?;
     visit_modifier(emit, 3, add(medals, 0x1a0)?)?;
-    visit_doctrine(memory, base, task, operands, emit)?;
+    visit_doctrine::<TERMINAL>(memory, base, task, emit)?;
     let location = ptr(memory, task, cunit::LOCATION)?;
     if location != 0 {
         auth(memory, base, location, crate::cprovince::VTABLE_RVA)?;
         let province = field::<u32>(memory, location, crate::cprovince::ID)?;
-        if operands {
-            //140C25310 chooses expeditionary owner when positive, then the
-            // relation matrix entry for the location's controller (ordinal0 when
-            // unowned). Keep this separate from roster-country modifier scope0.
-            let expeditionary = field::<i32>(memory, task, crate::cunit::EXPEDITIONARY_OWNER)?;
-            let owner_id = if expeditionary > 0 {
-                expeditionary as u32
-            } else {
-                country_id
-            };
-            let countries = ccountry::Reader::new(memory, base, game)?;
-            let owner = countries.resolve(owner_id)?;
-            let target = field::<u32>(memory, location, 0x188)?;
-            let target_slot = if target == 0 {
-                0
-            } else {
-                countries.resolve(target)?.canonical_slot
-            };
-            let diplomacy = ptr(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
-            auth(
-                memory,
-                base,
-                diplomacy,
-                crate::cdiplomacy_status::VTABLE_RVA,
-            )?;
-            let relations = array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS, 8)?;
-            let relation = ptr(memory, element(relations, target_slot, 8)?, 0)?;
-            if relation != 0 {
-                auth(memory, base, relation, crate::crelation_status::VTABLE_RVA)?;
-                if ptr(memory, relation, crate::crelation_status::DIPLOMACY_STATUS)? != diplomacy {
-                    return Err("naval weapon relation owner mismatch");
-                }
-                emit(
-                    SourceRow {
-                        scope: 16,
-                        index: owner_id,
-                        selector: target,
-                        ..Default::default()
-                    },
-                    Some(add(relation, 0x140)?),
-                )?;
+        //140C25310 chooses expeditionary owner when positive, then the
+        // relation matrix entry for the location's controller (ordinal0 when
+        // unowned). Keep this separate from roster-country modifier scope0.
+        let expeditionary = field::<i32>(memory, task, crate::cunit::EXPEDITIONARY_OWNER)?;
+        let owner_id = if expeditionary > 0 {
+            expeditionary as u32
+        } else {
+            country_id
+        };
+        let countries = ccountry::Reader::new(memory, base, game)?;
+        let owner = countries.resolve(owner_id)?;
+        let target = field::<u32>(memory, location, 0x188)?;
+        let target_slot = if target == 0 {
+            0
+        } else {
+            countries.resolve(target)?.canonical_slot
+        };
+        let diplomacy = ptr(memory, owner.pointer, ccountry::DIPLOMACY_STATUS)?;
+        auth(
+            memory,
+            base,
+            diplomacy,
+            crate::cdiplomacy_status::VTABLE_RVA,
+        )?;
+        let relations = array(memory, diplomacy, crate::cdiplomacy_status::RELATIONS, 8)?;
+        let relation = ptr(memory, element(relations, target_slot, 8)?, 0)?;
+        if relation != 0 {
+            auth(memory, base, relation, crate::crelation_status::VTABLE_RVA)?;
+            if ptr(memory, relation, crate::crelation_status::DIPLOMACY_STATUS)? != diplomacy {
+                return Err("naval weapon relation owner mismatch");
             }
-        }
-        let definition = ptr(memory, location, 0xc8)?;
-        let selected = terrain(memory, base, definition)?;
-        if operands {
-            row.terrain_name = crate::msvc_string::read_text(memory, add(selected, 0x18)?)
-                .ok_or("naval selected terrain name invalid")?;
-        }
-        let (terrain_modifier, terrain_adjuster) = terrain_class(memory, selected, row.ship_class)?;
-        visit_modifier(emit, 5, terrain_modifier)?;
-        if operands {
             emit(
                 SourceRow {
-                    scope: 20,
-                    selector: row.ship_class,
-                    weights: [
-                        field(memory, terrain_adjuster, 0x10)?,
-                        field(memory, terrain_adjuster, 0x18)?,
-                    ],
-                    movement: field(memory, terrain_adjuster, 0x20)?,
+                    scope: 16,
+                    index: owner_id,
+                    selector: target,
                     ..Default::default()
                 },
-                None,
+                Some(add(relation, 0x140)?),
             )?;
-            // Negative class delegates to an unweighted average of each task-force
-            // ship's terrain adjuster (140D56980/140D56D60), not an opaque cache.
-            if (row.ship_class as i32) < 0 {
-                let ships = array(memory, task, 0x348, 8)?;
-                for index in 0..ships.count {
-                    let p = ptr(memory, element(ships, index, 8)?, 0)?;
-                    auth(memory, base, p, cship::VTABLE_RVA)?;
-                    let class = field(memory, p, 0x88)?;
-                    let (_, adjuster) = terrain_class(memory, selected, class)?;
-                    emit(
-                        SourceRow {
-                            scope: 25,
-                            index,
-                            selector: class,
-                            reference: field(memory, p, 8)?,
-                            weights: [
-                                field(memory, adjuster, 0x10)?,
-                                field(memory, adjuster, 0x18)?,
-                            ],
-                            movement: field(memory, adjuster, 0x20)?,
-                            ..Default::default()
-                        },
-                        None,
-                    )?;
-                }
+        }
+        let definition = ptr(memory, location, 0xc8)?;
+        let selected = terrain_with_policy::<TERMINAL>(memory, base, definition)?;
+        row.terrain_name = text::<TERMINAL>(
+            memory,
+            add(selected, 0x18)?,
+            "naval selected terrain name invalid",
+        )?;
+        let (terrain_modifier, terrain_adjuster) = terrain_class(memory, selected, row.ship_class)?;
+        visit_modifier(emit, 5, terrain_modifier)?;
+        emit(
+            SourceRow {
+                scope: 20,
+                selector: row.ship_class,
+                weights: [
+                    field(memory, terrain_adjuster, 0x10)?,
+                    field(memory, terrain_adjuster, 0x18)?,
+                ],
+                movement: field(memory, terrain_adjuster, 0x20)?,
+                ..Default::default()
+            },
+            None,
+        )?;
+        // Negative class delegates to an unweighted average of each task-force
+        // ship's terrain adjuster (140D56980/140D56D60), not an opaque cache.
+        if (row.ship_class as i32) < 0 {
+            let ships = array(memory, task, 0x348, 8)?;
+            for index in 0..ships.count {
+                let p = ptr(memory, element(ships, index, 8)?, 0)?;
+                auth(memory, base, p, cship::VTABLE_RVA)?;
+                let class = field(memory, p, 0x88)?;
+                let (_, adjuster) = terrain_class(memory, selected, class)?;
+                emit(
+                    SourceRow {
+                        scope: 25,
+                        index,
+                        selector: class,
+                        reference: field(memory, p, 8)?,
+                        weights: [
+                            field(memory, adjuster, 0x10)?,
+                            field(memory, adjuster, 0x18)?,
+                        ],
+                        movement: field(memory, adjuster, 0x20)?,
+                        ..Default::default()
+                    },
+                    None,
+                )?;
             }
         }
         let weather = ptr(memory, game, crate::cgame_state::WEATHER_MANAGER)?;
@@ -746,11 +797,9 @@ pub(crate) fn visit_sources(
         let provinces = array(memory, weather, 0x370, 0x330)?;
         let p = element(provinces, province, 0x330)?;
         visit_modifier(emit, 7, add(p, 0x270)?)?;
-        if operands {
-            row.night = field(memory, p, 0x240)?;
-        }
+        row.night = field(memory, p, 0x240)?;
         visit_modifier(emit, 8, add(task, 0x658)?)?;
-        if operands && leader != 0 {
+        if leader != 0 {
             let a = array(memory, leader, 0x248, 0x28)?;
             let terrain_index = field::<i32>(memory, selected, 0x88)?;
             let index = if terrain_index >= 0 && (terrain_index as u32) < a.count {
@@ -776,33 +825,31 @@ pub(crate) fn visit_sources(
     if leader != 0 {
         visit_modifier(emit, 9, add(leader, 0x408)?)?;
         visit_modifier(emit, 10, selected_class(memory, leader, row.subunit, true)?)?;
-        if operands {
-            let adjuster = selected_class(memory, leader, row.subunit, false)?;
-            emit(
-                SourceRow {
-                    scope: 22,
-                    selector: row.subunit,
-                    weights: [
-                        field(memory, adjuster, 0x10)?,
-                        field(memory, adjuster, 0x18)?,
-                    ],
-                    ..Default::default()
-                },
-                None,
-            )?;
-            emit(
-                SourceRow {
-                    scope: 23,
-                    weights: [field(memory, leader, 0x270)?, field(memory, leader, 0x278)?],
-                    ..Default::default()
-                },
-                None,
-            )?;
-        }
+        let adjuster = selected_class(memory, leader, row.subunit, false)?;
+        emit(
+            SourceRow {
+                scope: 22,
+                selector: row.subunit,
+                weights: [
+                    field(memory, adjuster, 0x10)?,
+                    field(memory, adjuster, 0x18)?,
+                ],
+                ..Default::default()
+            },
+            None,
+        )?;
+        emit(
+            SourceRow {
+                scope: 23,
+                weights: [field(memory, leader, 0x270)?, field(memory, leader, 0x278)?],
+                ..Default::default()
+            },
+            None,
+        )?;
     }
     // Strength/org/detection getters pass commander=0; gun/carrier bonus
     // getters pass the combat's leader. Preserve both when they differ.
-    if operands && default_leader != 0 {
+    if default_leader != 0 {
         auth(memory, base, default_leader, cnavy_leader::VTABLE_RVA)?;
         let reference = field(memory, default_leader, 8)?;
         emit(
@@ -834,11 +881,7 @@ pub(crate) fn visit_sources(
             SourceRow {
                 scope: 11,
                 index,
-                weights: if operands {
-                    [i64::from(field::<i32>(memory, p, 8)?), 0]
-                } else {
-                    [0; 2]
-                },
+                weights: [i64::from(field::<i32>(memory, p, 8)?), 0],
                 ..Default::default()
             },
             Some(add(definition, 0x98)?),
@@ -849,39 +892,37 @@ pub(crate) fn visit_sources(
         let wrapper = ptr(memory, element(influences, index, 8)?, 0)?;
         visit_influence(memory, base, wrapper, index, emit)?;
     }
-    if operands {
-        emit(
-            SourceRow {
-                scope: 24,
-                weights: [
-                    field(memory, base, 0x0331_bea0)?,
-                    field(memory, base, 0x0331_bf40)?,
-                ],
-                ..Default::default()
-            },
-            None,
-        )?;
-        use crate::modifier_definition as md;
-        let callback = field::<u64>(memory, base, md::ELIGIBILITY_CALLBACK_RVA)?;
-        let eligibility = if callback == 0 {
-            0
-        } else if callback == add(base, md::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
-            1
-        } else {
-            return Err("naval weapon modifier callback unsupported");
-        };
-        emit(
-            SourceRow {
-                scope: 26,
-                weights: [
-                    i64::from(field::<u32>(memory, base, md::TRADE_FEATURE_FLAGS_RVA)?),
-                    eligibility,
-                ],
-                ..Default::default()
-            },
-            None,
-        )?;
-    }
+    emit(
+        SourceRow {
+            scope: 24,
+            weights: [
+                field(memory, base, 0x0331_bea0)?,
+                field(memory, base, 0x0331_bf40)?,
+            ],
+            ..Default::default()
+        },
+        None,
+    )?;
+    use crate::modifier_definition as md;
+    let callback = field::<u64>(memory, base, md::ELIGIBILITY_CALLBACK_RVA)?;
+    let eligibility = if callback == 0 {
+        0
+    } else if callback == add(base, md::ELIGIBILITY_FLAGS_GETTER_RVA)? as u64 {
+        1
+    } else {
+        return Err("naval weapon modifier callback unsupported");
+    };
+    emit(
+        SourceRow {
+            scope: 26,
+            weights: [
+                i64::from(field::<u32>(memory, base, md::TRADE_FEATURE_FLAGS_RVA)?),
+                eligibility,
+            ],
+            ..Default::default()
+        },
+        None,
+    )?;
     Ok(row)
 }
 

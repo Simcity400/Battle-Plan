@@ -283,7 +283,7 @@ fn mod_added_law_uses_overridden_localisation_and_sprite() {
 }
 
 #[test]
-fn law_icons_follow_vertical_native_frames_and_refuse_custom_rendering() {
+fn law_icons_follow_vertical_native_frames_and_name_missing_effects() {
     let (cat, folder) = crate::catalogue::tests::folder_catalogue(&[
         (
             "common/occupation_laws/a.txt",
@@ -315,7 +315,8 @@ fn law_icons_follow_vertical_native_frames_and_refuse_custom_rendering() {
     assert!(vertical.missing.is_none());
     let custom = law_content(&cat, &laws, "custom");
     assert!(custom.icon.is_none());
-    assert!(custom.missing.unwrap().contains("custom effect"));
+    let why = custom.missing.unwrap();
+    assert!(why.contains("gfx/FX/mod") && why.contains("Up"), "{why}");
     assert!(
         cat.refusal_lines()
             .iter()

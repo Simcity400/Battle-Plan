@@ -139,8 +139,9 @@ impl Regions {
                 .map_err(|error| error.to_string())
                 .and_then(|text| catalogue::plain_text(&text));
             let (name, missing) = match name {
-                Ok(name) if !name.is_empty() => (Some(name), None),
-                Ok(_) => (None, Some("Strategic region name is empty".into())),
+                // 1415938B0 stores successful empty localisation too;
+                // GetName@140E0EB10 returns the template's text unchanged.
+                Ok(name) => (Some(name), None),
                 Err(reason) => (None, Some(reason)),
             };
             result.names.push(TerritoryRegion {

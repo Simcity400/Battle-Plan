@@ -73,6 +73,38 @@ pub fn walk(
     rows: &mut [Row],
     torn: &mut u32,
 ) -> Outcome {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Fixed(rows),
+        torn,
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    rows: &mut Vec<Row>,
+    torn: &mut u32,
+) -> Outcome {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(rows),
+        torn,
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    rows: crate::walk::Buffer<'_, Row>,
+    torn: &mut u32,
+) -> Outcome {
     match walk_rows(memory, base, game_state, rows, torn) {
         Ok(outcome) => outcome,
         Err(reason) => Outcome::Unavailable { reason },
@@ -83,7 +115,7 @@ fn walk_rows(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    rows: &mut [Row],
+    rows: crate::walk::Buffer<'_, Row>,
     torn: &mut u32,
 ) -> Result<Outcome, &'static str> {
     let memo = memo_address(memory, base, game_state)?;
@@ -145,7 +177,7 @@ fn table_slots(header: &[u8; HEADER]) -> Result<usize, &'static str> {
 fn copy_table(
     memory: &impl Memory,
     header: &[u8; HEADER],
-    rows: &mut [Row],
+    mut rows: crate::walk::Buffer<'_, Row>,
 ) -> Result<Outcome, &'static str> {
     let field = |at: usize| &header[at - BUCKETS..];
     let buckets = usize::try_from(u64::from_le_bytes(field(BUCKETS)[..8].try_into().unwrap()))
@@ -154,6 +186,7 @@ fn copy_table(
         .ok_or("raid path memo buckets unreadable or null")?;
     let count = u32::from_le_bytes(field(COUNT)[..4].try_into().unwrap());
     let max_probe = field(MAX_PROBE)[0];
+    rows.ensure(count as usize)?;
     let slots = table_slots(header)?;
     let mut chunk = [0_u8; BATCH * BUCKET];
     let (mut len, mut occupied, mut unread) = (0, 0_u32, 0_u32);

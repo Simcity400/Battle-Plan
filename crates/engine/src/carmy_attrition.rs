@@ -80,6 +80,24 @@ pub fn copy_terrain_name(
     Ok(Some((start, name.len)))
 }
 
+/// 1418C00D0 formats the retained CTerrainType+18 label independently of
+/// 140C65DC0's numeric attrition operands. Worker storage grows from the
+/// original descriptor and acquired payload, without repeating either read.
+pub fn copy_terrain_name_growing(
+    memory: &impl Memory,
+    address: usize,
+    bytes: &mut Vec<u8>,
+    len: usize,
+    required: &mut usize,
+) -> Field<crate::cname_group_member::Span> {
+    let name = crate::msvc_string::Descriptor::read(memory, address)?;
+    *required = required
+        .checked_add(name.len)
+        .ok_or("attrition terrain text length overflow")?;
+    name.copy_buffer(memory, &mut crate::walk::Buffer::Growing(bytes), len)?;
+    Ok((len, name.len))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Supply {
     /// Fresh 140C67F40(army, out, 1), including its threshold normalization.
@@ -325,6 +343,19 @@ pub fn capture(
     seed: &carmy::DivisionSeed,
     exercising: Field<u8>,
 ) -> Inputs {
+    capture_with_acclimatization(memory, base, game_state, seed, exercising, None)
+}
+
+/// Share the exact original fresh-factor observation, including refusal.
+/// None means unobserved; Some(Err) never authorizes another native read.
+pub fn capture_with_acclimatization(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    seed: &carmy::DivisionSeed,
+    exercising: Field<u8>,
+    fresh: Option<Field<i64>>,
+) -> Inputs {
     if seed.primary_vtable != base.checked_add(carmy::VTABLE_RVA).map(|p| p as u64)
         || seed.secondary_vtable
             != base
@@ -481,7 +512,7 @@ pub fn capture(
     });
     output.weather = weather_root.map(|root| {
         let root = root?;
-        let acclimatization = acclimatization(memory, base, seed);
+        let acclimatization = fresh.unwrap_or_else(|| fresh_acclimatization(memory, base, seed));
         let attrition = modifier(memory, base, root, ATTRITION);
         output.sources[WEATHER_SOURCE] =
             attrition.map(|value| (value != 0).then(|| request(root, ATTRITION, -1, ONE)));
@@ -694,7 +725,11 @@ fn weather_accumulator(
     at(record, sweather_per_province::MODIFIERS).map(Some)
 }
 
-fn acclimatization(memory: &impl Memory, base: usize, seed: &carmy::DivisionSeed) -> Field<i64> {
+pub fn fresh_acclimatization(
+    memory: &impl Memory,
+    base: usize,
+    seed: &carmy::DivisionSeed,
+) -> Field<i64> {
     let header = seed
         .acclimatization
         .ok_or("attrition acclimatization unavailable")?;

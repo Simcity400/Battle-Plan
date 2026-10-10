@@ -1,0 +1,195 @@
+//! Selected railway movement operands from the original authenticated info walk.
+//! E733D0 indexes +20 by find_neighbour@1413F4F30's first ordinal; E765F0
+//! tests signed +44 != 0 without reading the sorted pair vector. E7D110 and
+//! E80070 size +20 from definition+7C; E80C40 saves that entire signed array.
+
+use crate::{
+    Memory, cpdx_array::Array, cprovince_railway_info as info, province_definition, read,
+    read_slice, walk::Buffer,
+};
+
+type Input<T> = Result<T, &'static str>;
+
+fn level_header(memory: &impl Memory, node: usize, definition: usize) -> Input<Array> {
+    let header = node
+        .checked_add(info::LEVELS_BY_NEIGHBOR_INDEX)
+        .and_then(|at| Array::read(memory, at, 4))
+        .ok_or("selected railway level array unreadable or invalid")?;
+    let neighbours = definition
+        .checked_add(province_definition::NEIGHBOUR_COUNT)
+        .and_then(|at| read::<i32>(memory, at))
+        .ok_or("selected railway definition neighbour count unreadable")?;
+    if neighbours < 0 || header.count != neighbours as u32 {
+        return Err("selected railway level count differs from native definition neighbours");
+    }
+    Ok(header)
+}
+
+/// Off-hour hint for 140E80C40's complete neighbour-indexed saved array. Size
+/// from authenticated live headers without reading levels, pairs or buildings.
+/// This does not supply any hourly operand or certify a later acquisition.
+pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Input<usize> {
+    use super::{PROVINCE_INFO_TABLE, VTABLE_RVA};
+    use crate::{cgame_state, cprovince};
+    let word = |object: usize, offset: usize| {
+        object
+            .checked_add(offset)
+            .and_then(|at| read::<u64>(memory, at))
+            .and_then(|pointer| usize::try_from(pointer).ok())
+            .ok_or("selected railway sizing pointer unreadable or overflow")
+    };
+    let identity = |pointer: usize, rva: usize| -> Input<()> {
+        let expected = base
+            .checked_add(rva)
+            .ok_or("selected railway sizing module address overflow")?;
+        if pointer == 0 || read::<u64>(memory, pointer) != Some(expected as u64) {
+            return Err("selected railway sizing identity unreadable or unsupported");
+        }
+        Ok(())
+    };
+    let manager = word(state, cgame_state::RAIL_MANAGER)?;
+    identity(manager, VTABLE_RVA)?;
+    let array = |object: usize, offset: usize| {
+        object
+            .checked_add(offset)
+            .and_then(|at| Array::read(memory, at, 8))
+            .ok_or("selected railway sizing array unreadable or invalid")
+    };
+    let rail = array(manager, PROVINCE_INFO_TABLE)?;
+    let provinces = array(state, cgame_state::PROVINCES)?;
+    if provinces.count < 2 || rail.count != provinces.count {
+        return Err("rail table extent differs from province table");
+    }
+    let mut required = 0_usize;
+    for slot in 0..rail.count {
+        let node = word(
+            rail.element(slot, 8)
+                .ok_or("selected railway sizing slot address overflow")?,
+            0,
+        )?;
+        if node == 0 {
+            continue;
+        }
+        identity(node, info::VTABLE_RVA)?;
+        let province = word(
+            provinces
+                .element(slot, 8)
+                .ok_or("selected railway sizing province address overflow")?,
+            0,
+        )?;
+        identity(province, cprovince::VTABLE_RVA)?;
+        let definition = word(province, cprovince::DEFINITION)?;
+        let id = |object: usize, offset: usize| {
+            object
+                .checked_add(offset)
+                .and_then(|at| read::<u32>(memory, at))
+        };
+        if definition == 0
+            || id(province, cprovince::ID) != Some(slot)
+            || id(definition, province_definition::ID) != Some(slot)
+            || word(node, info::PROVINCE_RECORD)? != definition
+            || Some(word(node, info::BUILDING_STATUS)?)
+                != province.checked_add(cprovince::BUILDING_STATUS)
+        {
+            return Err("selected railway sizing province identity or backlink mismatch");
+        }
+        required = required
+            .checked_add(level_header(memory, node, definition)?.count as usize)
+            .ok_or("selected railway level demand overflow")?;
+    }
+    Ok(required)
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LevelSpan {
+    pub first: usize,
+    pub len: usize,
+    pub positive: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionRow {
+    pub levels: Input<LevelSpan>,
+    pub pair_count: Input<i32>,
+    /// Ok(None) is outside both selected building gates; Ok(Some(None))
+    /// observes a native null building. Health/partial failures cannot deny it.
+    pub building_level: Input<Option<Option<i16>>>,
+}
+
+impl Default for SelectionRow {
+    fn default() -> Self {
+        Self {
+            levels: Err("selected railway levels not acquired"),
+            pair_count: Err("selected railway pair count not acquired"),
+            building_level: Err("selected railway building level not acquired"),
+        }
+    }
+}
+
+/// Caller-owned live-sized arena. A short arena refuses a whole province's
+/// domain, retains total demand, and never retries or allocates in the callback.
+pub struct Levels<'a> {
+    pub values: &'a mut [i32],
+    pub len: usize,
+    pub required: usize,
+}
+
+/// Worker-owned indexed levels grow after the same authenticated header read
+/// used by the fixed reader. 140E80C40 writes the full signed +20 array.
+pub struct GrowingLevels<'a> {
+    pub values: &'a mut Vec<i32>,
+    pub len: usize,
+    pub required: usize,
+}
+
+pub(super) struct LevelBuffer<'a> {
+    pub values: Buffer<'a, i32>,
+    pub len: usize,
+    pub required: usize,
+}
+
+impl LevelBuffer<'_> {
+    pub(super) fn read(
+        &mut self,
+        memory: &impl Memory,
+        node: usize,
+        definition: usize,
+    ) -> Input<LevelSpan> {
+        let header = level_header(memory, node, definition)?;
+        let count = header.count as usize;
+        self.required = self
+            .required
+            .checked_add(count)
+            .ok_or("selected railway level demand overflow")?;
+        let end = self
+            .len
+            .checked_add(count)
+            .ok_or("selected railway level arena overflow")?;
+        if !self.values.ensure(end)? {
+            return Err("selected railway level capacity insufficient");
+        }
+        let mut bytes = [0_u8; 256];
+        let mut positive = false;
+        for first in (0..count).step_by(bytes.len() / 4) {
+            let take = (count - first).min(bytes.len() / 4);
+            let at = header
+                .element(first as u32, 4)
+                .ok_or("selected railway level address overflow")?;
+            if !read_slice(memory, at, &mut bytes[..take * 4]) {
+                return Err("selected railway indexed levels unreadable");
+            }
+            for (index, bytes) in bytes[..take * 4].chunks_exact(4).enumerate() {
+                let level = i32::from_le_bytes(bytes.try_into().unwrap());
+                positive |= level > 0;
+                self.values[self.len + first + index] = level;
+            }
+        }
+        let span = LevelSpan {
+            first: self.len,
+            len: count,
+            positive,
+        };
+        self.len = end;
+        Ok(span)
+    }
+}

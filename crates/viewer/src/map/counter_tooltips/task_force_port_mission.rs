@@ -1,0 +1,1636 @@
+//! Port-counter strike-force status: 14197AFE0 -> 14197A6D0 in build
+//! 1.19.2.0.a729, executable SHA256
+//! 870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad.
+//!
+//! 141976180 builds combat power from genuine ship operands; 1419765B0 scores it,
+//! 141976A80 decides exact readiness, and 141976450 uses 14197A0E0's deterministic
+//! range for coarse intel. Products wrap at 64 bits before truncating division.
+//! Neither unit selection nor a client tooltip/animation cache is an input.
+
+use super::*;
+use replay::rows::{
+    NavalPortMissionInputs, ShipModelRow, ShipRow, TaskForceCounterInputRow, TaskForceRow,
+};
+use std::io;
+
+const SCALE: i64 = 100_000;
+const DIVISION_REFUSED: i64 = 0xffff_ffff;
+
+#[derive(Clone, Debug)]
+struct Guns {
+    /// Native indices: heavy 0, torpedo 1, light 2 (14195F4B0).
+    cooldown: [i64; 3],
+    minimum: i64,
+}
+
+#[derive(Clone, Debug)]
+struct ScoreDefines {
+    screening_ratio: Result<i64, String>,
+    /// Heavy/heavy, heavy/light, light/heavy, light/light, torpedo/heavy, torpedo/light.
+    efficiency: [i64; 6],
+}
+
+/// Independently fallible groups: exact intel does not consume fuzzy-range or
+/// likelihood defines, and early status arms consume none of these values.
+#[derive(Clone, Debug)]
+pub(crate) struct Defines {
+    guns: Result<Guns, String>,
+    score: Result<ScoreDefines, String>,
+    estimate_width: [Result<i32, String>; 2],
+    likelihood: [Result<i64, String>; 3],
+}
+
+impl Defines {
+    pub(crate) fn read(d: &installed_content::defines::Defines) -> Self {
+        let guns = (|| {
+            let values = d.fixed5_array("NNavy", "BASE_GUN_COOLDOWNS")?;
+            let cooldown = values
+                .get(..3)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "NNavy.BASE_GUN_COOLDOWNS has fewer than three native slots",
+                    )
+                })?
+                .try_into()
+                .expect("three slots admitted");
+            Ok::<_, io::Error>(Guns {
+                cooldown,
+                // Registry loader 14093F0A0 applies this lower bound.
+                minimum: d.fixed5("NNavy", "MIN_GUN_COOLDOWN")?.max(1_000),
+            })
+        })()
+        .map_err(|e| e.to_string());
+        let score = (|| {
+            let keys = [
+                "AGGRESSION_HEAVY_GUN_EFFICIENCY_ON_HEAVY_SHIPS",
+                "AGGRESSION_HEAVY_GUN_EFFICIENCY_ON_LIGHT_SHIPS",
+                "AGGRESSION_LIGHT_GUN_EFFICIENCY_ON_HEAVY_SHIPS",
+                "AGGRESSION_LIGHT_GUN_EFFICIENCY_ON_LIGHT_SHIPS",
+                "AGGRESSION_TORPEDO_EFFICIENCY_ON_HEAVY_SHIPS",
+                "AGGRESSION_TORPEDO_EFFICIENCY_ON_LIGHT_SHIPS",
+            ];
+            let mut efficiency = [0; 6];
+            for (out, key) in efficiency.iter_mut().zip(keys) {
+                *out = d.fixed5("NNavy", key)?;
+            }
+            Ok::<_, io::Error>(ScoreDefines {
+                // Registry loader 140953D40, unlike the six unclamped weights.
+                screening_ratio: d
+                    .fixed5("NNavy", "SCREEN_RATIO_FOR_FULL_SCREENING_FOR_CAPITALS")
+                    .map(|value| value.max(1_000))
+                    .map_err(|e| e.to_string()),
+                efficiency,
+            })
+        })()
+        .map_err(|e| e.to_string());
+        Self {
+            guns,
+            score,
+            // Integer loaders 14093A840 / 14093B540 clamp to 0..100.
+            estimate_width: [
+                "INTEL_LEVEL_LOW_STRENGTH_ESTIMATE_HALF_RANGE_PERCENTAGE",
+                "INTEL_LEVEL_MEDIUM_STRENGTH_ESTIMATE_HALF_RANGE_PERCENTAGE",
+            ]
+            .map(|key| {
+                d.int32("NNavy", key)
+                    .map(|v| v.clamp(0, 100))
+                    .map_err(|e| e.to_string())
+            }),
+            // Fixed loaders 14089AE60 / 14089A7C0 / 14089AB10 clamp each
+            // independently; do not sort thresholds authored out of order.
+            likelihood: [
+                "NAVAL_STRIKE_FORCE_ATTACK_LIKELYHOOD_THR_VERY_LIKELY",
+                "NAVAL_STRIKE_FORCE_ATTACK_LIKELYHOOD_THR_LIKELY",
+                "NAVAL_STRIKE_FORCE_ATTACK_LIKELYHOOD_THR_UNLIKELY",
+            ]
+            .map(|key| {
+                d.fixed5("NInterface", key)
+                    .map(|v| v.clamp(0, SCALE))
+                    .map_err(|e| e.to_string())
+            }),
+        }
+    }
+}
+
+fn divisible(numerator: i64) -> bool {
+    (numerator as u64).wrapping_add(0x7fff_ffff_ffff_fffe) < 0xffff_ffff_ffff_fffd
+}
+
+fn fraction(numerator: i64, denominator: i64) -> Result<i64, String> {
+    if denominator == 0 || !divisible(numerator) {
+        return Ok(DIVISION_REFUSED);
+    }
+    numerator
+        .wrapping_mul(SCALE)
+        .checked_div(denominator)
+        .ok_or_else(|| "native naval readiness fixed5 division traps".into())
+}
+
+fn multiply(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b) / SCALE
+}
+
+fn rate(cooldown: i64) -> i64 {
+    if cooldown == 0 {
+        DIVISION_REFUSED
+    } else {
+        10_000_000_000 / cooldown
+    }
+}
+
+/// Only members read by 1419765B0. The aggregate's +0/+38/+40/+48/+70/+78
+/// are never consumed by either reached readiness chain and are not recorded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Power {
+    ships: i32,
+    capitals: i32,
+    carriers: i32,
+    light: i64,
+    heavy: i64,
+    light_piercing: i64,
+    torpedo: i64,
+    strength: i64,
+    maximum_strength: i64,
+    organisation: i64,
+    maximum_organisation: i64,
+}
+
+fn score(own: Power, other: Power, defines: &Defines) -> Result<i64, String> {
+    if own.ships == own.carriers && other.light_piercing == 0 {
+        return Ok(100_000_000);
+    }
+    if other.ships == other.carriers && own.light_piercing == 0 {
+        return Ok(0);
+    }
+    let d = defines.score.as_ref().map_err(Clone::clone)?;
+    let screens = own
+        .ships
+        .wrapping_sub(own.capitals)
+        .wrapping_sub(own.carriers);
+    let screening = if screens > 0 {
+        // The native ratio is capitals/screens, including its unintuitive direction.
+        let ratio = fraction(i64::from(own.capitals) * SCALE, i64::from(screens) * SCALE)?;
+        let screening_ratio = *d.screening_ratio.as_ref().map_err(Clone::clone)?;
+        if screening_ratio != 0 && divisible(ratio) {
+            fraction(ratio, screening_ratio)?.clamp(0, SCALE)
+        } else {
+            SCALE
+        }
+    } else {
+        SCALE
+    };
+    let strength = if own.maximum_strength == 0 {
+        0
+    } else {
+        fraction(own.strength, own.maximum_strength)?
+    };
+    let organisation = if own.maximum_organisation == 0 {
+        0
+    } else {
+        fraction(own.organisation, own.maximum_organisation)?
+    };
+    let attacks = [
+        own.heavy,
+        own.heavy,
+        own.light,
+        own.light,
+        own.torpedo,
+        own.torpedo,
+    ];
+    let base = attacks
+        .into_iter()
+        .zip(d.efficiency)
+        .fold(0_i64, |sum, (attack, efficiency)| {
+            sum.wrapping_add(multiply(attack, efficiency))
+        });
+    let screening = multiply(screening, 25_000).wrapping_add(75_000);
+    let health = multiply(
+        multiply(strength, 40_000).wrapping_add(multiply(organisation, 60_000)),
+        75_000,
+    )
+    .wrapping_add(25_000);
+    Ok(multiply(multiply(base, screening), health))
+}
+
+fn exact_ready(own: Power, other: Power, aggression: i64, d: &Defines) -> Result<bool, String> {
+    let enemy_score = score(other, own, d)?;
+    let own_score = score(own, other, d)?.max(10_000);
+    Ok(fraction(enemy_score, own_score)?.min(1_000_000) < aggression)
+}
+
+fn mix(mut value: u32) -> u32 {
+    value = ((value >> 8) ^ value).wrapping_add(0x68e3_1da4);
+    value = (value.wrapping_mul(0x100) ^ value).wrapping_mul(0x1b56_c4e9);
+    value = ((value >> 8) ^ value).wrapping_mul(0x92d6_8ca2);
+    ((value >> 8) ^ value) & 0x7fff_ffff
+}
+
+/// 14197A0E0: deterministic endpoint range, seeded by the target's signed
+/// reference id (+1C), with native overlapping 31-bit draws packed at bit 30.
+fn fuzzy_range(base: i64, width: i32, seed: i32) -> (i64, i64) {
+    let seed = seed as u32;
+    let mut a = seed.wrapping_mul(0x7eb8_da44);
+    a = ((a >> 8) ^ a).wrapping_add(0x10d8_365e);
+    a = (a.wrapping_mul(0x100) ^ a).wrapping_mul(0x6d22_f31b);
+    a = (a >> 8) ^ a;
+    let mut b = seed.wrapping_mul(0x205a_d647);
+    b = ((b >> 8) ^ b).wrapping_add(0xb4f3_c315);
+    b = (b.wrapping_mul(0x100) ^ b).wrapping_mul(0x387a_9f3a);
+    b = (b >> 8) ^ b;
+    let root = a.wrapping_add(b.wrapping_mul(0xb529_7a4d));
+    let range = (base.wrapping_mul(i64::from(width)) / 100).max(100);
+    let span = range * 2 + i64::from(range & 1 == 0);
+    let first = u64::from(mix(root.wrapping_add(0xb529_7a4d))) | (u64::from(mix(root)) << 30);
+    let second = u64::from(mix(root.wrapping_add(0x1f7c_6ee7)))
+        | (u64::from(mix(root.wrapping_add(0x6a52_f49a))) << 30);
+    let offset = ((first as i64 % span)
+        .wrapping_add(second as i64 % span)
+        .wrapping_sub(span)
+        .wrapping_add(1))
+        / 2;
+    let center = base.wrapping_add(offset).max(0);
+    (
+        center.wrapping_sub(range).max(0),
+        center.wrapping_add(range).max(200),
+    )
+}
+
+fn likelihood_from_range(
+    own_score: i64,
+    range: (i64, i64),
+    aggression: i64,
+) -> Result<i64, String> {
+    let (low, high) = if own_score == 0 {
+        (1_000_000, 1_000_000)
+    } else {
+        (fraction(range.0, own_score)?, fraction(range.1, own_score)?)
+    };
+    if aggression <= low {
+        return Ok(0);
+    }
+    if aggression <= high {
+        let width = high.wrapping_sub(low);
+        if width != 0 {
+            let value = fraction(aggression.wrapping_sub(low), width)?;
+            return Ok(if value > 99_000 && width > 0 {
+                99_000
+            } else {
+                value
+            });
+        }
+    }
+    Ok(SCALE)
+}
+
+fn fuzzy_likelihood(
+    own: Power,
+    other: Power,
+    aggression: i64,
+    width: i32,
+    seed: i32,
+    d: &Defines,
+) -> Result<i64, String> {
+    likelihood_from_range(
+        score(own, other, d)?,
+        fuzzy_range(score(other, own, d)?, width, seed),
+        aggression,
+    )
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    InCombat,
+    NotReady,
+    Engaging,
+    EngagingAnother,
+    Ready,
+    NotEnoughIntel,
+    VeryLikely,
+    Likely,
+    Unlikely,
+    VeryUnlikely,
+    TooStrong,
+}
+
+impl Status {
+    fn key(self) -> &'static str {
+        match self {
+            Self::InCombat => "NAVAL_STRIKE_FORCE_STATUS_IN_COMBAT",
+            Self::NotReady => "NAVAL_STRIKE_FORCE_STATUS_NOT_READY",
+            Self::Engaging => "NAVAL_STRIKE_FORCE_STATUS_ENGAGING",
+            Self::EngagingAnother => "NAVAL_STRIKE_FORCE_STATUS_ENGAGING_ANOTHER",
+            Self::Ready => "NAVAL_STRIKE_FORCE_STATUS_READY",
+            Self::NotEnoughIntel => "NAVAL_STRIKE_FORCE_STATUS_NOT_ENOUGH_INTEL",
+            Self::VeryLikely => "NAVAL_STRIKE_FORCE_STATUS_VERY_LIKELY_TO_ENGAGE",
+            Self::Likely => "NAVAL_STRIKE_FORCE_STATUS_LIKELY_TO_ENGAGE",
+            Self::Unlikely => "NAVAL_STRIKE_FORCE_STATUS_UNLIKELY_TO_ENGAGE",
+            Self::VeryUnlikely => "NAVAL_STRIKE_FORCE_STATUS_VERY_UNLIKELY_TO_ENGAGE",
+            Self::TooStrong => "NAVAL_STRIKE_FORCE_STATUS_ENEMY_TOO_STRONG",
+        }
+    }
+}
+
+fn stable_status(combats: i32, detached: i32, mission: u32) -> Option<Status> {
+    if combats > 0 {
+        Some(Status::InCombat)
+    } else if detached != 0 || mission != 2 {
+        Some(Status::NotReady)
+    } else {
+        None
+    }
+}
+
+fn engagement_status(reference: u64, resolves: bool, target: u64) -> Option<Status> {
+    (reference != 0 && resolves).then_some(if reference == target {
+        Status::Engaging
+    } else {
+        Status::EngagingAnother
+    })
+}
+
+fn probability_status(probability: i64, d: &Defines) -> Result<(Status, bool), String> {
+    if probability > 99_999 {
+        return Ok((Status::Ready, false));
+    }
+    for (threshold, status) in
+        d.likelihood
+            .iter()
+            .zip([Status::VeryLikely, Status::Likely, Status::Unlikely])
+    {
+        if probability >= *threshold.as_ref().map_err(Clone::clone)? {
+            return Ok((status, true));
+        }
+    }
+    Ok((
+        if probability >= 1 {
+            Status::VeryUnlikely
+        } else {
+            Status::TooStrong
+        },
+        true,
+    ))
+}
+
+/// 140FA3080 walks target ships first, then the stored exclusion list. A
+/// decisive match does not consume later faults; an earlier fault prevents a
+/// later match from being considered. The comparison is exact native bytes.
+fn permits_types<'a>(
+    types: impl IntoIterator<Item = Result<&'a [u8], String>>,
+    avoided: &[Option<Vec<u8>>],
+) -> Result<bool, String> {
+    if avoided.is_empty() {
+        return Ok(true);
+    }
+    for spelling in types {
+        let spelling = spelling?;
+        for name in avoided {
+            let name = name
+                .as_ref()
+                .ok_or("avoided ship-type string is unreadable")?;
+            if name == spelling {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn force<'a>(context: &Context<'a>, id: u64) -> Result<&'a TaskForceRow, String> {
+    let rows = context
+        .frame
+        .complete::<tables::TaskForces>()
+        .map_err(|e| e.to_string())?;
+    rows.binary_search_by_key(&id, |row| row.id)
+        .map(|i| &rows[i])
+        .map_err(|_| format!("TaskForces task force {id} is absent"))
+}
+
+fn input<'a>(context: &Context<'a>, id: u64) -> Result<&'a TaskForceCounterInputRow, String> {
+    let rows = context
+        .frame
+        .complete::<tables::TaskForceCounterInputs>()
+        .map_err(|e| e.to_string())?;
+    rows.binary_search_by_key(&id, |row| row.task_force)
+        .map(|i| &rows[i])
+        .map_err(|_| format!("TaskForceCounterInputs task force {id} is absent"))
+}
+
+fn mission<'a>(
+    context: &Context<'a>,
+    input: &'a TaskForceCounterInputRow,
+) -> Result<&'a NavalPortMissionInputs, String> {
+    let inputs = input
+        .port_mission
+        .require("TaskForceCounterInputs.port_mission")?
+        .as_ref()
+        .ok_or(
+            "TaskForceCounterInputs.port_mission: task force port mission sample is unreadable",
+        )?;
+    if inputs.sample_hour != context.frame.hour {
+        return Err(format!(
+            "task force {} port mission sample is from hour {}, not {}",
+            input.task_force, inputs.sample_hour, context.frame.hour
+        ));
+    }
+    Ok(inputs)
+}
+
+fn roster<'a>(
+    context: &Context<'a>,
+    target: u64,
+) -> Result<Vec<(&'a ShipRow, &'a ShipModelRow)>, String> {
+    let ships = context
+        .frame
+        .complete::<tables::Ships>()
+        .map_err(|e| e.to_string())?;
+    let ships = ships
+        .iter()
+        .filter(|ship| ship.task_force == target)
+        .collect::<Vec<_>>();
+    if ships.is_empty() {
+        return Ok(Vec::new());
+    }
+    let models = context
+        .frame
+        .complete::<tables::ShipModels>()
+        .map_err(|e| e.to_string())?;
+    let mut result = ships
+        .into_iter()
+        .map(|ship| {
+            let model = models
+                .binary_search_by_key(&ship.id, |row| row.ship)
+                .map(|i| &models[i])
+                .map_err(|_| format!("ShipModels ship {} is absent", ship.id))?;
+            model
+                .counter
+                .as_ref()
+                .ok_or_else(|| format!("ship {} counter operands are unreadable", ship.id))?;
+            Ok((ship, model))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    result.sort_unstable_by_key(|(_, model)| model.counter.as_ref().unwrap().roster_ordinal);
+    for (ordinal, (_, model)) in result.iter().enumerate() {
+        if model.counter.as_ref().unwrap().roster_ordinal != ordinal as u32 {
+            return Err(format!(
+                "task force {target} ship roster has missing or duplicate ordinals"
+            ));
+        }
+    }
+    Ok(result)
+}
+
+fn power(context: &Context<'_>, target: u64, d: &Defines) -> Result<Power, String> {
+    let roster = roster(context, target)?;
+    let mut power = Power::default();
+    if roster.is_empty() {
+        return Ok(power);
+    }
+    let guns = d.guns.as_ref().map_err(Clone::clone)?;
+    for (ship, model) in roster {
+        let strike = model
+            .strike
+            .require("ShipModels.strike")?
+            .as_ref()
+            .ok_or_else(|| format!("ship {} strike inputs are unreadable", ship.id))?;
+        let counter = model.counter.as_ref().unwrap();
+        let heavy_rate = rate(guns.cooldown[0].max(guns.minimum));
+        let light_rate = rate(guns.cooldown[2].max(guns.minimum));
+        let word = |value: Option<i64>, field: &str| {
+            value.ok_or_else(|| {
+                format!(
+                    "ShipModels.strike.{field} for ship {} is unreadable",
+                    ship.id
+                )
+            })
+        };
+        let torpedo_modifier = word(
+            strike.torpedo_cooldown_modifier,
+            "torpedo_cooldown_modifier",
+        )?;
+        let torpedo_rate = rate(
+            multiply(guns.cooldown[1], torpedo_modifier.wrapping_add(SCALE)).max(guns.minimum),
+        );
+        power.ships = power.ships.wrapping_add(1);
+        if model.formation_flags & (1 << 7) != 0 {
+            power.carriers = power.carriers.wrapping_add(1);
+        } else if model.formation_flags & (1 << 8) != 0 {
+            power.capitals = power.capitals.wrapping_add(1);
+        }
+        power.light = power.light.wrapping_add(multiply(
+            light_rate,
+            word(strike.light_attack, "light_attack")?,
+        ));
+        power.heavy = power.heavy.wrapping_add(multiply(
+            heavy_rate,
+            word(strike.heavy_attack, "heavy_attack")?,
+        ));
+        power.light_piercing = power.light_piercing.wrapping_add(multiply(
+            light_rate,
+            word(strike.light_piercing, "light_piercing")?,
+        ));
+        power.torpedo = power.torpedo.wrapping_add(multiply(
+            torpedo_rate,
+            word(strike.torpedo_attack, "torpedo_attack")?,
+        ));
+        power.strength = power.strength.wrapping_add(ship.strength);
+        power.maximum_strength = power
+            .maximum_strength
+            .wrapping_add(counter.maximum_strength.max(100));
+        power.organisation = power.organisation.wrapping_add(ship.organisation);
+        power.maximum_organisation = power
+            .maximum_organisation
+            .wrapping_add(counter.maximum_organisation);
+    }
+    Ok(power)
+}
+
+fn avoidance(
+    context: &Context<'_>,
+    target: u64,
+    input: &NavalPortMissionInputs,
+) -> Result<bool, String> {
+    let avoided = input
+        .avoided_ship_types
+        .as_ref()
+        .ok_or("avoided ship types are unreadable")?;
+    if avoided.is_empty() {
+        return Ok(true);
+    }
+    let roster = roster(context, target)?;
+    if roster.is_empty() {
+        return Ok(true);
+    }
+    let tokens = context
+        .frame
+        .complete::<tables::LexicalTokens>()
+        .map_err(|e| e.to_string())?;
+    permits_types(
+        roster.into_iter().map(|(ship, _)| {
+            let token = ship.class_id as u32;
+            let spelling = tokens
+                .binary_search_by_key(&token, |row| row.token)
+                .map(|i| &tokens[i].literal)
+                .map_err(|_| format!("ship {} sub-unit token {token} is absent", ship.id))?;
+            Ok(spelling.as_slice())
+        }),
+        avoided,
+    )
+}
+
+fn status(
+    context: &Context<'_>,
+    own: &TaskForceRow,
+    target: u64,
+    visibility: u16,
+) -> Result<String, String> {
+    if own.combat_references > 0 {
+        return localise(context.loc, Status::InCombat.key(), &[]);
+    }
+    let input = input(context, own.id)?;
+    if let Some(status) = stable_status(0, input.detached_activity, own.mission) {
+        return localise(context.loc, status.key(), &[]);
+    }
+    let mission = mission(context, input)?;
+    let engagement = mission
+        .engagement_target
+        .as_ref()
+        .ok_or("strike-force target reference is unreadable")?;
+    if engagement.reference != 0 {
+        let resolves = engagement
+            .resolves
+            .ok_or("strike-force target registry lookup is unreadable")?;
+        if let Some(status) = engagement_status(engagement.reference, resolves, target) {
+            return localise(context.loc, status.key(), &[]);
+        }
+    }
+    if input.engagement_rule == 4 {
+        return localise(context.loc, Status::Ready.key(), &[]);
+    }
+    if visibility < 100 {
+        return localise(context.loc, Status::NotEnoughIntel.key(), &[]);
+    }
+    let content = context
+        .content
+        .ok_or("port strike-force content is unavailable")?;
+    let d = &content.counters.port_mission_defines;
+    let own_power = power(context, own.id, d)?;
+    let target_power = power(context, target, d)?;
+    let aggression = if input.running_away != 0 {
+        0
+    } else {
+        usize::try_from(input.engagement_rule)
+            .ok()
+            .and_then(|i| content.counters.aggression.get(i).copied())
+            .ok_or_else(|| {
+                format!(
+                    "NNavy.AGGRESSION_SETTINGS_VALUES lacks native index {}",
+                    input.engagement_rule
+                )
+            })?
+    };
+    let (status, explain) = if visibility < 250 {
+        let width = *d.estimate_width[usize::from(visibility > 149)]
+            .as_ref()
+            .map_err(Clone::clone)?;
+        probability_status(
+            fuzzy_likelihood(
+                own_power,
+                target_power,
+                aggression,
+                width,
+                (target >> 32) as i32,
+                d,
+            )?,
+            d,
+        )?
+    } else if exact_ready(own_power, target_power, aggression, d)?
+        && avoidance(context, target, mission)?
+    {
+        (Status::Ready, false)
+    } else {
+        (Status::TooStrong, true)
+    };
+    let mut text = localise(context.loc, status.key(), &[])?;
+    if explain {
+        let key = format!(
+            "SHIP_ENGAGEMENT_BUTTON_AGGRESSIVENESS_{}",
+            input.engagement_rule.wrapping_add(1)
+        );
+        let setting = localise(context.loc, &key, &[])?;
+        let setting = localise(context.loc, &setting, &[])?;
+        text.push('\n');
+        text.push_str(&localise(
+            context.loc,
+            "NAVAL_STRIKE_FORCE_STATUS_ENGAGEMENT_SETTING_DESC",
+            &[("SETTING", Arg::Text(&setting))],
+        )?);
+    }
+    Ok(text)
+}
+
+fn entries<'a>(context: &Context<'a>, target: u64) -> Result<Vec<&'a TaskForceRow>, String> {
+    let countries = context
+        .frame
+        .complete::<tables::Countries>()
+        .map_err(|e| e.to_string())?;
+    let viewer = countries
+        .iter()
+        .find(|row| row.canonical_slot == context.vision.ours())
+        .ok_or("current viewing country raw id is unavailable")?
+        .id;
+    if viewer as i32 <= 0 {
+        return Ok(Vec::new());
+    }
+    let target = force(context, target)?;
+    if target.province == 0 {
+        return Ok(Vec::new());
+    }
+    let content = context
+        .content
+        .ok_or("port strike-force region content is unavailable")?;
+    let Some(region) = content.counters.region(target.province) else {
+        return Ok(Vec::new());
+    };
+    let ledgers = context
+        .frame
+        .complete::<tables::NavalMissionLedgers>()
+        .map_err(|e| e.to_string())?;
+    let Some(ledger) = ledgers
+        .iter()
+        .find(|row| row.owner == viewer && row.region == region)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut entries = Vec::new();
+    for &id in &ledger.task_forces {
+        let own = force(context, id)?;
+        if own.mission == 2 {
+            entries.push(own);
+        }
+    }
+    Ok(entries)
+}
+
+pub(super) fn append(context: &Context<'_>, target: u64, visibility: u16, out: &mut Tooltip) {
+    let entries = match entries(context, target) {
+        Ok(entries) => entries,
+        Err(reason) => {
+            refuse(out, "port strike-force ledger", reason);
+            return;
+        }
+    };
+    if entries.is_empty() {
+        return;
+    }
+    crate::combat::text::ensure_newlines(&mut out.title, 2);
+    let header = localise(context.loc, "NAVAL_STRIKE_FORCE_STATUS_HEADER", &[])
+        .map(|header| format!("{header}\n"));
+    super::append(out, context, false, "port strike-force header", header);
+    for own in entries {
+        let entry = input(context, own.id)
+            .and_then(|row| {
+                dashboard::unit_names::task_force_name(row, context.loc, context.recorded_language)
+            })
+            .and_then(|name| {
+                localise(
+                    context.loc,
+                    "NAVAL_STRIKE_FORCE_STATUS_ENTRY",
+                    &[("NAME", Arg::Text(&name))],
+                )
+            });
+        super::append(out, context, false, "port strike-force name", entry);
+        super::append(
+            out,
+            context,
+            false,
+            "port strike-force status",
+            status(context, own, target, visibility),
+        );
+        if !out.title.is_empty() && !out.title.ends_with('\n') {
+            out.title.push('\n');
+        }
+    }
+}
+
+/// 14197C4FB selects the first matching searching entry, preserving order and
+/// decisive prefixes. Native dereferences a null/dangling searcher before the
+/// ownership test; that is a named fault boundary, never an entry to skip.
+fn searcher(context: &Context<'_>, first: u64) -> Result<Option<u64>, String> {
+    let packet = mission(context, input(context, first)?)?;
+    let entries = packet
+        .searching
+        .as_ref()
+        .ok_or("searching reference vector is unreadable")?;
+    if entries.is_empty() {
+        return Ok(None);
+    }
+    let countries = context
+        .frame
+        .complete::<tables::Countries>()
+        .map_err(|e| e.to_string())?;
+    let viewer = countries
+        .iter()
+        .find(|row| row.canonical_slot == context.vision.ours())
+        .ok_or("current viewing country raw id is unavailable")?
+        .id;
+    for (ordinal, entry) in entries.iter().enumerate() {
+        let reference = entry
+            .reference
+            .ok_or_else(|| format!("searching reference slot {ordinal} is unreadable"))?;
+        if reference == 0 {
+            return Err(format!(
+                "native searching slot {ordinal} reference {reference} is null or dangling (14197C53A)"
+            ));
+        }
+        match entry.resolves {
+            Some(true) => (),
+            Some(false) => {
+                return Err(format!(
+                    "native searching slot {ordinal} reference {reference} is null or dangling (14197C53A)"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "searching slot {ordinal} registry lookup is unreadable"
+                ));
+            }
+        }
+        let owner = entry
+            .roster_owner
+            .ok_or_else(|| format!("searching slot {ordinal} roster owner is unreadable"))?;
+        if owner == viewer
+            || (owner != 0 && viewer != 0 && context.slot(owner)? == context.vision.ours())
+        {
+            return Ok(Some(reference));
+        }
+    }
+    Ok(None)
+}
+
+pub(super) fn append_searching(
+    context: &Context<'_>,
+    first: u64,
+    visibility: u16,
+    out: &mut Tooltip,
+) {
+    let selected = match searcher(context, first) {
+        Ok(Some(id)) => id,
+        Ok(None) => return,
+        Err(reason) => {
+            refuse(out, "port task force searching references", reason);
+            return;
+        }
+    };
+    let key = if visibility < 100 {
+        "NAVAL_SPOTTING_LEVEL_NONE_DESC"
+    } else if visibility < 150 {
+        "NAVAL_SPOTTING_LEVEL_LOW_DESC"
+    } else if visibility < 250 {
+        "NAVAL_SPOTTING_LEVEL_MEDIUM_DESC"
+    } else {
+        "NAVAL_SPOTTING_LEVEL_DETAILED_UNITS_DESC"
+    };
+    super::append(
+        out,
+        context,
+        false,
+        "port task force spotting level",
+        localise(context.loc, key, &[]).map(|text| format!("{text}\n")),
+    );
+    let name = input(context, selected)
+        .and_then(|row| {
+            dashboard::unit_names::task_force_name(row, context.loc, context.recorded_language)
+        })
+        .and_then(|name| {
+            localise(
+                context.loc,
+                "NAVAL_SPOTTING_SEARCHED_BY",
+                &[("NAME", Arg::Text(&name))],
+            )
+        })
+        .map(|text| format!("{text}\n"));
+    super::append(out, context, false, "port task force searching name", name);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::map::{test_frame, test_put};
+    use replay::rows::{
+        CountryLinkRow, CountryRow, NavalEngagementTarget, NavalSearcher, ShipCounterInputs,
+        ShipStrikeInputs, TableRows,
+    };
+
+    fn with_context(frame: &DecodedFrame, run: impl FnOnce(&Context<'_>)) {
+        let loc: Localisation = [
+            ("NAVAL_SPOTTING_LEVEL_NONE_DESC".into(), "none".into()),
+            ("NAVAL_SPOTTING_LEVEL_LOW_DESC".into(), "low".into()),
+            ("NAVAL_SPOTTING_LEVEL_MEDIUM_DESC".into(), "medium".into()),
+            (
+                "NAVAL_SPOTTING_LEVEL_DETAILED_UNITS_DESC".into(),
+                "detailed".into(),
+            ),
+            (
+                "NAVAL_SPOTTING_SEARCHED_BY".into(),
+                "searched by $NAME$".into(),
+            ),
+            (Status::InCombat.key().into(), "combat".into()),
+            (Status::NotReady.key().into(), "not ready".into()),
+            (Status::Engaging.key().into(), "engaging".into()),
+            (Status::EngagingAnother.key().into(), "other target".into()),
+            (Status::Ready.key().into(), "ready".into()),
+            (Status::NotEnoughIntel.key().into(), "no intel".into()),
+        ]
+        .into_iter()
+        .collect();
+        let names = installed_content::division_names::Database::default();
+        let units = Err("unreached".into());
+        let vision = Vision::sharing(1, []);
+        run(&Context {
+            nato: false,
+            content: None,
+            dig_in_factor: Err("unreached".into()),
+            loc: &loc,
+            recorded_language: &loc.language,
+            icons: &crate::combat::binding::NoIcons,
+            names: &names,
+            units: &units,
+            supply_grace: Err("unreached".into()),
+            comms_max_distance: Err("unreached".into()),
+            frame,
+            vision: &vision,
+            links: frame
+                .complete::<tables::CountryLinks>()
+                .map_err(|e| e.to_string()),
+        });
+    }
+
+    fn packet(entries: Vec<NavalSearcher>) -> NavalPortMissionInputs {
+        NavalPortMissionInputs {
+            sample_hour: 7,
+            searching: Some(entries),
+            ..Default::default()
+        }
+    }
+
+    fn task_input(packet: NavalPortMissionInputs) -> TaskForceCounterInputRow {
+        TaskForceCounterInputRow {
+            task_force: 50,
+            port_mission: Some(packet).into(),
+            ..Default::default()
+        }
+    }
+
+    fn set_searchers(frame: &mut DecodedFrame, entries: Vec<NavalSearcher>) {
+        test_put(
+            frame,
+            TableRows::TaskForceCounterInputs(vec![task_input(packet(entries))]),
+        );
+    }
+
+    #[test]
+    fn searching_preserves_first_raw_or_canonical_match_and_unknown_prefixes() {
+        let mut frame = test_frame(7);
+        test_put(
+            &mut frame,
+            TableRows::Countries(vec![CountryRow {
+                id: 1,
+                canonical_slot: 1,
+                ..Default::default()
+            }]),
+        );
+        test_put(
+            &mut frame,
+            TableRows::CountryLinks(vec![
+                CountryLinkRow {
+                    id: 2,
+                    canonical_slot: 2,
+                },
+                CountryLinkRow {
+                    id: 99,
+                    canonical_slot: 1,
+                },
+            ]),
+        );
+        let nonmatch = NavalSearcher {
+            reference: Some(100),
+            resolves: Some(true),
+            roster_owner: Some(2),
+        };
+        let alias = NavalSearcher {
+            reference: Some(101),
+            resolves: Some(true),
+            roster_owner: Some(99),
+        };
+        set_searchers(&mut frame, vec![nonmatch, alias, NavalSearcher::default()]);
+        with_context(&frame, |context| {
+            assert_eq!(searcher(context, 50).unwrap(), Some(101))
+        });
+        for (entry, fault) in [
+            (NavalSearcher::default(), "reference slot 0"),
+            (
+                NavalSearcher {
+                    reference: Some(0),
+                    ..Default::default()
+                },
+                "null or dangling",
+            ),
+            (
+                NavalSearcher {
+                    reference: Some(102),
+                    resolves: Some(false),
+                    ..Default::default()
+                },
+                "null or dangling",
+            ),
+            (
+                NavalSearcher {
+                    reference: Some(102),
+                    ..Default::default()
+                },
+                "registry lookup",
+            ),
+            (
+                NavalSearcher {
+                    reference: Some(102),
+                    resolves: Some(true),
+                    ..Default::default()
+                },
+                "roster owner",
+            ),
+        ] {
+            set_searchers(&mut frame, vec![entry, alias]);
+            with_context(&frame, |context| {
+                assert!(searcher(context, 50).unwrap_err().contains(fault))
+            });
+        }
+        // Raw equality does not demand the canonical CountryLinks table.
+        let mut raw_frame = test_frame(7);
+        test_put(
+            &mut raw_frame,
+            TableRows::Countries(vec![CountryRow {
+                id: 1,
+                canonical_slot: 1,
+                ..Default::default()
+            }]),
+        );
+        set_searchers(
+            &mut raw_frame,
+            vec![
+                NavalSearcher {
+                    reference: Some(101),
+                    resolves: Some(true),
+                    roster_owner: Some(1),
+                },
+                NavalSearcher::default(),
+            ],
+        );
+        with_context(&raw_frame, |context| {
+            assert_eq!(searcher(context, 50).unwrap(), Some(101))
+        });
+    }
+
+    #[test]
+    fn searching_sample_is_current_and_empty_list_demands_no_roster() {
+        let mut frame = test_frame(7);
+        set_searchers(&mut frame, Vec::new());
+        with_context(&frame, |context| {
+            assert_eq!(searcher(context, 50).unwrap(), None)
+        });
+        let stale = task_input(NavalPortMissionInputs {
+            sample_hour: 6,
+            searching: Some(Vec::new()),
+            ..Default::default()
+        });
+        test_put(&mut frame, TableRows::TaskForceCounterInputs(vec![stale]));
+        with_context(&frame, |context| {
+            assert!(
+                searcher(context, 50)
+                    .unwrap_err()
+                    .contains("from hour 6, not 7")
+            )
+        });
+        test_put(
+            &mut frame,
+            TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
+                task_force: 50,
+                ..Default::default()
+            }]),
+        );
+        with_context(&frame, |context| {
+            let reason = searcher(context, 50).unwrap_err();
+            assert!(reason.contains("TaskForceCounterInputs.port_mission"));
+            assert!(reason.contains("sample is unreadable"));
+        });
+        test_put(
+            &mut frame,
+            TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
+                task_force: 50,
+                port_mission: replay::rows::Recorded::NotRecorded,
+                ..Default::default()
+            }]),
+        );
+        with_context(&frame, |context| {
+            assert_eq!(
+                searcher(context, 50).unwrap_err(),
+                "TaskForceCounterInputs.port_mission not recorded"
+            );
+        });
+    }
+
+    #[test]
+    fn searching_text_keeps_visibility_thresholds_current_name_and_unconditional_newlines() {
+        let mut frame = test_frame(7);
+        test_put(
+            &mut frame,
+            TableRows::Countries(vec![CountryRow {
+                id: 1,
+                canonical_slot: 1,
+                ..Default::default()
+            }]),
+        );
+        test_put(
+            &mut frame,
+            TableRows::TaskForceCounterInputs(vec![
+                task_input(packet(vec![NavalSearcher {
+                    reference: Some(101),
+                    resolves: Some(true),
+                    roster_owner: Some(1),
+                }])),
+                TaskForceCounterInputRow {
+                    task_force: 101,
+                    name: Some(b"patrol".to_vec()).into(),
+                    ..Default::default()
+                },
+            ]),
+        );
+        with_context(&frame, |context| {
+            for (visibility, level) in [
+                (99, "none"),
+                (100, "low"),
+                (149, "low"),
+                (150, "medium"),
+                (249, "medium"),
+                (250, "detailed"),
+            ] {
+                let mut text = Tooltip {
+                    title: "existing".into(),
+                    ..Default::default()
+                };
+                append_searching(context, 50, visibility, &mut text);
+                assert_eq!(text.title, format!("existing{level}\nsearched by patrol\n"));
+                assert!(text.body.is_empty() && text.refused.is_empty());
+            }
+        });
+    }
+
+    #[test]
+    fn native_status_early_arms_consume_only_reached_current_fields() {
+        let mut frame = test_frame(7);
+        let own = TaskForceRow {
+            id: 50,
+            mission: 2,
+            ..Default::default()
+        };
+        with_context(&frame, |context| {
+            assert_eq!(
+                status(
+                    context,
+                    &TaskForceRow {
+                        combat_references: 1,
+                        ..own.clone()
+                    },
+                    101,
+                    250
+                )
+                .unwrap(),
+                "combat"
+            )
+        });
+        for (detached, mission_kind) in [(1, 2), (0, 3)] {
+            test_put(
+                &mut frame,
+                TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
+                    task_force: 50,
+                    detached_activity: detached,
+                    ..Default::default()
+                }]),
+            );
+            with_context(&frame, |context| {
+                assert_eq!(
+                    status(
+                        context,
+                        &TaskForceRow {
+                            mission: mission_kind,
+                            ..own.clone()
+                        },
+                        101,
+                        250
+                    )
+                    .unwrap(),
+                    "not ready"
+                )
+            });
+        }
+        for (target, rule, intel, expected) in [
+            (
+                NavalEngagementTarget {
+                    reference: 101,
+                    resolves: Some(true),
+                },
+                0,
+                0,
+                "engaging",
+            ),
+            (
+                NavalEngagementTarget {
+                    reference: 102,
+                    resolves: Some(true),
+                },
+                0,
+                0,
+                "other target",
+            ),
+            (
+                NavalEngagementTarget {
+                    reference: 0,
+                    resolves: None,
+                },
+                4,
+                0,
+                "ready",
+            ),
+            (
+                NavalEngagementTarget {
+                    reference: 101,
+                    resolves: Some(false),
+                },
+                4,
+                0,
+                "ready",
+            ),
+            (
+                NavalEngagementTarget {
+                    reference: 0,
+                    resolves: None,
+                },
+                0,
+                99,
+                "no intel",
+            ),
+        ] {
+            test_put(
+                &mut frame,
+                TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
+                    engagement_rule: rule,
+                    ..task_input(NavalPortMissionInputs {
+                        sample_hour: 7,
+                        engagement_target: Some(target),
+                        ..Default::default()
+                    })
+                }]),
+            );
+            with_context(&frame, |context| {
+                assert_eq!(status(context, &own, 101, intel).unwrap(), expected)
+            });
+        }
+        // Unknown resolution cannot be skipped to the otherwise-ready rule.
+        test_put(
+            &mut frame,
+            TableRows::TaskForceCounterInputs(vec![TaskForceCounterInputRow {
+                engagement_rule: 4,
+                ..task_input(NavalPortMissionInputs {
+                    sample_hour: 7,
+                    engagement_target: Some(NavalEngagementTarget {
+                        reference: 101,
+                        resolves: None,
+                    }),
+                    ..Default::default()
+                })
+            }]),
+        );
+        with_context(&frame, |context| {
+            assert!(
+                status(context, &own, 101, 250)
+                    .unwrap_err()
+                    .contains("registry lookup")
+            )
+        });
+    }
+
+    #[test]
+    fn ship_power_uses_current_strike_words_roster_order_and_native_carrier_precedence() {
+        let mut frame = test_frame(7);
+        test_put(
+            &mut frame,
+            TableRows::Ships(vec![
+                ShipRow {
+                    id: 10,
+                    task_force: 50,
+                    strength: 50_000,
+                    organisation: 25_000,
+                    ..Default::default()
+                },
+                ShipRow {
+                    id: 11,
+                    task_force: 50,
+                    strength: 100_000,
+                    organisation: 50_000,
+                    ..Default::default()
+                },
+            ]),
+        );
+        let strike = ShipStrikeInputs {
+            light_attack: Some(200_000),
+            heavy_attack: Some(300_000),
+            light_piercing: Some(400_000),
+            torpedo_attack: Some(500_000),
+            torpedo_cooldown_modifier: Some(0),
+        };
+        let model = |ship, ordinal, flags, maximum_organisation, strike| ShipModelRow {
+            ship,
+            formation_flags: flags,
+            counter: Some(ShipCounterInputs {
+                roster_ordinal: ordinal,
+                maximum_strength: 100_000,
+                maximum_organisation,
+                ..Default::default()
+            }),
+            strike: Some(strike).into(),
+            ..Default::default()
+        };
+        let first = model(10, 0, (1 << 7) | (1 << 8), 200_000, strike);
+        let second = model(
+            11,
+            1,
+            1 << 8,
+            400_000,
+            ShipStrikeInputs {
+                torpedo_cooldown_modifier: Some(SCALE),
+                ..strike
+            },
+        );
+        test_put(
+            &mut frame,
+            TableRows::ShipModels(vec![first.clone(), second.clone()]),
+        );
+        let d = Defines {
+            guns: Ok(Guns {
+                cooldown: [100_000, 200_000, 400_000],
+                minimum: 1_000,
+            }),
+            ..score_defines()
+        };
+        with_context(&frame, |context| {
+            assert_eq!(
+                super::power(context, 50, &d).unwrap(),
+                Power {
+                    ships: 2,
+                    capitals: 1,
+                    carriers: 1,
+                    light: 100_000,
+                    heavy: 600_000,
+                    light_piercing: 200_000,
+                    torpedo: 375_000,
+                    strength: 150_000,
+                    maximum_strength: 200_000,
+                    organisation: 75_000,
+                    maximum_organisation: 600_000,
+                }
+            )
+        });
+        for (missing, field) in [
+            (
+                ShipStrikeInputs {
+                    light_attack: None,
+                    ..strike
+                },
+                "light_attack",
+            ),
+            (
+                ShipStrikeInputs {
+                    heavy_attack: None,
+                    ..strike
+                },
+                "heavy_attack",
+            ),
+            (
+                ShipStrikeInputs {
+                    light_piercing: None,
+                    ..strike
+                },
+                "light_piercing",
+            ),
+            (
+                ShipStrikeInputs {
+                    torpedo_attack: None,
+                    ..strike
+                },
+                "torpedo_attack",
+            ),
+            (
+                ShipStrikeInputs {
+                    torpedo_cooldown_modifier: None,
+                    ..strike
+                },
+                "torpedo_cooldown_modifier",
+            ),
+        ] {
+            test_put(
+                &mut frame,
+                TableRows::ShipModels(vec![
+                    ShipModelRow {
+                        strike: Some(missing).into(),
+                        ..first.clone()
+                    },
+                    second.clone(),
+                ]),
+            );
+            with_context(&frame, |context| {
+                assert!(super::power(context, 50, &d).unwrap_err().contains(field))
+            });
+        }
+        let mut empty = test_frame(7);
+        test_put(&mut empty, TableRows::Ships(Vec::new()));
+        with_context(&empty, |context| {
+            assert_eq!(
+                super::power(context, 50, &thresholds([Ok(0), Ok(0), Ok(0)])).unwrap(),
+                Power::default()
+            )
+        });
+    }
+
+    fn score_defines() -> Defines {
+        Defines {
+            score: Ok(ScoreDefines {
+                screening_ratio: Ok(400_000),
+                efficiency: [SCALE, 0, SCALE, 0, SCALE, 0],
+            }),
+            ..thresholds([Ok(80_000), Ok(60_000), Ok(20_000)])
+        }
+    }
+
+    fn power() -> Power {
+        Power {
+            ships: 1,
+            light: SCALE,
+            light_piercing: 1,
+            strength: SCALE,
+            maximum_strength: SCALE,
+            organisation: SCALE,
+            maximum_organisation: SCALE,
+            ..Power::default()
+        }
+    }
+
+    fn thresholds(values: [Result<i64, String>; 3]) -> Defines {
+        Defines {
+            guns: Err("unreached guns".into()),
+            score: Err("unreached score".into()),
+            estimate_width: [Err("unreached low".into()), Err("unreached medium".into())],
+            likelihood: values,
+        }
+    }
+
+    #[test]
+    fn fixed5_guard_uses_unsigned32_sentinel_and_wrapping_products() {
+        for n in [i64::MIN, i64::MIN + 1, i64::MAX] {
+            assert_eq!(fraction(n, SCALE).unwrap(), 4_294_967_295);
+        }
+        assert_eq!(fraction(1, 0).unwrap(), 4_294_967_295);
+        assert_eq!(fraction(-5, 3).unwrap(), -166_666);
+        assert_eq!(rate(0), 4_294_967_295);
+        // Native IMUL wraps before the signed division, rather than widening.
+        assert_eq!(multiply(i64::MAX, 2), 0);
+        assert!(fraction(1_i64 << 58, -1).is_err());
+    }
+
+    #[test]
+    fn score_preserves_carrier_precedence_health_and_capitals_over_screens() {
+        let d = score_defines();
+        let carrier = Power {
+            ships: 1,
+            carriers: 1,
+            ..Power::default()
+        };
+        assert_eq!(score(carrier, Power::default(), &d).unwrap(), 100_000_000);
+        assert_eq!(
+            score(
+                Power {
+                    light_piercing: 0,
+                    ..power()
+                },
+                carrier,
+                &d
+            )
+            .unwrap(),
+            0
+        );
+        let missing = thresholds([Ok(0), Ok(0), Ok(0)]);
+        assert_eq!(
+            score(carrier, Power::default(), &missing).unwrap(),
+            100_000_000
+        );
+        assert_eq!(
+            score(
+                Power {
+                    light_piercing: 0,
+                    ..power()
+                },
+                carrier,
+                &missing
+            )
+            .unwrap(),
+            0
+        );
+        let mut own = Power {
+            ships: 4,
+            capitals: 1,
+            light: 200_000,
+            heavy: 600_000,
+            torpedo: 100_000,
+            ..power()
+        };
+        // 1/3 then /4, separately truncated: factor 0.77083, not full screening.
+        assert_eq!(score(own, power(), &d).unwrap(), 693_747);
+        own.maximum_strength = 0;
+        own.maximum_organisation = 0;
+        assert_eq!(score(own, power(), &d).unwrap(), 173_436);
+        let mut missing_screen = d.clone();
+        missing_screen.score.as_mut().unwrap().screening_ratio = Err("unreached screening".into());
+        assert_eq!(
+            score(
+                Power {
+                    capitals: 1,
+                    ..power()
+                },
+                power(),
+                &missing_screen
+            )
+            .unwrap(),
+            SCALE
+        );
+        assert_eq!(
+            score(power(), power(), &missing_screen).unwrap_err(),
+            "unreached screening"
+        );
+    }
+
+    #[test]
+    fn exact_readiness_is_strict_and_caps_the_enemy_ratio() {
+        let d = score_defines();
+        assert!(!exact_ready(power(), power(), SCALE, &d).unwrap());
+        assert!(exact_ready(power(), power(), SCALE + 1, &d).unwrap());
+        let powerless = Power {
+            light: 0,
+            ..power()
+        };
+        let enemy = Power {
+            light: 2_000_000,
+            ..power()
+        };
+        assert!(!exact_ready(powerless, enemy, 1_000_000, &d).unwrap());
+        assert!(exact_ready(powerless, enemy, 1_000_001, &d).unwrap());
+    }
+
+    #[test]
+    fn fuzzy_range_keeps_hash_packing_parity_and_signed_seed() {
+        assert_eq!(fuzzy_range(1_000_000, 25, 0), (763_401, 1_263_401));
+        assert_eq!(fuzzy_range(1_000_000, 25, 1), (619_796, 1_119_796));
+        assert_eq!(
+            fuzzy_range(1_000_010, 10, 0x1234_5678),
+            (930_023, 1_130_025)
+        );
+        assert_eq!(fuzzy_range(0, 0, 0), (0, 200));
+        assert_eq!(fuzzy_range(500, 33, -1), (277, 607));
+    }
+
+    #[test]
+    fn fuzzy_probability_keeps_endpoint_and99percent_rules() {
+        let range = (50_000, 150_000);
+        assert_eq!(likelihood_from_range(SCALE, range, 50_000).unwrap(), 0);
+        assert_eq!(likelihood_from_range(SCALE, range, SCALE).unwrap(), 50_000);
+        assert_eq!(
+            likelihood_from_range(SCALE, range, 150_000).unwrap(),
+            99_000
+        );
+        assert_eq!(likelihood_from_range(SCALE, range, 150_001).unwrap(), SCALE);
+        assert_eq!(likelihood_from_range(0, range, 1_000_000).unwrap(), 0);
+        assert_eq!(likelihood_from_range(0, range, 1_000_001).unwrap(), SCALE);
+    }
+
+    #[test]
+    fn status_precedence_distinguishes_dangling_target_and_exact_full_identity() {
+        assert_eq!(stable_status(1, 1, 3), Some(Status::InCombat));
+        assert_eq!(stable_status(0, 1, 2), Some(Status::NotReady));
+        assert_eq!(stable_status(0, 0, 3), Some(Status::NotReady));
+        assert_eq!(stable_status(0, 0, 2), None);
+        let target = 0x0000_007b_0000_0002;
+        assert_eq!(engagement_status(target, false, target), None);
+        assert_eq!(engagement_status(0, true, target), None);
+        assert_eq!(
+            engagement_status(target, true, target),
+            Some(Status::Engaging)
+        );
+        assert_eq!(
+            engagement_status(target ^ 1, true, target),
+            Some(Status::EngagingAnother)
+        );
+    }
+
+    #[test]
+    fn likelihood_thresholds_are_ordered_and_only_reached_values_are_demanded() {
+        let d = thresholds([
+            Ok(50_000),
+            Err("unreached likely".into()),
+            Err("unreached unlikely".into()),
+        ]);
+        assert_eq!(
+            probability_status(50_000, &d).unwrap(),
+            (Status::VeryLikely, true)
+        );
+        assert_eq!(
+            probability_status(SCALE, &d).unwrap(),
+            (Status::Ready, false)
+        );
+        assert_eq!(
+            probability_status(49_999, &d).unwrap_err(),
+            "unreached likely"
+        );
+        let d = thresholds([Ok(80_000), Ok(60_000), Ok(20_000)]);
+        for (p, expected) in [
+            (80_000, Status::VeryLikely),
+            (60_000, Status::Likely),
+            (20_000, Status::Unlikely),
+            (1, Status::VeryUnlikely),
+            (0, Status::TooStrong),
+        ] {
+            assert_eq!(probability_status(p, &d).unwrap(), (expected, true));
+        }
+    }
+
+    #[test]
+    fn avoidance_preserves_decisive_prefixes_and_empty_list_laziness() {
+        let unconsumed = std::iter::once_with(|| -> Result<&[u8], String> {
+            panic!("an empty exclusion list reads no target types")
+        });
+        assert!(permits_types(unconsumed, &[]).unwrap());
+        let types = [Ok(b"screen".as_slice()), Err("unreached later ship".into())];
+        assert!(!permits_types(types, &[Some(b"screen".to_vec()), None]).unwrap());
+        assert_eq!(
+            permits_types(
+                [Ok(b"screen".as_slice())],
+                &[None, Some(b"screen".to_vec())]
+            )
+            .unwrap_err(),
+            "avoided ship-type string is unreadable"
+        );
+    }
+
+    #[test]
+    fn avoidance_uses_raw_bytes_without_utf8_or_case_folding() {
+        assert!(permits_types([Ok(b"Screen".as_slice())], &[Some(b"screen".to_vec())]).unwrap());
+        assert!(!permits_types([Ok([0xff, 0].as_slice())], &[Some(vec![0xff, 0])]).unwrap());
+    }
+}

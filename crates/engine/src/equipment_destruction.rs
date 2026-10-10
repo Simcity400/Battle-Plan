@@ -1015,7 +1015,19 @@ pub fn snapshot(
     pool: usize,
     rows: &mut [equipment_entry::Row],
 ) -> Result<usize, &'static str> {
+    snapshot_with_demand(memory, base, pool, rows, |_| ())
+}
+/// Preserve the original pool+20/+2C header (140FFDB00) demand even when
+/// allocation-free callback storage cannot retain its payload.
+pub fn snapshot_with_demand(
+    memory: &impl Memory,
+    base: usize,
+    pool: usize,
+    rows: &mut [equipment_entry::Row],
+    demand: impl FnOnce(usize),
+) -> Result<usize, &'static str> {
     let array = cequipment_variant_pool::entries(memory, base, pool)?;
+    demand(array.count as usize);
     if array.count as usize > rows.len() {
         return Err("destruction pool exceeds live design capacity");
     }
@@ -1041,7 +1053,20 @@ pub fn variant_amount(
     variant: usize,
     scratch: &mut [u8],
 ) -> Result<i64, &'static str> {
+    variant_amount_with_demand(memory, base, pool, variant, scratch, |_| ())
+}
+/// 140FFD5A0 consumes the same pool header; report its row count before the
+/// scratch check without changing the original payload/consistency reads.
+pub fn variant_amount_with_demand(
+    memory: &impl Memory,
+    base: usize,
+    pool: usize,
+    variant: usize,
+    scratch: &mut [u8],
+    demand: impl FnOnce(usize),
+) -> Result<i64, &'static str> {
     let array = cequipment_variant_pool::entries(memory, base, pool)?;
+    demand(array.count as usize);
     let bytes = (array.count as usize)
         .checked_mul(equipment_entry::STRIDE)
         .ok_or("destruction variant snapshot size overflow")?;

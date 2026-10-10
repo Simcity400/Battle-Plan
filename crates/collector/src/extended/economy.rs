@@ -53,7 +53,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("fuel status and consumers", 0, &[0, 10]),
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],
     pub foreign_sources: usize,
@@ -63,36 +63,51 @@ pub struct Capacities {
 /// Consumer rows per country, fixed by the engine's fuel status.
 const FUEL_CONSUMERS: usize = ccountry_fuel_status::MAX_CONSUMERS as usize;
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: [
-                512,
-                512,
-                16_384,
-                1024,
-                256,
-                512,
-                16,
-                4096,
-                1024,
-                128,
-                512 * FUEL_CONSUMERS,
-            ],
-            foreign_sources: 16_384,
-            demand: Default::default(),
-        }
-    }
-}
 impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let rows = |outcome| match outcome {
+            Outcome::Rows { len } => Ok(len),
+            Outcome::Truncated { len, unread_rows } => len
+                .checked_add(unread_rows as usize)
+                .ok_or("economy sizing row count overflow"),
+            Outcome::Unavailable { reason } => Err(reason),
+        };
+        let resources = ccountry_resources::storage_demand(memory, base, state)?;
+        for (index, demand) in [6, 7, 8].into_iter().zip(resources) {
+            crate::table_capture::grow_capacity(&mut self.rows[index], demand);
+        }
+        for (index, outcome) in [
+            (2, sprovince_supply_data::walk(memory, base, state, &mut [])),
+            (
+                3,
+                ccountry_supply_system::walk(memory, base, state, &mut []),
+            ),
+            (
+                4,
+                disrupted_supply_bucket::walk(memory, base, state, &mut []),
+            ),
+            (
+                9,
+                cpurchase_contract::walk(memory, base, state, &mut [], &mut []),
+            ),
+        ] {
+            crate::table_capture::grow_capacity(&mut self.rows[index], rows(outcome)?);
+        }
+        Ok(())
+    }
+
     /// CountryFuel and CountryExperience hold one row per canonical country,
-    /// and CountryFuelConsumers the engine's fixed number per country; CountryResources one per country and resource definition (the
-    /// default's eight per country covers the vanilla roster; more grows).
+    /// and CountryFuelConsumers the engine's fixed number per country. Resource
+    /// pools follow the live definition census and original pool headers.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[0], rows(slots, 1));
         raise(&mut self.rows[1], rows(slots, 1));
-        raise(&mut self.rows[7], rows(slots, 8));
         raise(&mut self.rows[10], rows(slots, FUEL_CONSUMERS));
         self.demand.raise_for_countries(slots);
     }
@@ -129,6 +144,14 @@ pub struct Captured {
 }
 
 impl Captured {
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            rows: [0; N],
+            foreign_sources: 0,
+            demand: Default::default(),
+        })
+    }
+
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             fuel: CaptureRows::new(capacity.rows[0]),
@@ -212,6 +235,7 @@ impl Captured {
     }
 
     /// Bounded acquisition without allocation, encoding or I/O; returns QPC ticks.
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -220,13 +244,48 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
+        self.capture_buffers(memory, base, game_state, hour, force_full, false)
+    }
+
+    pub(crate) fn capture_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        self.capture_buffers(memory, base, game_state, hour, force_full, true)
+    }
+
+    pub(crate) fn fail_final_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.demand.fail_capture(hour, reason);
+        if !self.rest_raw_mode {
+            self.set_schedule(hour, force_full);
+            self.fail_economy_rest_capture(reason);
+        }
+    }
+
+    fn capture_buffers(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        growing: bool,
+    ) -> [u64; N] {
         self.reset();
         self.set_schedule(hour, force_full);
         let mut ticks = [0; N];
         if self.other_active {
             let _reads = read_accounting::table(TABLES[0]);
             let begin = qpc();
-            self.demand.capture(memory, base, game_state, hour);
+            if growing {
+                self.demand.capture_growing(memory, base, game_state, hour);
+            } else {
+                self.demand.capture(memory, base, game_state, hour);
+            }
             ticks[0] = elapsed(begin);
         }
         // A staged payload is installed by the decode worker.
@@ -234,11 +293,15 @@ impl Captured {
             return ticks;
         }
         macro_rules! plain {
-            ($index:literal, $field:ident, $walker:path) => {{
+            ($index:literal, $field:ident, $fixed:path, $worker:path) => {{
                 let _reads = read_accounting::table(TABLES[$index]);
                 let begin = qpc();
                 capture_rows(&mut self.$field, |rows| {
-                    $walker(memory, base, game_state, rows)
+                    if growing {
+                        $worker(memory, base, game_state, rows)
+                    } else {
+                        $fixed(memory, base, game_state, rows)
+                    }
                 });
                 ticks[$index] = elapsed(begin);
             }};
@@ -246,22 +309,42 @@ impl Captured {
         if self.other_active {
             let _reads = read_accounting::table(TABLES[0]);
             let begin = qpc();
-            self.capture_fuel(memory, base, game_state);
+            self.capture_fuel_buffers(memory, base, game_state, growing);
             ticks[0] = ticks[0].saturating_add(elapsed(begin));
-            plain!(1, experience, ccountry_experience_status::walk);
+            plain!(
+                1,
+                experience,
+                ccountry_experience_status::walk,
+                ccountry_experience_status::walk_growing
+            );
         }
-        plain!(2, supply, sprovince_supply_data::walk);
+        plain!(
+            2,
+            supply,
+            sprovince_supply_data::walk,
+            sprovince_supply_data::walk_growing
+        );
         if self.other_active {
-            plain!(3, hubs, ccountry_supply_system::walk);
-            plain!(4, disrupted, disrupted_supply_bucket::walk);
+            plain!(
+                3,
+                hubs,
+                ccountry_supply_system::walk,
+                ccountry_supply_system::walk_growing
+            );
+            plain!(
+                4,
+                disrupted,
+                disrupted_supply_bucket::walk,
+                disrupted_supply_bucket::walk_growing
+            );
             let _reads = read_accounting::table(TABLES[5]);
             let begin = qpc();
-            let acquired = foreign_homebase_node::walk(
+            let acquired = foreign_homebase_node::walk_buffer(
                 memory,
                 base,
                 game_state,
-                &mut self.foreign.rows,
-                &mut self.sources.first,
+                engine::walk::Buffer::for_worker(&mut self.foreign.rows, growing),
+                engine::walk::Buffer::for_worker(&mut self.sources.first, growing),
             );
             self.foreign.outcome = bounded(acquired.outcome, self.foreign.rows.len());
             self.sources.len = acquired.bytes_len;
@@ -282,7 +365,11 @@ impl Captured {
             let mut reads = read_accounting::table(TABLES[6]);
             let begin = qpc();
             capture_rows(&mut self.definitions, |rows| {
-                cstrategic_resource::walk(memory, base, rows)
+                cstrategic_resource::walk_buffer(
+                    memory,
+                    base,
+                    engine::walk::Buffer::for_worker(rows, growing),
+                )
             });
             ticks[6] = elapsed(begin);
             let descriptors = match self.definitions.outcome {
@@ -293,7 +380,13 @@ impl Captured {
             let begin = qpc();
             if let Some(descriptors) = descriptors {
                 capture_rows(&mut self.resources, |rows| {
-                    ccountry_resources::walk(memory, base, game_state, descriptors, rows)
+                    ccountry_resources::walk_buffer(
+                        memory,
+                        base,
+                        game_state,
+                        descriptors,
+                        engine::walk::Buffer::for_worker(rows, growing),
+                    )
                 });
             } else {
                 self.resources.outcome = unavailable_descriptors();
@@ -303,13 +396,13 @@ impl Captured {
             let begin = qpc();
             if let Some(descriptors) = descriptors {
                 self.exchanges.outcome = bounded(
-                    cresource_exchange::walk(
+                    cresource_exchange::walk_buffer(
                         memory,
                         base,
                         game_state,
                         descriptors,
-                        &mut self.exchanges.rows,
-                        &mut self.exchange_scratch,
+                        engine::walk::Buffer::for_worker(&mut self.exchanges.rows, growing),
+                        engine::walk::Buffer::for_worker(&mut self.exchange_scratch, growing),
                     ),
                     self.exchanges.rows.len(),
                 );
@@ -323,22 +416,41 @@ impl Captured {
             let _reads = read_accounting::table(TABLES[9]);
             let begin = qpc();
             capture_rows(&mut self.purchases, |rows| {
-                cpurchase_contract::walk(memory, base, game_state, rows, &mut self.purchase_scratch)
+                cpurchase_contract::walk_buffer(
+                    memory,
+                    base,
+                    game_state,
+                    engine::walk::Buffer::for_worker(rows, growing),
+                    engine::walk::Buffer::for_worker(&mut self.purchase_scratch, growing),
+                )
             });
             ticks[9] = elapsed(begin);
         }
         ticks
     }
 
-    /// One fuel walk fills CountryFuel and CountryFuelConsumers, each with its
-    /// own outcome.
-    fn capture_fuel(&mut self, memory: &impl Memory, base: usize, game_state: usize) {
-        let outcomes = ccountry_fuel_status::walk(
+    /// One fuel walk fills CountryFuel and CountryFuelConsumers independently.
+    fn capture_fuel_buffers(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        growing: bool,
+    ) {
+        let outcomes = ccountry_fuel_status::walk_buffer(
             memory,
             base,
             game_state,
-            &mut self.fuel.rows,
-            &mut self.fuel_consumers.rows,
+            if growing {
+                engine::walk::Buffer::Growing(&mut self.fuel.rows)
+            } else {
+                engine::walk::Buffer::Fixed(&mut self.fuel.rows)
+            },
+            if growing {
+                engine::walk::Buffer::Growing(&mut self.fuel_consumers.rows)
+            } else {
+                engine::walk::Buffer::Fixed(&mut self.fuel_consumers.rows)
+            },
         );
         self.fuel.outcome = bounded(outcomes.fuel, self.fuel.rows.len());
         self.fuel_consumers.outcome = bounded(outcomes.consumers, self.fuel_consumers.rows.len());
@@ -669,7 +781,7 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-fn capture_rows<R>(captured: &mut CaptureRows<R>, mut walk: impl FnMut(&mut [R]) -> Outcome) {
+fn capture_rows<R>(captured: &mut CaptureRows<R>, mut walk: impl FnMut(&mut Vec<R>) -> Outcome) {
     captured.outcome = bounded(walk(&mut captured.rows), captured.rows.len());
 }
 
@@ -705,9 +817,12 @@ mod owned;
 
 #[cfg(test)]
 use owned::OwnedResources;
+#[cfg(test)]
+pub(crate) use owned::copy_economy_rest_refresh;
 use owned::skipped;
 pub(crate) use owned::{
-    EconomyRestCopyContext, EconomyRestCopyReport, EconomyRestJob, copy_economy_rest_refresh,
+    EconomyRestCopyContext, EconomyRestCopyReport, EconomyRestJob,
+    copy_economy_rest_refresh_growing,
 };
 
 #[cfg(test)]

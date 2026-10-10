@@ -26,7 +26,7 @@ pub const TABLES: [TableId; N] = [TableId::CharacterRoleTraits, TableId::Charact
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("character role traits and operative links", 0, &[0, 1])];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     traits: usize,
     values: usize,
@@ -34,20 +34,6 @@ pub struct Capacities {
     definitions: usize,
     bytes: usize,
 }
-impl Default for Capacities {
-    /// Starting sizes only; the live demand (`country_scale::observe_politics`)
-    /// and each hour's walk raise them.
-    fn default() -> Self {
-        Self {
-            traits: 8192,
-            values: 16_384,
-            operatives: 512,
-            definitions: 2048,
-            bytes: 16_384,
-        }
-    }
-}
-
 impl Capacities {
     /// From the live walk with no storage, with the three-quarters growth
     /// rule's headroom. Never lowers.
@@ -227,6 +213,30 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
+        self.capture_mode(memory, base, game_state, hour, force_full, true)
+    }
+
+    #[cfg(test)]
+    fn capture_fixed(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        self.capture_mode(memory, base, game_state, hour, force_full, false)
+    }
+
+    fn capture_mode(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        growing: bool,
+    ) -> [u64; N] {
         self.reset();
         let walked = TABLES.map(|table| should_walk(table, hour, force_full));
         if !walked.iter().any(|&walked| walked) {
@@ -238,18 +248,33 @@ impl Captured {
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        let walk = native::walk(
-            memory,
-            base,
-            game_state,
-            native::Buffers {
-                traits: &mut self.traits.rows,
-                trait_values: &mut self.values.first,
-                operatives: &mut self.operatives.rows,
-                definitions: &mut self.definitions.first,
-                bytes: &mut self.bytes.first,
-            },
-        );
+        let walk = if growing {
+            native::walk_growing(
+                memory,
+                base,
+                game_state,
+                native::GrowingBuffers {
+                    traits: &mut self.traits.rows,
+                    trait_values: &mut self.values.first,
+                    operatives: &mut self.operatives.rows,
+                    definitions: &mut self.definitions.first,
+                    bytes: &mut self.bytes.first,
+                },
+            )
+        } else {
+            native::walk(
+                memory,
+                base,
+                game_state,
+                native::Buffers {
+                    traits: &mut self.traits.rows,
+                    trait_values: &mut self.values.first,
+                    operatives: &mut self.operatives.rows,
+                    definitions: &mut self.definitions.first,
+                    bytes: &mut self.bytes.first,
+                },
+            )
+        };
         let skipped = Outcome::Unavailable {
             reason: SKIPPED_REASON,
         };
@@ -606,6 +631,14 @@ mod tests {
         );
         captured.grow(&mut capacity);
         assert!(capacity.values >= 1 << 20);
+    }
+
+    #[test]
+    fn cold_character_input_defaults_have_no_population_or_text_capacity() {
+        assert_eq!(
+            Captured::with_capacities(&Capacities::default()).allocated_bytes(),
+            0
+        );
     }
 
     #[test]

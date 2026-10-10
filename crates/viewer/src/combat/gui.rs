@@ -529,6 +529,18 @@ impl Retained {
                 );
                 continue;
             };
+            if container.text_box().is_some() {
+                if let Err(why) = self.instance.scroll_text(
+                    root,
+                    container,
+                    action.direction,
+                    action.wheel,
+                    resources,
+                ) {
+                    count(refused, &action.target.path, why);
+                }
+                continue;
+            }
             let changed = if action.wheel {
                 self.instance.wheel_scroll(
                     root,
@@ -795,6 +807,14 @@ fn apply(
             ) {
                 count(refused, &path, why);
             }
+            if widget.is_some_and(|widget| widget.text_scroll_lines == Some(true)) {
+                let lines = widget
+                    .and_then(|widget| widget.text.as_deref())
+                    .map_or(0, |text| text.bytes().filter(|byte| *byte == b'\n').count());
+                if let Err(why) = instance.set_text_scroll_lines(root, element, lines, resources) {
+                    count(refused, &path, why);
+                }
+            }
         }
         let authored = element
             .icon()
@@ -804,7 +824,11 @@ fn apply(
             .and_then(|widget| widget.sprite.as_deref())
             .map(str::as_bytes)
             .or(authored);
-        if let Some(sprite) = sprite {
+        // 1415C66C0 -> 141C5DD20 calls replace_drawable@14229A8E0 only
+        // after the tactic picture path exists. A native no-op keeps its clocks too.
+        if !widget.is_some_and(|widget| widget.retain_sprite)
+            && let Some(sprite) = sprite
+        {
             let setter = if element.kind == Kind::Icon {
                 SpriteSetter::Icon
             } else {
@@ -915,7 +939,9 @@ fn apply(
                 bound.progress = progress;
                 bound.offset = Some(widget.offset.map(truncate_f32));
                 bound.rotation = widget.rotation;
-                bound.color = widget.opacity.map(|opacity| [1.0, 1.0, 1.0, opacity]);
+                bound.color = widget
+                    .color
+                    .or_else(|| widget.opacity.map(|opacity| [1.0, 1.0, 1.0, opacity]));
                 bound.shield = shield;
                 bound.texture = texture;
                 bound.enabled = widget.enabled;
@@ -1317,6 +1343,16 @@ fn controls(root: &Element, regions: &[Region], origin: [i32; 2], drawn: &mut Dr
             continue;
         };
         let name = indexed.get(region.path.as_str()).map(|path| path.as_str());
+        if !popup {
+            match name {
+                Some("dismiss_button") => drawn.dismiss = Some(rect),
+                Some("open_details") => drawn.result_details_button = Some(rect),
+                Some("attacker_details" | "defender_details") => {
+                    drawn.result_details_rects.push(rect)
+                }
+                _ => {}
+            }
+        }
         if name.is_some_and(|path| {
             path.rsplit('/').next().is_some_and(|name| {
                 name.eq_ignore_ascii_case("close") || name.eq_ignore_ascii_case("close_button")
@@ -1349,6 +1385,21 @@ fn controls(root: &Element, regions: &[Region], origin: [i32; 2], drawn: &mut Dr
                     ));
                 }
             }
+        }
+        if let Some(path) = name
+            && root
+                .path_named(path)
+                .and_then(Element::text_box)
+                .is_some_and(|text| !text.scrollbar_type.is_empty())
+        {
+            drawn.lists.push((
+                rect,
+                ScrollTarget {
+                    popup,
+                    path: path.to_owned(),
+                    vertical: true,
+                },
+            ));
         }
         if let Some((vertical, direction)) = region.scroll
             && let Some(path) = region.owner.as_deref().and_then(|owner| indexed.get(owner))

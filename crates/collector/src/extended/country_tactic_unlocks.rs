@@ -20,33 +20,45 @@ pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::CountryTacticUnlocks];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     unlocks: usize,
     registry: usize,
     list: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 512,
-            unlocks: 512 * UNLOCKS_PER_COUNTRY,
-            registry: 512,
-            list: 256 * 8,
-        }
-    }
-}
-/// Presizing estimate, not a bound: the longest list in a 1943 vanilla text
-/// save held five tactics and most held one. Longer lists grow the arena.
-const UNLOCKS_PER_COUNTRY: usize = 8;
+
 impl Capacities {
-    /// One row and a typical unlock list per country slot, so a large mod's
-    /// first day is whole.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let demand = native::capture(
+            memory,
+            base,
+            state,
+            native::Buffers {
+                rows: &mut [],
+                unlocks: &mut [],
+                registry: &mut [],
+                list: &mut [],
+            },
+        );
+        if let Outcome::Unavailable { reason } = demand.outcome {
+            return Err(reason);
+        }
+        self.rows = self.rows.max(demand.required_rows);
+        self.unlocks = self.unlocks.max(demand.required_unlocks);
+        self.registry = self.registry.max(demand.required_registry);
+        self.list = self.list.max(demand.required_list);
+        Ok(())
+    }
+    /// One row per country slot; unlock lists use their live demand.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows, rows(slots, 1));
-        raise(&mut self.unlocks, rows(slots, UNLOCKS_PER_COUNTRY));
     }
 }
 
@@ -119,16 +131,14 @@ impl Captured {
             return [0];
         }
         let begin = qpc();
-        let result = native::capture(
+        let result = native::capture_growing(
             memory,
             base,
             state,
-            native::Buffers {
-                rows: &mut self.rows.rows,
-                unlocks: &mut self.unlocks.first,
-                registry: &mut self.registry.first,
-                list: &mut self.list.first,
-            },
+            &mut self.rows.rows,
+            &mut self.unlocks.first,
+            &mut self.registry.first,
+            &mut self.list.first,
         );
         self.rows.outcome = result.outcome;
         self.required_rows = result.required_rows;

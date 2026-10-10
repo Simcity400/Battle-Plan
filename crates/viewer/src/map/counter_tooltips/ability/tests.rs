@@ -54,6 +54,7 @@ fn hover() -> CounterHover {
             country: 1,
             ordinal: 0,
         },
+        authored: None,
         rect: [0.0; 4],
         remaining: None,
         ours: false,

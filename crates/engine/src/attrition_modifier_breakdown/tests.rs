@@ -83,20 +83,100 @@ fn buffers<'a>(
 ) -> Buffers<'a> {
     let request_len = requests.len();
     Buffers {
-        requests,
+        requests: crate::walk::Buffer::Fixed(requests),
         request_len,
         request_required: request_len,
-        roots,
+        roots: crate::walk::Buffer::Fixed(roots),
         root_len: 0,
         root_required: 0,
-        nodes,
+        nodes: crate::walk::Buffer::Fixed(nodes),
         node_len: 0,
         node_required: 0,
-        text,
+        text: crate::walk::Buffer::Fixed(text),
         text_len: 0,
         text_required: 0,
-        stack,
+        stack: crate::walk::Buffer::Fixed(stack),
         stack_required: 0,
+    }
+}
+
+#[test]
+fn cold_worker_formatter_arenas_keep_five_thousand_native_labels_and_later_tree_growth() {
+    let mut roots = Vec::new();
+    let mut nodes = Vec::new();
+    let mut text = Vec::new();
+    let mut stack = Vec::new();
+    for count in [1_500_usize, 5_000] {
+        let mut fixture = Fixture::new();
+        let key = modifier_keys::ATTRITION;
+        let label = vec![b'M'; 300];
+        let children = (0..count)
+            .map(|_| fixture.node(&label, &[(key, 100_000)], &[]))
+            .collect::<Vec<_>>();
+        let root = fixture.node(b"", &[], &children);
+        let mut requests = vec![Request {
+            accumulator: root,
+            key,
+        }];
+        let mut captured = Buffers {
+            requests: crate::walk::Buffer::Growing(&mut requests),
+            request_len: 1,
+            request_required: 1,
+            roots: crate::walk::Buffer::Growing(&mut roots),
+            root_len: 0,
+            root_required: 0,
+            nodes: crate::walk::Buffer::Growing(&mut nodes),
+            node_len: 0,
+            node_required: 0,
+            text: crate::walk::Buffer::Growing(&mut text),
+            text_len: 0,
+            text_required: 0,
+            stack: crate::walk::Buffer::Growing(&mut stack),
+            stack_required: 0,
+        };
+        capture(&fixture, 0, &mut captured).unwrap();
+        assert_eq!(
+            (captured.root_len, captured.node_len, captured.text_len),
+            (1, count + 1, count * label.len())
+        );
+        assert!(
+            captured.roots[..1]
+                .iter()
+                .all(|root| root.failure.is_none())
+        );
+        assert_eq!(
+            captured.nodes[count].name,
+            [(count - 1) * label.len(), label.len()]
+        );
+        assert!(
+            captured.text[..captured.text_len]
+                .iter()
+                .all(|&byte| byte == b'M')
+        );
+        let mut requests = [Request {
+            accumulator: root,
+            key,
+        }];
+        let mut enough_roots = [Root::default(); 1];
+        let mut enough_nodes = vec![RawNode::default(); count + 1];
+        let mut enough_text = vec![0; count * label.len()];
+        let mut enough_stack = vec![Frame::default(); 2];
+        let mut expected = buffers(
+            &mut requests,
+            &mut enough_roots,
+            &mut enough_nodes,
+            &mut enough_text,
+            &mut enough_stack,
+        );
+        capture(&fixture, 0, &mut expected).unwrap();
+        assert_eq!(
+            &captured.nodes[..captured.node_len],
+            &expected.nodes[..expected.node_len]
+        );
+        assert_eq!(
+            &captured.text[..captured.text_len],
+            &expected.text[..expected.text_len]
+        );
     }
 }
 

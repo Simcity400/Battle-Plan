@@ -3,7 +3,7 @@ use super::*;
 
 const GROUP_VTABLE: usize = crate::ctechnology_sharing_group::VTABLE_RVA;
 pub(super) const FACTION_VTABLE: usize = 0x02a3_7e70;
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Group {
     id: u32,
     base: i64,
@@ -11,7 +11,7 @@ struct Group {
     members: Array,
     member_pointers: bool,
     filters: Array,
-    name: Text<512>,
+    name: Text,
 }
 impl Default for Group {
     fn default() -> Self {
@@ -27,7 +27,7 @@ impl Default for Group {
     }
 }
 pub(super) struct Country {
-    groups: [Group; 32],
+    groups: Vec<Group>,
     len: usize,
 }
 impl Country {
@@ -40,15 +40,15 @@ impl Country {
         countries: &ccountry::Reader<'_, M>,
         country: ccountry::Country,
         status: usize,
+        growing: bool,
     ) -> Result<Self, &'static str> {
         let roster = array_at(memory, at(status, 0x118)?, 8)?;
         let mut result = Self {
-            groups: [Group::default(); 32],
+            // 140D6D9B0 visits the complete signed sharing-roster count.
+            groups: crate::allocation::default_vec(roster.count as usize)
+                .map_err(|_| "research sharing group allocation failed")?,
             len: 0,
         };
-        if roster.count > result.groups.len() as u32 {
-            return Err("research sharing group limit exceeded");
-        }
         pointer_pages(memory, roster, |p| {
             let bytes = read::<[u8; 72]>(memory, p).ok_or("research sharing group unreadable")?;
             let vtable = u64::from_le_bytes(bytes[..8].try_into().unwrap());
@@ -95,7 +95,7 @@ impl Country {
                 let faction = read::<u8>(memory, at(template, 0x78)?)
                     .ok_or("research sharing faction mode unreadable")?;
                 group.filters = array_at(memory, at(template, 0x80)?, 40)?;
-                group.name = text(memory, at(template, 0x10)?)?;
+                group.name = text(memory, at(template, 0x10)?, growing)?;
                 if faction != 0 {
                     let diplomacy =
                         pointer(memory, at(country.pointer, ccountry::DIPLOMACY_STATUS)?)?;
@@ -160,7 +160,7 @@ impl Country {
                 group.bonus,
                 group.members.count,
                 group.id,
-                group.name,
+                group.name.clone(),
             )?;
             capture_categories(memory, group.filters, Kind::SharingFilter, ordinal, out)?;
             if group.member_pointers {
@@ -222,53 +222,40 @@ fn capture_categories(
     owner: u32,
     out: &mut Output<'_>,
 ) -> Result<(), &'static str> {
-    if categories.count > 128 {
-        return Err("research sharing category limit exceeded");
-    }
+    // 140ED0970 uses the original template category roster.
     for index in 0..categories.count {
         let p = categories
             .element(index, 40)
             .ok_or("research sharing category overflow")?;
         let hash =
             read::<u32>(memory, at(p, 32)?).ok_or("research sharing category hash unreadable")?;
-        out.push(kind, 0, 0, owner, hash, text(memory, p)?)?;
+        out.push(
+            kind,
+            0,
+            0,
+            owner,
+            hash,
+            text(memory, p, out.rows.is_growing())?,
+        )?;
     }
     Ok(())
 }
 
 #[derive(Clone, Copy)]
 struct Witness {
-    country: u32,
-    template: usize,
     level: i32,
     present: bool,
     predecessors: Array,
 }
-/// Per-country-pass memo of member witnesses keyed by (raw member, template).
-/// It retains the first `entries.len()` distinct keys; further members are
-/// still read, just not memoised. An open-addressed index at load <= 1/2 keeps
-/// each lookup to a few probes, so a faction of thousands of members costs a
-/// linear number of comparisons rather than a scan of every stored witness.
+/// Original member witnesses keyed by (raw member, template), retained for
+/// the whole country pass. EC9CB0 selects the native member/template headers.
+#[derive(Default)]
 pub(super) struct Witnesses {
-    entries: [Witness; 512],
-    /// 1-based entry index per slot; zero is empty. Twice the entry count.
-    slots: [u16; 1024],
-    len: usize,
-}
-impl Default for Witnesses {
-    fn default() -> Self {
-        Self {
-            entries: [Witness::default(); 512],
-            slots: [0; 1024],
-            len: 0,
-        }
-    }
+    entries: std::collections::HashMap<(u32, usize), Witness>,
 }
 impl Default for Witness {
     fn default() -> Self {
         Self {
-            country: 0,
-            template: 0,
             level: 0,
             present: false,
             predecessors: Array { data: 0, count: 0 },
@@ -277,7 +264,7 @@ impl Default for Witness {
 }
 impl Witnesses {
     #[allow(clippy::too_many_arguments)]
-    fn capture<M: Memory>(
+    pub(super) fn capture<M: Memory>(
         &mut self,
         memory: &M,
         base: usize,
@@ -287,19 +274,7 @@ impl Witnesses {
         group: u32,
         out: &mut Output<'_>,
     ) -> Result<(), &'static str> {
-        let mask = self.slots.len() - 1;
-        let hash = (u64::from(raw) ^ (input.template_pointer as u64).rotate_left(32))
-            .wrapping_mul(0x9e37_79b9_7f4a_7c15);
-        let mut slot = (hash >> 32) as usize & mask;
-        let mut hit = None;
-        while self.slots[slot] != 0 {
-            let entry = self.entries[usize::from(self.slots[slot]) - 1];
-            if entry.country == raw && entry.template == input.template_pointer {
-                hit = Some(entry);
-                break;
-            }
-            slot = (slot + 1) & mask;
-        }
+        let hit = self.entries.get(&(raw, input.template_pointer)).copied();
         let witness = if let Some(w) = hit {
             w
         } else {
@@ -316,11 +291,7 @@ impl Witnesses {
                 .checked_sub(1)
                 .and_then(|i| u32::try_from(i).ok())
                 .ok_or("research sharing template index invalid")?;
-            let mut witness = Witness {
-                country: raw,
-                template: input.template_pointer,
-                ..Default::default()
-            };
+            let mut witness = Witness::default();
             if index < technologies.count {
                 let p = read::<u64>(
                     memory,
@@ -350,12 +321,9 @@ impl Witnesses {
                     witness.predecessors = array_at(memory, at(p, 0xc8)?, 8)?;
                 }
             }
-            if self.len < self.entries.len() {
-                // `slot` is the empty slot that ended the probe above.
-                self.entries[self.len] = witness;
-                self.len += 1;
-                self.slots[slot] = self.len as u16;
-            }
+            crate::allocation::reserve_map(&mut self.entries, 1)
+                .map_err(|_| "research sharing witness allocation failed")?;
+            self.entries.insert((raw, input.template_pointer), witness);
             witness
         };
         let ordinal = out.current.ordinal;

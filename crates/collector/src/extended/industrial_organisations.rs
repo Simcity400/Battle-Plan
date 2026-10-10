@@ -22,36 +22,25 @@ pub const TABLES: [TableId; N] = [
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("industrial organisations and their history", 0, &[0, 1])];
 
-/// Organisations and history slots per country slot the first capture is
-/// sized for: content decides how many a country holds, so this only presizes.
-const PER_COUNTRY: usize = 8;
-/// Name and icon bytes per organisation the first capture is sized for; a
-/// vanilla icon name is about 25 bytes and the name override usually empty.
-const BYTES_PER_ORGANISATION: usize = 32;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     organisations: usize,
     history: usize,
     bytes: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            organisations: 4096,
-            history: 4096,
-            bytes: 4096 * BYTES_PER_ORGANISATION,
-        }
-    }
-}
 
 impl Capacities {
-    /// A few rows of each per country slot. Never lowers.
-    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
-        let rows = crate::country_scale::rows(slots, PER_COUNTRY);
-        crate::country_scale::raise(&mut self.organisations, rows);
-        crate::country_scale::raise(&mut self.history, rows);
-        crate::country_scale::raise(&mut self.bytes, rows.saturating_mul(BYTES_PER_ORGANISATION));
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let (organisations, history, bytes) = native::demand(memory, base, state)?;
+        crate::table_capture::grow_capacity(&mut self.organisations, organisations);
+        crate::table_capture::grow_capacity(&mut self.history, history);
+        crate::table_capture::grow_capacity(&mut self.bytes, bytes);
+        Ok(())
     }
 }
 
@@ -117,7 +106,7 @@ impl Captured {
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        let walk = native::walk(
+        let walk = native::walk_growing(
             memory,
             base,
             game_state,

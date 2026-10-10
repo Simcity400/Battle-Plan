@@ -68,6 +68,15 @@ impl Fixture {
     fn q(&mut self, address: usize, value: u64) {
         self.put(address, &value.to_le_bytes());
     }
+    fn heap_text(&mut self, address: usize, payload: usize, value: &[u8]) {
+        self.bytes
+            .resize(self.bytes.len().max(payload + value.len() + 1 - 0x1000), 0);
+        self.q(address, payload as u64);
+        self.q(address + 16, value.len() as u64);
+        self.q(address + 24, value.len() as u64);
+        self.put(payload, value);
+        self.put(payload + value.len(), &[0]);
+    }
 }
 
 const TASK: usize = 0x1000;
@@ -80,13 +89,14 @@ const TOKENS: usize = 0x50000;
 fn doctrine_fixture(count: usize) -> Fixture {
     use crate::cpdx_lexer as lexer;
     let mut f = fixture();
-    f.bytes.resize(TOKENS + (count + 1) * 32 - 0x1000, 0);
+    let tokens = TOKENS.max(NODES + count * 0x38);
+    f.bytes.resize(tokens + (count + 1) * 32 - 0x1000, 0);
     let mut witness = vec![0; 64];
     witness[0] = 1;
     for offset in [4, 12] {
         witness[offset..offset + 4].copy_from_slice(&(count as u32).to_le_bytes());
     }
-    witness[48..56].copy_from_slice(&(TOKENS as u64).to_le_bytes());
+    witness[48..56].copy_from_slice(&(tokens as u64).to_le_bytes());
     for offset in [56, 60] {
         witness[offset..offset + 4].copy_from_slice(&(count as u32 + 1).to_le_bytes());
     }
@@ -100,7 +110,7 @@ fn doctrine_fixture(count: usize) -> Fixture {
             .push((IMAGE + rva, (value as u64).to_le_bytes().to_vec()));
     }
     for index in 0..=count {
-        f.q(TOKENS + index * 32 + 24, 15);
+        f.q(tokens + index * 32 + 24, 15);
     }
     for offset in [0x28, 0x48] {
         f.q(GENERATOR + offset, 15);
@@ -153,7 +163,7 @@ fn doctrine_sources(memory: &Fixture) -> Result<Vec<SourceRow>, &'static str> {
             required: &mut required,
         },
     };
-    visit_doctrine(memory, IMAGE, TASK, true, &mut |row, accumulator| {
+    visit_doctrine::<true>(memory, IMAGE, TASK, &mut |row, accumulator| {
         capture.source(row, accumulator)
     })?;
     Ok(sources)
@@ -167,24 +177,48 @@ fn doctrine_exceeds_4096_nodes() {
 }
 
 #[test]
-fn doctrine_source_visitor_sizes_without_key_name_or_weight_operands() {
+fn doctrine_source_visitor_sizes_country_and_mod_populations_in_operand_order() {
     for count in [1500, 5000] {
         let mut memory = doctrine_fixture(count);
-        memory.fail = Some(IMAGE + crate::cpdx_lexer::INITIALIZED_RVA);
+        for index in 0..count {
+            let node = NODES + index * 0x38;
+            memory.put(node + 0x28, &(index as i32).to_le_bytes());
+            memory.put(node + 0x2c, &(index as i32 + 7).to_le_bytes());
+        }
         let mut sources = Vec::new();
-        visit_doctrine(&memory, IMAGE, TASK, false, &mut |row, accumulator| {
-            sources.push((row.scope, row.index, accumulator));
+        visit_doctrine::<true>(&memory, IMAGE, TASK, &mut |row, accumulator| {
+            sources.push((row, accumulator));
             Ok(())
         })
         .unwrap();
         assert_eq!(sources.len(), count);
-        assert_eq!(sources[count - 1], (4, count as u32 - 1, Some(0x1800)));
-        assert!(
-            memory
-                .reads
-                .borrow()
+        for (index, (source, accumulator)) in sources.iter().enumerate() {
+            assert_eq!(source.scope, 4);
+            assert_eq!(source.index, index as u32);
+            assert_eq!(source.selector, index as u32 + 1);
+            assert_eq!(source.weights, [index as i64 + 7, index as i64]);
+            assert_eq!(*accumulator, Some(0x1800));
+        }
+        let failed = IMAGE + crate::cpdx_lexer::INITIALIZED_RVA;
+        memory.fail = Some(failed);
+        memory.reads.borrow_mut().clear();
+        sources.clear();
+        assert_eq!(
+            visit_doctrine::<true>(&memory, IMAGE, TASK, &mut |row, accumulator| {
+                sources.push((row, accumulator));
+                Ok(())
+            }),
+            Err("naval field unreadable")
+        );
+        assert!(sources.is_empty());
+        let reads = memory.reads.borrow();
+        assert_eq!(reads.last(), Some(&(failed, 64)));
+        assert_eq!(
+            reads
                 .iter()
-                .all(|&(address, _)| address != IMAGE + crate::cpdx_lexer::INITIALIZED_RVA)
+                .filter(|&&(address, _)| address == failed)
+                .count(),
+            1
         );
     }
 }
@@ -222,7 +256,7 @@ fn dictionary_exceeds_65536_nodes() {
         );
         f.put(node + 0x10, &1u32.to_le_bytes());
     }
-    assert_eq!(doctrine_keys(&f, IMAGE, 1), Ok([0; 2]));
+    assert_eq!(doctrine_keys::<true>(&f, IMAGE, 1), Ok([0; 2]));
 }
 
 #[test]
@@ -234,9 +268,137 @@ fn dictionary_cycle_fails_its_predecessor_check() {
     f.q(NODE + 8, NODE as u64);
     f.put(NODE + 0x10, &1u32.to_le_bytes());
     assert_eq!(
-        doctrine_keys(&f, IMAGE, 1),
+        doctrine_keys::<true>(&f, IMAGE, 1),
         Err("naval doctrine modifier dictionary link invalid")
     );
+}
+
+#[test]
+fn cold_doctrine_keys_keep_mod_heap_segments_and_original_text_faults() {
+    const NODE: usize = 0x1500;
+    const DATA: usize = TOKENS + 0x1000;
+    for length in [257, 4097, 5000] {
+        let mut memory = doctrine_fixture(2);
+        let prefix = vec![b'p'; length];
+        let selected = vec![b's'; length];
+        let suffix = vec![b't'; length];
+        let combined: Vec<_> = prefix
+            .iter()
+            .chain(&selected)
+            .chain(&suffix)
+            .copied()
+            .collect();
+        let selected_data = DATA;
+        let prefix_data = selected_data + length + 1;
+        let suffix_data = prefix_data + length + 1;
+        let name_data = suffix_data + length + 1;
+        memory.heap_text(TOKENS + 32, selected_data, &selected);
+        memory.heap_text(GENERATOR + 0x10, prefix_data, &prefix);
+        memory.heap_text(GENERATOR + 0x30, suffix_data, &suffix);
+        memory.heap_text(TOKENS + 64, name_data, &combined);
+        memory.q(DICTIONARY, NODE as u64);
+        memory.q(DICTIONARY + 8, NODE as u64);
+        memory.q(NODE, DICTIONARY as u64);
+        memory.q(NODE + 8, DICTIONARY as u64);
+        memory.put(NODE + 0x10, &2u32.to_le_bytes());
+        memory.put(NODE + 0x14, &77u32.to_le_bytes());
+        for address in [TOKENS + 32, GENERATOR + 0x10, GENERATOR + 0x30, TOKENS + 64] {
+            assert!(crate::msvc_string::read_text::<256>(&memory, address).is_none());
+        }
+        memory.reads.borrow_mut().clear();
+        assert_eq!(doctrine_keys::<true>(&memory, IMAGE, 1), Ok([77; 2]));
+        let capture_reads = memory.reads.borrow().clone();
+        memory.reads.borrow_mut().clear();
+        assert_eq!(doctrine_keys::<false>(&memory, IMAGE, 1), Ok([77; 2]));
+        assert_eq!(*memory.reads.borrow(), capture_reads);
+        for (failed, reason) in [
+            (TOKENS + 32 + 16, "naval doctrine token string invalid"),
+            (TOKENS + 32 + 24, "naval doctrine token string invalid"),
+            (TOKENS + 32, "naval doctrine token string invalid"),
+            (
+                selected_data + length,
+                "naval doctrine token string invalid",
+            ),
+            (selected_data + 256, "naval doctrine token string invalid"),
+            (prefix_data + 256, "naval doctrine prefix invalid"),
+            (suffix_data + 256, "naval doctrine suffix invalid"),
+            (name_data + 256, "naval doctrine token string invalid"),
+        ] {
+            memory.fail = Some(failed);
+            memory.reads.borrow_mut().clear();
+            assert_eq!(doctrine_keys::<true>(&memory, IMAGE, 1), Err(reason));
+            let reads = memory.reads.borrow();
+            assert_eq!(reads.last().map(|&(address, _)| address), Some(failed));
+            assert_eq!(
+                reads
+                    .iter()
+                    .filter(|&&(address, _)| address == failed)
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn cold_terrain_fallback_keeps_mod_heap_names_and_named_first_faults() {
+    const DATABASE: usize = 0x2100;
+    const TYPES: usize = 0x2800;
+    const LONG: usize = 0x3000;
+    const MATCHED: usize = 0x3400;
+    const DATA: usize = 0x10000;
+    let key = *b"abcde";
+    for length in [257, 4097, 5000] {
+        let mut memory = fixture();
+        memory.globals.push((IMAGE + 0x0296_2540, key.to_vec()));
+        memory.globals.push((
+            IMAGE + crate::cterrain_database::SINGLETON_RVA,
+            (DATABASE as u64).to_le_bytes().to_vec(),
+        ));
+        memory.q(DATABASE + 0x40, TYPES as u64);
+        memory.q(DATABASE + 0x48, (2u64 << 32) | 2);
+        memory.q(TYPES, LONG as u64);
+        memory.q(TYPES + 8, MATCHED as u64);
+        for terrain in [LONG, MATCHED] {
+            memory.q(terrain, (IMAGE + crate::cterrain_type::VTABLE_RVA) as u64);
+            memory.put(terrain + 0x10, &[1]);
+        }
+        memory.heap_text(LONG + 0x18, DATA, &vec![b'z'; length]);
+        memory.put(MATCHED + 0x18, &key);
+        memory.q(MATCHED + 0x28, key.len() as u64);
+        memory.q(MATCHED + 0x30, 15);
+        assert_eq!(ContextRow::default().terrain_name.allocated_bytes(), 0);
+        assert!(crate::msvc_string::read_text::<256>(&memory, LONG + 0x18).is_none());
+        memory.reads.borrow_mut().clear();
+        assert_eq!(terrain_from_template(&memory, IMAGE, TASK), Ok(MATCHED));
+        let capture_reads = memory.reads.borrow().clone();
+        memory.reads.borrow_mut().clear();
+        assert_eq!(
+            terrain_from_template_with_policy::<false>(&memory, IMAGE, TASK),
+            Ok(MATCHED)
+        );
+        assert_eq!(*memory.reads.borrow(), capture_reads);
+        let captured =
+            text::<true>(&memory, LONG + 0x18, "naval selected terrain name invalid").unwrap();
+        assert_eq!(captured.as_bytes(), vec![b'z'; length]);
+        assert!(captured.allocated_bytes() >= length);
+        let failed = DATA + 256;
+        memory.fail = Some(failed);
+        memory.reads.borrow_mut().clear();
+        assert_eq!(
+            terrain_from_template(&memory, IMAGE, TASK),
+            Err("naval terrain name invalid")
+        );
+        let reads = memory.reads.borrow();
+        assert_eq!(reads.last().map(|&(address, _)| address), Some(failed));
+        assert_eq!(
+            reads
+                .iter()
+                .filter(|&&(address, _)| address == failed)
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]

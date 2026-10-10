@@ -57,10 +57,12 @@ use std::{
 
 /// One serial daily pass uses the live header-derived equipment/Rocket event demand.
 /// Reserve two passes: one can remain after a short drain while its storage
-/// grows off-thread, with room for the next pass. The floor covers menu attach;
-/// no population ceiling is imposed, and a backlog beyond this still overflows.
+/// grows off-thread, with room for the next pass. Retained attempted bursts
+/// also prepare storage when the live population is unchanged.
 fn capacity_for_lines(events: usize) -> usize {
-    events.saturating_mul(2).max(1024)
+    events
+        .saturating_mul(2)
+        .max(OBSERVATION.required.load(Ordering::Relaxed))
 }
 
 #[derive(Default)]
@@ -82,11 +84,11 @@ struct Storage {
     slots: Vec<Slot>,
 }
 impl Storage {
-    /// Off-thread; checked allocation failure terminates capture.
+    /// Off-thread; an advisory offer may fail without stopping capture.
     fn new(capacity: usize) -> Option<Box<Self>> {
         let mut slots = engine::allocation::vec(capacity).ok()?;
         slots.resize_with(capacity, Slot::default);
-        Some(Box::new(Self { slots }))
+        engine::allocation::boxed(Self { slots }).ok()
     }
 }
 
@@ -109,12 +111,20 @@ static FAILED_OFFERS: AtomicU64 = AtomicU64::new(0);
 /// Loader/spool thread: offer storage for the live output event demand. Never
 /// shrink or replace an equally large offer; allocation stays off-thread.
 pub fn presize(events: usize) {
+    engine::allocation::advisory(|| presize_storage(events));
+}
+
+fn presize_storage(events: usize) {
     let Ok(mut swap) = LOG_SWAP.lock() else {
         return;
     };
     let capacity = capacity_for_lines(events);
-    let offered = swap.next.as_ref().map_or(0, |log| log.slots.len());
-    if capacity <= CAPACITY.load(Ordering::Acquire) || capacity <= offered {
+    if (!LOG.load(Ordering::SeqCst).is_null() && capacity <= CAPACITY.load(Ordering::Acquire))
+        || swap
+            .next
+            .as_ref()
+            .is_some_and(|log| capacity <= log.slots.len())
+    {
         return;
     }
     if let Some(next) = Storage::new(capacity) {
@@ -463,11 +473,14 @@ fn append(entry: Entry) {
     if !entry.exact {
         COUNTERS[4].fetch_add(1, Ordering::Relaxed);
     }
+    let (index, slot) = OBSERVATION.reserve_optional();
+    let Some(slot) = slot else {
+        return;
+    };
     let Some(log) = log() else {
         invalidate();
         return;
     };
-    let (index, slot) = OBSERVATION.reserve();
     let slot = &log.slots[slot];
     slot.line.store(entry.line, Ordering::SeqCst);
     slot.country.store(entry.country, Ordering::SeqCst);
@@ -512,7 +525,14 @@ fn entry(slot: &Slot) -> Entry {
 }
 
 /// Copy settled entries without allocating; short storage defers the rest.
+#[cfg(test)]
 pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
+    drain_buffer(engine::walk::Buffer::Fixed(output))
+}
+pub fn drain_growing(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
+    drain_buffer(engine::walk::Buffer::Growing(output))
+}
+fn drain_buffer(output: engine::walk::Buffer<'_, Entry>) -> Result<Drained, &'static str> {
     let log = log();
     let unavailable = || {
         if native_retention_required() {
@@ -527,7 +547,7 @@ pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
             crate::world_lifetime::unavailable_reason()
         }
     };
-    OBSERVATION.drain(
+    OBSERVATION.drain_buffer(
         output,
         |slot| entry(&log.unwrap().slots[slot]),
         unavailable,
@@ -663,7 +683,8 @@ pub(crate) fn observe_for_test(enabled: bool) {
 }
 
 #[cfg(test)]
-fn reset_log_for_test(capacity: usize) {
+pub(crate) fn reset_log_for_test(capacity: usize) {
+    OBSERVATION.required.store(0, Ordering::Relaxed);
     let mut current = Storage::new(capacity).unwrap();
     LOG.store(&mut *current, Ordering::SeqCst);
     CAPACITY.store(capacity, Ordering::Release);
@@ -842,6 +863,34 @@ mod tests {
             overflows
         );
         assert!(drained(1).1.is_empty());
+        observe_for_test(false);
+    }
+    #[test]
+    fn rejected_empty_log_burst_grows_without_a_new_census_or_chosen_floor() {
+        let _lock = test_lock();
+        observe_for_test(true);
+        reset_log_for_test(0);
+        assert_eq!(capacity_for_lines(0), 0);
+        let mut frame = Vec::new();
+        for line in 1..=5000 {
+            let _writer = Call::enter();
+            append(tick(line));
+        }
+        let lost = drain_growing(&mut frame).unwrap();
+        assert_eq!((lost.pending, lost.copied), (5000, 0));
+        assert_eq!(OBSERVATION.required.load(Ordering::Relaxed), 5000);
+        presize(0);
+        install_offered();
+        collect();
+        assert_eq!(CAPACITY.load(Ordering::Acquire), 5000);
+        for line in 1..=5000 {
+            let _writer = Call::enter();
+            append(tick(line));
+        }
+        let drained = drain_growing(&mut frame).unwrap();
+        assert_eq!((drained.pending, drained.copied), (5000, 5000));
+        assert_eq!(frame[..5000], (1..=5000).map(tick).collect::<Vec<_>>());
+        assert_eq!(drained.first, lost.cursor);
         observe_for_test(false);
     }
 

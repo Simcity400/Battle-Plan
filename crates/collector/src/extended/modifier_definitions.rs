@@ -20,21 +20,23 @@ pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ModifierDefinitions];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     text: usize,
 }
-impl Default for Capacities {
-    /// A first guess only: a truncated read grows both off-thread and forces
-    /// the next hour to read the table again. The vanilla game registers about
-    /// 5,000 definitions (a live capture read 4,988), so the guess covers them
-    /// and a first full hour, such as a requested refresh, is not lost to growth.
-    fn default() -> Self {
-        Self {
-            rows: 8192,
-            text: 1024 * 1024,
-        }
+
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        _state: usize,
+    ) -> Result<(), &'static str> {
+        let (rows, text) = native::storage_demand(memory, base)?;
+        crate::country_scale::raise(&mut self.rows, rows);
+        crate::country_scale::raise(&mut self.text, text);
+        Ok(())
     }
 }
 
@@ -91,7 +93,7 @@ impl Captured {
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        let walk = native::walk(memory, base, &mut self.rows.rows, &mut self.text.first);
+        let walk = native::walk_growing(memory, base, &mut self.rows.rows, &mut self.text.first);
         self.rows.outcome = walk.outcome;
         self.text.len = walk.text_len;
         self.text.required = walk.text_required;

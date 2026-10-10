@@ -179,8 +179,8 @@ fn scalar_stats(
             base,
             member,
             &mut crate::cname_group_member::GroupKeys::with_capacity(64, 64),
-            &mut crate::cname_group_member::Names {
-                bytes: &mut [0; 4096],
+            &mut crate::cname_group_member::NameArena {
+                bytes: crate::walk::Buffer::Fixed(&mut [0; 4096]),
                 len: 0,
                 required: 0,
             },
@@ -583,8 +583,86 @@ fn refuses_modifier_pressure_and_wrong_identity() {
     };
     assert_eq!(
         capture_modifiers(&memory, 0, 0x1000, 0x1234_0000_0033, &mut []),
-        Err("land combat division modifier bound exceeded")
+        Err("land combat division modifier arena full")
     );
+}
+
+#[test]
+fn worker_modifier_vector_has_no_chosen_limit_and_grows_from_original_headers() {
+    let mut modifiers = Vec::new();
+    for count in [5_000, 7_500] {
+        let mut image = fixture(0);
+        image.resize(0x10_0000 + count * 24, 0);
+        image[0x1170..0x1178].copy_from_slice(&0x10_0000_u64.to_le_bytes());
+        image[0x1178..0x117c].copy_from_slice(&(count as u32).to_le_bytes());
+        image[0x117c..0x1180].copy_from_slice(&(count as u32).to_le_bytes());
+        for index in 0..count {
+            let at = 0x10_0000 + index * 24;
+            image[at..at + 4].copy_from_slice(&(index as u32 + 1).to_le_bytes());
+            image[at + 8..at + 16].copy_from_slice(&(-(index as i64)).to_le_bytes());
+        }
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &image,
+        };
+        let source = Observed::new(&memory);
+        assert_eq!(
+            capture_modifiers_buffer(
+                &source,
+                0,
+                0x1000,
+                0x1234_0000_0033,
+                crate::walk::Buffer::Growing(&mut modifiers)
+            ),
+            Ok(count)
+        );
+        assert_eq!(modifiers[count - 1].id, count as u32);
+        assert_eq!(modifiers[count - 1].value_a, -(count as i64 - 1));
+        assert_eq!(
+            source
+                .reads
+                .borrow()
+                .iter()
+                .filter(|&&(at, len)| (at, len) == (0x1170, 16))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn worker_width_and_context_accumulator_accept_mod_sized_native_vectors() {
+    let mut terms = Vec::new();
+    for count in [5_000, 7_500] {
+        let mut memory = context_fixture();
+        memory.image.resize(0x40_0000, 0);
+        memory.array(0xb0c0, 0x20_0000, count as u32);
+        memory.array(
+            0x9000 + crate::ccountry::MODIFIER_ACCUMULATOR,
+            0x10_0000,
+            count as u32,
+        );
+        for index in 0..count {
+            memory.put(0x10_0000 + index * 16, &(index as u32 + 1).to_le_bytes());
+            memory.u64(0x10_0000 + index * 16 + 8, index as u64);
+            memory.u64(0x20_0000 + index * 16, 0xd000);
+            memory.put(0x20_0000 + index * 16 + 8, &(-(index as i32)).to_le_bytes());
+        }
+        let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
+        let row = capture_context_buffer(
+            &memory,
+            0,
+            &countries,
+            &mut crate::combat_sources::Sources::new(),
+            0x1000,
+            0x1234_0000_0033,
+            crate::walk::Buffer::Growing(&mut terms),
+        )
+        .unwrap();
+        assert_eq!(row.width_term_count, count);
+        assert_eq!(terms[count - 1].count, -(count as i32 - 1));
+        assert_eq!(terms[count - 1].width, 12345);
+    }
 }
 
 #[test]
@@ -894,6 +972,49 @@ fn exile_lists_are_bounded_by_the_live_country_count_and_never_sized_from_it() {
     }
 }
 
+#[test]
+fn worker_exile_arena_keeps_5000_country_lists_and_later_growth_without_truncation() {
+    let mut tags = vec![0xfeed];
+    for count in [1_500, 5_000] {
+        let mut memory = context_fixture();
+        memory.image.resize(0x40_0000, 0);
+        memory.array(0x5000 + crate::cgame_state::COUNTRIES, 0x10_0000, 5_001);
+        memory.array(0x5000 + crate::cgame_state::COUNTRY_LINKS, 0x20_0000, 5_001);
+        memory.u64(0x10_0008, 0x9000);
+        memory.put(0x20_0004, &1_u32.to_le_bytes());
+        memory.put(0xb000 + TEMPLATE_COUNTRY, &1_i32.to_le_bytes());
+        memory.put(0xb000 + TEMPLATE_ORIGIN_TYPE, &2_i32.to_le_bytes());
+        memory.u64(0x1000 + cunit::LOCATION, 0x7000);
+        memory.u64(0x7000 + crate::cprovince::STATE, 0x7800);
+        memory.array(0x7800 + crate::cstate::CORES, 0x30_0000, count as u32);
+        memory.u64(0x9000 + crate::ccountry::DIPLOMACY_STATUS, 0xe800);
+        memory.array(0xe800 + OCCUPIER_SET, 0x31_0000, count as u32);
+        for index in 0..count {
+            memory.put(0x30_0000 + index * 4, &(index as u32 + 1).to_le_bytes());
+            memory.put(
+                0x31_0000 + index * 4,
+                &(count as u32 - index as u32).to_le_bytes(),
+            );
+        }
+        let countries = crate::ccountry::Reader::new(&memory, 0, 0x5000).unwrap();
+        let row = capture_exile_buffer(
+            &memory,
+            &countries,
+            0x1000,
+            crate::walk::Buffer::GrowingFrom(&mut tags, 1),
+        )
+        .unwrap();
+        let Exile::Row(row) = row else {
+            panic!("complete original exile lists were not retained")
+        };
+        assert_eq!(row.cores, (0, count));
+        assert_eq!(row.occupiers, (count, count));
+        assert_eq!(tags[0], 0xfeed);
+        assert_eq!(tags[count], count as u32);
+        assert_eq!(tags[count * 2], 1);
+    }
+}
+
 /// An exiled division's country always resolves in the game (14129FB60
 /// reads its diplomacy status unguarded), so a resolution or read fault is
 /// the division's failure, never an empty occupier set. The exile country
@@ -944,7 +1065,7 @@ fn exile_country_faults_fail_the_division_with_their_reason() {
 }
 
 #[test]
-fn width_context_reports_short_arena_and_modifier_bound() {
+fn width_context_reports_short_arena_and_malformed_accumulator() {
     let mut memory = context_fixture();
     assert_eq!(
         capture_context_at(
@@ -969,7 +1090,7 @@ fn width_context_reports_short_arena_and_modifier_bound() {
             0x1234_0000_0033,
             &mut []
         ),
-        Err("land combat context modifier bound exceeded")
+        Err("land combat context modifier keys not increasing")
     );
 }
 

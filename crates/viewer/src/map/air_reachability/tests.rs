@@ -643,6 +643,7 @@ fn land_scout_uses_state_controller_and_directional_attache() {
         country,
         target_index,
         links: RelationLinkRow::ATTACHE,
+        transport_subject: Default::default(),
     };
     set::<tables::RelationLinks>(&mut frame, vec![attache(1, 2)]);
     assert_eq!(admit(&frame), Some(false));

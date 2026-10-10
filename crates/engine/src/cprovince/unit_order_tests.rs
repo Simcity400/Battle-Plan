@@ -624,3 +624,61 @@ fn unit_order_reacquires_changed_registry_header_on_each_walk() {
     put(&mut bytes, TABLE + registry::MASK, &7_u32.to_le_bytes());
     assert_eq!(walk(&bytes), Outcome::Rows { len: 1 });
 }
+
+#[test]
+fn worker_province_order_population_jump_grows_from_original_headers() {
+    let bytes = fixture([2, 1]);
+    let fixed = Observed {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault_at: None,
+        change_at: None,
+    };
+    let grown = Observed {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault_at: None,
+        change_at: None,
+    };
+    let mut expected_rows = vec![UnitOrderRow::default(); 1];
+    let mut expected_handles = vec![0; 3];
+    let expected = walk_unit_order_with_land(
+        &fixed,
+        0,
+        STATE,
+        &mut expected_rows,
+        &mut expected_handles,
+        |_, _| Ok(()),
+    );
+    let (mut rows, mut handles) = (Vec::new(), Vec::new());
+    let actual =
+        walk_unit_order_growing_with_land(&grown, 0, STATE, &mut rows, &mut handles, |_, _| Ok(()));
+    assert_eq!(actual, expected);
+    assert_eq!(actual.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(rows[..1], expected_rows);
+    assert_eq!(handles[..3], expected_handles);
+    assert_eq!(*grown.reads.borrow(), *fixed.reads.borrow());
+}
+
+#[test]
+fn province_order_demand_has_no_chosen_occupant_or_aggregate_ceiling() {
+    let mut bytes = fixture([0, 0]);
+    // Sizing does not follow a unit pointer when no output row fits. This
+    // native count can exceed both the former 65536 and 1048576 guards.
+    let count = 1_100_000u32;
+    put(&mut bytes, PROVINCE + OCCUPANTS + 8, &count.to_le_bytes());
+    put(&mut bytes, PROVINCE + OCCUPANTS + 12, &count.to_le_bytes());
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    let demand = walk_unit_order_with_land(&memory, 0, STATE, &mut [], &mut [], |_, _| Ok(()));
+    assert_eq!(demand.required, count as usize);
+    assert_eq!(
+        demand.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 1
+        }
+    );
+}

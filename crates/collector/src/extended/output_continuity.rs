@@ -16,21 +16,16 @@ use std::{collections::HashMap, io, marker::PhantomData, ops::Range};
 
 pub(super) type OutputMap<L> = HashMap<u64, L>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
-    /// Log entries one drain can take; excess waits for off-thread growth.
+    /// Owned producer entries in a boundary handoff.
     pub entries: usize,
-}
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { entries: 4096 }
-    }
 }
 
 pub trait Observation {
     type Entry: Copy + Default;
     const ASSEMBLED_BY_SPOOL: &'static str;
-    fn drain(entries: &mut [Self::Entry]) -> Result<Drained, &'static str>;
+    fn drain_growing(entries: &mut Vec<Self::Entry>) -> Result<Drained, &'static str>;
 }
 
 pub struct Captured<O: Observation, const N: usize = 1> {
@@ -39,6 +34,12 @@ pub struct Captured<O: Observation, const N: usize = 1> {
     observation: PhantomData<O>,
 }
 impl<O: Observation, const N: usize> Captured<O, N> {
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities { entries: 0 })
+    }
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        self.drained = Some(Err(reason));
+    }
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             entries: owned_vec(default_vec(capacity.entries)),
@@ -66,9 +67,8 @@ impl<O: Observation, const N: usize> Captured<O, N> {
     pub fn tables(&self) -> [TableView; N] {
         std::array::from_fn(|_| unavailable(O::ASSEMBLED_BY_SPOOL))
     }
-    /// Allocation-free hand-over at the clocked callback.
-    pub fn drain(&mut self) {
-        self.drained = Some(O::drain(&mut self.entries));
+    pub(crate) fn drain_growing(&mut self) {
+        self.drained = Some(O::drain_growing(&mut self.entries));
     }
     pub(super) fn handed_over(&self) -> &[O::Entry] {
         match self.drained {
@@ -82,6 +82,9 @@ impl<O: Observation, const N: usize> Captured<O, N> {
         drained: Result<Drained, &'static str>,
         entries: &[O::Entry],
     ) {
+        if self.entries.len() < entries.len() {
+            engine::allocation::resize_default(&mut self.entries, entries.len()).unwrap();
+        }
         self.entries[..entries.len()].copy_from_slice(entries);
         self.drained = Some(drained);
     }

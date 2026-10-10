@@ -1,5 +1,77 @@
 use crate::{Memory, cpdx_array::Array};
 
+/// Fixed callback storage or a worker-owned vector. Growing readers reserve
+/// from their acquired headers before filling, without restarting native reads.
+pub enum Buffer<'a, T> {
+    Fixed(&'a mut [T]),
+    Growing(&'a mut Vec<T>),
+    GrowingFrom(&'a mut Vec<T>, usize),
+}
+
+impl<T: Default> Buffer<'_, T> {
+    pub fn ensure(&mut self, required: usize) -> Result<bool, &'static str> {
+        if required <= self.len() {
+            return Ok(true);
+        }
+        let (values, start) = match self {
+            Self::Fixed(_) => return Ok(false),
+            Self::Growing(values) => (values, 0),
+            Self::GrowingFrom(values, start) => (values, *start),
+        };
+        let required = start
+            .checked_add(required)
+            .ok_or("capture buffer length overflow")?;
+        let len = values.len().saturating_mul(2).max(required);
+        crate::allocation::resize_default(values, len)
+            .map_err(|_| "capture buffer allocation failed")?;
+        Ok(true)
+    }
+}
+
+impl<T> Buffer<'_, T> {
+    pub fn for_worker(values: &mut Vec<T>, growing: bool) -> Buffer<'_, T> {
+        if growing {
+            Buffer::Growing(values)
+        } else {
+            Buffer::Fixed(values)
+        }
+    }
+
+    /// Continue an original walk in the same owned allocation. A slice would
+    /// discard the worker's ability to grow after a nested header is acquired.
+    pub fn is_growing(&self) -> bool {
+        !matches!(self, Self::Fixed(_))
+    }
+    pub fn suffix(&mut self, start: usize) -> Buffer<'_, T> {
+        match self {
+            Self::Fixed(values) => Buffer::Fixed(&mut values[start..]),
+            Self::Growing(values) => Buffer::GrowingFrom(values, start),
+            Self::GrowingFrom(values, offset) => Buffer::GrowingFrom(values, *offset + start),
+        }
+    }
+}
+
+impl<T> std::ops::Deref for Buffer<'_, T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        match self {
+            Self::Fixed(values) => values,
+            Self::Growing(values) => values,
+            Self::GrowingFrom(values, start) => &values[*start..],
+        }
+    }
+}
+
+impl<T> std::ops::DerefMut for Buffer<'_, T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        match self {
+            Self::Fixed(values) => values,
+            Self::Growing(values) => values,
+            Self::GrowingFrom(values, start) => &mut values[*start..],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Rows {
@@ -32,16 +104,29 @@ impl Outcome {
 /// turns a prefix into a successful table, and capacity never causes allocation.
 /// Exact pointer spans are copied in bounded batches. Earlier complete rows keep
 /// their validation precedence over a later unreadable pointer in the batch.
-pub(crate) fn pointers<R>(
+#[cfg(test)]
+pub(crate) fn pointers<R: Default>(
     memory: &impl Memory,
     array: Array,
     output: &mut [R],
+    read_row: impl FnMut(u32, usize) -> Result<R, &'static str>,
+) -> Outcome {
+    pointers_buffer(memory, array, Buffer::Fixed(output), read_row)
+}
+
+pub(crate) fn pointers_buffer<R: Default>(
+    memory: &impl Memory,
+    array: Array,
+    mut output: Buffer<'_, R>,
     mut read_row: impl FnMut(u32, usize) -> Result<R, &'static str>,
 ) -> Outcome {
     if array.count == 0 {
         return Outcome::Unavailable {
             reason: "table has no sentinel slot",
         };
+    }
+    if let Err(reason) = output.ensure(array.count.saturating_sub(1) as usize) {
+        return Outcome::Unavailable { reason };
     }
     let mut len = 0;
     let mut unread_rows = 0;
@@ -83,6 +168,66 @@ pub(crate) fn pointers<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nested_worker_suffixes_grow_first_and_later_mod_demands_without_losing_prefix() {
+        let mut values = Vec::<u32>::new();
+        let mut buffer = Buffer::Growing(&mut values);
+        for countries in [1500, 5000] {
+            buffer.ensure(countries).unwrap();
+            buffer[..countries].fill(7);
+            let mut tail = buffer.suffix(countries);
+            let mut nested = tail.suffix(0);
+            nested.ensure(countries * 19).unwrap();
+            nested[..countries * 19].fill(13);
+            assert!(nested.is_growing());
+            assert_eq!(&buffer[..countries], vec![7; countries]);
+            assert_eq!(buffer[countries..countries * 20], vec![13; countries * 19]);
+        }
+        let mut fixed = Buffer::Fixed(&mut [0u32; 1]);
+        assert!(!fixed.suffix(1).ensure(5000).unwrap());
+    }
+
+    #[test]
+    fn growing_pointer_census_uses_original_array_once_at_mod_size() {
+        let bytes = pointer_bytes(5001);
+        let memory = TracedMemory {
+            bytes: &bytes,
+            blocked: None,
+            reads: RefCell::new(Vec::new()),
+        };
+        let mut rows = Vec::new();
+        let result = pointers_buffer(
+            &memory,
+            Array {
+                data: 0x1000,
+                count: 5001,
+            },
+            Buffer::Growing(&mut rows),
+            |slot, _| Ok(slot),
+        );
+        let expected: Vec<_> = (1..5001).filter(|slot| slot % 3 != 0).collect();
+        assert_eq!(
+            result,
+            Outcome::Rows {
+                len: expected.len()
+            }
+        );
+        assert_eq!(&rows[..result.len()], expected);
+        assert_eq!(memory.reads.borrow().len(), 5000);
+        assert!(matches!(
+            pointers(
+                &memory,
+                Array {
+                    data: 0x1000,
+                    count: 5001
+                },
+                &mut [0; 1],
+                |slot, _| Ok(slot)
+            ),
+            Outcome::Truncated { .. }
+        ));
+    }
+
     use crate::memory::SliceMemory;
     use std::cell::{Cell, RefCell};
 

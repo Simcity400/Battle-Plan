@@ -19,10 +19,9 @@ pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::FactionTheatres, TableId::FactionAdvisors];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-/// Starting sizes only: any short buffer truncates explicitly and the spool
-/// thread grows it to the walk's reported demand. The advisor slots are
-/// presized from their live demand (`country_scale::observe_politics`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Starting allocations only; live hints and worker walks grow every arena
+/// from the acquired native headers before publication.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     icons: usize,
@@ -31,19 +30,28 @@ pub struct Capacities {
     advisors: usize,
     advisor_bytes: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 64,
-            icons: 2048,
-            regions: 1024,
-            hidden: 256,
-            advisors: 64,
-            advisor_bytes: 2048,
-        }
-    }
-}
+
 impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let demand = native::walk(memory, base, state, &mut [], &mut [], &mut [], &mut []);
+        if let Outcome::Unavailable { reason } = demand.outcome {
+            return Err(reason);
+        }
+        self.raise_for_theatres(demand);
+        Ok(())
+    }
+    pub(crate) fn raise_for_theatres(&mut self, demand: native::Walk) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows, rows(demand.required_rows, 1));
+        raise(&mut self.icons, rows(demand.required_icons, 1));
+        raise(&mut self.regions, rows(demand.required_regions, 1));
+        raise(&mut self.hidden, rows(demand.required_hidden, 1));
+    }
     /// FactionAdvisors from the live occupied slot count and token bytes,
     /// with the three-quarters growth rule's headroom. Never lowers.
     pub(crate) fn raise_for_faction_advisors(&mut self, advisors: usize, bytes: usize) {
@@ -132,7 +140,7 @@ impl Captured {
         if should_walk(TABLES[0], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[0]);
             let started = qpc();
-            let walk = native::walk(
+            let walk = native::walk_growing(
                 memory,
                 base,
                 game_state,
@@ -158,7 +166,7 @@ impl Captured {
         if should_walk(TABLES[1], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let started = qpc();
-            let walk = cfaction::walk_advisors(
+            let walk = cfaction::walk_advisors_growing(
                 memory,
                 base,
                 game_state,
@@ -283,7 +291,11 @@ mod tests {
 
     #[test]
     fn faction_advisors_convert_their_tokens_and_refuse_escapes() {
-        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut captured = Captured::with_capacities(&Capacities {
+            advisors: 1,
+            advisor_bytes: 12,
+            ..Default::default()
+        });
         captured.advisor_bytes.first[..12].copy_from_slice(b"GER_theorist");
         captured.advisor_bytes.len = 12;
         captured.advisors.rows[0] = cfaction::AdvisorRow {

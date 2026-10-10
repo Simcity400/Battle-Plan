@@ -2,9 +2,41 @@ use super::*;
 use engine::{cgame_state, cunit_leader_trait, memory::SliceMemory};
 use std::cell::Cell;
 
+pub(super) fn fixture_capacities() -> Capacities {
+    Capacities {
+        rows: [16_384, 4096, 4096, 2048, 4096, 32_768],
+        bytes: [524_288, 0, 262_144, 131_072, 131_072, 524_288],
+    }
+}
+
+pub(super) fn fixture_bindings() -> CharacterSourceBindings {
+    let mut value = CharacterSourceBindings::new();
+    value.sources = Vec::with_capacity(8192);
+    value.update_charge();
+    value
+}
+
+#[test]
+fn character_typed_defaults_have_no_chosen_population_capacity() {
+    let capacity = Capacities::default();
+    assert_eq!(capacity.rows, [0; N]);
+    assert_eq!(capacity.bytes, [0; N]);
+    assert_eq!(Captured::with_capacities(&capacity).allocated_bytes(), 0);
+}
+
+#[test]
+fn character_worker_staging_starts_cold_and_remains_provisioned() {
+    for part in 0..PARTS {
+        let job = CharactersJob::new_part(part);
+        assert_eq!(job.log.spans.capacity(), 0);
+        assert_eq!(job.log.bytes.capacity(), 0);
+        assert!(job.has_storage());
+    }
+}
+
 #[test]
 fn tooltip_key_capacity_tracks_keys_instead_of_payload_bytes() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&fixture_capacities());
     let key = vec![b'x'; 40_000];
     let len = key.len() + 16;
     captured.advisors.bytes.first[..8].copy_from_slice(&(key.len() as u64).to_le_bytes());
@@ -170,7 +202,7 @@ fn appended_raw_shortage_keeps_the_complete_advisor_prefix_without_live_retry() 
         .unwrap();
     let prefix_bytes = baseline.log.spans[prefix_spans].start as usize;
     let assert_prefix = |job: &CharactersJob, expect_tooltip_absence: bool| {
-        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut captured = Captured::with_capacities(&fixture_capacities());
         captured.decode_characters_payload(IMAGE, job, &mut [0; N]);
         assert_eq!(captured.advisors.rows.outcome, Outcome::Rows { len: 2 });
         for (index, row) in captured.advisors.rows.rows[..2].iter().enumerate() {
@@ -271,7 +303,7 @@ fn appended_raw_shortage_keeps_the_complete_advisor_prefix_without_live_retry() 
         assert!(job.log.bytes.len() > copied && job.log.grow_for_next());
     }
     assert!(!job.log.overflowed);
-    let mut recovered = Captured::with_capacities(&Capacities::default());
+    let mut recovered = Captured::with_capacities(&fixture_capacities());
     recovered.decode_characters_payload(IMAGE, &job, &mut [0; N]);
     let direct = direct_advisors(&kit::memory(&changed));
     assert_eq!(recovered.advisors_table(), direct.advisors_table());
@@ -292,7 +324,7 @@ fn appended_raw_shortage_keeps_the_complete_advisor_prefix_without_live_retry() 
     queued.prepare_read_plans();
     assert!(copy_characters_refresh(&kit::memory(&bytes), context, &mut queued).raw_ok);
     assert_eq!(queued.appended_roles.len(), 2);
-    let mut recovered = Captured::with_capacities(&Capacities::default());
+    let mut recovered = Captured::with_capacities(&fixture_capacities());
     recovered.decode_characters_payload(IMAGE, &queued, &mut [0; N]);
     assert!(
         recovered.advisors.rows.rows[..2]
@@ -702,8 +734,8 @@ fn independent_parts_merge_fresh_rows_and_isolate_fallbacks_and_failures() {
             part,
             appended_roles: Vec::with_capacity(log.spans.capacity() / 8),
             log,
-            traits: TraitCapture::new(),
-            source_bindings: Some(CharacterSourceBindings::new()),
+            traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
+            source_bindings: Some(fixture_bindings()),
             ..Default::default()
         }
     });
@@ -1407,9 +1439,9 @@ fn complete_family_plan_refreshes_roles_traits_and_experience_without_retry() {
         log.initialize_scattered_read_plan(8192, 8192, 65536);
         CharactersJob {
             log,
-            traits: TraitCapture::new(),
+            traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
             appended_roles: Vec::with_capacity(1024),
-            source_bindings: Some(CharacterSourceBindings::new()),
+            source_bindings: Some(fixture_bindings()),
             ..Default::default()
         }
     }
@@ -2994,12 +3026,13 @@ fn split_copy_matches_direct_walk_on_cost_census() {
         assert_eq!(job.advisor_demand.rows, 22);
         assert_eq!(job.advisor_demand.bytes, 22 * 3 * COST_LITERAL.len());
         assert!(!job.advisor_demand.overflowed);
-        let retained_rows = decoded.advisors.rows.rows.capacity();
-        let retained_bytes = decoded.advisors.bytes.first.capacity();
+        decoded.grow(&mut small);
+        assert!(small.rows[2] >= job.advisor_demand.rows);
+        assert!(small.bytes[2] >= job.advisor_demand.bytes);
+        let retained = small;
         decoded.reset();
         decoded.grow(&mut small);
-        assert_eq!(small.rows[2], retained_rows);
-        assert_eq!(small.bytes[2], retained_bytes);
+        assert_eq!(small, retained);
         let context = CharactersCopyContext {
             force_full: false,
             base: IMAGE,
@@ -3856,7 +3889,7 @@ fn characters_fixed_gathers_keep_family_rows_and_faults_exact() {
                 appended_roles: Vec::with_capacity(512),
                 game_state: 0,
                 active: [true; 6],
-                traits: TraitCapture::new(),
+                traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
                 advisor_demand: AdvisorDemand::default(),
                 skills: [SkillCopy::default(); 32],
                 ..Default::default()
@@ -4134,7 +4167,7 @@ fn staging_overflow_falls_back_to_typed_walk() {
         log: crate::raw::RawLog::new(8, 8),
         game_state: 0,
         active: [true; 6],
-        traits: TraitCapture::new(),
+        traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
         advisor_demand: AdvisorDemand::default(),
         skills: [SkillCopy::default(); 32],
         ..Default::default()
@@ -4377,7 +4410,7 @@ fn small_wave_job() -> CharactersJob {
         appended_roles: Vec::with_capacity(1024),
         game_state: 0,
         active: [true; 6],
-        traits: TraitCapture::new(),
+        traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
         advisor_demand: AdvisorDemand::default(),
         skills: [SkillCopy::default(); 32],
         ..Default::default()
@@ -4739,7 +4772,7 @@ fn character_page_wave_keeps_staging_overflow_unaccepted() {
             log: crate::raw::RawLog::new(spans, bytes_capacity),
             game_state: 0,
             active: [true; 6],
-            traits: TraitCapture::new(),
+            traits: TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20),
             advisor_demand: AdvisorDemand::default(),
             skills: [SkillCopy::default(); 32],
             ..Default::default()

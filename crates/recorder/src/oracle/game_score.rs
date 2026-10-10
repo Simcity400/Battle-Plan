@@ -49,7 +49,9 @@ pub(super) fn rosters(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut actual = country_inputs(frame, links, report)?;
-    for tag in saved.countries.keys() {
+    let countries = report.canonical_countries(&saved.countries);
+    let country_count = countries.len();
+    for (tag, _) in countries {
         let label = format!("{}.game_score", String::from_utf8_lossy(tag));
         let Some(row) = actual.remove(tag.as_slice()) else {
             report.difference(label, "absent", "saved country present");
@@ -129,10 +131,7 @@ pub(super) fn rosters(
             "country absent",
         );
     }
-    report.compared(
-        "CountryGameScoreInputs saved rosters",
-        saved.countries.len(),
-    );
+    report.compared("CountryGameScoreInputs saved rosters", country_count);
     report.limitation("CCountry::Serialize@14070C580 and CFleet::Serialize@140D4A390 save roster bodies, not raw header identity/capacity. Division order beyond the first saved handle has no captured witness; existing unit comparisons certify membership, while FleetCounterInputs certifies saved task-force order independently when available", "CountryGameScoreInputs raw headers / division order");
     report.limitation("the save parser refuses duplicate full fleet/task-force definitions rather than discarding them. Normal AddFleet@1406F2920 rejects an already-listed pointer, but no exhaustive runtime uniqueness proof exists; repeated captured fleet occurrences are not certified by this save oracle", "CountryGameScoreInputs repeated fleet occurrences");
     report.limitation("CStrategicAir::Serialize@140C57230 saves ordered pools and CAirWingPool::Serialize@140F53E70 saves ordered wings. AirWings.pool_ordinal compares only the flattened per-owner wing order and each wing's saved base; empty pools and boundaries/order between pools sharing a base have no distinct captured witness. The save does not hold the country strategic-air pointer state, first-site registration order/repeats, or the access predicate used by CalculateAirScore@1406D8560", "CountryGameScoreInputs.air_state / first_sites / access / air pool grouping");
@@ -170,7 +169,9 @@ pub(super) fn land(
         }
     }
     let mut actual = country_inputs(frame, links, report)?;
-    for tag in saved.countries.keys() {
+    let countries = report.canonical_countries(&saved.countries);
+    let country_count = countries.len();
+    for (tag, _) in countries {
         let Some(row) = actual.remove(tag.as_slice()) else {
             report.difference(
                 format!("{}.game_score.land_count", String::from_utf8_lossy(tag)),
@@ -195,7 +196,7 @@ pub(super) fn land(
             "country absent",
         );
     }
-    report.compared("CountryGameScoreInputs.land_count", saved.countries.len());
+    report.compared("CountryGameScoreInputs.land_count", country_count);
     report.limitation("CalculateProvinceScore@1406E4B80 reads Country+0x434, which the country writer does not save directly. Saved controller inputs check the maintained-count invariant, including owner-default omissions, not a reset/stale header's exact value; any count difference still fails and needs matched native evidence", "CountryGameScoreInputs.land_count stored-header invariant");
     Ok(())
 }

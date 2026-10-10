@@ -3,6 +3,7 @@
 //! and scoped custom-tooltip expansion use the shared text code.
 use super::super::rules::Lines;
 use super::*;
+use crate::combat::text::ensure_newlines;
 use installed_content::{parser::Item, scripted_triggers::Lookup};
 use std::collections::BTreeSet;
 
@@ -113,13 +114,18 @@ impl Context<'_, '_> {
                     path.remove(key);
                 }
                 _ => {
-                    let text = self.trigger_leaf(trigger, scopes, invert).and_then(|text| {
-                        if text.is_empty() {
-                            return Ok(text);
-                        }
-                        self.trigger_prefix(trigger, scopes, invert, indent)
-                            .map(|prefix| format!("{prefix}{text}\n"))
-                    });
+                    let text = self
+                        .trigger_leaf(trigger, scopes, invert)
+                        .and_then(|mut text| {
+                            if text.is_empty() {
+                                return Ok(text);
+                            }
+                            // 14053FCC0 appends only a missing trailing newline,
+                            // including when custom text contains an effect description.
+                            ensure_newlines(&mut text, 1);
+                            self.trigger_prefix(trigger, scopes, invert, indent)
+                                .map(|prefix| format!("{prefix}{text}"))
+                        });
                     out.push((line, text));
                 }
             }

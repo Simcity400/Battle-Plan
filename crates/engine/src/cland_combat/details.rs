@@ -2,7 +2,7 @@ use super::{
     ATTACKER, ATTACKER_BONUS, DEFENDER, DEFENDER_BONUS, Members, PHASE, PROVINCE, Reader,
     STORED_TERRAIN, Source, WIDTH_FACTOR,
 };
-use crate::{Memory, carmy, cland_combatant, cpdx_array::Array, read};
+use crate::{Memory, carmy, cland_combatant, cpdx_array::Array, read, walk::Buffer};
 
 /// Each side's selected commander, made once per combat side and shared by
 /// that combat's window, detail and tactic readers. 14129E190
@@ -63,12 +63,12 @@ pub struct DetailCounts {
 /// stored, so `used` falls short of `required` and the caller publishes no
 /// partial detail; it grows the arenas off the game thread from `required`.
 pub struct DetailArenas<'a> {
-    pub participants: &'a mut [u64],
-    pub air: &'a mut [i32],
-    pub text: &'a mut [u8],
-    pub traits: &'a mut [CommanderTrait],
-    pub timed: &'a mut [CommanderTimedTrait],
-    pub learning: &'a mut [CommanderLearningTrait],
+    pub participants: Buffer<'a, u64>,
+    pub air: Buffer<'a, i32>,
+    pub text: Buffer<'a, u8>,
+    pub traits: Buffer<'a, CommanderTrait>,
+    pub timed: Buffer<'a, CommanderTimedTrait>,
+    pub learning: Buffer<'a, CommanderLearningTrait>,
     pub used: DetailCounts,
     pub required: DetailCounts,
     pub(super) verify_headers: bool,
@@ -82,6 +82,28 @@ impl<'a> DetailArenas<'a> {
         traits: &'a mut [CommanderTrait],
         timed: &'a mut [CommanderTimedTrait],
         learning: &'a mut [CommanderLearningTrait],
+    ) -> Self {
+        Self {
+            participants: Buffer::Fixed(participants),
+            air: Buffer::Fixed(air),
+            text: Buffer::Fixed(text),
+            traits: Buffer::Fixed(traits),
+            timed: Buffer::Fixed(timed),
+            learning: Buffer::Fixed(learning),
+            used: DetailCounts::default(),
+            required: DetailCounts::default(),
+            verify_headers: false,
+        }
+    }
+
+    /// Continue these same native detail observations in worker-owned arenas.
+    pub fn with_buffers(
+        participants: Buffer<'a, u64>,
+        air: Buffer<'a, i32>,
+        text: Buffer<'a, u8>,
+        traits: Buffer<'a, CommanderTrait>,
+        timed: Buffer<'a, CommanderTimedTrait>,
+        learning: Buffer<'a, CommanderLearningTrait>,
     ) -> Self {
         Self {
             participants,
@@ -156,7 +178,7 @@ pub fn commander_sources(
     ])
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SideDetails {
     pub committed_start: usize,
     pub committed_len: usize,
@@ -220,7 +242,7 @@ pub struct BorderWarInputs {
     pub combat_width: i64,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
     pub id: u64,
     pub province: u32,
@@ -406,6 +428,11 @@ pub fn read_details(
         {
             let vector = reader.array(pointer, vector_offset, 8)?;
             let (start, count) = (arenas.used.participants, vector.count as usize);
+            arenas.participants.ensure(
+                start
+                    .checked_add(count)
+                    .ok_or("land participant arena overflow")?,
+            )?;
             if which == 0 {
                 side.committed_start = start;
                 side.committed_len = count;
@@ -418,7 +445,7 @@ pub fn read_details(
                 let unit = reader.element(vector, member)?;
                 let handle = reader.known_unit(members, index, unit, &mut hint)?;
                 push(
-                    arenas.participants,
+                    &mut arenas.participants,
                     &mut arenas.used.participants,
                     &mut arenas.required.participants,
                     handle,
@@ -453,6 +480,13 @@ pub fn read_details(
             side.tactic_kind = 1;
         }
         let air = reader.array(pointer, cland_combatant::AIR_SUPPORT, 8)?;
+        arenas.air.ensure(
+            arenas
+                .used
+                .air
+                .checked_add(air.count as usize)
+                .ok_or("land air arena overflow")?,
+        )?;
         side.air_counts = Span {
             start: arenas.used.air,
             len: air.count as usize,
@@ -463,7 +497,7 @@ pub fn read_details(
                 crate::land_combat_air_entry::PLANE_COUNT,
             )?;
             push(
-                arenas.air,
+                &mut arenas.air,
                 &mut arenas.used.air,
                 &mut arenas.required.air,
                 planes,
@@ -627,6 +661,13 @@ impl<M: Memory> Reader<'_, M> {
         // Every vector is sized by its live count alone; entries that do not
         // fit the caller's arenas are still authenticated and counted.
         let traits = self.array(selected, cunit_leader::TRAIT_DATA, 8)?;
+        arenas.traits.ensure(
+            arenas
+                .used
+                .traits
+                .checked_add(traits.count as usize)
+                .ok_or("land trait arena overflow")?,
+        )?;
         row.traits_start = arenas.used.traits;
         row.traits_len = traits.count as usize;
         for ordinal in 0..traits.count {
@@ -642,7 +683,7 @@ impl<M: Memory> Reader<'_, M> {
                 token_len: token.len,
             };
             push(
-                arenas.traits,
+                &mut arenas.traits,
                 &mut arenas.used.traits,
                 &mut arenas.required.traits,
                 value,
@@ -653,17 +694,31 @@ impl<M: Memory> Reader<'_, M> {
             cunit_leader::TIMED_TRAIT_DATA,
             cunit_leader::TIMED_TRAIT_STRIDE,
         )?;
+        arenas.timed.ensure(
+            arenas
+                .used
+                .timed
+                .checked_add(timed.count as usize)
+                .ok_or("land timed trait arena overflow")?,
+        )?;
         row.timed_traits_start = arenas.used.timed;
         row.timed_traits_len = timed.count as usize;
         cunit_leader::read_timed_traits(self.memory, self.base, timed, |value| {
             push(
-                arenas.timed,
+                &mut arenas.timed,
                 &mut arenas.used.timed,
                 &mut arenas.required.timed,
                 value,
             );
         })?;
         let learning = self.array(selected, cunit_leader::TRAIT_EXPERIENCE_DATA, 16)?;
+        arenas.learning.ensure(
+            arenas
+                .used
+                .learning
+                .checked_add(learning.count as usize)
+                .ok_or("land learning trait arena overflow")?,
+        )?;
         row.learning_traits = Span {
             start: arenas.used.learning,
             len: learning.count as usize,
@@ -685,7 +740,7 @@ impl<M: Memory> Reader<'_, M> {
                 token_len: token.len,
             };
             push(
-                arenas.learning,
+                &mut arenas.learning,
                 &mut arenas.used.learning,
                 &mut arenas.required.learning,
                 value,
@@ -728,6 +783,9 @@ impl<M: Memory> Reader<'_, M> {
             .text
             .checked_add(len)
             .ok_or("land detail text overflows")?;
+        arenas
+            .text
+            .ensure(start.checked_add(len).ok_or("land detail text overflows")?)?;
         if let Some(output) = start
             .checked_add(len)
             .and_then(|end| arenas.text.get_mut(start..end))
@@ -756,13 +814,13 @@ impl<M: Memory> Reader<'_, M> {
         errors: &crate::cname_group_member::StringErrors,
         arenas: &mut DetailArenas<'_>,
     ) -> Result<Span, &'static str> {
-        let mut names = crate::cname_group_member::Names {
-            bytes: &mut *arenas.text,
+        let mut names = crate::cname_group_member::NameArena {
+            bytes: arenas.text.suffix(0),
             len: arenas.used.text,
             required: arenas.required.text,
         };
         let copied =
-            crate::cname_group_member::copy_string(self.memory, header, &mut names, errors)?;
+            crate::cname_group_member::copy_string_buffer(self.memory, header, &mut names, errors)?;
         let len = names.required - arenas.required.text;
         arenas.required.text = names.required;
         let start = arenas.used.text;

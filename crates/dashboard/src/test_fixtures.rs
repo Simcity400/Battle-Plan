@@ -253,6 +253,7 @@ pub(crate) fn fixture_research_inputs(frame: &mut DecodedFrame) {
             .iter()
             .map(|s| {
                 let mut row = ResearchInputRow {
+                    database_index: s.database_index,
                     country: s.country,
                     index: s.index,
                     technology_handle: s.technology_handle,
@@ -264,11 +265,14 @@ pub(crate) fn fixture_research_inputs(frame: &mut DecodedFrame) {
                 };
                 if s.technology_present != 0 {
                     let t = techs.iter().find(|t| {
-                        t.country == s.country && t.technology_handle == s.technology_handle
+                        t.country == s.country
+                            && s.database_index == replay::rows::Recorded::Value(t.database_index)
                     })?;
                     row.token = definitions
                         .iter()
-                        .find(|d| d.technology_handle == s.technology_handle)?
+                        .find(|d| {
+                            s.database_index == replay::rows::Recorded::Value(d.database_index)
+                        })?
                         .id
                         .clone();
                     row.level = t.level;

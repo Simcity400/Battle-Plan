@@ -2,7 +2,6 @@
 //! declarations and constants are native; historical simulation/order is separate.
 use super::{Emitter, Simulation};
 use crate::map::{
-    camera::Camera,
     particle_shader::{self, Instance, Packet},
     scene::{self, Targets},
     shader_scene::Partial,
@@ -18,14 +17,17 @@ use std::{
 
 pub struct Inputs<'a> {
     pub frame: &'a [u8],
+    pub grid: &'a [u8],
     pub textures: [&'a wgpu::TextureView; 10],
-    pub retained: &'a crate::map::shader_scene::State,
+    pub retained: &'a mut crate::map::shader_scene::State,
 }
 
 pub(super) struct DrawPacket {
     page: usize,
     registration: usize,
-    pub actor: [usize; 3],
+    pub actor: [usize; 4],
+    /// Prepared admission in the frame's ordered native camera envelopes.
+    pub views: u8,
     pub(super) descriptor: RenderDescriptor,
     constants: Packet,
     pub instances: Vec<Instance>,
@@ -68,7 +70,8 @@ impl DrawPacket {
         Self {
             page: e.page,
             registration: e.registration,
-            actor: [0; 3],
+            actor: [0; 4],
+            views: u8::MAX,
             descriptor: e.render.clone(),
             constants: Packet {
                 world: matrix(world),
@@ -118,16 +121,9 @@ impl DrawPacket {
         out
     }
 
-    pub fn entity(
-        e: &Emitter,
-        scale: f32,
-        event: &crate::map::entity_animation::Event,
-        camera: Camera,
-        size: [u32; 2],
-    ) -> Self {
-        let mut world = event.transform;
-        world.translation[0] += camera.wrap_offset(world.translation, size);
-        Self::new(e, scale, world, event.age - e.start.base)
+    pub fn entity(e: &Emitter, scale: f32, event: &crate::map::entity_animation::Event) -> Self {
+        //1423E8B90 copies the runtime's world matrix, independent of view.
+        Self::new(e, scale, event.transform, event.age - e.start.base)
     }
 }
 
@@ -200,18 +196,16 @@ impl EntitySimulations {
     }
 
     pub fn packets(
-        &mut self,
-        assets: &super::Assets,
+        &self,
+        entities: &BTreeMap<String, (f32, Vec<Emitter>)>,
         events: &[crate::map::entity_animation::Event],
-        camera: Camera,
-        size: [u32; 2],
         packets: &mut Vec<DrawPacket>,
-    ) -> io::Result<()> {
+    ) {
         for (actor, event) in events.iter().enumerate() {
             let Some(name) = &event.definition.particle else {
                 continue;
             };
-            let Some((scale, emitters)) = assets.entities.get(name) else {
+            let Some((scale, emitters)) = entities.get(name) else {
                 continue;
             };
             for (ordinal, emitter) in emitters.iter().enumerate() {
@@ -219,15 +213,12 @@ impl EntitySimulations {
                 let Some(sim) = self.0.get(&key) else {
                     continue;
                 };
-                let mut packet = DrawPacket::entity(emitter, *scale, event, camera, size);
-                packet.actor = [1, actor, 0];
+                let mut packet = DrawPacket::entity(emitter, *scale, event);
+                packet.actor = [1, actor, 0, 0];
                 packet.constants.time = sim.age;
                 for particle in &sim.particles {
                     let t = particle.age / particle.life;
-                    let mut position = particle.position;
-                    if !emitter.local_space {
-                        position[0] += camera.wrap_offset(event.transform.translation, size);
-                    }
+                    let position = particle.position;
                     packet.instances.push(Instance {
                         position_size: [
                             position[0],
@@ -246,17 +237,17 @@ impl EntitySimulations {
                         tail: [0; 12],
                     });
                 }
-                if !packet.instances.is_empty() {
-                    packets.push(packet);
-                }
+                packets.push(packet);
             }
         }
-        Ok(())
     }
 }
 
-fn submission_order(packets: &[DrawPacket]) -> Vec<&DrawPacket> {
-    let mut ordered: Vec<_> = packets.iter().collect();
+fn submission_order(packets: &[DrawPacket], view: usize) -> Vec<&DrawPacket> {
+    let mut ordered: Vec<_> = packets
+        .iter()
+        .filter(|packet| packet.views & (1 << view) != 0)
+        .collect();
     //14227F420 submits each actor's ordinary packets before that actor's trails.
     ordered.sort_by_key(|packet| (packet.registration, packet.actor, packet.descriptor.trail));
     ordered
@@ -390,6 +381,7 @@ impl Renderer {
         targets: &Targets,
         projection: [[f32; 4]; 4],
         eye: [f32; 3],
+        view: usize,
         inputs: Inputs<'_>,
         packets: &[DrawPacket],
     ) -> io::Result<()> {
@@ -403,7 +395,7 @@ impl Renderer {
         //14227F420 walks registered type buckets, then each actor's packets.
         //Stable grouping preserves this viewer's actor/packet enqueue order;
         //historical cross-producer actor order remains unrecorded.
-        let ordered = submission_order(packets);
+        let ordered = submission_order(packets, view);
         let mut actor = None;
         let mut ordinary_offset = 0;
         let mut ring = InstanceRing::new(allocation_size(self.max_particles, 48)?);
@@ -438,10 +430,16 @@ impl Renderer {
             template(wgpu::PrimitiveTopology::TriangleList),
             template(wgpu::PrimitiveTopology::TriangleStrip),
         ];
-        // Every packet binds the same depth state and map textures (140B47790); binding them
-        // once before the first draw leaves each draw's retained state unchanged.
-        if !ordered.is_empty() {
+        //14227F6D7's map callback, then F84D/F879/F889, bind these even
+        //with no actors. The next seam inherits the empty view's native state.
+        {
             let stream = &mut self.retained.stream;
+            for stage in [Stage::Vertex, Stage::Pixel] {
+                stream.bind_partial_constants(0, stage, Some(inputs.frame), &[0..348, 352..408]);
+                stream.bind_constants(1, stage, Some(bytemuck::bytes_of(&projection)));
+            }
+            //141269E90 restores the complete sixteen-byte light grid at PS b2.
+            stream.bind_constants(2, Stage::Pixel, Some(inputs.grid));
             stream.bind_depth_stencil(depth.clone());
             let map_samplers = crate::map::mesh_shader::map_samplers();
             for (slot, texture) in inputs.textures.iter().enumerate() {
@@ -461,6 +459,18 @@ impl Renderer {
             let key_actor = (packet.registration, packet.actor);
             if actor != Some(key_actor) {
                 actor = Some(key_actor);
+                //14227FA05/FA73 bind an enabled actor's scale and quad even
+                //when all of its subsystem packet counts are zero.
+                let scale = [packet.constants.scale[0], packet.constants.scale[1], 0., 0.];
+                for stage in [Stage::Vertex, Stage::Pixel] {
+                    self.retained.stream.bind_partial_constants(
+                        2,
+                        stage,
+                        Some(bytemuck::bytes_of(&scale)),
+                        std::slice::from_ref(&(0..8)),
+                    );
+                }
+                self.retained.bind_vertex(0, 8, quad.clone());
                 // Ordering puts each actor's ordinary packets first, together.
                 ordinary_offset = ring.append(
                     ordered[index..]
@@ -470,6 +480,9 @@ impl Renderer {
                         })
                         .flat_map(|p| &p.instances),
                 )?;
+            }
+            if packet.instances.is_empty() {
+                continue;
             }
             let name = packet.descriptor.technique();
             let trail = if packet.descriptor.trail {
@@ -512,7 +525,7 @@ impl Renderer {
                     entry.insert(program)
                 }
             };
-            let buffers = packet.constants.buffers(inputs.frame, &projection);
+            let buffers = packet.constants.buffers();
             let stream = &mut self.retained.stream;
             match program {
                 Some(program) => {
@@ -527,13 +540,6 @@ impl Renderer {
                 }
             }
             for stage in [Stage::Vertex, Stage::Pixel] {
-                stream.bind_partial_constants(
-                    0,
-                    stage,
-                    Some(&buffers[&binding(0, stage)]),
-                    &[0..348, 352..408],
-                );
-                stream.bind_constants(1, stage, Some(&buffers[&binding(1, stage)]));
                 stream.bind_partial_constants(
                     2,
                     stage,
@@ -612,6 +618,9 @@ impl Renderer {
             }
             previous = Some((submission.pass.pipeline, submission.pass.bindings));
         }
+        //Keep the renderer's persistent device cache while publishing the
+        //bindings/vertex allocations subsequent meshes and popups inherit.
+        inputs.retained.inherit(&self.retained);
         Ok(())
     }
 }
@@ -716,9 +725,74 @@ mod tests {
         assert_eq!(packet.instances.len(), 1);
         assert_eq!(packet.instances[0].tile, [1, 0, 0, 0]);
         assert_eq!(packet.instances[0].color, [200, 200, 200, 255]);
-        let buffers = packet.constants.buffers(&[], &[[0.; 4]; 4]);
+        let buffers = packet.constants.buffers();
         let object = &buffers[&binding(3, Stage::Vertex)];
         assert_eq!(&object[72..80], bytemuck::bytes_of(&[2_f32, 2.]));
+    }
+
+    #[test]
+    fn canonical_packets_use_seam_carriers_without_advancing_births() {
+        use crate::map::camera::{Camera, MapDefines, MapSize};
+        let size = [1200, 800];
+        let camera = Camera {
+            center: [5., 400.],
+            height: 600.,
+            map: MapSize::TEST,
+            defines: MapDefines::test(),
+        };
+        let anchor = [camera.map.x() - 5., 10., 400.];
+        for local in [false, true] {
+            let mut emitter = super::super::tests::activation_test_emitter();
+            emitter.local_space = local;
+            let mut simulation = Simulation::cold(&emitter, 7, anchor, 0.);
+            // Use the production birth space (1423DDAA0/1423E5CD0), so
+            // nonlocal particles already hold canonical world positions.
+            simulation.advance_space(
+                &emitter,
+                1. / 60.,
+                1.,
+                Some(super::super::motion::Space::new(
+                    emitter.local_space,
+                    emitter.system_local_space,
+                    emitter.scale,
+                    Transform {
+                        translation: anchor,
+                        ..Transform::IDENTITY
+                    },
+                )),
+            );
+            let seed = simulation.seed;
+            let age = simulation.age;
+            let packet = DrawPacket::weather(&emitter, &simulation, anchor, 1.);
+            let instances = packet.instances.clone();
+            assert!(!instances.is_empty());
+            if local {
+                assert_eq!(packet.constants.world[3][..3], anchor);
+            } else {
+                assert_eq!(packet.constants.world, matrix(Transform::IDENTITY));
+                assert!(
+                    instances
+                        .iter()
+                        .all(|p| p.position_size[0] > camera.map.x() - 20.)
+                );
+            }
+            for offset in [0., -camera.map.x(), camera.map.x()] {
+                let mut wrapped = camera;
+                wrapped.center[0] -= offset;
+                let original_copy = camera
+                    .project([anchor[0] + offset, anchor[1], anchor[2]], size)
+                    .unwrap();
+                let canonical_copy = wrapped.project(anchor, size).unwrap();
+                for coordinate in 0..2 {
+                    assert!((original_copy[coordinate] - canonical_copy[coordinate]).abs() < 0.01);
+                }
+                let _ = packet.constants.buffers();
+                assert_eq!(packet.instances, instances);
+            }
+            assert_eq!(simulation.seed, seed);
+            assert_eq!(simulation.age, age);
+            assert_eq!(simulation.particles.len(), instances.len());
+        }
     }
 
     #[test]
@@ -768,7 +842,7 @@ mod tests {
             emitter.registration = registration;
             packets.push(DrawPacket::new(&emitter, 1., Transform::IDENTITY, time));
         }
-        let ordered = submission_order(&packets);
+        let ordered = submission_order(&packets, 0);
         assert_eq!(
             ordered.iter().map(|p| p.constants.time).collect::<Vec<_>>(),
             [20., 21., 30., 10., 11.]
@@ -782,15 +856,53 @@ mod tests {
         for (actor, trail, time) in [(0, true, 1.), (0, false, 2.), (1, true, 3.), (1, false, 4.)] {
             emitter.render.trail = trail;
             let mut packet = DrawPacket::new(&emitter, 1., Transform::IDENTITY, time);
-            packet.actor = [0, actor, 0];
+            packet.actor = [0, actor, 0, 0];
             packets.push(packet);
         }
         assert_eq!(
-            submission_order(&packets)
+            submission_order(&packets, 0)
                 .iter()
                 .map(|p| p.constants.time)
                 .collect::<Vec<_>>(),
             [2., 1., 4., 3.]
+        );
+    }
+
+    #[test]
+    fn view_admission_filters_actors_before_registration_and_trail_order() {
+        let mut emitter = super::super::tests::activation_test_emitter();
+        let mut packets = Vec::new();
+        for (reference, trail, views, time) in [
+            (0, true, 0b010, 1.),
+            (0, false, 0b010, 2.),
+            (1, true, 0b100, 3.),
+            (1, false, 0b100, 4.),
+        ] {
+            emitter.render.trail = trail;
+            let mut packet = DrawPacket::new(&emitter, 1., Transform::IDENTITY, time);
+            packet.actor = [0, 0, 0, reference];
+            packet.views = views;
+            packets.push(packet);
+        }
+        assert!(submission_order(&packets, 0).is_empty());
+        assert_eq!(
+            submission_order(&packets, 1)
+                .iter()
+                .map(|p| p.constants.time)
+                .collect::<Vec<_>>(),
+            [2., 1.]
+        );
+        assert_eq!(
+            submission_order(&packets, 2)
+                .iter()
+                .map(|p| p.constants.time)
+                .collect::<Vec<_>>(),
+            [4., 3.]
+        );
+        //Packet masks, identities and populations remain immutable across views.
+        assert_eq!(
+            packets.iter().map(|p| p.views).collect::<Vec<_>>(),
+            [2, 2, 4, 4]
         );
     }
 }

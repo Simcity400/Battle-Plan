@@ -103,13 +103,51 @@ fn outcome(len: usize, missing: usize) -> Outcome {
 /// transfers are found by sorting their handles in the caller's row buffer, so the walk is
 /// linear in reads and `n log n` in comparisons. Nothing is allocated: a short buffer
 /// truncates and reports the demand.
+pub struct GrowingBuffers<'a> {
+    pub combats: &'a mut Vec<CombatTransfers>,
+    pub transfer_handles: &'a mut Vec<u64>,
+    pub transfers: &'a mut Vec<TransferUnits>,
+    pub unit_handles: &'a mut Vec<u64>,
+}
+
 pub fn walk(memory: &impl Memory, base: usize, state: usize, buffers: Buffers<'_>) -> Walk {
-    let Buffers {
-        combats,
-        transfer_handles,
-        transfers,
-        unit_handles,
-    } = buffers;
+    walk_buffer(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Fixed(buffers.combats),
+        crate::walk::Buffer::Fixed(buffers.transfer_handles),
+        crate::walk::Buffer::Fixed(buffers.transfers),
+        crate::walk::Buffer::Fixed(buffers.unit_handles),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    buffers: GrowingBuffers<'_>,
+) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Growing(buffers.combats),
+        crate::walk::Buffer::Growing(buffers.transfer_handles),
+        crate::walk::Buffer::Growing(buffers.transfers),
+        crate::walk::Buffer::Growing(buffers.unit_handles),
+    )
+}
+
+fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut combats: crate::walk::Buffer<'_, CombatTransfers>,
+    mut transfer_handles: crate::walk::Buffer<'_, u64>,
+    mut transfers: crate::walk::Buffer<'_, TransferUnits>,
+    mut unit_handles: crate::walk::Buffer<'_, u64>,
+) -> Walk {
     let (mut combat_len, mut combat_missing, mut transfer_used) = (0usize, 0usize, 0usize);
     let (mut transfer_len, mut transfer_missing, mut unit_used) = (0usize, 0usize, 0usize);
     let (mut transfer_required, mut unit_required) = (0usize, 0usize);
@@ -155,6 +193,16 @@ pub fn walk(memory: &impl Memory, base: usize, state: usize, buffers: Buffers<'_
                 .checked_add(count)
                 .ok_or("naval transfer demand overflow")?;
             let start = transfer_used;
+            combats.ensure(
+                combat_len
+                    .checked_add(1)
+                    .ok_or("naval transfer combat demand overflow")?,
+            )?;
+            transfer_handles.ensure(
+                start
+                    .checked_add(count)
+                    .ok_or("naval transfer demand overflow")?,
+            )?;
             if combat_len < combats.len() && start + count <= transfer_handles.len() {
                 for_each_handle(memory, vector, |entry, transfer| {
                     transfer_handles[start + entry as usize] = transfer;
@@ -181,6 +229,7 @@ pub fn walk(memory: &impl Memory, base: usize, state: usize, buffers: Buffers<'_
             .iter()
             .filter(|&&handle| handle != 0)
             .count();
+        transfers.ensure(named)?;
         if named > transfers.len() {
             transfer_missing = named;
             return Ok(());
@@ -225,6 +274,12 @@ pub fn walk(memory: &impl Memory, base: usize, state: usize, buffers: Buffers<'_
             }
             let units = handles(memory, pointer, cnaval_unit_transfer::UNITS)?;
             let start = unit_used;
+            // Serialize@140E14640 reaches every original unit occurrence.
+            unit_handles.ensure(
+                start
+                    .checked_add(units.count as usize)
+                    .ok_or("naval transfer unit demand overflow")?,
+            )?;
             let mut live = 0usize;
             for_each_handle(memory, units, |_, unit| {
                 // Both natives take the resolved CReferenceObject (`CUnit+0x10`) and skip one
@@ -574,6 +629,49 @@ mod tests {
                 unread_rows: 4
             }
         );
+    }
+
+    #[test]
+    fn growing_transfers_keep_full_original_vectors_and_distinct_scratch_before_publication() {
+        let transfer = handle(1);
+        let unit = handle(2);
+        let mut combats = Vec::new();
+        let mut named = Vec::new();
+        let mut transfers = Vec::new();
+        let mut units = Vec::new();
+        for count in [5_000_usize, 12_000] {
+            let fixture = Fixture::new(
+                &vec![vec![transfer, 0, transfer]; count],
+                &[(transfer, vec![unit; count])],
+                &[unit],
+                &[],
+            );
+            let memory = Image(SliceMemory {
+                base: 0,
+                bytes: &fixture.bytes,
+            });
+            let previous = fixture.walk([0; 4]).0;
+            assert!(matches!(previous.combats, Outcome::Truncated { .. }));
+            let capture = walk_growing(
+                &memory,
+                0,
+                STATE,
+                GrowingBuffers {
+                    combats: &mut combats,
+                    transfer_handles: &mut named,
+                    transfers: &mut transfers,
+                    unit_handles: &mut units,
+                },
+            );
+            assert_eq!(capture.combats, Outcome::Rows { len: count });
+            assert_eq!(capture.transfers, Outcome::Rows { len: 1 });
+            assert_eq!(capture.transfer_handles_required, count * 3);
+            assert_eq!(capture.unit_handles_required, count);
+            assert!(transfers.len() >= count * 2);
+            assert_eq!(combats[count - 1].transfers, [(count - 1) * 3, 3]);
+            assert_eq!(transfers[0].units, [0, count]);
+            assert!(units[..count].iter().all(|&value| value == unit));
+        }
     }
 
     /// 1,500 and 5,000 transfers, each named by two combats: the reads grow linearly.

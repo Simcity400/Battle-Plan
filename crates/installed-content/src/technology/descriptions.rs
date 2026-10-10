@@ -23,7 +23,8 @@ pub struct Definition {
 
 #[derive(Clone, Debug, Default)]
 pub struct Catalog {
-    pub definitions: BTreeMap<Token, Definition>,
+    pub definitions: Vec<Definition>,
+    by_name: BTreeMap<Vec<u8>, usize>,
     pub categories: BTreeMap<Token, Vec<u8>>,
     /// Full categories/aliases differ from KeyNames' registration-only roster.
     pub equipment: crate::equipment::Database,
@@ -82,7 +83,7 @@ impl Catalog {
         }
         if catalog
             .definitions
-            .values()
+            .iter()
             .any(|definition| !definition.tactics.is_empty())
         {
             catalog.tactics =
@@ -109,10 +110,7 @@ impl Catalog {
             }
             for item in root.value.items().unwrap_or_default() {
                 let id = parser::c_string(item.key.as_deref().unwrap_or_default());
-                let identity = Token::c_str(id);
-                if self.definitions.contains_key(&identity) {
-                    continue;
-                }
+                let identity = id.to_ascii_lowercase();
                 let mut definition = Definition {
                     id: id.to_vec(),
                     ..Definition::default()
@@ -200,7 +198,10 @@ impl Catalog {
                 }
                 // 140ABCFC0 allocates every repeated definition afresh;
                 // 140AB9020/140AC1A80 return the first registered token.
-                self.definitions.insert(identity, definition);
+                self.by_name
+                    .entry(identity)
+                    .or_insert(self.definitions.len());
+                self.definitions.push(definition);
             }
         }
     }
@@ -209,7 +210,10 @@ impl Catalog {
         if let Some(why) = &self.refusal {
             return Err(why.clone());
         }
-        Ok(self.definitions.get(&Token::c_str(operand)))
+        Ok(self
+            .by_name
+            .get(&parser::c_string(operand).to_ascii_lowercase())
+            .map(|&index| &self.definitions[index]))
     }
 
     pub fn category(&self, operand: &[u8]) -> Result<Option<&[u8]>, String> {
@@ -226,6 +230,41 @@ impl Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn layered_repeated_technology_declarations_keep_every_index_and_first_name_lookup() {
+        let stack = crate::mod_layers_tests::Stack::new("technology_occurrences");
+        stack.write(
+            &stack.base(),
+            "common/technologies/vanilla.txt",
+            "technologies={hidden={}} ",
+        );
+        stack.write(
+            &stack.addon(),
+            "common/technologies/a.txt",
+            "technologies={repeat={parent=first} REPEAT={parent=second}}",
+        );
+        stack.write(
+            &stack.addon(),
+            "common/technologies/b.txt",
+            "technologies={repeat={parent=third}}",
+        );
+        stack.write(
+            &stack.addon(),
+            "common/technologies/nested/ignored.txt",
+            "technologies={ignored={}}",
+        );
+        let layers = stack.layers(&["common/technologies"]);
+        let names = KeyNames::read(&layers).unwrap();
+        let catalog = Catalog::read(&layers, &names).unwrap();
+        assert!(catalog.refusal.is_none(), "{:?}", catalog.refusal);
+        assert_eq!(catalog.definitions.len(), 3);
+        assert_eq!(catalog.get(b"RePeAt").unwrap().unwrap().parent, b"first");
+        assert_eq!(catalog.definitions[1].parent, b"second");
+        assert_eq!(catalog.definitions[2].parent, b"third");
+        assert!(catalog.get(b"hidden").unwrap().is_none());
+        assert!(catalog.get(b"ignored").unwrap().is_none());
+    }
+
     #[test]
     fn technology_description_names_use_native_parent_and_layout_flag() {
         let (read, _, _) = read_templates(b"@title=mod_parent technology_categories={mod_category} technologies={mod_tech={parent=@title force_use_small_tech_layout=yes enable_equipments={mod_equipment}}}", &units::Registry::default(), &KeyNames::default());

@@ -165,6 +165,53 @@ impl Storage {
         if hour.is_none() && snapshot.failure.is_none() {
             snapshot.failure = Some("peace finalizer hour unreadable");
         }
+        self.record(snapshot, hour, sequence);
+        if settled {
+            OMITTED.fetch_add(snapshot.omitted as u64, Ordering::Relaxed);
+            if snapshot.failure.is_some() {
+                FAILED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        true
+    }
+    /// Resident bids run on the acquisition worker; finalizer callbacks keep
+    /// their fixed output above. Continue each original 140E245D0 history walk
+    /// after its acquired headers size the cumulative owned arenas.
+    pub(crate) fn observe_bids_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        conference: usize,
+        hour: i32,
+        sequence: u64,
+    ) {
+        use engine::walk::Buffer::GrowingFrom;
+        let [_, winners, losers, actions, transfers, subjects, name_bytes] = self.used;
+        let snapshot = native::copy_bids_growing(
+            memory,
+            base,
+            conference,
+            native::GrowingOutput {
+                winners: GrowingFrom(&mut self.winners, winners),
+                losers: GrowingFrom(&mut self.losers, losers),
+                actions: GrowingFrom(&mut self.actions, actions),
+                transfers: GrowingFrom(&mut self.transfers, transfers),
+                subjects: GrowingFrom(&mut self.subjects, subjects),
+                name_bytes: GrowingFrom(&mut self.name_bytes, name_bytes),
+            },
+        );
+        self.record(snapshot, Some(hour), sequence);
+    }
+    fn record(&mut self, snapshot: Snapshot, hour: Option<i32>, sequence: u64) {
+        let [
+            events,
+            winners,
+            losers,
+            actions,
+            transfers,
+            subjects,
+            name_bytes,
+        ] = self.used;
         self.events[events] = Event {
             sequence,
             hour,
@@ -185,13 +232,6 @@ impl Storage {
             subjects + snapshot.subjects,
             name_bytes + snapshot.name_bytes,
         ];
-        if settled {
-            OMITTED.fetch_add(snapshot.omitted as u64, Ordering::Relaxed);
-            if snapshot.failure.is_some() {
-                FAILED.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        true
     }
 }
 
@@ -221,6 +261,8 @@ static RETURN: AtomicUsize = AtomicUsize::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static LOST: AtomicU64 = AtomicU64::new(0);
+static LOST_DRAINS: AtomicU64 = AtomicU64::new(0);
+static DRAIN_INVALIDATED: AtomicBool = AtomicBool::new(false);
 static OMITTED: AtomicU64 = AtomicU64::new(0);
 static FAILED: AtomicU64 = AtomicU64::new(0);
 static UNHOOKED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -239,6 +281,10 @@ impl Drop for Lease {
 }
 
 pub fn presize(capacity: Capacities) {
+    engine::allocation::advisory(|| presize_storage(capacity));
+}
+
+fn presize_storage(capacity: Capacities) {
     let Ok(mut swap) = SWAP.lock() else {
         return;
     };
@@ -251,11 +297,13 @@ pub fn presize(capacity: Capacities) {
         return;
     }
     let capacity = offered.map_or(capacity, |offered| offered.merge(capacity));
-    if let Some(storage) = Storage::new(capacity) {
-        swap.next = Some(Box::new(Log {
+    if let Some(storage) = Storage::new(capacity)
+        && let Ok(next) = engine::allocation::boxed(Log {
             capacity,
             storage: UnsafeCell::new(storage),
-        }));
+        })
+    {
+        swap.next = Some(next);
     }
 }
 pub fn install_offered() {
@@ -357,7 +405,18 @@ fn resident_capacity(memory: &impl Memory, base: usize, state: usize) -> Option<
 
 /// Simulation-thread handoff, copying only owned arenas. A short destination
 /// loses counted conferences, never publishes their partial payload as exact.
+#[cfg(test)]
 pub fn drain(output: &mut Storage, continuous: bool) -> Result<u64, &'static str> {
+    drain_mode(output, continuous, false)
+}
+pub(crate) fn drain_growing(output: &mut Storage, continuous: bool) -> Result<u64, &'static str> {
+    drain_mode(output, continuous, true)
+}
+pub(crate) fn lost_drain() {
+    LOST_DRAINS.fetch_add(1, Ordering::Relaxed);
+    DRAIN_INVALIDATED.store(true, Ordering::Release);
+}
+fn drain_mode(output: &mut Storage, continuous: bool, growing: bool) -> Result<u64, &'static str> {
     output.used = [0; 7];
     let Some(_lease) = Lease::try_enter() else {
         return Err(replay::rows::PEACE_DRAIN_BUSY);
@@ -369,6 +428,28 @@ pub fn drain(output: &mut Storage, continuous: bool) -> Result<u64, &'static str
         return Err("peace finalizer hook is not enabled");
     }
     let storage = unsafe { &mut *log.storage.get() };
+    let invalidated = DRAIN_INVALIDATED.swap(false, Ordering::AcqRel);
+    let continuous = continuous && !invalidated;
+    if growing && continuous {
+        for (target, count) in [
+            (
+                engine::walk::Buffer::Growing(&mut output.winners),
+                storage.used[1],
+            ),
+            (
+                engine::walk::Buffer::Growing(&mut output.losers),
+                storage.used[2],
+            ),
+        ] {
+            let mut target = target;
+            target.ensure(count)?;
+        }
+        engine::walk::Buffer::Growing(&mut output.events).ensure(storage.used[0])?;
+        engine::walk::Buffer::Growing(&mut output.actions).ensure(storage.used[3])?;
+        engine::walk::Buffer::Growing(&mut output.transfers).ensure(storage.used[4])?;
+        engine::walk::Buffer::Growing(&mut output.subjects).ensure(storage.used[5])?;
+        engine::walk::Buffer::Growing(&mut output.name_bytes).ensure(storage.used[6])?;
+    }
     let mut lost = LOST.swap(0, Ordering::Relaxed);
     if !continuous {
         lost = lost.saturating_add(storage.used[0] as u64);
@@ -568,6 +649,7 @@ pub fn status() -> impl serde::Serialize {
         "prepared": ORIGINAL.load(Ordering::Acquire) != 0,
         "enabled": ENABLED.load(Ordering::Acquire), "unhooked": UNHOOKED.get(),
         "observed": SEQUENCE.load(Ordering::Relaxed), "pending_lost_conferences": LOST.load(Ordering::Relaxed),
+        "lost_worker_drains": LOST_DRAINS.load(Ordering::Relaxed),
         "omitted_operands": OMITTED.load(Ordering::Relaxed), "failed_conferences": FAILED.load(Ordering::Relaxed)})
 }
 
@@ -579,6 +661,82 @@ mod tests {
     use super::TEST_GLOBALS as GLOBALS;
     use super::*;
     use crate::peace_settlement_tests::fixture::Fixture;
+
+    #[test]
+    fn worker_drain_grows_every_original_five_thousand_country_and_mod_sized_arena() {
+        let _guard = GLOBALS.lock().unwrap();
+        let capacity = Capacities {
+            events: 12_000,
+            countries: 12_000,
+            actions: 12_000,
+            transfers: 12_000,
+            name_bytes: 12_000 * 48,
+        };
+        let mut log = Box::new(Log {
+            capacity,
+            storage: UnsafeCell::new(Storage::new(capacity).unwrap()),
+        });
+        let prior_log = LOG.swap(&mut *log, Ordering::AcqRel);
+        let prior_enabled = ENABLED.swap(true, Ordering::AcqRel);
+        let prior_lost = LOST.swap(0, Ordering::AcqRel);
+        let prior_invalidated = DRAIN_INVALIDATED.swap(false, Ordering::AcqRel);
+        let mut output = Storage::new(Capacities::default()).unwrap();
+        for count in [5000, 12_000] {
+            {
+                let storage = unsafe { &mut *log.storage.get() };
+                storage.used = [count, count, count, count, count, count, count * 48];
+                for index in 0..count {
+                    storage.events[index] = Event {
+                        sequence: index as u64 + 1,
+                        hour: Some(41),
+                        snapshot: Snapshot {
+                            id: Some(index as u64 + 1),
+                            winners: 1,
+                            losers: 1,
+                            actions: 1,
+                            transfers: 1,
+                            subjects: 1,
+                            name_bytes: 48,
+                            ..Default::default()
+                        },
+                        winners: index,
+                        losers: index,
+                        actions: index,
+                        transfers: index,
+                        subjects: index,
+                        name_bytes: index * 48,
+                    };
+                    storage.winners[index] = (index % 5000) as u32;
+                    storage.losers[index] = (4999 - index % 5000) as u32;
+                    storage.actions[index].country = (index % 5000) as u32;
+                    storage.transfers[index].state = index as i32;
+                    storage.subjects[index].subject = (index % 5000) as u32;
+                    storage.name_bytes[index * 48..(index + 1) * 48].fill((index % 251) as u8);
+                }
+            }
+            assert_eq!(drain_growing(&mut output, true), Ok(0));
+            assert_eq!(
+                output.used,
+                [count, count, count, count, count, count, count * 48]
+            );
+            assert_eq!(output.events[count - 1].sequence, count as u64);
+            assert_eq!(output.winners[count - 1], ((count - 1) % 5000) as u32);
+            assert_eq!(
+                output.actions[count - 1].country,
+                ((count - 1) % 5000) as u32
+            );
+            assert_eq!(output.transfers[count - 1].state, count as i32 - 1);
+            assert_eq!(
+                &output.name_bytes[(count - 1) * 48..count * 48],
+                &[((count - 1) % 251) as u8; 48]
+            );
+            assert_eq!(unsafe { &*log.storage.get() }.used, [0; 7]);
+        }
+        LOG.store(prior_log, Ordering::Release);
+        ENABLED.store(prior_enabled, Ordering::Release);
+        LOST.store(prior_lost, Ordering::Relaxed);
+        DRAIN_INVALIDATED.store(prior_invalidated, Ordering::Release);
+    }
     #[test]
     fn peace_storage_allocation_failure_is_returned() {
         let _globals = GLOBALS.lock().unwrap();

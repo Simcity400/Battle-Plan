@@ -10,20 +10,30 @@ pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LeaderPortraitPaths];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { rows: 8192 }
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+    ) -> Result<(), &'static str> {
+        let count = crate::country_scale::table_demand::rows(engine::corders_group::walk_roots(
+            memory,
+            base,
+            &mut [],
+        ))?;
+        crate::table_capture::grow_capacity(&mut self.rows, count);
+        Ok(())
     }
 }
 
 pub struct Captured {
-    rows: CaptureRows<cunit_leader::PortraitPathRow>,
+    rows: CaptureRows<cunit_leader::PortraitPathRow<engine::capture_text::Owned>>,
     /// One tag cell per country slot, sized from the observed table off-thread.
-    tag_memo: cunit_leader::PortraitTagMemo,
+    tag_memo: cunit_leader::PortraitTagMemo<engine::capture_text::Owned>,
 }
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
@@ -46,7 +56,14 @@ impl Captured {
         self.rows.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes() + self.tag_memo.allocated_bytes()
+        self.rows.allocated_bytes()
+            + self.tag_memo.allocated_bytes()
+            + self
+                .rows
+                .rows
+                .iter()
+                .map(|row| row.tag.allocated_bytes())
+                .sum::<usize>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
@@ -62,7 +79,7 @@ impl Captured {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         self.rows.outcome = match sources {
-            Some(sources) => cunit_leader::walk_portrait_paths_memo(
+            Some(sources) => cunit_leader::walk_portrait_paths_memo_growing(
                 memory,
                 base,
                 state,
@@ -111,6 +128,7 @@ mod tests {
         capture.rows.rows[0].leader = (9 << 32) | 4713;
         capture.rows.rows[0].country = 12;
         capture.rows.rows[0].tag_reference = 3;
+        capture.rows.rows[0].tag.bytes.resize(3, 0);
         capture.rows.rows[0].tag.bytes[..3].copy_from_slice(b"G\0R");
         capture.rows.rows[0].tag.len = 3;
         capture.rows.outcome = Outcome::Rows { len: 1 };

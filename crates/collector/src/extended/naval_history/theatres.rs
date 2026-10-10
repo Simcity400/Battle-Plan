@@ -1,5 +1,8 @@
 use super::*;
-use engine::allocation::{owned_vec, reserve, reserve_exact, resize_default, vec};
+use engine::allocation::{reserve, reserve_exact, resize_default};
+
+mod order_group_source;
+pub(crate) use order_group_source::OrderGroupSource;
 
 /// Fault-attribution masks in closure order: [LandTheatres,
 /// LandTheatreGroups, LandTheatreMembers, AirTheatres, AirTheatreGroups,
@@ -18,9 +21,11 @@ const OOB_MASK: u32 = 0x1C0;
 pub(crate) struct NavalJob {
     pub log: RawLog<NAVAL_PACK_N>,
     pub game_state: usize,
+    pub(super) growing: bool,
     pub(super) theatres_active: bool,
     pub(super) wing_sources: Vec<ctheatre::WingMembership>,
     pub(super) wing_outcome: Option<Outcome>,
+    pub(super) wing_growing: bool,
     pub(super) wing_required: usize,
     /// OOB-only memo of freshly authenticated theatre pointers, in root order.
     /// It never shares observations with theatre/member source families. The
@@ -35,34 +40,30 @@ pub(crate) struct NavalJob {
     /// The callback's authenticated country roster as the theatre copy used
     /// it, for this pass's decode only; see [`copy_naval_theatres`].
     pub(super) roster: engine::ccountry::RosterSnapshot,
-    /// The callback's orders-group registry census of this pass, when it was
-    /// complete and fitted: `roots[..len]` for `roots_len == Some(len)`. The
-    /// order-of-battle copy walks these roots instead of the registry, and
-    /// this pass's decode takes them as its census; see [`copy_naval_oob`].
-    /// Filled by [`Self::capture_roots`] and dropped by [`Self::clear`].
+    /// This pass's original worker registry census, including its verdict.
+    /// A complete prefix supplies OOB copy and decode; an attempted failure
+    /// remains terminal. Only standalone fixtures without any attempted census
+    /// read the registry themselves. Dropped by [`Self::clear`].
     pub(super) roots: Vec<corders_group::Root>,
     pub(super) roots_len: Option<usize>,
+    pub(super) roots_outcome: Option<Outcome>,
     pub(super) roots_required: usize,
     pub(super) capacity_charge: crate::raw_memory::Charge,
-}
-
-/// Orders-group theatre references per country slot the order-of-battle
-/// walk is sized for up front. A sizing hint only: a larger roster overflows
-/// once and grows, as every capture does.
-pub(super) const OOB_THEATRE_REFERENCES_PER_COUNTRY: usize = 4;
-
-/// The order-of-battle theatre scratch for the largest observed country
-/// registry ([`crate::country_scale`]), never below the vanilla-sized floor.
-fn oob_theatre_rows() -> usize {
-    crate::country_scale::census_rows(0)
-        .saturating_mul(OOB_THEATRE_REFERENCES_PER_COUNTRY)
-        .max(2048)
+    pub(super) positive_span_end: usize,
+    pub(super) positive_raw_complete: bool,
+    pub(super) reserved_native_count: Option<u32>,
+    pub(super) reserved_first_failure: Option<&'static str>,
+    pub(super) reserved_capacity_short: bool,
+    pub(super) reserved_required_rows: usize,
+    pub(super) reserved_raw_demand: Option<(usize, usize)>,
+    pub(super) reserved_growth_rows: usize,
 }
 
 impl NavalJob {
     /// Callback-owned values from the one shared complete wing census.
-    pub(crate) fn install_wings(&mut self, job: &super::super::air::AirWingJob) -> u64 {
+    pub(crate) fn install_wings(&mut self, job: &mut super::super::air::AirWingJob) -> u64 {
         self.theatres_active = job.theatres_active;
+        self.wing_growing = job.growing;
         if !job.theatres_active {
             self.wing_sources.clear();
             self.wing_outcome = Some(SKIPPED);
@@ -70,6 +71,14 @@ impl NavalJob {
             return 0;
         }
         let begin = qpc();
+        if job.growing {
+            let outcome = job.naval_membership_outcome;
+            std::mem::swap(&mut self.wing_sources, &mut job.naval_memberships);
+            self.wing_sources.truncate(outcome.len());
+            self.wing_outcome = Some(outcome);
+            self.wing_required = job.required_memberships;
+            return elapsed(begin);
+        }
         self.wing_sources.clear();
         let (source, rows) = job.memberships();
         // Capacity demand is independent of failure: a bad tail leaf in the
@@ -116,25 +125,21 @@ impl NavalJob {
     }
 
     pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[cfg(test)]
+    pub(super) fn fixture() -> Self {
         let mut job = Self {
             log: RawLog::new(1 << 17, 4 << 20),
-            game_state: 0,
-            theatres_active: false,
-            wing_sources: owned_vec(vec(4096)),
-            wing_outcome: None,
-            wing_required: 0,
-            oob_theatres: owned_vec(vec(oob_theatre_rows())),
-            oob_theatre_positions: owned_vec(vec(oob_theatre_rows())),
-            oob_theatres_required: 0,
-            roster: engine::ccountry::RosterSnapshot::try_with_capacity(
-                crate::country_scale::census_rows(1024),
-            )
-            .map_err(crate::allocation::io)
-            .unwrap_or_default(),
-            roots: owned_vec(vec(oob_theatre_rows())),
-            roots_len: None,
-            roots_required: 0,
-            capacity_charge: crate::raw_memory::Charge::default(),
+            wing_sources: Vec::with_capacity(4096),
+            oob_theatres: Vec::with_capacity(2048),
+            oob_theatre_positions: Vec::with_capacity(2048),
+            roster: engine::ccountry::RosterSnapshot::try_with_capacity(1024)
+                .map_err(crate::allocation::io)
+                .unwrap_or_default(),
+            roots: Vec::with_capacity(2048),
+            ..Default::default()
         };
         job.update_capacity_charge();
         job
@@ -143,9 +148,11 @@ impl NavalJob {
     pub fn clear(&mut self) {
         self.log.clear();
         self.game_state = 0;
+        self.growing = false;
         self.theatres_active = false;
         self.wing_sources.clear();
         self.wing_outcome = None;
+        self.wing_growing = false;
         self.wing_required = 0;
         self.oob_theatres.clear();
         self.oob_theatre_positions.clear();
@@ -153,19 +160,30 @@ impl NavalJob {
         self.roster.clear();
         self.roots.clear();
         self.roots_len = None;
+        self.roots_outcome = None;
         self.roots_required = 0;
+        self.clear_reserved();
     }
 
-    /// On the callback, after its orders-group registry census and before
-    /// this job is queued: keeps a complete census for this pass's
-    /// order-of-battle copy and decode. Any other outcome, or a census larger
-    /// than the snapshot, keeps none, and the copy reads the registry as
-    /// before; the demand grows the snapshot off the game thread. Never
-    /// allocates.
+    fn clear_reserved(&mut self) {
+        self.positive_span_end = 0;
+        self.positive_raw_complete = false;
+        self.reserved_native_count = None;
+        self.reserved_first_failure = None;
+        self.reserved_capacity_short = false;
+        self.reserved_required_rows = 0;
+        self.reserved_raw_demand = None;
+        self.reserved_growth_rows = 0;
+    }
+
+    /// Retains the original census verdict as well as a complete fitted prefix.
+    /// This fixed entry preserves allocation-free fixture/callback storage;
+    /// a failed or short attempted snapshot never authorizes a registry retry.
     pub(crate) fn capture_roots(&mut self, roots: &[corders_group::Root], outcome: Outcome) -> u64 {
         let begin = qpc();
         self.roots.clear();
         self.roots_len = None;
+        self.roots_outcome = Some(outcome);
         let required = match outcome {
             Outcome::Rows { len } => len,
             Outcome::Truncated { len, unread_rows } => len.saturating_add(unread_rows as usize),
@@ -182,8 +200,34 @@ impl NavalJob {
         elapsed(begin)
     }
 
+    /// Worker-only snapshot of the original, complete registry census.
+    pub(crate) fn capture_roots_growing(
+        &mut self,
+        roots: &[corders_group::Root],
+        outcome: Outcome,
+    ) -> u64 {
+        if let Outcome::Rows { len } = outcome
+            && len <= roots.len()
+        {
+            let additional = len.saturating_sub(self.roots.len());
+            if reserve_exact(&mut self.roots, additional).is_err() {
+                self.fail_roots("orders registry snapshot allocation failed");
+                return 0;
+            }
+        }
+        self.capture_roots(roots, outcome)
+    }
+
+    /// A rejected or failed accepted producer supplies no retryable census.
+    pub(crate) fn fail_roots(&mut self, reason: &'static str) {
+        self.roots.clear();
+        self.roots_len = None;
+        self.roots_outcome = Some(Outcome::Unavailable { reason });
+    }
+
     pub fn grow_for_next(&self) -> bool {
         self.log.grow_for_next()
+            || self.reserved_capacity_short
             || self.wing_required > self.wing_sources.capacity()
             || self.oob_theatres_required > self.oob_theatres.capacity()
             || self.roster.required() > self.roster.capacity()
@@ -200,16 +244,14 @@ impl NavalJob {
             _ => self.wing_required,
         };
         if required > self.wing_sources.capacity() {
-            let target = required.max(self.wing_sources.capacity().saturating_mul(2));
+            let target = required;
             let additional = target.saturating_sub(self.wing_sources.len());
             if reserve_exact(&mut self.wing_sources, additional).is_err() {
                 return;
             }
         }
         if self.oob_theatres_required > self.oob_theatres.capacity() {
-            let target = self
-                .oob_theatres_required
-                .max(self.oob_theatres.capacity().saturating_mul(2));
+            let target = self.oob_theatres_required;
             let additional = target.saturating_sub(self.oob_theatres.len());
             if reserve_exact(&mut self.oob_theatres, additional).is_err() {
                 return;
@@ -228,9 +270,7 @@ impl NavalJob {
             return;
         }
         if self.roots_required > self.roots.capacity() {
-            let target = self
-                .roots_required
-                .max(self.roots.capacity().saturating_mul(2));
+            let target = self.roots_required;
             let additional = target.saturating_sub(self.roots.len());
             if reserve_exact(&mut self.roots, additional).is_err() {
                 return;
@@ -239,37 +279,15 @@ impl NavalJob {
         self.update_capacity_charge();
     }
 
-    /// Off the game thread: size the order-of-battle theatre references for
-    /// the largest observed country registry, so a large save's first hour does
-    /// not overflow. Only grows.
+    /// Off-thread live country hint. OOB roots and references use their own
+    /// original registry demand rather than a chosen country-slot ratio.
     pub fn presize_countries(&mut self) {
-        let target = oob_theatre_rows();
-        let roster = crate::country_scale::census_rows(1024);
-        if self.oob_theatres.capacity() >= target
-            && self.oob_theatre_positions.capacity() >= target
-            && self.roots.capacity() >= target
-            && self.roster.capacity() >= roster
-        {
-            return;
-        }
         if self
             .roster
-            .reserve(roster)
+            .reserve(crate::country_scale::census_rows(0))
             .map_err(crate::allocation::io)
             .is_err()
         {
-            return;
-        }
-        let additional = target.saturating_sub(self.roots.len());
-        if reserve_exact(&mut self.roots, additional).is_err() {
-            return;
-        }
-        let additional = target.saturating_sub(self.oob_theatres.len());
-        if reserve_exact(&mut self.oob_theatres, additional).is_err() {
-            return;
-        }
-        let additional = target.saturating_sub(self.oob_theatre_positions.len());
-        if reserve_exact(&mut self.oob_theatre_positions, additional).is_err() {
             return;
         }
         self.update_capacity_charge();
@@ -459,13 +477,37 @@ fn copy_naval_air_theatres(
     }
 }
 
-pub(super) fn copy_naval_theatres(
+pub(crate) fn copy_naval_theatres(
     log: &mut RawLog<NAVAL_PACK_N>,
     roster_snapshot: &mut engine::ccountry::RosterSnapshot,
     memory: &impl engine::Memory,
     base: usize,
     game_state: usize,
     details_active: bool,
+) {
+    let root = engine::ccountry::read_reserved_observation(memory, base, game_state);
+    copy_naval_theatres_with_root(
+        log,
+        roster_snapshot,
+        memory,
+        base,
+        game_state,
+        details_active,
+        root,
+    );
+    // Positive capture clears this snapshot even when it cannot fit. Keep the
+    // independent selection and result after that operation, including failure.
+    roster_snapshot.capture_reserved_observation(base, game_state, root);
+}
+
+fn copy_naval_theatres_with_root(
+    log: &mut RawLog<NAVAL_PACK_N>,
+    roster_snapshot: &mut engine::ccountry::RosterSnapshot,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    details_active: bool,
+    reserved: engine::ccountry::ReservedCountryObservation,
 ) {
     use engine::{carmy_group, ccountry};
     let mask = if details_active {
@@ -484,30 +526,40 @@ pub(super) fn copy_naval_theatres(
     // roster, or room for it, the census is taken as before.
     if let Some(roster) = memory.authenticated_countries(base, game_state)
         && roster.slots().len() == roster.arrays()[0].count as usize
-        && roster_snapshot.capture(roster, base, game_state)
     {
-        let [countries, links] = roster.arrays();
-        let slots = roster.slots();
-        if links.count == 0 {
+        if log.worker_growth_enabled()
+            && roster_snapshot
+                .reserve(roster.slots().len())
+                .map_err(crate::allocation::io)
+                .is_err()
+        {
             return;
         }
-        for slot in 1..countries.count {
-            let Some(country) = slots[slot as usize].filter(|c| c.canonical_slot == slot) else {
-                continue;
-            };
-            if !copy_country_theatres(
-                log,
-                memory,
-                country.pointer,
-                &links,
-                Some(slots),
-                details_active,
-                mask,
-            ) {
+        if roster_snapshot.capture(roster, base, game_state) {
+            let [countries, links] = roster.arrays();
+            let slots = roster.slots();
+            if links.count == 0 {
                 return;
             }
+            for slot in 1..countries.count {
+                let Some(country) = slots[slot as usize].filter(|c| c.canonical_slot == slot)
+                else {
+                    continue;
+                };
+                if !copy_country_theatres(
+                    log,
+                    memory,
+                    country.pointer,
+                    &links,
+                    Some(slots),
+                    details_active,
+                    mask,
+                ) {
+                    return;
+                }
+            }
+            return;
         }
-        return;
     }
     // Country census exactly like the fleet/wing censuses.
     let countries = match nspan(
@@ -558,6 +610,12 @@ pub(super) fn copy_naval_theatres(
             Some(pointer) => pointer,
             None => continue,
         };
+        if let Some(alias) = reserved.physical_alias(pointer) {
+            match alias {
+                Ok(()) => continue,
+                Err(_) => return,
+            }
+        }
         let vtable = match nspan(log, memory, Some(pointer), 8, mask) {
             Some(start) => start,
             None => continue,
@@ -980,6 +1038,17 @@ fn copy_oob_root(
                     })
                 {
                     job.oob_theatres_required = job.oob_theatres.len().saturating_add(1);
+                    if job.growing {
+                        if reserve(&mut job.oob_theatres, 1).is_err() {
+                            return false;
+                        }
+                        let required = job
+                            .oob_theatres_required
+                            .saturating_sub(job.oob_theatre_positions.len());
+                        if reserve(&mut job.oob_theatre_positions, required).is_err() {
+                            return false;
+                        }
+                    }
                     if job.oob_theatres.len() == job.oob_theatres.capacity()
                         || job.oob_theatres.len() == job.oob_theatre_positions.capacity()
                     {
@@ -1170,12 +1239,12 @@ fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine::Memory, base: usi
         Some(v) => v as u64,
         None => return false,
     };
-    let mut first: u32 = 0;
-    let terminal_u32 = terminal.min(1 << 20) as u32;
-    while first < terminal_u32 {
+    let mut first = 0_usize;
+    // Registry growth@14220A4F0 allocates the complete mask/overflow extent.
+    while first < terminal {
         let log = &mut job.log;
-        let slots = (terminal_u32 - first).min(64) as usize;
-        let address = match entries.checked_add(first as usize * bucket::STRIDE) {
+        let slots = (terminal - first).min(64);
+        let address = match entries.checked_add(first * bucket::STRIDE) {
             Some(address) => address,
             None => break,
         };
@@ -1237,24 +1306,17 @@ fn copy_oob_registry(job: &mut NavalJob, memory: &impl engine::Memory, base: usi
                 return false;
             }
         }
-        first += slots as u32;
+        first += slots;
     }
     true
 }
 
-pub(super) fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize) {
+pub(crate) fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, base: usize) {
     job.oob_theatres.clear();
     job.oob_theatre_positions.clear();
     job.oob_theatres_required = 0;
-    match job.roots_len {
-        // Reuse within the pass: the callback took this registry census from
-        // this memory before queueing this job and holds the game thread
-        // until every job has finished, so the registry, each root's
-        // identity and its country read again would give the same roots.
-        // `capture_roots` keeps only a complete census, and `clear` drops it
-        // with the pass; this pass's decode takes the same roots as its
-        // census instead of replaying the registry, which is not recorded.
-        Some(len) => {
+    match job.roots_outcome {
+        Some(Outcome::Rows { len }) if job.roots_len == Some(len) => {
             for index in 0..len {
                 let pointer = job.roots[index].pointer();
                 if !copy_oob_root(job, memory, base, pointer) {
@@ -1262,6 +1324,8 @@ pub(super) fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, b
                 }
             }
         }
+        Some(_) => return,
+        // A standalone fixed fixture may acquire its own first census.
         None => {
             if !copy_oob_registry(job, memory, base) {
                 return;
@@ -1312,7 +1376,7 @@ pub(super) fn copy_naval_oob(job: &mut NavalJob, memory: &impl engine::Memory, b
 /// position per value, then return to position order. A sorted insert per
 /// value would move O(n) entries each. `positions` needs `values.len()`
 /// capacity to stay allocation-free.
-pub(super) fn dedup_first_seen(values: &mut Vec<usize>, positions: &mut Vec<usize>) {
+pub(crate) fn dedup_first_seen(values: &mut Vec<usize>, positions: &mut Vec<usize>) {
     positions.clear();
     positions.extend(0..values.len());
     positions.sort_unstable_by_key(|&position| (values[position], position));
@@ -1325,6 +1389,189 @@ pub(super) fn dedup_first_seen(values: &mut Vec<usize>, positions: &mut Vec<usiz
     values.truncate(positions.len());
 }
 
+/// Optional suffix only: first failure stops acquisition, and mask zero never
+/// changes positive fault bits. Full count demand is not a row certificate.
+/// Reuse only one exact observation in the completed positive acquisition.
+/// An observed failure or ambiguous occurrence never admits a fresh retry.
+pub(super) fn prior_roster_header(
+    log: &RawLog<NAVAL_PACK_N>,
+    end: usize,
+    address: usize,
+) -> Result<Option<[u8; 16]>, &'static str> {
+    let spans = log
+        .spans
+        .get(..end)
+        .ok_or("reserved land prior span range invalid")?;
+    let mut observed = None;
+    for span in spans
+        .iter()
+        .filter(|span| span.addr == address && span.len == 16)
+    {
+        if observed.is_some() {
+            return Err("reserved land prior roster header ambiguous");
+        }
+        if !span.ok {
+            return Err("reserved land prior roster header unreadable");
+        }
+        let start = span.start as usize;
+        let end = start
+            .checked_add(16)
+            .ok_or("reserved land prior byte range overflow")?;
+        let source = log
+            .bytes
+            .get(start..end)
+            .ok_or("reserved land prior roster bytes unavailable")?;
+        let mut header = [0; 16];
+        header.copy_from_slice(source);
+        observed = Some(header);
+    }
+    Ok(observed)
+}
+
+fn copy_reserved_land_headers(job: &mut NavalJob, memory: &impl Memory, base: usize) {
+    let mut bounded_demand = false;
+    let result = (|| {
+        let root = job
+            .roster
+            .reserved(base, job.game_state)
+            .ok_or("reserved land root observation absent")??;
+        job.log
+            .bytes
+            .len()
+            .checked_add(16)
+            .filter(|end| *end <= u32::MAX as usize)
+            .ok_or("reserved land raw byte demand overflow")?;
+        job.reserved_raw_demand = Some((16, 1));
+        bounded_demand = true;
+        job.log.reserve(16);
+        if job.log.overflowed {
+            return Err("reserved land raw capacity insufficient");
+        }
+        let header = nspan(
+            &mut job.log,
+            memory,
+            root.pointer.checked_add(engine::ccountry::THEATRES),
+            16,
+            0,
+        )
+        .ok_or("reserved land vector unreadable or capacity insufficient")?;
+        let mut bytes = [0; 16];
+        bytes.copy_from_slice(&job.log.bytes[header..header + 16]);
+        let theatres = Array::from_header(bytes, 8).ok_or("reserved land vector invalid")?;
+        job.reserved_native_count = Some(theatres.count);
+        job.reserved_required_rows = theatres.count as usize;
+        job.reserved_raw_demand = super::reserved_raw_demand(Some(theatres.count));
+        bounded_demand = false;
+        let remaining = (theatres.count as usize)
+            .checked_mul(32)
+            .ok_or("reserved land raw byte demand overflow")?;
+        job.log
+            .bytes
+            .len()
+            .checked_add(remaining)
+            .filter(|end| *end <= u32::MAX as usize)
+            .ok_or("reserved land raw byte demand overflow")?;
+        (theatres.count as usize)
+            .checked_mul(4)
+            .and_then(|spans| spans.checked_add(1))
+            .ok_or("reserved land raw span demand overflow")?;
+        bounded_demand = true;
+        job.reserved_growth_rows = theatres.count as usize;
+        job.log.reserve(remaining);
+        if job.log.overflowed {
+            return Err("reserved land raw capacity insufficient");
+        }
+        let expected = base
+            .checked_add(ctheatre::VTABLE_RVA)
+            .ok_or("reserved land module address overflow")? as u64;
+        for ordinal in 0..theatres.count {
+            let entry = nspan(&mut job.log, memory, theatres.element(ordinal, 8), 8, 0)
+                .ok_or("reserved land theatre pointer unreadable or capacity insufficient")?;
+            let theatre = usize::try_from(npool_u64(&job.log, entry))
+                .ok()
+                .filter(|pointer| *pointer != 0)
+                .ok_or("reserved land theatre pointer null or overflowing")?;
+            let owner_address = theatre
+                .checked_add(ctheatre::OWNER)
+                .ok_or("reserved land theatre owner address overflow")?;
+            let volunteers_address = theatre
+                .checked_add(ctheatre::VOLUNTEERS_THEATRE)
+                .ok_or("reserved land theatre volunteers address overflow")?;
+            let (taken, completed) = job
+                .log
+                .take_scattered(
+                    memory,
+                    [theatre, owner_address, volunteers_address],
+                    [16, 4, 4],
+                    [0; 3],
+                )
+                .ok_or("reserved land theatre header capacity or copy form refused")?;
+            if completed != ctheatre::HEADER_SPANS.len() {
+                return Err("reserved land theatre header unreadable");
+            }
+            let identity = taken[0];
+            let owner = taken[1];
+            let handle = npool_u64(&job.log, identity + 8);
+            if npool_u64(&job.log, identity) != expected
+                || handle as u32 != ctheatre::REFERENCE_TYPE
+                || handle >> 32 == 0
+            {
+                return Err("reserved land theatre identity mismatch");
+            }
+            if npool_u32(&job.log, owner) != 0 {
+                return Err("reserved land theatre owner is not zero");
+            }
+            for offset in [ctheatre::ORDERS_GROUP_DATA, ctheatre::ARMY_GROUP_DATA] {
+                let address = theatre
+                    .checked_add(offset)
+                    .ok_or("reserved land group roster address overflow")?;
+                let prior = prior_roster_header(&job.log, job.positive_span_end, address)?;
+                let bytes = match prior {
+                    Some(bytes) => bytes,
+                    None => {
+                        bounded_demand = false;
+                        let (bytes, spans) = job
+                            .reserved_raw_demand
+                            .ok_or("reserved land raw demand unavailable")?;
+                        let demand = (
+                            bytes
+                                .checked_add(16)
+                                .ok_or("reserved land raw byte demand overflow")?,
+                            spans
+                                .checked_add(1)
+                                .ok_or("reserved land raw span demand overflow")?,
+                        );
+                        job.log
+                            .bytes
+                            .len()
+                            .checked_add(16)
+                            .filter(|end| *end <= u32::MAX as usize)
+                            .ok_or("reserved land raw byte demand overflow")?;
+                        job.reserved_raw_demand = Some(demand);
+                        bounded_demand = true;
+                        job.log.reserve(16);
+                        if job.log.overflowed {
+                            return Err("reserved land raw capacity insufficient");
+                        }
+                        let start = nspan(&mut job.log, memory, Some(address), 16, 0).ok_or(
+                            "reserved land group roster header unreadable or capacity insufficient",
+                        )?;
+                        let mut bytes = [0; 16];
+                        bytes.copy_from_slice(&job.log.bytes[start..start + 16]);
+                        bytes
+                    }
+                };
+                // Entry payloads already belong to the complete OOB walk.
+                // Unknown nonempty rosters are refused by the logical callback.
+                Array::from_header(bytes, 8).ok_or("reserved land group roster header invalid")?;
+            }
+        }
+        Ok::<_, &'static str>(())
+    })();
+    job.reserved_first_failure = result.err();
+    job.reserved_capacity_short = bounded_demand && job.log.overflowed;
+}
+
 fn copy_naval_pass(
     job: &mut NavalJob,
     memory: &impl engine::Memory,
@@ -1334,6 +1581,10 @@ fn copy_naval_pass(
 ) {
     // Shared wing values were installed before this independent raw phase.
     job.log.clear();
+    if job.growing {
+        job.log.enable_worker_growth();
+    }
+    job.clear_reserved();
     job.game_state = game_state;
     let details_active = job.theatres_active;
     let started = qpc();
@@ -1354,6 +1605,16 @@ fn copy_naval_pass(
     let started = qpc();
     read_accounting::with_table(TableId::OrdersGroups, || copy_naval_oob(job, memory, base));
     ticks[6] += qpc().saturating_sub(started).max(0) as u64;
+    if job.log.overflowed {
+        return;
+    }
+    job.positive_span_end = job.log.spans.len();
+    job.positive_raw_complete = true;
+    let started = qpc();
+    read_accounting::with_table(TableId::LandTheatres, || {
+        copy_reserved_land_headers(job, memory, base)
+    });
+    ticks[0] += qpc().saturating_sub(started).max(0) as u64;
 }
 
 pub(crate) fn copy_naval_refresh(
@@ -1364,15 +1625,29 @@ pub(crate) fn copy_naval_refresh(
     job.theatres_active =
         replay::cadence::should_walk(TableId::LandTheatreGroups, ctx.hour, ctx.force_full);
     if job.theatres_active && job.wing_outcome.is_none() {
+        job.clear_reserved();
+        job.roster.clear();
         return NavalCopyReport::default();
     }
     let mut ticks = [0u64; NAVAL_PACK_N];
     copy_naval_pass(job, memory, ctx.base, ctx.game_state, &mut ticks);
     NavalCopyReport {
-        raw_ok: !job.log.overflowed,
+        raw_ok: job.positive_raw_complete,
         copy_ticks: ticks,
         raw_bytes: job.log.raw_bytes,
     }
+}
+
+/// Acquisition-worker entry: grow from this pass's original observations.
+pub(crate) fn copy_naval_refresh_growing(
+    memory: &impl Memory,
+    ctx: NavalCopyContext,
+    job: &mut NavalJob,
+) -> NavalCopyReport {
+    job.growing = true;
+    let report = copy_naval_refresh(memory, ctx, job);
+    job.update_capacity_charge();
+    report
 }
 
 impl Captured {
@@ -1380,6 +1655,13 @@ impl Captured {
     /// capture. The separately acquired wing census and other naval families
     /// retain their outcomes; no raw payload or typed retry may follow this.
     pub(crate) fn fail_naval_capture(&mut self, reason: &'static str) {
+        self.reserved_land_count = None;
+        self.reserved_land_required_rows = 0;
+        self.reserved_land_first_failure = Some(reason);
+        self.reserved_land_native_count = None;
+        self.reserved_land_typed_capacity_short = false;
+        self.reserved_land_raw_capacity_short = false;
+        self.reserved_land_raw_demand = None;
         macro_rules! reject {
             ($($field:ident = $slot:literal),+ $(,)?) => {
                 $({
@@ -1411,9 +1693,29 @@ impl Captured {
 struct RosterReplay<'a, M> {
     inner: &'a M,
     roster: Option<(usize, usize, engine::ccountry::AuthenticatedRoster<'a>)>,
+    reserved: Option<(usize, usize, engine::ccountry::ReservedCountryObservation)>,
 }
 
 impl<M: Memory> Memory for RosterReplay<'_, M> {
+    fn authenticated_reserved_country(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<Result<engine::ccountry::Country, &'static str>> {
+        self.authenticated_reserved_country_observation(base, game_state)
+            .map(engine::ccountry::ReservedCountryObservation::result)
+    }
+
+    fn authenticated_reserved_country_observation(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<engine::ccountry::ReservedCountryObservation> {
+        self.reserved
+            .filter(|(module, state, _)| (*module, *state) == (base, game_state))
+            .map(|(_, _, root)| root)
+    }
+
     #[inline(always)]
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         self.inner.copy(address, destination)
@@ -1444,36 +1746,38 @@ pub(crate) fn decode_naval_payload(
     job: &NavalJob,
     decode_ticks: &mut [u64; NAVAL_PACK_N],
 ) {
+    captured.reserved_land_count = None;
+    captured.reserved_land_required_rows = 0;
+    captured.reserved_land_first_failure = None;
+    captured.reserved_land_native_count = job.reserved_native_count;
+    captured.reserved_land_typed_capacity_short = false;
+    captured.reserved_land_raw_capacity_short = job.reserved_capacity_short;
+    captured.reserved_land_raw_demand = job.reserved_raw_demand;
     captured.active[4] = true;
     captured.active[5..10].fill(job.theatres_active);
-    let recorded = crate::raw::Recorded::build(&job.log);
+    let recorded = match crate::raw::Recorded::build_range(&job.log, 0..job.positive_span_end) {
+        Ok(recorded) => recorded,
+        Err(reason) => {
+            captured.fail_naval_capture(reason);
+            return;
+        }
+    };
     let started = qpc();
-    // Order roots replay (worker-side, grows until the registry fits so the
-    // census never truncates here; OOB row truncation is handled by the
-    // pooled buffers through set_order_sources below).
+    // Interpretation retains the original census's terminal verdict.
     let mut walked: Vec<corders_group::Root> = Vec::new();
-    let (roots, roots_outcome) = match job.roots_len {
-        // The copy walked the callback's complete registry census of this
-        // pass instead of recording the registry; that census is what this
-        // replay of the registry would give. Never another pass's: the job
-        // clears it before it is reused.
-        Some(len) => (&job.roots[..len], Outcome::Rows { len }),
+    let (roots, roots_outcome) = match job.roots_outcome {
+        Some(Outcome::Rows { len }) if job.roots_len == Some(len) => {
+            (&job.roots[..len], Outcome::Rows { len })
+        }
+        Some(Outcome::Rows { .. }) => (
+            &[][..],
+            Outcome::Unavailable {
+                reason: "orders registry snapshot capacity insufficient",
+            },
+        ),
+        Some(outcome) => (&[][..], outcome),
         None => {
-            let outcome = loop {
-                let outcome = corders_group::walk_roots(&recorded, base, &mut walked);
-                match outcome {
-                    Outcome::Truncated { .. } => {
-                        let target = walked.len().saturating_mul(2).saturating_add(16);
-                        let additional = target - walked.len();
-                        if reserve(&mut walked, additional).is_err() {
-                            return;
-                        }
-                        walked.resize(target, corders_group::Root::default());
-                        continue;
-                    }
-                    _ => break outcome,
-                }
-            };
+            let outcome = corders_group::walk_roots_growing(&recorded, base, &mut walked);
             (&walked[..], outcome)
         }
     };
@@ -1489,7 +1793,11 @@ pub(crate) fn decode_naval_payload(
     }
     // Order sources + OOB through the existing setters (identical rows,
     // outcomes and ticks to the game thread's source callbacks).
-    captured.set_order_sources(&recorded, base, roots, roots_outcome);
+    if job.growing {
+        captured.set_order_sources_growing(&recorded, base, roots, roots_outcome);
+    } else {
+        captured.set_order_sources(&recorded, base, roots, roots_outcome);
+    }
     // The hourly header walk uses the same country and owner checks as the
     // daily detail walk, but never requires wing membership or nested arenas.
     if !job.theatres_active {
@@ -1503,20 +1811,24 @@ pub(crate) fn decode_naval_payload(
             .roster
             .roster(base, job.game_state)
             .map(|roster| (base, job.game_state, roster)),
+        reserved: job
+            .roster
+            .reserved_observation(base, job.game_state)
+            .map(|root| (base, job.game_state, root)),
     };
-    let first = ctheatre::walk(
+    let first = ctheatre::walk_buffers(
         &theatre_source,
         base,
         job.game_state,
         job.theatres_active,
-        ctheatre::Buffers {
-            land: &mut captured.land.rows,
-            land_groups: &mut captured.land_groups.rows,
-            land_members: &mut captured.land_members.rows,
-            air: &mut captured.air.rows,
-            air_groups: &mut captured.air_groups.rows,
-            air_members: &mut captured.air_members.rows,
-            names: &mut captured.theatre_names.first,
+        ctheatre::Storage {
+            land: storage_buffer(&mut captured.land.rows, job.growing),
+            land_groups: storage_buffer(&mut captured.land_groups.rows, job.growing),
+            land_members: storage_buffer(&mut captured.land_members.rows, job.growing),
+            air: storage_buffer(&mut captured.air.rows, job.growing),
+            air_groups: storage_buffer(&mut captured.air_groups.rows, job.growing),
+            air_members: storage_buffer(&mut captured.air_members.rows, job.growing),
+            names: storage_buffer(&mut captured.theatre_names.first, job.growing),
         },
     );
     captured.land.outcome = bounded(first.land, captured.land.rows.len());
@@ -1530,6 +1842,43 @@ pub(crate) fn decode_naval_payload(
     }
     captured.theatre_names.len = first.names_len;
     captured.theatre_names.required = first.names_required;
+    // Finish all positive byte consumers before recycling the one index for
+    // the independently acquired optional suffix. Never share address cursors.
+    drop(recorded);
+    // Replay the logical failure order even when a later staged header failed:
+    // its callback must first retain an earlier OOB refusal. A staging refusal
+    // can veto a successful whole batch, but can never authorize publication.
+    match crate::raw::Recorded::build_range(&job.log, job.positive_span_end..job.log.spans.len()) {
+        Ok(recorded) => {
+            let source = RosterReplay {
+                inner: &recorded,
+                roster: None,
+                reserved: job
+                    .roster
+                    .reserved_observation(base, job.game_state)
+                    .map(|root| (base, job.game_state, root)),
+            };
+            captured.capture_reserved_land_inner(
+                &source,
+                base,
+                source
+                    .authenticated_reserved_country(base, job.game_state)
+                    .unwrap_or(Err("reserved land root observation absent")),
+                Some((&job.log, job.positive_span_end)),
+                job.reserved_first_failure,
+                job.growing,
+            );
+        }
+        Err(reason) => {
+            captured.reserved_land_first_failure = Some(reason);
+        }
+    }
+    // Keep observed raw demand independent from logical certificate refusal.
+    // Only the callback's checked representable demand may schedule growth.
+    captured.reserved_land_native_count = job.reserved_native_count;
+    captured.reserved_land_required_rows = job.reserved_growth_rows;
+    captured.reserved_land_raw_capacity_short = job.reserved_capacity_short;
+    captured.reserved_land_raw_demand = job.reserved_raw_demand;
     if !job.theatres_active {
         captured.wing_sources.outcome = SKIPPED;
         captured.wings_finished = true;
@@ -1540,6 +1889,9 @@ pub(crate) fn decode_naval_payload(
     // Preserve the complete authoritative reverse census without attempting
     // an unrelated full wing decode from an incomplete mirror.
     let source_len = job.wing_sources.len();
+    if job.wing_growing {
+        crate::table_capture::grow_vec(&mut captured.wing_sources.rows, source_len);
+    }
     let copied = source_len.min(captured.wing_sources.rows.len());
     captured.wing_sources.rows[..copied].copy_from_slice(&job.wing_sources[..copied]);
     captured.wing_sources.outcome = match job.wing_outcome {

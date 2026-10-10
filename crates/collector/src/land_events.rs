@@ -9,7 +9,7 @@ use std::{
     ops::Range,
     ptr,
     sync::{
-        Mutex,
+        Mutex, OnceLock,
         atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -50,6 +50,10 @@ static RESIZING: AtomicBool = AtomicBool::new(false);
 /// Spool thread: grow from complete attempted-word demand, including records
 /// that exceeded the old storage. No population or record ceiling is imposed.
 pub fn prepare() {
+    engine::allocation::advisory(prepare_storage);
+}
+
+fn prepare_storage() {
     let Ok(mut swap) = LOG_SWAP.lock() else {
         return;
     };
@@ -67,7 +71,9 @@ pub fn prepare() {
     crate::table_capture::grow_capacity(&mut capacity, required);
     if let Ok(mut words) = engine::allocation::vec(capacity) {
         words.resize_with(capacity, || AtomicU64::new(0));
-        swap.next = Some(Box::new(Storage::new(words, Default::default())));
+        if let Ok(next) = engine::allocation::boxed(Storage::new(words, Default::default())) {
+            swap.next = Some(next);
+        }
     }
 }
 
@@ -77,15 +83,7 @@ pub(crate) fn presize(words: usize) {
 }
 
 pub(crate) fn capacity() -> usize {
-    let offered = LOG_SWAP
-        .lock()
-        .ok()
-        .and_then(|swap| swap.next.as_ref().map(|storage| storage.words.len()))
-        .unwrap_or(0);
-    LOG_REQUIRED
-        .load(Ordering::Relaxed)
-        .max(LOG_CAPACITY.load(Ordering::Acquire))
-        .max(offered)
+    LOG_REQUIRED.load(Ordering::Relaxed)
 }
 
 /// Sole hourly consumer, after draining: offer installation neither allocates
@@ -182,6 +180,157 @@ const DISPATCH_ORIGINAL: usize = 4;
 const WIPE_ORIGINAL: usize = 5;
 const DESTRUCTION_ORIGINAL: usize = 6;
 static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
+const LOSS_NAMES: [&str; 145] = [
+    "border final inputs unreadable",
+    "border final side backlink differs",
+    "border final side identity mismatch",
+    "border-war finalizer not observed",
+    "border-war finalizer verdict unobserved",
+    "canonical country slot points to a different object",
+    "capture buffer allocation failed",
+    "capture buffer length overflow",
+    "combat registry unreadable or invalid",
+    "combat wipe address overflow",
+    "combat wipe class unsupported",
+    "combat wipe countries invalid",
+    "combat wipe field unreadable",
+    "combat wipe game state unreadable",
+    "combat wipe null pointer",
+    "combat wipe null-country links invalid",
+    "combat wipe null-country offset overflow",
+    "combat wipe opposite backlink differs",
+    "combat wipe pointer identity differs",
+    "combat wipe remaining class unsupported",
+    "combat wipe remaining offset overflow",
+    "combat wipe remaining references invalid",
+    "combat wipe side discriminator differs",
+    "combat wipe triggering reference was not removed",
+    "combat wipe unit class unsupported",
+    "country array unreadable or invalid",
+    "country id is zero",
+    "country id unreadable",
+    "country link does not resolve to its canonical object",
+    "country link resolves to null country",
+    "country link unreadable or outside country table",
+    "country links have no sentinel slot",
+    "country links unreadable or invalid",
+    "country pointer differs from its canonical object",
+    "country pointer is null",
+    "country pointer unreadable or outside country table",
+    "country slot and object resolve to different countries",
+    "country table has no country slots",
+    "country vtable mismatch",
+    "destroyed combat address overflow",
+    "destroyed combat offset overflow",
+    "destroyed division combat class unsupported",
+    "destroyed division combat header invalid",
+    "destruction diplomacy owner differs",
+    "destruction relation address overflow",
+    "destruction relation offset overflow",
+    "destruction relation owner differs",
+    "destruction relation slot out of bounds",
+    "destruction relations invalid",
+    "equipment entry unreadable",
+    "equipment variant pointer overflow",
+    "history country count invalid",
+    "history first country null",
+    "history raw tag out of bounds",
+    "history side backlink differs",
+    "history side identity mismatch",
+    "history tag array invalid",
+    "history tags address overflow",
+    "land append escaped unwind",
+    "land border finalization flags or sides unreadable",
+    "land border finalization identity unavailable",
+    "land callback escaped unwind",
+    "land casualty snapshot read refused",
+    "land combat class unsupported",
+    "land decode detach drain panicked",
+    "land decode worker panicked",
+    "land destruction killer callback unpaired",
+    "land destruction returned without killer observation",
+    "land dispatch returned without both leader observations",
+    "land dispatch sides differ",
+    "land event country set invalid",
+    "land event drain capacity exceeded",
+    "land event field unreadable",
+    "land event game state null",
+    "land event log capacity exceeded",
+    "land event log changed during drain",
+    "land event object identity mismatch",
+    "land event producer active at boundary",
+    "land event record word count differs",
+    "land event sizing address overflow",
+    "land event sizing combat pointer unreadable",
+    "land event sizing combat registry changed",
+    "land event sizing division address overflow",
+    "land event sizing division pointer unreadable",
+    "land event sizing division roster changed",
+    "land event sizing division roster invalid",
+    "land event sizing overflow",
+    "land event storage handoff overlaps producer",
+    "land final spool flush failed",
+    "land frame conversion failed",
+    "land frame decode queue full",
+    "land loss arena capacity exceeded",
+    "land loss count overflow",
+    "land loss entry bytes overflow",
+    "land loss equipment address overflow",
+    "land loss equipment entries unreadable",
+    "land loss event words overflow",
+    "land loss observer address overflow",
+    "land loss observer header unreadable",
+    "land loss observer headers unreadable",
+    "land loss observer vtable address overflow",
+    "land loss observer vtable mismatch",
+    "land loss pool array invalid",
+    "land loss pool vtable address overflow",
+    "land loss pool vtable mismatch",
+    "land loss side backlink differs",
+    "land loss side null",
+    "land loss sides alias",
+    "land loss variant identities unreadable",
+    "land loss variant pointer overflow",
+    "land loss variant vtable address overflow",
+    "land native verdict caller or side invalid",
+    "land observer worker drain lost",
+    "land observer frame not captured",
+    "land prepared spool write failed",
+    "land recycled spool write failed",
+    "land result combatant blocks unreadable",
+    "land result country set changed",
+    "land result country set short",
+    "land result side backlink mismatch",
+    "land result side identity mismatch",
+    "land result size overflow",
+    "land result unit header invalid",
+    "land result unit offset overflow",
+    "land verdict resolver escaped unwind",
+    "module address overflow",
+    "null history tag absent",
+    "null history tag array invalid",
+    "raw country link observation context mismatch",
+    "raw country selecting link controls unobserved",
+    "reserved country id is not zero",
+    "reserved country module address overflow",
+    "reserved country object identity mismatch",
+    "reserved country slot absent or unreadable",
+    "reserved country slot is null",
+    "string bytes unreadable",
+    "string header invalid",
+    "string header unreadable",
+    "string heap pointer invalid",
+    "string length overflow",
+    "string offset overflow",
+    "string terminator unreadable or invalid",
+    "variant identity unreadable",
+    "variant module address overflow",
+    "variant vtable or reference type mismatch",
+];
+static LOSS_REASONS: [AtomicU64; LOSS_NAMES.len()] =
+    [const { AtomicU64::new(0) }; LOSS_NAMES.len()];
+static UNLISTED_LOSS: OnceLock<&'static str> = OnceLock::new();
+static UNLISTED_LOSSES: AtomicU64 = AtomicU64::new(0);
 static LOST: AtomicU64 = AtomicU64::new(0);
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static HOOK_TICKS: AtomicU64 = AtomicU64::new(0);
@@ -283,10 +432,11 @@ struct Destruction {
     from: usize,
     to: usize,
     division: u64,
+    entry: u64,
     seen: bool,
     failed: bool,
 }
-thread_local! {static DESTRUCTION:Cell<Destruction>=const{Cell::new(Destruction{army:0,from:0,to:0,division:0,seen:false,failed:false})};}
+thread_local! {static DESTRUCTION:Cell<Destruction>=const{Cell::new(Destruction{army:0,from:0,to:0,division:0,entry:0,seen:false,failed:false})};}
 
 struct Call {
     completed: Cell<bool>,
@@ -325,19 +475,31 @@ impl Drop for Call {
         if !self.completed.get() || std::thread::panicking() {
             CALL_ESCAPED_UNWINDS.fetch_add(1, Ordering::SeqCst);
             ENABLED.store(false, Ordering::SeqCst);
-            fail();
+            fail("land callback escaped unwind");
             return;
         }
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
-pub(crate) fn fail() {
+pub(crate) fn fail(reason: &'static str) {
+    if let Some(index) = LOSS_NAMES.iter().position(|name| *name == reason) {
+        LOSS_REASONS[index].fetch_add(1, Ordering::Relaxed);
+    } else {
+        let _ = UNLISTED_LOSS.set(reason);
+        UNLISTED_LOSSES.fetch_add(1, Ordering::Relaxed);
+    }
+
     LOST.fetch_add(1, Ordering::Relaxed);
     EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Independent hourly read failures count observations, never break event spans.
 pub(crate) fn lost_casualty_reads(count: u64) -> u64 {
+    let index = LOSS_NAMES
+        .iter()
+        .position(|name| *name == "land casualty snapshot read refused")
+        .unwrap();
+    LOSS_REASONS[index].fetch_add(count, Ordering::Relaxed);
     LOST.fetch_add(count, Ordering::Relaxed)
         .saturating_add(count)
 }
@@ -345,6 +507,9 @@ pub(crate) fn lost_casualty_reads(count: u64) -> u64 {
 /// Caller reserved one contiguous logical record. Atomics avoid any data race
 /// even when a stalled producer is lapped; PRODUCERS/cursor/epoch checks reject it.
 fn append(size: usize, copy: impl FnOnce(&mut dyn FnMut(u64)) -> Result<(), &'static str>) {
+    append_at(size, |_, put| copy(put));
+}
+fn append_at(size: usize, copy: impl FnOnce(u64, &mut dyn FnMut(u64)) -> Result<(), &'static str>) {
     if escaped_unwind_reason().is_some() {
         return;
     }
@@ -354,7 +519,7 @@ fn append(size: usize, copy: impl FnOnce(&mut dyn FnMut(u64)) -> Result<(), &'st
     impl Drop for Producer {
         fn drop(&mut self) {
             if self.uncommitted {
-                fail();
+                fail("land append escaped unwind");
             }
             PRODUCERS.fetch_sub(1, Ordering::SeqCst);
         }
@@ -366,19 +531,19 @@ fn append(size: usize, copy: impl FnOnce(&mut dyn FnMut(u64)) -> Result<(), &'st
     let required = CURSOR.load(Ordering::SeqCst).wrapping_sub(consumed) as usize;
     LOG_REQUIRED.fetch_max(required.max(size), Ordering::Relaxed);
     if RESIZING.load(Ordering::SeqCst) {
-        fail();
+        fail("land event storage handoff overlaps producer");
         return;
     }
     let Some(log) = log().filter(|s| s.words.len() >= required && s.words.len() >= size) else {
         LOG_CAPACITY_FAILURES.fetch_add(1, Ordering::Relaxed);
-        fail();
+        fail("land event log capacity exceeded");
         return;
     };
     let capacity = log.words.len() as u64;
     producer.uncommitted = true;
     log.words[(first % capacity) as usize].store(0, Ordering::Relaxed);
     let mut written = 1;
-    let result = copy(&mut |word| {
+    let result = copy(first, &mut |word| {
         if written < size {
             log.words[(first.wrapping_add(written as u64) % capacity) as usize]
                 .store(word, Ordering::Relaxed);
@@ -394,7 +559,11 @@ fn append(size: usize, copy: impl FnOnce(&mut dyn FnMut(u64)) -> Result<(), &'st
         count_class_refusal(reason);
     }
     if result.is_err() || written != size || lapped {
-        fail();
+        fail(
+            result
+                .err()
+                .unwrap_or("land event record word count differs"),
+        );
         return;
     }
     log.words[(first % capacity) as usize].store(size as u64, Ordering::Release);
@@ -416,7 +585,29 @@ pub struct Drain {
 /// A first boundary/load/gap discards its unknown prefix. An epoch
 /// change, capacity shortage or concurrent producer refuses the whole interval.
 /// The next interval can restart; consumers cannot infer its preceding events.
+#[cfg(test)]
 pub fn drain(output: &mut [u64], hour: i32, invalidating: bool) -> Drain {
+    drain_buffer(engine::walk::Buffer::Fixed(output), hour, invalidating)
+}
+pub(crate) fn drain_growing(output: &mut Vec<u64>, hour: i32, invalidating: bool) -> Drain {
+    drain_buffer(engine::walk::Buffer::Growing(output), hour, invalidating)
+}
+pub(crate) fn lost_drain(hour: i32, reason: &'static str) -> Drain {
+    fail("land observer worker drain lost");
+    let first = CONSUMED.load(Ordering::SeqCst);
+    Drain {
+        epoch: EPOCH.load(Ordering::SeqCst),
+        first,
+        words: 0,
+        required: CURSOR.load(Ordering::SeqCst).wrapping_sub(first) as usize,
+        from_hour: LAST_HOUR.load(Ordering::Relaxed) as i32,
+        to_hour: hour,
+        complete: false,
+        lost: LOST.load(Ordering::Relaxed),
+        reason,
+    }
+}
+fn drain_buffer(mut output: engine::walk::Buffer<'_, u64>, hour: i32, invalidating: bool) -> Drain {
     if invalidating {
         EPOCH.fetch_add(1, Ordering::SeqCst);
     }
@@ -458,6 +649,17 @@ pub fn drain(output: &mut [u64], hour: i32, invalidating: bool) -> Drain {
         result.reason = "land event hour unavailable or discontinuous";
         return result;
     }
+    if required <= LOG_CAPACITY.load(Ordering::Acquire)
+        && let Err(reason) = output.ensure(required)
+    {
+        fail(reason);
+        result.epoch = EPOCH.load(Ordering::SeqCst);
+        result.lost = LOST.load(Ordering::Relaxed);
+        OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
+        result.reason = reason;
+        return result;
+    }
+    DRAIN_CAPACITY.store(output.len(), Ordering::Relaxed);
     if required > LOG_CAPACITY.load(Ordering::Acquire) || required > output.len() {
         let log_overflow = required > LOG_CAPACITY.load(Ordering::Acquire);
         if !log_overflow {
@@ -465,7 +667,11 @@ pub fn drain(output: &mut [u64], hour: i32, invalidating: bool) -> Drain {
         }
         // Log shortages were already counted by the refusing append. Drain
         // shortages and the discarded interval are counted here as well.
-        fail();
+        fail(if log_overflow {
+            "land event log capacity exceeded"
+        } else {
+            "land event drain capacity exceeded"
+        });
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -481,7 +687,7 @@ pub fn drain(output: &mut [u64], hour: i32, invalidating: bool) -> Drain {
         return result;
     }
     if PRODUCERS.load(Ordering::SeqCst) != 0 {
-        fail();
+        fail("land event producer active at boundary");
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -499,7 +705,7 @@ pub fn drain(output: &mut [u64], hour: i32, invalidating: bool) -> Drain {
         || EPOCH.load(Ordering::SeqCst) != epoch
         || CURSOR.load(Ordering::SeqCst) != end
     {
-        fail();
+        fail("land event log changed during drain");
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -645,9 +851,9 @@ unsafe extern "system-unwind" fn observe_wipe(combatant: usize, army: usize) {
 }
 #[cfg(test)]
 static WIPE_TEST_CLOBBER_XMM: AtomicBool = AtomicBool::new(false);
-fn refusal(reason: &str) {
+fn refusal(reason: &'static str) {
     count_class_refusal(reason);
-    fail();
+    fail(reason);
 }
 fn count_class_refusal(reason: &str) {
     if let Some((_, count)) = WIPE_UNSUPPORTED_CLASSES
@@ -677,7 +883,7 @@ unsafe extern "system-unwind" fn destroyed(
                 match native::killer_handle(&memory, base, killer) {
                     Ok(handle) => append(4, |put| {
                         put(6);
-                        put(context.division);
+                        put(context.entry);
                         put(handle);
                         Ok(())
                     }),
@@ -686,7 +892,7 @@ unsafe extern "system-unwind" fn destroyed(
                 context.seen = true;
                 DESTRUCTION.set(context);
             } else {
-                fail();
+                fail("land destruction killer callback unpaired");
                 if matches {
                     context.failed = true;
                     DESTRUCTION.set(context);
@@ -714,10 +920,19 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
                     from,
                     to,
                     division: plan.division(),
+                    entry: 0,
                     seen: false,
                     failed: false,
                 });
-                append(plan.words, |put| plan.copy(&memory, base, put));
+                // 140C79E70 calls 140CCC7F0 before deferred deletion
+                // 1401D6FE0. One division can enter again; pair this native
+                // invocation by its reserved record, not its division handle.
+                append_at(plan.words, |first, put| {
+                    let mut context = DESTRUCTION.get();
+                    context.entry = first;
+                    DESTRUCTION.set(context);
+                    plan.copy(&memory, base, put)
+                });
             }
             Err(reason) => {
                 refusal(reason);
@@ -737,7 +952,7 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
     unsafe { original(army, from, to) };
     let start = crate::sampling::qpc();
     if observing() && !DESTRUCTION.get().seen && !DESTRUCTION.get().failed {
-        fail();
+        fail("land destruction returned without killer observation");
     }
     timing(start);
     _call.finish();
@@ -767,7 +982,7 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
                 terminating: [255; 2],
             });
         } else {
-            fail();
+            fail("land border finalization flags or sides unreadable");
             BORDER.set(NO_BORDER);
         }
     }
@@ -788,7 +1003,7 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
                 Err(reason) => refusal(reason),
             }
         } else {
-            fail();
+            fail("land border finalization identity unavailable");
         }
     }
     timing(start);
@@ -840,7 +1055,7 @@ unsafe extern "system-unwind" fn leader_tap_body(
                 // Rust frame. Only its normal return may retire that flight.
                 TAP_ESCAPED_UNWINDS.fetch_add(1, Ordering::SeqCst);
                 ENABLED.store(false, Ordering::SeqCst);
-                fail();
+                fail("land verdict resolver escaped unwind");
             }
         }
     }
@@ -865,7 +1080,7 @@ unsafe extern "system-unwind" fn border_terminate(side: usize, caller: usize) ->
                 BORDER.set(border);
             }
             Ok(None) => {}
-            Err(()) => fail(),
+            Err(()) => fail("land native verdict caller or side invalid"),
         }
     }
     timing(start);
@@ -932,7 +1147,7 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
                 Ok(())
             });
         } else {
-            fail();
+            fail("land dispatch returned without both leader observations");
         }
     }
     timing(start);
@@ -965,7 +1180,7 @@ unsafe fn leader_observation(side: usize, caller: usize, target: usize) -> usize
                 }
             }
             Ok(None) => {}
-            Err(()) => fail(),
+            Err(()) => fail("land native verdict caller or side invalid"),
         }
         timing(start);
     }
@@ -1114,6 +1329,9 @@ pub fn status() -> impl serde::Serialize {
         "epoch": EPOCH.load(Ordering::Relaxed),
         "events": EVENTS.load(Ordering::Relaxed),
         "lost_events": LOST.load(Ordering::Relaxed),
+        "loss_reasons": crate::status::map(LOSS_NAMES.into_iter().zip(LOSS_REASONS.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
+        "first_unlisted_loss_reason": UNLISTED_LOSS.get().copied(),
+        "unlisted_loss_reasons": UNLISTED_LOSSES.load(Ordering::Relaxed),
         "leader_resolver_calls": LEADER_CALLS.load(Ordering::Relaxed),
         "verdict_taps_in_flight": TAP_IN_FLIGHT.load(Ordering::SeqCst),
         "verdict_tap_escaped_unwinds": TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst),
@@ -1213,6 +1431,28 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use test_support::{EXCLUSIVE, reset};
+
+    #[test]
+    fn worker_drain_keeps_first_and_later_mod_sized_five_thousand_country_words() {
+        let _guard = EXCLUSIVE.lock().unwrap();
+        test_support::reset_with_words(36_000);
+        let mut words = Vec::new();
+        assert!(!drain_growing(&mut words, 9, true).complete);
+        for (hour, count) in [(10, 5000), (11, 12_000)] {
+            for index in 0..count {
+                test_support::append_record(&[1, (index % 5000) as u64]);
+            }
+            let drained = drain_growing(&mut words, hour, false);
+            assert!(drained.complete, "{}", drained.reason);
+            assert_eq!(drained.words, count * 3);
+            assert_eq!(
+                &words[drained.words - 3..drained.words],
+                &[3, 1, ((count - 1) % 5000) as u64]
+            );
+            assert_eq!(DRAIN_CAPACITY_FAILURES.load(Ordering::Relaxed), 0);
+        }
+        test_support::disable();
+    }
     static ESCAPE_AFTER_PUBLICATION: AtomicBool = AtomicBool::new(false);
     pub(super) fn escape_after_publication() {
         if !ESCAPE_AFTER_PUBLICATION.swap(false, Ordering::SeqCst) {
@@ -1230,6 +1470,33 @@ mod tests {
             .is_err()
         );
     }
+    #[test]
+    fn read_losses_and_publication_losses_keep_separate_named_counts() {
+        let _guard = EXCLUSIVE.lock().unwrap();
+        reset();
+        let before = LOST.load(Ordering::Relaxed);
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            refusal("land event field unreadable");
+            fail("land frame decode queue full");
+        });
+        assert_eq!(LOST.load(Ordering::Relaxed), before + 2);
+        let value = serde_json::to_value(status()).unwrap();
+        assert!(
+            value["loss_reasons"]["land event field unreadable"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert!(
+            value["loss_reasons"]["land frame decode queue full"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert_eq!(value["log_capacity_failures"], 0);
+        ENABLED.store(false, Ordering::SeqCst);
+    }
+
     #[test]
     fn escaped_resolver_racing_final_enable_cannot_reopen_observation() {
         use windows_sys::Win32::System::Memory::{
@@ -1596,6 +1863,44 @@ mod tests {
                 sentinel
             );
         }
+    }
+    #[test]
+    fn repeated_division_killer_records_use_the_reserved_destruction_entry() {
+        let _guard = EXCLUSIVE.lock().unwrap();
+        reset();
+        unsafe extern "system-unwind" fn writer(_: usize, _: usize, _: usize, _: usize, _: usize) {}
+        let original = ORIGINAL[DESTROYED].swap(writer as *const () as usize, Ordering::SeqCst);
+        let _restore = Restore::new(&DESTRUCTION);
+        let mut output = [0; 32];
+        drain(&mut output, 10, true);
+        for _ in 0..2 {
+            append_at(10, |entry, put| {
+                DESTRUCTION.set(Destruction {
+                    army: 11,
+                    from: 12,
+                    to: 13,
+                    division: 71,
+                    entry,
+                    ..Default::default()
+                });
+                for word in [1, 71, 1, 2, 0, 12, 13, 11, 0] {
+                    put(word);
+                }
+                Ok(())
+            });
+            unsafe {
+                destroyed(12, 13, 11, 0, 0);
+            }
+        }
+        let observed = drain(&mut output, 11, false);
+        ORIGINAL[DESTROYED].store(original, Ordering::SeqCst);
+        test_support::disable();
+        assert!(observed.complete);
+        assert_eq!(observed.lost, 0);
+        assert_eq!(observed.words, 28);
+        assert_eq!(&output[10..14], &[4, 6, 0, 0]);
+        assert_eq!(&output[24..28], &[4, 6, 14, 0]);
+        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
     }
     #[test]
     fn failed_destruction_read_is_counted_once_across_nested_writer() {
@@ -2530,7 +2835,7 @@ mod tests {
                 frame.grow(&mut capacities);
             }
             frames[(hour as usize - 10) % 4].drain(hour, hour == 10);
-            assert_eq!(capacities.words, 16);
+            assert_eq!(capacities.words, 9);
             assert_eq!(LOG_REQUIRED.load(Ordering::Relaxed), 9);
             assert_eq!(LOG_CAPACITY.load(Ordering::Acquire), 16);
         }

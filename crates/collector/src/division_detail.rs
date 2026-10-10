@@ -95,19 +95,32 @@ impl<M: Memory> Memory for CountedMemory<'_, M> {
     ) -> Option<engine::ccountry::AuthenticatedRoster<'_>> {
         self.memory.authenticated_countries(base, game_state)
     }
+
+    fn authenticated_reserved_country(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<Result<engine::ccountry::Country, &'static str>> {
+        self.memory.authenticated_reserved_country(base, game_state)
+    }
+
+    fn authenticated_reserved_country_observation(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<engine::ccountry::ReservedCountryObservation> {
+        self.memory
+            .authenticated_reserved_country_observation(base, game_state)
+    }
 }
 
 const EMPTY: Outcome = Outcome::Unavailable {
     reason: "division details not captured",
 };
-const CAPACITY: Outcome = Outcome::Unavailable {
-    reason: "owned division detail row capacity insufficient",
-};
-
 /// Order is equipment, groups, requests, deliveries, produced. Every table
 /// retains its own capacity and outcome even though upgrade acquisition shares
 /// the army-owned parent graph. Groups retain one row per accepted census
-/// source; construction, growth and installation allocate off the callback.
+/// source; acquisition is worker-only and grows from each original live header.
 #[derive(Debug)]
 pub(crate) struct OwnedDetails {
     equipment: Vec<cequipment_variant_pool::DivisionRow>,
@@ -136,6 +149,7 @@ impl Default for OwnedDetails {
 }
 
 impl OwnedDetails {
+    #[cfg(test)]
     pub(crate) fn new(source_capacity: usize) -> Self {
         let capacities = production::Capacities::default().rows;
         let required = [
@@ -246,35 +260,29 @@ impl OwnedDetails {
                 return [0; 5];
             }
         };
+        self.grow(sources.len());
         let memory = CountedMemory::new(memory);
-        let available = self.capacities();
         let equipment_reads = read_accounting::table(TableId::DivisionEquipment);
         let started = qpc();
-        self.outcomes[0] = if available[0] >= capacities[0] {
-            cequipment_variant_pool::walk_divisions(
-                &memory,
-                base,
-                sources,
-                &mut self.equipment[..capacities[0]],
-            )
-        } else {
-            CAPACITY
-        };
+        self.outcomes[0] = cequipment_variant_pool::walk_divisions_growing(
+            &memory,
+            base,
+            sources,
+            &mut self.equipment,
+        );
         self.acquired_bytes[0] = memory.bytes();
         let equipment_ticks = qpc().saturating_sub(started).max(0) as u64;
         drop(equipment_reads);
         let _upgrade_reads = read_accounting::table(TableId::ArmyUpgradeGroups);
         let started = qpc();
-        let result = carmy_upgrades_status::walk(
+        let result = carmy_upgrades_status::walk_growing(
             &memory,
             base,
             sources,
-            // The graph already authenticates and reads every group before
-            // checking its output bound, including groups with empty children.
-            &mut self.groups[..sources.len().min(available[1])],
-            &mut self.requests[..capacities[2].min(available[2])],
-            &mut self.deliveries[..capacities[3].min(available[3])],
-            &mut self.produced[..capacities[4].min(available[4])],
+            &mut self.groups,
+            &mut self.requests,
+            &mut self.deliveries,
+            &mut self.produced,
         );
         self.outcomes[1..].copy_from_slice(&[
             result.groups,
@@ -282,11 +290,6 @@ impl OwnedDetails {
             result.deliveries,
             result.produced,
         ]);
-        for index in 1..5 {
-            if available[index] < capacities[index] {
-                self.outcomes[index] = CAPACITY;
-            }
-        }
         // The existing read group assigns its shared traversal cost to groups;
         // child zero slots therefore never claim that their acquisition is free.
         let upgrade_ticks = qpc().saturating_sub(started).max(0) as u64;
@@ -318,7 +321,7 @@ impl OwnedDetails {
 }
 
 fn install<R>(rows: &mut Vec<R>, outcome: Outcome, captured: &mut CaptureRows<R>) {
-    let capacity = captured.rows.len();
+    let capacity = captured.rows.len().max(outcome.len());
     std::mem::swap(rows, &mut captured.rows);
     captured.rows.truncate(capacity);
     captured.outcome = outcome;
@@ -328,6 +331,67 @@ fn install<R>(rows: &mut Vec<R>, outcome: Outcome, captured: &mut CaptureRows<R>
 mod tests {
     use super::*;
     use engine::{carmy, memory::SliceMemory};
+
+    #[test]
+    fn recycled_details_size_from_live_rows() {
+        for population in [1, 1500, 5000] {
+            let (bytes, fixture_sources) = fixture();
+            let sources: Vec<_> = (0..population)
+                .map(|index| DivisionSource {
+                    country: index as u32 + 1,
+                    division: index as u64 + 1,
+                    ..fixture_sources[0]
+                })
+                .collect();
+            let memory = SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            let mut owned = OwnedDetails::default();
+            let mut capacities = production::Capacities {
+                rows: [3; production::N],
+                ..Default::default()
+            };
+            let mut frames: Vec<_> = (0..6)
+                .map(|_| production::Captured::with_capacities(&capacities))
+                .collect();
+            let mut previous = 0;
+            for hour in 0..128 {
+                let captured = &mut frames[hour % 6];
+                let hints = [
+                    captured.division_equipment.rows.len(),
+                    captured.groups.rows.len(),
+                    captured.requests.rows.len(),
+                    captured.deliveries.rows.len(),
+                    captured.produced.rows.len(),
+                ];
+                owned.capture(
+                    &memory,
+                    0,
+                    &sources,
+                    Outcome::Rows { len: population },
+                    hints,
+                );
+                assert_eq!(owned.outcomes()[1], Outcome::Rows { len: population });
+                owned.install(captured);
+                for frame in &mut frames {
+                    frame.grow(&mut capacities);
+                }
+                let allocated = frames
+                    .iter()
+                    .map(production::Captured::allocated_bytes)
+                    .sum::<usize>()
+                    + owned.allocated_bytes();
+                if hour >= frames.len() {
+                    assert_eq!(
+                        allocated, previous,
+                        "population {population}, hour {hour}: {capacities:?}"
+                    );
+                }
+                previous = allocated;
+            }
+        }
+    }
 
     fn fixture() -> (Vec<u8>, [DivisionSource; 1]) {
         let mut bytes = vec![0_u8; 0x4000];
@@ -498,6 +562,182 @@ mod tests {
     }
 
     #[test]
+    fn live_pool_and_delivery_headers_grow_before_first_capture_and_installation() {
+        use engine::{ccountry, cequipment_variant, cgame_state, cpdx_array, equipment_entry};
+        let (mut bytes, sources) = fixture();
+        let equipment_rows = 40_000_usize;
+        let delivery_rows = 5_000_usize;
+        let entries = 0x4000;
+        let pointers = entries + equipment_rows * equipment_entry::STRIDE;
+        let delivery = pointers + delivery_rows * 8;
+        let variant = delivery + 0x100;
+        bytes.resize(variant + 0x100, 0);
+        let word = |bytes: &mut [u8], at: usize, value: u64| {
+            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        let array = |bytes: &mut [u8], at: usize, data: usize, count: usize| {
+            word(bytes, at, data as u64);
+            bytes[at + 8..at + 12].copy_from_slice(&(count as u32).to_le_bytes());
+            bytes[at + 12..at + 16].copy_from_slice(&(count as u32).to_le_bytes());
+        };
+        array(
+            &mut bytes,
+            sources[0].pointer + carmy::EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
+            entries,
+            equipment_rows,
+        );
+        array(
+            &mut bytes,
+            0x2000 + carmy_upgrades_requests::DELIVERIES_DATA,
+            pointers,
+            delivery_rows,
+        );
+        word(&mut bytes, variant, cequipment_variant::VTABLE_RVA as u64);
+        word(
+            &mut bytes,
+            variant + cequipment_variant::TYPE,
+            0x8000_0000_0000_0046,
+        );
+        word(&mut bytes, delivery, cupgrade_delivery::VTABLE_RVA as u64);
+        word(
+            &mut bytes,
+            delivery + cupgrade_delivery::PRODUCED_EQUIPMENT_POOL,
+            cequipment_variant_pool::VTABLE_RVA as u64,
+        );
+        for index in 0..equipment_rows {
+            word(
+                &mut bytes,
+                entries + index * equipment_entry::STRIDE,
+                variant as u64,
+            );
+            word(
+                &mut bytes,
+                entries + index * equipment_entry::STRIDE + 8,
+                index as u64,
+            );
+        }
+        for index in 0..delivery_rows {
+            word(&mut bytes, pointers + index * 8, delivery as u64);
+        }
+        let state = variant + 0x200;
+        let country = state + 0x2000;
+        let status = country + 0x1000;
+        let country_slots = state + 0x1800;
+        let links = state + 0x1900;
+        let army_slots = state + 0x1a00;
+        bytes.resize(status + 0x1000, 0);
+        array(&mut bytes, state + cgame_state::COUNTRIES, country_slots, 2);
+        array(&mut bytes, state + cgame_state::COUNTRY_LINKS, links, 2);
+        word(&mut bytes, country_slots + 8, country as u64);
+        bytes[links + 4..links + 8].copy_from_slice(&1_u32.to_le_bytes());
+        word(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        bytes[country + ccountry::ID..country + ccountry::ID + 4]
+            .copy_from_slice(&1_u32.to_le_bytes());
+        word(
+            &mut bytes,
+            country + ccountry::PRODUCTION_STATUS,
+            status as u64,
+        );
+        word(
+            &mut bytes,
+            status,
+            engine::cproduction_status::VTABLE_RVA as u64,
+        );
+        word(
+            &mut bytes,
+            status + engine::cproduction_status::COUNTRY,
+            country as u64,
+        );
+        word(
+            &mut bytes,
+            status + engine::cproduction_status::STOCKPILE_POOL,
+            cequipment_variant_pool::VTABLE_RVA as u64,
+        );
+        array(&mut bytes, country + ccountry::DIVISIONS, army_slots, 1);
+        word(&mut bytes, army_slots, sources[0].pointer as u64);
+        word(&mut bytes, sources[0].pointer, carmy::VTABLE_RVA as u64);
+        word(
+            &mut bytes,
+            sources[0].pointer + carmy::SECONDARY_BASE,
+            carmy::SECONDARY_VTABLE_RVA as u64,
+        );
+        word(
+            &mut bytes,
+            sources[0].pointer + engine::cunit::HANDLE,
+            sources[0].division,
+        );
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let limits = production::Capacities::default();
+        let mut sized = limits;
+        sized.presize(&memory, 0, state).unwrap();
+        assert!(sized.rows[2] >= equipment_rows && sized.rows[9] >= delivery_rows);
+        let mut owned = OwnedDetails::new(1);
+        owned.capture(
+            &memory,
+            0,
+            &sources,
+            Outcome::Rows { len: 1 },
+            [
+                limits.rows[2],
+                limits.rows[7],
+                limits.rows[8],
+                limits.rows[9],
+                limits.rows[10],
+            ],
+        );
+        assert_eq!(
+            owned.outcomes()[0],
+            Outcome::Rows {
+                len: equipment_rows
+            }
+        );
+        assert_eq!(owned.outcomes()[3], Outcome::Rows { len: delivery_rows });
+        let mut captured = production::Captured::with_capacities(&limits);
+        owned.install(&mut captured);
+        assert_eq!(
+            captured.division_equipment.outcome,
+            Outcome::Rows {
+                len: equipment_rows
+            }
+        );
+        assert_eq!(
+            captured.deliveries.outcome,
+            Outcome::Rows { len: delivery_rows }
+        );
+        assert_eq!(
+            captured.division_equipment.rows[equipment_rows - 1].amount_raw,
+            (equipment_rows - 1) as i64
+        );
+        assert_eq!(
+            captured.deliveries.rows[delivery_rows - 1].ordinal,
+            (delivery_rows - 1) as u32
+        );
+        assert!(matches!(
+            captured.tables()[2],
+            replay::frame::TableView::Complete(_)
+        ));
+        assert!(matches!(
+            captured.tables()[9],
+            replay::frame::TableView::Complete(_)
+        ));
+        // The actual native pool header, not its allocation capacity, supplied
+        // the exact initial demand above.
+        assert_eq!(
+            cpdx_array::Array::read(
+                &memory,
+                sources[0].pointer + carmy::EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
+                equipment_entry::STRIDE
+            )
+            .unwrap()
+            .count as usize,
+            equipment_rows
+        );
+    }
+
+    #[test]
     fn install_transfers_primary_buffers_and_preserves_exact_rows() {
         let (bytes, sources) = fixture();
         let memory = SliceMemory {
@@ -562,9 +802,12 @@ mod tests {
         assert_eq!(captured.produced.rows.len(), 1);
         let mut capacities = capacities;
         captured.grow(&mut capacities);
-        assert_eq!(capacities.rows[7], captured.groups.rows.capacity());
-        let allocated = owned.allocated_bytes();
+        assert_eq!(capacities.rows[7], captured.groups.rows.len());
         assert!(owned.ready_for([1; 5]));
+        // The displaced packet has smaller logical rows; restore its retained
+        // prepared floors off-thread before measuring allocation-free reuse.
+        owned.grow(sources.len());
+        let allocated = owned.allocated_bytes();
         owned.capture(&memory, 0, &sources, Outcome::Rows { len: 1 }, [1; 5]);
         assert_eq!(owned.allocated_bytes(), allocated);
         assert_eq!(owned.outcomes[1], Outcome::Rows { len: 1 });

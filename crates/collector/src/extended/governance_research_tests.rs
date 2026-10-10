@@ -439,10 +439,9 @@ struct Research {
 }
 
 /// Independent reference: the engine walks, country by country in census
-/// order, each into its own fresh buffers of the collector's default
-/// capacities, and every per-country outcome must be complete.
+/// order, each into fresh fixed buffers sized for this fixture's population,
+/// and every per-country outcome must be complete.
 fn reference(world: &World) -> Research {
-    let capacity = Capacities::default();
     let countries = ccountry::Reader::new(world, BASE, GAME_STATE).expect("census readable");
     let input_context = research_inputs::Context::read(world, BASE);
     let modifier_context = research_modifiers::Context::read(world, BASE);
@@ -457,9 +456,9 @@ fn reference(world: &World) -> Research {
             continue;
         };
         visited.push((country.canonical_slot, country.id, country.pointer));
-        let mut inputs = vec![research_inputs::Row::default(); capacity.rows[RESEARCH[0]]];
-        let mut bonuses = vec![research_inputs::BonusRow::default(); capacity.rows[RESEARCH[1]]];
-        let mut modifiers = vec![research_modifiers::Row::default(); capacity.rows[RESEARCH[2]]];
+        let mut inputs = vec![research_inputs::Row::default(); FIRST.slots.len()];
+        let mut bonuses = vec![research_inputs::BonusRow::default(); FIRST.bonuses.len()];
+        let mut modifiers = vec![research_modifiers::Row::default(); 20];
         let (input_outcome, bonus_outcome) = research_inputs::walk_country(
             world,
             BASE,
@@ -810,12 +809,12 @@ fn off_full_hours_read_only_the_slice_and_label_rows_with_the_hour() {
             rows.inputs
                 .iter()
                 .filter(|r| r.slot.country == 3)
-                .copied()
+                .cloned()
                 .collect::<Vec<_>>(),
             rows.modifiers
                 .iter()
                 .filter(|r| r.country == 3)
-                .copied()
+                .cloned()
                 .collect::<Vec<_>>(),
         )
     };

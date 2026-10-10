@@ -240,7 +240,8 @@ impl Storage {
 /// A load or failed operand starts fresh storage. Current supply/convoy values
 /// are never used to backfill cells which no native balance write has reached.
 pub fn prepare(memory: &impl Memory, base: usize) -> io::Result<usize> {
-    let Some(clock) = cgame_state::read_clock(memory, base) else {
+    let Some(clock) = engine::allocation::advisory(|| cgame_state::read_clock(memory, base)) else {
+        refuse_census("logistics clock preparation unavailable");
         LOG.store(ptr::null_mut(), Ordering::SeqCst);
         return Ok(0);
     };

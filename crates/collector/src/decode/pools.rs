@@ -469,7 +469,7 @@ pub(super) fn release_session_job(mut job: SessionJob) {
     if crate::allocation::failed() {
         return;
     }
-    if job.log.spans.capacity() == 0 {
+    if !job.is_provisioned() {
         return;
     }
     crate::raw::note_growth("Session", &job.log);
@@ -879,6 +879,16 @@ pub fn acquire_weather_job() -> WeatherJob {
     WeatherJob::default()
 }
 
+/// Spool thread: live map dimension changes must size pooled boundaries before
+/// the new branch's first hourly copy, as attachment sizing does for new jobs.
+pub(crate) fn presize_weather_jobs() {
+    if let Ok(mut pool) = WEATHER_JOB_POOL.lock() {
+        for job in pool.iter_mut().filter(|job| job.grow_for_next()) {
+            job.grow();
+        }
+    }
+}
+
 /// Defer clearing, growth and recycling to the decode worker.
 pub fn recycle_weather_job(job: WeatherJob) {
     defer_payload(RetiredPayload::Weather(job));
@@ -888,7 +898,7 @@ pub(super) fn release_weather_job(mut job: WeatherJob) {
     if crate::allocation::failed() {
         return;
     }
-    if job.log.spans.capacity() == 0 {
+    if !job.is_provisioned() {
         return;
     }
     crate::raw::note_growth("Weather", &job.log);

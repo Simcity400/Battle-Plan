@@ -44,9 +44,8 @@ const M_P_PROD_MGR: u32 = 0x87;
 const M_P_DEPLOY: u32 = 0x78;
 const M_P_CENSUS: u32 = 0xFF;
 
-/// One scheduled refresh of raw production-rest payload. Flat pools recycle capacities
-/// and the steady state allocates on neither thread; growth happens on the
-/// decode side only (see `crate::decode::recycle_production_rest_job`).
+/// One scheduled refresh of raw production-rest payload. Worker pools grow
+/// from original request/header demand before publication and recycle storage.
 #[derive(Debug, Default)]
 pub(crate) struct ProductionRestJob {
     pub log: RawLog<8>,
@@ -62,17 +61,16 @@ pub(super) struct ProductionRestCountry {
 
 impl ProductionRestJob {
     pub fn new() -> Self {
-        let mut log = RawLog::new(1 << 17, 8 << 20);
+        let mut log = RawLog::new(0, 0);
         // Optional discovery tracing has its own bounded storage. Exhaustion
         // disables only plan compilation; the ordinary capture still completes.
-        log.initialize_read_plan(1 << 17, 1 << 15, 1 << 20);
+        log.initialize_read_plan(0, 0, 0);
         let mut job = Self {
-            // Late-campaign worst case is about 768 lines, 1.6k stockpiles,
-            // licences plus deployment queues with names; both pools start
-            // above that so steady state never overflows.
+            // Reusable storage is advisory; worker copies grow from each
+            // original span and the original country header.
             log,
             game_state: 0,
-            census: owned_vec(vec(crate::country_scale::census_rows(512))),
+            census: Vec::new(),
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         job.update_capacity_charge();
@@ -90,13 +88,17 @@ impl ProductionRestJob {
         self.log.grow_for_next()
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed hours fall back to the typed
-    /// walk when no prepared source was consumed. Prepared captures that
-    /// overflow report a local failure until their storage grows.
+    /// Prepare only observed shortage and live census demand off-thread.
     pub fn grow(&mut self) {
-        self.log.grow();
-        crate::raw::double_capacity(&mut self.census);
+        engine::allocation::advisory(|| {
+            self.log.grow();
+            let target = self
+                .census
+                .len()
+                .saturating_add(1)
+                .max(crate::country_scale::census_rows(0));
+            let _ = crate::allocation::reserve_raw(&mut self.census, target, "production census");
+        });
         self.update_capacity_charge();
     }
 
@@ -254,6 +256,12 @@ fn copy_production_census(
         Some(v) => v as u64,
         None => return false,
     };
+    if log.worker_growth_enabled()
+        && engine::allocation::reserve(census, countries.count.saturating_sub(1) as usize).is_err()
+    {
+        log.overflowed = true;
+        return false;
+    }
     for slot in 1..countries.count {
         let pointer_addr = (slot as usize)
             .checked_mul(8)
@@ -1175,13 +1183,34 @@ fn copy_deployment_object(
 }
 
 /// Acquire one owned payload and report its per-table costs.
+#[cfg(test)]
 pub(crate) fn copy_production_rest_refresh(
     memory: &impl Memory,
     ctx: ProductionRestCopyContext,
     job: &mut ProductionRestJob,
 ) -> ProductionRestCopyReport {
+    copy_production_rest(memory, ctx, job, false)
+}
+
+pub(crate) fn copy_production_rest_refresh_growing(
+    memory: &impl Memory,
+    ctx: ProductionRestCopyContext,
+    job: &mut ProductionRestJob,
+) -> ProductionRestCopyReport {
+    copy_production_rest(memory, ctx, job, true)
+}
+
+fn copy_production_rest(
+    memory: &impl Memory,
+    ctx: ProductionRestCopyContext,
+    job: &mut ProductionRestJob,
+    growing: bool,
+) -> ProductionRestCopyReport {
     let started = qpc();
     job.clear();
+    if growing {
+        job.log.enable_worker_growth();
+    }
     job.game_state = ctx.game_state;
     acquire_production_rest_pass(memory, ctx.base, ctx.game_state, job);
     let mut ticks = [0; 8];

@@ -377,17 +377,14 @@ impl Renderer<'_, '_, '_> {
             .iter()
             .find(|row| world.recorded().slot(row.country) == Some(target))
             .ok_or("CountryAppearance lacks ordered target subjects")?;
-        let subjects = appearance
-            .subjects
-            .require("CountryAppearance.subjects")?
-            .iter()
-            .map(|raw| {
-                world
-                    .recorded()
-                    .slot(*raw as u32)
-                    .ok_or_else(|| format!("CountryLinks lacks ordered subject {raw}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        // 1404AC450 reaches +0x170/+0x17C only inside a removal or join
+        // branch. A same-faction nonleader needs no subject roster.
+        let subject = |raw: i32| {
+            world
+                .recorded()
+                .slot(raw as u32)
+                .ok_or_else(|| format!("CountryLinks lacks ordered subject {raw}"))
+        };
         let mut body = String::new();
         if appearance.overlord > 0 {
             let master = world
@@ -408,12 +405,11 @@ impl Renderer<'_, '_, '_> {
                 )?);
             }
         }
-        let countries: Vec<_> = std::iter::once(target).chain(subjects).collect();
         if let Some(faction) = target_faction.filter(|faction| Some(*faction) != source_faction) {
             let faction = self.context.text.faction_name_by_id(faction)?;
-            for &country in &countries {
+            let line = |country| -> Result<String, String> {
                 let country = self.country_name(country, false)?;
-                body.push_str(&self.line(
+                self.line(
                     b"EFFECT_REMOVE_FROM_FACTION_NAME",
                     &[
                         ("COUNTRY", Argument::Text(&country)),
@@ -421,7 +417,11 @@ impl Renderer<'_, '_, '_> {
                     ],
                     scopes,
                     true,
-                )?);
+                )
+            };
+            body.push_str(&line(target)?);
+            for &raw in appearance.subjects.require("CountryAppearance.subjects")? {
+                body.push_str(&line(subject(raw)?)?);
             }
         }
         let join = match source_faction {
@@ -432,15 +432,15 @@ impl Renderer<'_, '_, '_> {
             Some(_) => None,
         };
         if let Some(faction) = join {
-            for country in countries {
+            let line = |country| -> Result<String, String> {
                 let country = self.country_name(country, false)?;
-                body.push_str(&match &faction {
+                match &faction {
                     None => self.line(
                         b"EFFECT_ADD_TO_FACTION",
                         &[("COUNTRY", Argument::Text(&country))],
                         scopes,
                         true,
-                    )?,
+                    ),
                     Some(faction) => self.line(
                         b"EFFECT_ADD_TO_FACTION_NAME",
                         &[
@@ -449,8 +449,12 @@ impl Renderer<'_, '_, '_> {
                         ],
                         scopes,
                         true,
-                    )?,
-                });
+                    ),
+                }
+            };
+            body.push_str(&line(target)?);
+            for &raw in appearance.subjects.require("CountryAppearance.subjects")? {
+                body.push_str(&line(subject(raw)?)?);
             }
         }
         Ok(body)

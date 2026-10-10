@@ -46,13 +46,11 @@ fn array(
     parent: usize,
     offset: usize,
     stride: usize,
-    limit: usize,
 ) -> Result<Array, &'static str> {
     parent
         .checked_add(offset)
         .and_then(|at| Array::read(memory, at, stride))
-        .filter(|a| a.count as usize <= limit)
-        .ok_or("tactic input array invalid or exceeds safety bound")
+        .ok_or("tactic input array invalid")
 }
 
 fn identity(memory: &impl Memory, base: usize, tactic: usize) -> Result<i32, &'static str> {
@@ -107,16 +105,12 @@ fn parent_commander(
         return Ok(0);
     }
     let owner = countries.resolve(field(memory, leader, 0x120)?)?;
-    let theatres = array(memory, owner.pointer, 0x168, 8, 4096)?;
-    let mut visited = 0usize;
+    let theatres = array(memory, owner.pointer, 0x168, 8)?;
     for ordinal in 0..theatres.count {
         let theatre = pointer(memory, theatres.data, ordinal as usize * 8)?;
         authentic(memory, base, theatre, &[crate::ctheatre::VTABLE_RVA])?;
-        let groups = array(memory, theatre, 0x80, 8, 4096)?;
-        visited = visited
-            .checked_add(groups.count as usize)
-            .filter(|n| *n <= 4096)
-            .ok_or("tactic formation census exceeds safety bound")?;
+        let groups = array(memory, theatre, 0x80, 8)?;
+        // 1412A77A0 traverses each original signed vector count to its end.
         for index in 0..groups.count {
             let group = pointer(memory, groups.data, index as usize * 8)?;
             authentic(
@@ -214,5 +208,125 @@ pub fn capture_context(
             Ok(()) => Outcome::Rows { len: 1 },
         },
         row,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parent_commander_reaches_five_thousand_native_theatres_and_formations() {
+        const COUNT: usize = 5_001;
+        const STATE: usize = 0x1000;
+        const COUNTRY: usize = 0x4000;
+        const LEADER: usize = 0x8000;
+        const THEATRE: usize = 0x9000;
+        const LAST_THEATRE: usize = 0x12000;
+        const GROUP: usize = 0x15000;
+        const LAST_GROUP: usize = 0x14000;
+        const PARENT: usize = 0x11000;
+        const PARENT_LEADER: usize = 0xd000;
+        fn word(bytes: &mut [u8], at: usize, value: usize) {
+            bytes[at..at + 8].copy_from_slice(&(value as u64).to_le_bytes());
+        }
+        fn dword(bytes: &mut [u8], at: usize, value: usize) {
+            bytes[at..at + 4].copy_from_slice(&(value as u32).to_le_bytes());
+        }
+        fn header(bytes: &mut [u8], at: usize, data: usize, count: usize) {
+            word(bytes, at, data);
+            dword(bytes, at + 8, count);
+            dword(bytes, at + 12, count);
+        }
+        for theatres in [false, true] {
+            let mut bytes = vec![0; 0x60000];
+            header(&mut bytes, STATE + crate::cgame_state::COUNTRIES, 0x3000, 2);
+            header(
+                &mut bytes,
+                STATE + crate::cgame_state::COUNTRY_LINKS,
+                0x3100,
+                2,
+            );
+            word(&mut bytes, 0x3008, COUNTRY);
+            dword(&mut bytes, 0x3104, 1);
+            word(&mut bytes, COUNTRY, ccountry::VTABLE_RVA);
+            dword(&mut bytes, COUNTRY + ccountry::ID, 1);
+            dword(&mut bytes, LEADER + 0x120, 1);
+            for theatre in [THEATRE, LAST_THEATRE] {
+                word(&mut bytes, theatre, crate::ctheatre::VTABLE_RVA);
+            }
+            for group in [GROUP, LAST_GROUP] {
+                word(&mut bytes, group, crate::corders_group::VTABLE_RVA);
+            }
+            word(
+                &mut bytes,
+                LAST_GROUP + crate::corders_group::LEADER,
+                LEADER,
+            );
+            word(
+                &mut bytes,
+                LAST_GROUP + crate::corders_group::PARENT,
+                PARENT,
+            );
+            word(&mut bytes, PARENT, crate::carmy_group::VTABLE_RVA);
+            word(
+                &mut bytes,
+                PARENT + crate::corders_group::LEADER,
+                PARENT_LEADER,
+            );
+            word(&mut bytes, PARENT_LEADER, crate::carmy_leader::VTABLE_RVA);
+            if theatres {
+                header(&mut bytes, COUNTRY + 0x168, 0x20000, COUNT);
+                for index in 0..COUNT {
+                    word(
+                        &mut bytes,
+                        0x20000 + index * 8,
+                        if index + 1 == COUNT {
+                            LAST_THEATRE
+                        } else {
+                            THEATRE
+                        },
+                    );
+                }
+                header(&mut bytes, THEATRE + 0x80, 0xa000, 1);
+                word(&mut bytes, 0xa000, GROUP);
+                header(&mut bytes, LAST_THEATRE + 0x80, 0x13000, 1);
+                word(&mut bytes, 0x13000, LAST_GROUP);
+            } else {
+                header(&mut bytes, COUNTRY + 0x168, 0xa000, 1);
+                word(&mut bytes, 0xa000, THEATRE);
+                header(&mut bytes, THEATRE + 0x80, 0x20000, COUNT);
+                for index in 0..COUNT {
+                    word(
+                        &mut bytes,
+                        0x20000 + index * 8,
+                        if index + 1 == COUNT {
+                            LAST_GROUP
+                        } else {
+                            GROUP
+                        },
+                    );
+                }
+            }
+            let source = crate::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            let countries = ccountry::Reader::new(&source, 0, STATE).unwrap();
+            assert_eq!(
+                parent_commander(&source, 0, &countries, LEADER),
+                Ok(PARENT_LEADER)
+            );
+            word(&mut bytes, PARENT_LEADER, 0);
+            let source = crate::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            let countries = ccountry::Reader::new(&source, 0, STATE).unwrap();
+            assert_eq!(
+                parent_commander(&source, 0, &countries, LEADER),
+                Err("tactic context vtable mismatch")
+            );
+        }
     }
 }

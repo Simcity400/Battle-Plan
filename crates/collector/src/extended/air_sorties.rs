@@ -10,9 +10,13 @@
 //! other operand once per sorted key.
 
 use engine::{
-    Memory, allocation, cair_regional_mission::WingIdentity, ccountry, cpdx_array::Array,
+    Memory, allocation,
+    cair_regional_mission::WingIdentity,
+    ccountry,
+    cpdx_array::Array,
     map_air_carrier_operands, map_air_country_region_modifier, map_air_rocket_slots,
-    map_air_sortie_inputs as native, walk::Outcome,
+    map_air_sortie_inputs as native,
+    walk::{Buffer, Outcome},
 };
 use replay::{
     frame::TableView,
@@ -29,7 +33,7 @@ use crate::{
     table_capture::{grow_capacity, grow_vec},
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     pub missions: usize,
     pub reached: usize,
@@ -39,15 +43,24 @@ pub struct Capacities {
     pub hosts: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            missions: 4096,
-            reached: 65_536,
-            rows: 2048,
-            keys: 8192,
-            hosts: 256,
-        }
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let [missions, reached, hosts, overrides] = native::storage_demand(memory, base, state)?;
+        self.missions = self.missions.max(missions);
+        self.reached = self.reached.max(reached);
+        self.hosts = self.hosts.max(hosts);
+        self.rows = self.rows.max(
+            missions
+                .checked_add(overrides)
+                .ok_or("sortie sizing row count overflow")?,
+        );
+        self.keys = self.keys.max(missions);
+        Ok(())
     }
 }
 
@@ -107,11 +120,12 @@ struct Cached {
     region_map: Option<(usize, map_air_country_region_modifier::CountryMap)>,
 }
 
-/// A preallocated buffer that counts its demand past capacity.
+/// Fixed fixture storage or worker rows that grow before publication.
 struct Rows<T> {
     rows: Vec<T>,
     len: usize,
     required: usize,
+    growing: bool,
 }
 
 impl<T: Default> Rows<T> {
@@ -120,18 +134,26 @@ impl<T: Default> Rows<T> {
             rows: allocation::owned_vec(allocation::default_vec(capacity)),
             len: 0,
             required: 0,
+            growing: false,
         }
     }
     fn reset(&mut self) {
         self.len = 0;
         self.required = 0;
     }
-    fn push(&mut self, row: T) {
-        self.required += 1;
+    fn push(&mut self, row: T) -> Result<(), &'static str> {
+        self.required = self
+            .required
+            .checked_add(1)
+            .ok_or("sortie row count overflow")?;
+        if self.growing {
+            Buffer::Growing(&mut self.rows).ensure(self.required)?;
+        }
         if let Some(slot) = self.rows.get_mut(self.len) {
             *slot = row;
             self.len += 1;
         }
+        Ok(())
     }
     fn short(&self) -> usize {
         self.required - self.len
@@ -255,6 +277,7 @@ impl Sorties {
 
     /// `registered` are the registered wings, `witnesses` the probed bases
     /// sorted by handle. Any unreadable operand fails every sortie table.
+    #[cfg(test)]
     pub(super) fn capture<'a>(
         &mut self,
         memory: &impl Memory,
@@ -264,7 +287,43 @@ impl Sorties {
         registered: impl Iterator<Item = Result<&'a WingIdentity, &'static str>>,
         witnesses: &[BaseWitness],
     ) {
+        self.capture_mode(
+            memory, base, game_state, metadata, registered, witnesses, false,
+        )
+    }
+
+    pub(super) fn capture_growing<'a>(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        metadata: bool,
+        registered: impl Iterator<Item = Result<&'a WingIdentity, &'static str>>,
+        witnesses: &[BaseWitness],
+    ) {
+        self.capture_mode(
+            memory, base, game_state, metadata, registered, witnesses, true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_mode<'a>(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        metadata: bool,
+        registered: impl Iterator<Item = Result<&'a WingIdentity, &'static str>>,
+        witnesses: &[BaseWitness],
+        growing: bool,
+    ) {
         self.reset();
+        self.missions.growing = growing;
+        self.reached.growing = growing;
+        self.containers.growing = growing;
+        self.modifiers.growing = growing;
+        self.special.growing = growing;
+        self.keys.growing = growing;
         self.metadata_outcome = if metadata {
             UNSET
         } else {
@@ -330,9 +389,12 @@ impl Sorties {
                 region: wing.region,
                 membership: wing.mission_mask & AIR_MISSION_REACHED_IDS != 0,
                 ..Mission::default()
-            });
+            })?;
         }
         self.read_missions(memory, base)?;
+        if self.missions.growing {
+            Buffer::Growing(&mut self.order).ensure(self.missions.len)?;
+        }
         self.definitions(memory, base)?;
         self.queue_keys(memory, &countries, witnesses)?;
         let keys = &mut self.keys.rows[..self.keys.len];
@@ -355,13 +417,14 @@ impl Sorties {
     /// filler keeps one entry per slot, so a repeat is refused.
     fn overrides(&mut self, memory: &impl Memory, base: usize) -> Result<(), &'static str> {
         let first = self.modifiers.len;
-        native::efficiency_overrides(memory, base, |slot, raw| {
+        native::efficiency_overrides_fallible(memory, base, |slot, raw| {
             self.modifiers.push(AirSortieModifierRow {
                 scope: AirSortieModifierRow::EFFICIENCY_OVERRIDE,
                 subject: slot,
                 region: 0,
                 raw,
-            });
+            })?;
+            Ok(())
         })?;
         let overrides = &mut self.modifiers.rows[first..self.modifiers.len];
         overrides.sort_unstable_by_key(|row| row.subject);
@@ -400,7 +463,18 @@ impl Sorties {
             if mission.membership {
                 let ids = mission.operands.reached.count as usize;
                 let start = self.reached.len;
-                self.reached.required += ids;
+                self.reached.required = self
+                    .reached
+                    .required
+                    .checked_add(ids)
+                    .ok_or("sortie reached count overflow")?;
+                if self.reached.growing {
+                    Buffer::Growing(&mut self.reached.rows).ensure(
+                        start
+                            .checked_add(ids)
+                            .ok_or("sortie reached count overflow")?,
+                    )?;
+                }
                 let Some(output) = self.reached.rows.get_mut(start..start + ids) else {
                     continue;
                 };
@@ -474,7 +548,11 @@ impl Sorties {
                 continue;
             }
             let country = countries.resolve(effective)?;
-            let count = native::volunteer_hosts(memory, country.pointer, &mut self.hosts)?;
+            let count = if self.keys.growing {
+                native::volunteer_hosts_growing(memory, country.pointer, &mut self.hosts)?
+            } else {
+                native::volunteer_hosts(memory, country.pointer, &mut self.hosts)?
+            };
             self.hosts_required = self.hosts_required.max(count);
             let mut hosts = 0;
             if count > self.hosts.len() {
@@ -504,9 +582,9 @@ impl Sorties {
                     object: pool_base.object,
                     ..Key::default()
                 };
-                self.keys.push(container(country.canonical_slot, true));
+                self.keys.push(container(country.canonical_slot, true))?;
                 for index in 0..hosts {
-                    self.keys.push(container(self.hosts[index], false));
+                    self.keys.push(container(self.hosts[index], false))?;
                 }
                 self.keys.push(Key {
                     scope: Scope::Base,
@@ -515,7 +593,7 @@ impl Sorties {
                     stateful: pool_base.state.is_some(),
                     object: pool_base.object,
                     ..Key::default()
-                });
+                })?;
                 let region = mission.region.unwrap_or(0);
                 if mission.region.is_some() {
                     // 140F04E40 would index weather record 0, which is unsupported.
@@ -526,7 +604,7 @@ impl Sorties {
                         scope: Scope::Weather,
                         region,
                         ..Key::default()
-                    });
+                    })?;
                 }
                 // 140F63380 adds the country terms only for a positive effective tag.
                 if (effective as i32) > 0 {
@@ -535,7 +613,7 @@ impl Sorties {
                         slot: country.canonical_slot,
                         country: country.pointer,
                         ..Key::default()
-                    });
+                    })?;
                     if mission.operands.region_pointer != 0 {
                         self.keys.push(Key {
                             scope: Scope::CountryRegion,
@@ -544,7 +622,7 @@ impl Sorties {
                             object: mission.operands.region_pointer,
                             country: country.pointer,
                             ..Key::default()
-                        });
+                        })?;
                     }
                 }
             }
@@ -590,7 +668,7 @@ impl Sorties {
                         || !zero(row.fuel_demand_raw)
                         || !zero(row.fuel_allocated_raw)
                     {
-                        self.containers.push(row);
+                        self.containers.push(row)?;
                     }
                 }
                 return Ok(());
@@ -620,7 +698,7 @@ impl Sorties {
                     || row.leader_modifier_raw != 0
                     || row.task_force_combats.is_some()
                 {
-                    self.special.push(row);
+                    self.special.push(row)?;
                 }
                 return Ok(());
             }
@@ -661,7 +739,7 @@ impl Sorties {
                 subject: key.slot,
                 region: key.region,
                 raw,
-            });
+            })?;
         }
         Ok(())
     }
@@ -709,6 +787,7 @@ impl Sorties {
                             [mission.reached_start..mission.reached_start + mission.reached_len],
                     )),
                     definition_map_flags: mission.definition_map_flags,
+                    cas_ratio_raw: mission.operands.cas_ratio_raw.into(),
                 }
             }),
             table::<tables::AirSortieBaseCountries, _>(

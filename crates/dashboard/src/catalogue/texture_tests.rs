@@ -3,6 +3,22 @@
 use super::tests::{Folder, folder_catalogue};
 use super::*;
 
+/// Original default sprite program and map globals for synthetic content fixtures.
+pub(crate) fn write_sprite_program(root: &std::path::Path) {
+    for (path, bytes) in [
+        ("gfx/FX/buttonstate.shader", ARTWORK_SHADER.as_bytes()),
+        ("gfx/FX/defines_hlsl_dx11.fxh", b"".as_slice()),
+        ("map/default.map", ARTWORK_MAP.as_bytes()),
+    ] {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    for path in ["map/grid.bmp", "map/provinces.bmp"] {
+        std::fs::write(root.join(path), map_bitmap()).unwrap();
+    }
+}
+
 pub(crate) fn texture_catalogue(
     files: &[(&str, &str)],
     textures: &[(&str, Vec<u8>)],
@@ -187,7 +203,7 @@ pub(crate) fn refusal_textures() -> Vec<(&'static str, Vec<u8>, &'static str)> {
         height: 1,
         pixels: vec![255; 4],
     };
-    // 9000x9000: within the device limit, past the dashboard's decode budget.
+    // Native dimensions, but the DDS payload has no complete first level.
     let mut claim = dds(&strip());
     claim[12..20].copy_from_slice(&[9000_u32.to_le_bytes(), 9000_u32.to_le_bytes()].concat());
     let mut cube = dds(&face);
@@ -210,7 +226,7 @@ pub(crate) fn refusal_textures() -> Vec<(&'static str, Vec<u8>, &'static str)> {
         ),
         ("gfx/mod/device.dds", device, "graphics device"),
         ("gfx/mod/cube.dds", cube, "cube-map DDS"),
-        ("gfx/mod/claim.dds", claim, "texel decode budget"),
+        ("gfx/mod/claim.dds", claim, "first level runs past the file"),
         (
             "gfx/mod/large.png",
             vec![0x13; (16 << 20) + 1],
@@ -317,7 +333,7 @@ fn native_failures_keep_their_distinct_reasons() {
 }
 
 #[test]
-fn sprite_and_texture_frames_share_fractional_padded_pixels() {
+fn texture_frames_keep_fractional_padded_pixels_in_both_directions() {
     let (catalogue, _folders) = texture_catalogue(
         &[(
             "interface/art.gfx",
@@ -334,26 +350,66 @@ fn sprite_and_texture_frames_share_fractional_padded_pixels() {
         force_pow2_textures: true,
     };
     for frame in 0..3 {
-        let across = sprite_frame_png(layers, sprite("GFX_mod_sheet"), decode, frame, 96).unwrap();
+        let across = png_data_url(
+            &native_frame(
+                &read_texture(layers, "gfx/mod/sheet.png", decode).unwrap(),
+                sprite("GFX_mod_sheet").facts.kind.plain().unwrap(),
+                frame,
+                96,
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             across,
             texture_frame_png(layers, "gfx/mod/sheet.png", decode, 3, frame, 96).unwrap()
         );
         // A vertical strip steps down by the same native pitch.
-        let down =
-            from_url(&sprite_frame_png(layers, sprite("GFX_mod_down"), decode, frame, 96).unwrap());
+        let down = native_frame(
+            &read_texture(layers, "gfx/mod/down.png", decode).unwrap(),
+            sprite("GFX_mod_down").facts.kind.plain().unwrap(),
+            frame,
+            96,
+        )
+        .unwrap();
         assert_eq!(transposed(&down), from_url(&across), "{frame}");
     }
     let why = sprite_frame_png(layers, sprite("GFX_mod_shine"), decode, 0, 96)
         .unwrap_err()
         .to_string();
-    assert!(why.contains("needs native sprite rendering"), "{why}");
+    assert!(why.contains("gfx/FX/mod"), "{why}");
     for (frames, frame) in [(0, 0), (3, 3), (9, 0)] {
         assert!(
             gui_texture_frame_png(layers, b"gfx/mod/sheet.png", decode, frames, frame, 96).is_err()
         );
     }
     assert!(gui_texture_frame_png(layers, b"gfx/mod/sheet.png", decode, 3, 0, 0).is_err());
+}
+
+#[test]
+fn plain_sprite_refuses_a_missing_resolved_default_program_by_name() {
+    let (catalogue, folder) = folder_catalogue(&[(
+        "interface/art.gfx",
+        "spriteTypes={spriteType={name=GFX_plain textureFile=plain.png}}",
+    )]);
+    std::fs::write(folder.0.join("plain.png"), png_bytes(&strip())).unwrap();
+    std::fs::remove_file(folder.0.join("gfx/FX/buttonstate.shader")).unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
+    let why = sprite_frame_png(
+        &layers,
+        catalogue.sprites.lookup("GFX_plain").unwrap(),
+        Decode::default(),
+        0,
+        96,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        why.contains("GFX_plain")
+            && why.contains("buttonstate.lua")
+            && why.contains("no Up technique"),
+        "{why}"
+    );
 }
 
 fn transposed(image: &Rgba8Image) -> Rgba8Image {
@@ -368,4 +424,251 @@ fn transposed(image: &Rgba8Image) -> Rgba8Image {
             .map(|at| image.pixels[at])
             .collect(),
     }
+}
+
+#[test]
+#[ignore = "requires DXC and a GPU; synthetic content only"]
+fn frame_animated_sprites_render_native_strip_frames() {
+    let (catalogue, _folders) = texture_catalogue(
+        &[("interface/art.gfx", "spriteTypes = {
+            frameAnimatedSpriteType = { name = GFX_mod_sheet textureFile = gfx/sheet.png noOfFrames = 3 animation_rate_fps = 15 looping = yes play_on_show = yes }
+            frameAnimatedSpriteType = { name = GFX_mod_vertical textureFile = gfx/down.png noOfFrames = 3 framedirectiony = yes animation_rate_spf = 0.5 }
+        }"), ("gfx/FX/buttonstate.shader", ARTWORK_SHADER), ("gfx/FX/defines_hlsl_dx11.fxh", ""), ("map/default.map", ARTWORK_MAP)],
+        &[("gfx/sheet.png", png_bytes(&strip())), ("gfx/down.png", png_bytes(&transposed(&strip()))), ("map/grid.bmp", map_bitmap())],
+    );
+    for decode in [
+        Decode::default(),
+        Decode {
+            force_pow2_textures: true,
+        },
+    ] {
+        let sheet = read_texture(&catalogue.content.layers, "gfx/sheet.png", decode).unwrap();
+        let down = read_texture(&catalogue.content.layers, "gfx/down.png", decode).unwrap();
+        let expected = |source: &Rgba8Image, columns: &[u32], rows: &[u32]| Rgba8Image {
+            width: columns.len() as u32,
+            height: rows.len() as u32,
+            pixels: rows
+                .iter()
+                .flat_map(|y| {
+                    columns.iter().flat_map(move |x| {
+                        let at = ((y * source.width + x) * 4) as usize;
+                        source.pixels[at..at + 4].iter().copied()
+                    })
+                })
+                .collect(),
+        };
+        for frame in 0..3 {
+            let image = sprite_frame_png(
+                &catalogue.content.layers,
+                catalogue.sprites.lookup("GFX_mod_sheet").unwrap(),
+                decode,
+                frame,
+                96,
+            )
+            .unwrap();
+            // 14222CB90 clips the fractional right edge, rather than scaling
+            // its pitch into the truncated query extent.
+            let columns = if decode.force_pow2_textures {
+                [[0, 1], [3, 4], [5, 6]][frame as usize]
+            } else {
+                [frame * 2, frame * 2 + 1]
+            };
+            let rows: Vec<_> = (0..sheet.height).collect();
+            assert_eq!(from_url(&image), expected(&sheet, &columns, &rows));
+            let vertical = from_url(
+                &sprite_frame_png(
+                    &catalogue.content.layers,
+                    catalogue.sprites.lookup("GFX_mod_vertical").unwrap(),
+                    decode,
+                    frame,
+                    96,
+                )
+                .unwrap(),
+            );
+            // Vertical fractional geometry is bottom-anchored (1422E90C0),
+            // clipping its top instead; this is not a transposed right clip.
+            let rows = if decode.force_pow2_textures {
+                [[1, 2], [3, 4], [6, 7]][frame as usize]
+            } else {
+                [frame * 2, frame * 2 + 1]
+            };
+            let columns: Vec<_> = (0..down.width).collect();
+            assert_eq!(vertical, expected(&down, &columns, &rows));
+        }
+    }
+}
+
+/// Original, synthetic program: deliberately use different effect and texture names.
+pub(crate) const ARTWORK_SHADER: &str = r#"
+VertexStruct Input { float3 position : POSITION;
+float2 uv : TEXCOORD0;
+};
+VertexStruct Output { float4 position : SV_POSITION;
+float2 uv : TEXCOORD0;
+};
+ConstantBuffer(0,0) { float4x4 M;
+float4 Color;
+float4 Offsets;
+float Time;
+float AnimationTime;
+};
+VertexShader = { MainCode V [[
+Output main(Input i) { Output o; o.position = mul(M,float4(i.position,1)); o.uv=i.uv+Offsets.xy; return o; }
+]] }
+PixelShader = {
+Samplers = {
+ Base { Index = 0 MagFilter = point MinFilter = point AddressU = clamp AddressV = clamp }
+ AnimationMask { Index = 1 MagFilter = point MinFilter = point }
+ Overlay { Index = 2 MagFilter = point MinFilter = point }
+ SpareMask { Index = 3 }
+ SpareOverlay { Index = 4 }
+ Mask { Index = 5 MagFilter = point MinFilter = point }
+}
+ConstantBuffer(1,0) { float4 Rotation;
+float4 UVScale;
+float4 Parameters;
+float4 Animation;
+float4 Clamp;
+};
+MainCode P [[
+float4 main(Output i) : SV_TARGET {
+ float4 color=Base_Texture.Sample(Base_Sampler,i.uv)*Color;
+ #ifdef MASKING
+ color.a *= Mask_Texture.Sample(Mask_Sampler,i.uv).a;
+ #endif
+ #ifdef ANIMATED
+ color.r += Overlay_Texture.Sample(Overlay_Sampler,i.uv).r * AnimationMask_Texture.Sample(AnimationMask_Sampler,i.uv).r * Animation.y;
+ #endif
+ return color;
+}
+]] }
+Effect Up { VertexShader = V PixelShader = P }
+"#;
+
+const ARTWORK_MAP: &str = "definitions=definitions.csv provinces=grid.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp";
+
+pub(crate) fn map_bitmap() -> Vec<u8> {
+    let mut bytes = vec![0; 58];
+    bytes[..2].copy_from_slice(b"BM");
+    bytes[2..6].copy_from_slice(&58_u32.to_le_bytes());
+    bytes[10..14].copy_from_slice(&54_u32.to_le_bytes());
+    bytes[14..18].copy_from_slice(&40_u32.to_le_bytes());
+    bytes[18..22].copy_from_slice(&1_i32.to_le_bytes());
+    bytes[22..26].copy_from_slice(&1_i32.to_le_bytes());
+    bytes[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bytes[28..30].copy_from_slice(&24_u16.to_le_bytes());
+    bytes
+}
+
+#[test]
+#[ignore = "requires DXC and a GPU; synthetic content only"]
+fn sprite_shaders_execute_stack_effects_masks_and_animation_at_rest() {
+    let lazy_shader = ARTWORK_SHADER.replace("return color;", "color.b = 0.0; return color;");
+    let unavailable_shader = ARTWORK_SHADER
+        .replace(
+            "float4 Clamp;",
+            "float4 Clamp;\nfloat4 UnusedSecond[5];\nfloat4 Tail;",
+        )
+        .replace("return color;", "color.r += Tail.x; return color;");
+    let pixel = |rgba: [u8; 4]| {
+        png_bytes(&Rgba8Image {
+            width: 4,
+            height: 4,
+            pixels: rgba.repeat(16),
+        })
+    };
+    let (catalogue, _folders) = texture_catalogue(
+        &[("interface/art.gfx", "spriteTypes = {
+            spriteType = { name = GFX_custom textureFile = gfx/base.png effectFile = outside/test.lua }
+            spriteType = { name = GFX_masked textureFile = gfx/base.png effectFile = gfx/FX/test.lua masking_texture = gfx/mask.png }
+            spriteType = { name = GFX_animated textureFile = gfx/base.png effectFile = gfx/FX/test.lua legacy_lazy_load = no
+                animation = { animationtype = pulsing animationmaskfile = gfx/mask.png animationtexturefile = gfx/overlay.png animationblendmode = add }
+            }
+            spriteType = { name = GFX_lazy textureFile = gfx/base.png legacy_lazy_load = yes
+                animation = { animationtype = pulsing animationmaskfile = gfx/mask.png animationtexturefile = gfx/overlay.png animationblendmode = add }
+            }
+            spriteType = { name = GFX_plain textureFile = gfx/base.png }
+            spriteType = { name = GFX_unknown textureFile = gfx/base.png effectFile = gfx/FX/partial.lua legacy_lazy_load = no
+                animation = { animationtype = pulsing animationmaskfile = gfx/mask.png animationtexturefile = gfx/overlay.png }
+            }
+            frameAnimatedSpriteType = { name = GFX_custom_frames textureFile = gfx/base.png effectFile = gfx/FX/test.lua play_on_show = yes }
+        }"), ("gfx/FX/test.shader", ARTWORK_SHADER), ("gfx/FX/buttonstate.shader", &lazy_shader), ("gfx/FX/partial.shader", &unavailable_shader), ("outside/test.shader", ARTWORK_SHADER), ("gfx/FX/defines_hlsl_dx11.fxh", ""), ("map/default.map", ARTWORK_MAP)],
+        &[("gfx/base.png", pixel([40,80,120,200])), ("gfx/mask.png", pixel([255,0,0,128])), ("gfx/overlay.png", pixel([50,0,0,255])), ("map/grid.bmp", map_bitmap())],
+    );
+    let reads = catalogue.content.layers.report_uncovered_reads();
+    for (name, expected) in [
+        ("GFX_custom", [40, 80, 120, 200]),
+        ("GFX_masked", [40, 80, 120, 100]),
+        ("GFX_animated", [90, 80, 120, 200]),
+        // 14222B5F0 ignores lazy animation records; draw@14222D5A0 still
+        // executes the stack's default Up program, including its overrides.
+        ("GFX_lazy", [40, 80, 0, 200]),
+        ("GFX_plain", [40, 80, 0, 200]),
+        ("GFX_custom_frames", [40, 80, 120, 200]),
+    ] {
+        let image = from_url(
+            &sprite_frame_png(
+                &catalogue.content.layers,
+                catalogue.sprites.lookup(name).unwrap(),
+                Decode::default(),
+                0,
+                96,
+            )
+            .unwrap(),
+        );
+        assert_eq!([image.width, image.height], [4, 4]);
+        assert!(
+            image.pixels.chunks_exact(4).all(|pixel| pixel == expected),
+            "{name}: {:?}",
+            image.pixels
+        );
+    }
+    assert!(reads.warning().unwrap().contains("outside/test.shader"));
+    let why = sprite_frame_png(
+        &catalogue.content.layers,
+        catalogue.sprites.lookup("GFX_unknown").unwrap(),
+        Decode::default(),
+        0,
+        96,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        why.contains("GFX_unknown")
+            && why.contains("b1 reads unavailable bytes 160..")
+            && why.contains("physical size 256"),
+        "{why}"
+    );
+}
+
+#[test]
+fn artwork_shader_source_warnings_survive_lazy_reads() {
+    let (catalogue, _folders) = texture_catalogue(
+        &[
+            (
+                "outside/test.shader",
+                "Includes = { absent.fxh } Effect Up { }",
+            ),
+            ("gfx/FX/defines_hlsl_dx11.fxh", ""),
+        ],
+        &[],
+    );
+    let layers = &catalogue.content.layers;
+    let reads = layers.report_uncovered_reads();
+    let program =
+        installed_content::pdxshader::program::read_reported(layers, b"outside/test.lua").unwrap();
+    let warnings = catalogue.reader_warning_lines();
+    assert!(warnings.contains(&reads.warning().unwrap()));
+    for warning in program
+        .warnings
+        .iter()
+        .filter(|warning| warning.contains("not loaded"))
+    {
+        assert!(warnings.contains(warning), "{warnings:?}");
+    }
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("absent.fxh"))
+    );
 }

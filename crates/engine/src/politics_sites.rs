@@ -281,6 +281,38 @@ pub struct Owner {
     pub politics: Option<usize>,
 }
 
+/// 1406C3320 and upkeep@1406EF9A0 mutate CCountry+1F0 without selecting
+/// CPoliticalStatus. Authenticate only their original country identity.
+pub fn command_owner(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+) -> Result<Owner, &'static str> {
+    let identity = read::<[u8; 16]>(memory, pointer)
+        .filter(|_| pointer != 0)
+        .ok_or("politics country identity unreadable")?;
+    owner_identity(base, pointer, identity)
+}
+fn owner_identity(base: usize, pointer: usize, identity: [u8; 16]) -> Result<Owner, &'static str> {
+    if u64::from_le_bytes(identity[..8].try_into().unwrap()) as usize
+        != base
+            .checked_add(ccountry::VTABLE_RVA)
+            .ok_or("politics module overflow")?
+    {
+        return Err("politics country vtable mismatch");
+    }
+    let country = u32::from_le_bytes(identity[8..12].try_into().unwrap());
+    if country == 0 {
+        return Err("politics country has null identity");
+    }
+    Ok(Owner {
+        pointer,
+        country,
+        instance: u32::from_le_bytes(identity[12..].try_into().unwrap()),
+        politics: None,
+    })
+}
+
 /// Read only native ownership, never player/human/AI status. P: CCountry
 /// identity +08/+0C and politics backlink +F90; AddPP 140B98130 uses owner
 /// +C8. P: 1406BD180 assigns +F90 from its 0x110 allocation, retaining
@@ -305,17 +337,7 @@ pub fn country_owner(
     {
         return Err("politics country identity unreadable");
     }
-    if u64::from_le_bytes(identity[..8].try_into().unwrap()) as usize
-        != base
-            .checked_add(ccountry::VTABLE_RVA)
-            .ok_or("politics module overflow")?
-    {
-        return Err("politics country vtable mismatch");
-    }
-    let country = u32::from_le_bytes(identity[8..12].try_into().unwrap());
-    if country == 0 {
-        return Err("politics country has null identity");
-    }
+    let mut owner = owner_identity(base, pointer, identity)?;
     let status = usize::try_from(u64::from_le_bytes(status))
         .map_err(|_| "politics status pointer overflow")?;
     if status != 0 {
@@ -332,12 +354,8 @@ pub fn country_owner(
             return Err("politics status owner mismatch");
         }
     }
-    Ok(Owner {
-        pointer,
-        country,
-        instance: u32::from_le_bytes(identity[12..].try_into().unwrap()),
-        politics: (status != 0).then_some(status),
-    })
+    owner.politics = (status != 0).then_some(status);
+    Ok(owner)
 }
 
 pub fn status_owner(
@@ -390,6 +408,42 @@ mod tests {
         put(&mut bytes, text + msvc_string::LENGTH, 9);
         put(&mut bytes, text + msvc_string::CAPACITY, 15);
         bytes
+    }
+    #[test]
+    fn command_owner_authenticates_only_the_original_country_identity() {
+        struct IdentityOnly {
+            header: [u8; 16],
+            reads: std::cell::RefCell<Vec<(usize, usize)>>,
+        }
+        impl Memory for IdentityOnly {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                self.reads.borrow_mut().push((address, output.len()));
+                if address != COUNTRY || output.len() != self.header.len() {
+                    return false;
+                }
+                output.copy_from_slice(&self.header);
+                true
+            }
+        }
+        let memory = IdentityOnly {
+            header: fixture()[COUNTRY..COUNTRY + 16].try_into().unwrap(),
+            reads: Default::default(),
+        };
+        assert_eq!(
+            command_owner(&memory, BASE, COUNTRY),
+            Ok(Owner {
+                pointer: COUNTRY,
+                country: 5001,
+                instance: 0,
+                politics: None,
+            })
+        );
+        assert_eq!(*memory.reads.borrow(), [(COUNTRY, 16)]);
+        // The former CP reader requires an unrelated +F90 selecting read.
+        assert_eq!(
+            country_owner(&memory, BASE, COUNTRY),
+            Err("politics country identity unreadable")
+        );
     }
     #[test]
     fn every_country_owner_and_native_null_status_are_preserved() {

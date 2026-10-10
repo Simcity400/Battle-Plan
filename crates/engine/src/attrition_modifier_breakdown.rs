@@ -54,19 +54,19 @@ pub struct Frame {
 /// its partial node/text storage is reused by later independent roots.
 /// Required counts include full known demand even when storage is short.
 pub struct Buffers<'a> {
-    pub requests: &'a mut [Request],
+    pub requests: crate::walk::Buffer<'a, Request>,
     pub request_len: usize,
     pub request_required: usize,
-    pub roots: &'a mut [Root],
+    pub roots: crate::walk::Buffer<'a, Root>,
     pub root_len: usize,
     pub root_required: usize,
-    pub nodes: &'a mut [RawNode],
+    pub nodes: crate::walk::Buffer<'a, RawNode>,
     pub node_len: usize,
     pub node_required: usize,
-    pub text: &'a mut [u8],
+    pub text: crate::walk::Buffer<'a, u8>,
     pub text_len: usize,
     pub text_required: usize,
-    pub stack: &'a mut [Frame],
+    pub stack: crate::walk::Buffer<'a, Frame>,
     pub stack_required: usize,
 }
 
@@ -167,6 +167,7 @@ pub fn capture(
     buffers.text_len = 0;
     buffers.text_required = 0;
     buffers.stack_required = 0;
+    buffers.roots.ensure(unique)?;
     let limits = StackLimits::current();
     for index in 0..unique {
         let request = buffers.requests[index];
@@ -219,6 +220,11 @@ fn capture_root(
         {
             return Err("attrition modifier null node or ancestor cycle");
         }
+        buffers.stack.ensure(
+            depth
+                .checked_add(1)
+                .ok_or("attrition modifier depth overflow")?,
+        )?;
         if depth == buffers.stack.len() {
             if store {
                 failure.get_or_insert(DEPTH_CAPACITY);
@@ -308,6 +314,11 @@ fn capture_node(
         name_len = name.len;
         add(&mut buffers.text_required, name.len)?;
         if store {
+            buffers.text.ensure(
+                name_first
+                    .checked_add(name.len)
+                    .ok_or("attrition modifier text overflow")?,
+            )?;
             if let Some(output) = name_first
                 .checked_add(name.len)
                 .and_then(|end| buffers.text.get_mut(name_first..end))
@@ -323,6 +334,12 @@ fn capture_node(
     }
     add(&mut buffers.node_required, 1)?;
     if store {
+        buffers.nodes.ensure(
+            buffers
+                .node_len
+                .checked_add(1)
+                .ok_or("attrition modifier node overflow")?,
+        )?;
         if let Some(node) = buffers.nodes.get_mut(buffers.node_len) {
             *node = RawNode {
                 children: children.count,

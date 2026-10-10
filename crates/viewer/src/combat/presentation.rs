@@ -7,7 +7,8 @@ use crate::{document::Document, map::tables::rows};
 use replay::{
     frame::DecodedFrame,
     rows::{
-        CombatCommanderPortraitEntry, CombatCommanderPresentation, LandCombatCommanderTrait, tables,
+        CombatCommanderPortraitEntry, CombatCommanderPresentation, LandCombatCommanderTrait,
+        LandCombatSideDetails, tables,
     },
 };
 use std::io;
@@ -166,6 +167,50 @@ fn tactic(
     out.bind(key, SPRITE, value);
 }
 
+pub(super) fn land_tactics(
+    out: &mut Bindings,
+    has_sprite: &dyn Fn(&str) -> bool,
+    tactics: &super::tactics::Content,
+    null_picture: bool,
+    sides: &[LandCombatSideDetails; 2],
+) {
+    for (index, prefix) in ["attacker", "defender"].into_iter().enumerate() {
+        let side = &sides[index];
+        let key = format!("{prefix}_tactic");
+        if side.tactic_kind == 2 {
+            tactic(
+                out,
+                has_sprite,
+                tactics,
+                &key,
+                side.tactic_id,
+                &side.tactic_token,
+            );
+        } else if side.tactic_kind == 1 {
+            // 1415C66C0 reaches 141C5DD20 for the nonnull singleton too. Its
+            // empty picture keeps the previous drawable when `.dds` is absent.
+            if null_picture {
+                let picture = super::tactics::NULL_PICTURE;
+                out.bind(&key, SPRITE, if has_sprite(picture) {
+                    Ok(picture.into())
+                } else {
+                    Err(format!("Combat tactic picture {key} is hidden: the content's null-tactic picture cannot be drawn"))
+                });
+            } else {
+                let widget = out.values.entry(key).or_default();
+                widget.hidden = false;
+                widget.retain_sprite = true;
+            }
+        }
+        // 1406B3670 compares this object's counter ID with the other object's
+        // ID, including CNullCombatTactic's constructor IDs of zero.
+        out.values
+            .entry(format!("{prefix}_countered_tactic_overlay"))
+            .or_default()
+            .hidden = !super::tooltips::countered(side, &sides[1 - index]);
+    }
+}
+
 fn exile_entry(out: &mut Bindings, entry: &mut Values, flag: Result<String, String>) {
     // 141C61C40 fills the exile flag through 140B35990.
     match flag {
@@ -298,27 +343,20 @@ pub(super) fn bind(
                     &side.traits,
                     &exile(side.commander),
                 );
-                if side.tactic_kind == 2 {
-                    tactic(
-                        out,
-                        &has_sprite,
-                        &document.icons.combat.tactics,
-                        &format!("{prefix}_tactic"),
-                        side.tactic_id,
-                        &side.tactic_token,
-                    );
-                }
-                // 1406B3670 compares this tactic's counter id to the other id.
-                // Null and CNullCombatTactic are distinct recorded kinds; neither
-                // provides an authenticated selected tactic id for this binding.
-                let other = &detail.sides[1 - index];
-                out.values
-                    .entry(format!("{prefix}_countered_tactic_overlay"))
-                    .or_default()
-                    .hidden = side.tactic_kind != 2
-                    || other.tactic_kind != 2
-                    || side.tactic_counter_id != other.tactic_id as u32;
             }
+            land_tactics(
+                out,
+                &has_sprite,
+                &document.icons.combat.tactics,
+                document
+                    .icons
+                    .combat
+                    .gui
+                    .registry()
+                    .sprite(super::tactics::NULL_PICTURE.as_bytes())
+                    .is_some(),
+                &detail.sides,
+            );
         }
         Selection::Naval(id) => {
             let details = rows::<tables::NavalCombatDetails>(frame)?;

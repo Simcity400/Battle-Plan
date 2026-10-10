@@ -128,7 +128,7 @@ fn construction_rest_job_capacity_accounting_tracks_all_vectors_through_growth_c
     assert_eq!(initial, expected(&job));
     job.grow();
     let grown = LOCAL.snapshot().current.auxiliary_vectors;
-    assert!(grown > initial);
+    assert_eq!(grown, initial, "unused census capacity is not live demand");
     assert_eq!(grown, expected(&job));
     job.clear();
     assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
@@ -550,7 +550,7 @@ fn construction_rest_truncation_matrix_preserves_unrelated_caps() {
             base: 0,
             game_state: kit::BASE,
         };
-        let mut first = ConstructionRestJob::new();
+        let mut first = construction_rest_test_kit::job();
         let report =
             crate::extended::construction::copy_construction_rest_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok, "rows={rows:?}");
@@ -591,7 +591,7 @@ fn construction_rest_split_copy_matches_direct_walk_under_truncation() {
             base: 0,
             game_state: kit::BASE,
         };
-        let mut first = ConstructionRestJob::new();
+        let mut first = construction_rest_test_kit::job();
         let report =
             crate::extended::construction::copy_construction_rest_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok);
@@ -785,7 +785,7 @@ fn garrison_equipment_acquisition_covers_5000_authenticated_countries_without_a_
         base: kit::BASE,
         bytes: &bytes,
     };
-    let mut job = ConstructionRestJob::new();
+    let mut job = construction_rest_test_kit::job();
     job.log = RawLog::new(1 << 18, 16 << 20);
     engine::allocation::reserve_exact(&mut job.census, 5_000).unwrap();
     job.update_capacity_charge();
@@ -1008,21 +1008,6 @@ fn construction_rest_staging_overflow_falls_back_to_typed_walk() {
 }
 
 #[test]
-fn construction_rest_worst_case_pools_start_above_late_campaign_caps() {
-    // Late-campaign worst case: 4096 resources, 1k queue lines with
-    // routes, occupation graphs with laws plus resistance and
-    // collaboration links. Pools start above that so steady state never
-    // overflows; overflow still falls back to the typed walk above.
-    let job = ConstructionRestJob::new();
-    assert!(job.log.spans.capacity() >= 1 << 17);
-    assert!(job.log.bytes.capacity() >= (8 << 20));
-    let capacities = Capacities::default();
-    assert!(capacities.rows[2] >= 4096);
-    assert!(capacities.routes >= 4096);
-    assert!(capacities.law_bytes >= 16384);
-}
-
-#[test]
 fn occupation_group_and_database_laws_survive_raw_copy_without_changing_state_zero() {
     use construction_rest_test_kit as kit;
     const DATABASE: usize = 0x8500;
@@ -1088,5 +1073,112 @@ fn occupation_group_and_database_laws_survive_raw_copy_without_changing_state_ze
                 }]))
             );
         }
+    }
+}
+
+#[test]
+fn cold_construction_owned_arenas_keep_original_mod_sized_queue_and_state_demand() {
+    use super::construction_rest_test_kit as kit;
+    let mut captured = Captured::with_capacities(&Capacities {
+        rows: [0; N],
+        routes: 0,
+        law_bytes: 0,
+        occupied: 0,
+        group_laws: 0,
+        equipment: 0,
+    });
+    let mut job = ConstructionRestJob::new();
+    job.log = RawLog::new(1, 1);
+    job.census = Vec::new();
+    let mut typed = Captured::vacant();
+    for count in [1_500_usize, 5_000] {
+        let mut bytes = kit::fixture();
+        let states = kit::BASE + bytes.len();
+        bytes.resize(bytes.len() + (count + 1) * 8, 0);
+        let queue = kit::BASE + bytes.len();
+        bytes.resize(bytes.len() + count * 16, 0);
+        let mut put = |at: usize, value: &[u8]| {
+            bytes[at - kit::BASE..at - kit::BASE + value.len()].copy_from_slice(value);
+        };
+        for (header, data, n) in [
+            (kit::BASE + cgame_state::STATES, states, count + 1),
+            (
+                0x6000 + cproduction_status::CONSTRUCTION_LINES,
+                queue,
+                count * 2,
+            ),
+        ] {
+            put(header, &(data as u64).to_le_bytes());
+            put(header + 8, &(n as u32).to_le_bytes());
+            put(header + 12, &(n as u32).to_le_bytes());
+        }
+        for ordinal in 0..count {
+            put(queue + ordinal * 16, &0x9000u64.to_le_bytes());
+            put(queue + ordinal * 16 + 8, &0xa000u64.to_le_bytes());
+        }
+        for slot in 1..=count {
+            let state = kit::BASE + bytes.len();
+            let source = bytes[0x4000 - kit::BASE..0x5000 - kit::BASE].to_vec();
+            bytes.extend_from_slice(&source);
+            let template = kit::BASE + bytes.len();
+            let source = bytes
+                [0x5000 - kit::BASE..0x5000 - kit::BASE + cstate_template::RESOURCES + 16]
+                .to_vec();
+            bytes.extend_from_slice(&source);
+            let mut put = |at: usize, value: &[u8]| {
+                bytes[at - kit::BASE..at - kit::BASE + value.len()].copy_from_slice(value);
+            };
+            put(states + slot * 8, &(state as u64).to_le_bytes());
+            put(state + cstate::ID, &(slot as u32).to_le_bytes());
+            put(state + cstate::TEMPLATE, &(template as u64).to_le_bytes());
+            put(
+                state + cstate::RESISTANCE + cresistance::STATE,
+                &(state as u64).to_le_bytes(),
+            );
+            put(template + cstate_template::ID, &(slot as u32).to_le_bytes());
+        }
+        // The building target and garrison retain their authenticated state-1 object.
+        bytes[states - kit::BASE + 8..states - kit::BASE + 16]
+            .copy_from_slice(&0x4000u64.to_le_bytes());
+        let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        });
+        let native = read_accounting::Capture::new();
+        let report = copy_construction_rest_refresh_growing(
+            &memory,
+            ConstructionRestCopyContext {
+                base: 0,
+                game_state: kit::BASE,
+            },
+            &mut job,
+        );
+        assert!(report.raw_ok);
+        let reads = read_accounting::snapshot();
+        captured.decode_construction_rest_payload(0, kit::BASE, &job, &mut [0; 10]);
+        assert_eq!(native.finish(), reads);
+        for outcome in [
+            captured.base_resources.outcome,
+            captured.resistance.outcome,
+            captured.building_construction.outcome,
+            captured.railway_construction.outcome,
+        ] {
+            assert_eq!(outcome, Outcome::Rows { len: count });
+        }
+        for outcome in [
+            captured.settings.outcome,
+            captured.laws.outcome,
+            captured.garrisons.outcome,
+            captured.assigned_manpower.outcome,
+            captured.reserve_manpower.outcome,
+        ] {
+            assert_eq!(outcome, Outcome::Rows { len: 1 });
+        }
+        assert_eq!(captured.routes.len, count * 2);
+        assert_eq!(captured.occupied.len, 1);
+        assert_eq!(captured.law_bytes.len, 16);
+        assert_eq!(captured.resistance.rows[count - 1].state, count as u32);
+        typed.capture_growing(&memory, 0, kit::BASE, 0, true);
+        kit::assert_matches_direct(&captured, &typed);
     }
 }

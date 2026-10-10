@@ -643,12 +643,13 @@ type Walked = Vec<Result<Captured, &'static str>>;
 /// Divisions per image gather in the test walk: a combat's.
 const IMAGE_BATCH: usize = 20;
 
-/// Per-division scratch, as the collector's.
+/// Fixed scratch for comparison within the historical baseline's limits.
 struct Scratch {
-    widths: [inputs::WidthTerm; inputs::WIDTH_TERM_LIMIT],
-    modifiers: [reinforcement::ModifierTerm; reinforcement::MODIFIER_LIMIT],
-    supply: [reinforcement::SupplyTerm; reinforcement::SUPPLY_TERM_LIMIT],
-    acclimatization: [reinforcement::AcclimatizationTerm; reinforcement::ACCLIMATIZATION_LIMIT],
+    widths: [inputs::WidthTerm; main_combat::WIDTH_TERM_LIMIT],
+    modifiers: [reinforcement::ModifierTerm; main_reinforcement::MODIFIER_LIMIT],
+    supply: [reinforcement::SupplyTerm; main_reinforcement::SUPPLY_TERM_LIMIT],
+    acclimatization:
+        [reinforcement::AcclimatizationTerm; main_reinforcement::ACCLIMATIZATION_LIMIT],
     transport: Vec<reinforcement::TransportTerm>,
     groups: crate::cname_group_member::GroupKeys,
     names: Vec<u8>,
@@ -657,10 +658,10 @@ struct Scratch {
 impl Scratch {
     fn new() -> Self {
         Self {
-            widths: [Default::default(); inputs::WIDTH_TERM_LIMIT],
-            modifiers: [Default::default(); reinforcement::MODIFIER_LIMIT],
-            supply: [Default::default(); reinforcement::SUPPLY_TERM_LIMIT],
-            acclimatization: [Default::default(); reinforcement::ACCLIMATIZATION_LIMIT],
+            widths: [Default::default(); main_combat::WIDTH_TERM_LIMIT],
+            modifiers: [Default::default(); main_reinforcement::MODIFIER_LIMIT],
+            supply: [Default::default(); main_reinforcement::SUPPLY_TERM_LIMIT],
+            acclimatization: [Default::default(); main_reinforcement::ACCLIMATIZATION_LIMIT],
             transport: Vec::new(),
             groups: crate::cname_group_member::GroupKeys::with_capacity(64, 64),
             names: vec![0; 4096],

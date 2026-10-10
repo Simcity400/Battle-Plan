@@ -27,12 +27,21 @@ Fixed modifier keys and lexer tokens require the live layouts to match their nat
 
 - Use `Memory` and the guarded read helpers for every native span. Check nulls, address arithmetic, lengths and the reader's vtable, reference-type, identity and ownership requirements. A readable address alone does not authenticate an object.
 - Preserve native order, repeated occurrences, signed widths and arithmetic. Deduplicate only where native behaviour permits it. Scope shared reads to the selecting table, identity and occurrence; address equality alone is insufficient.
+- Command-power ownership authenticates the country independently of political status. Political-power ownership also authenticates the selected political status and its backlink.
 - Preserve the first independent failure and each consumer's failure boundary. A short or failed read cannot become a complete row, empty table or zero. Distinguish known absence, unavailable data and capacity truncation, counting unread occurrences as the walker requires. Do not retry to hide a failure.
 - Read passively at the collector's established boundary. Never call game getters, refresh caches, wait for memory to change or infer freshness beyond the native writers. Registry walks require a quiescent boundary.
 - Copy everything deferred decoding needs into owned storage during acquisition. Deferred code must not follow game pointers. Native string descriptors, including ace portrait descriptors, authorize immediate acquisition only; copy their payload before deferring work.
 - Reuse buffers and plans only within a proved identity, ownership and invalidation lifetime. Reloadable defines, weather and mutable definitions are not automatically session-static; a sizing hint is not a recorded value or validation of a later read.
 
 Size variable capture storage from live demand. Use [allocation.rs](src/allocation.rs) for potentially large or live-sized buffers, reserve a known batch before filling it, and keep callback reads within caller-owned capacity. Preserve the existing growth boundaries when filtering determines the output count. Allocation failure must retain its terminal `OutOfMemory` distinction through the collector callback, including readers that otherwise return a static refusal or optional value. See the collector guide for accepted standard-library allocation residuals.
+
+Allocating worker readers use [growing buffers](src/walk.rs) to extend storage from acquired headers without restarting native reads. Fixed slice readers retain explicit shortage outcomes for callback storage and fault fixtures.
+
+Nested growing suffixes keep the original vector owner, so a later country's header can extend the same acquisition after earlier rows were filled. Text, catalog, graph and memo arenas follow their original selecting controls before payload reads. Owned decoding prepares complete destinations from retained controls. Capture allocations keep terminal failure handling; advisory demand reads use nonterminal allocation without supplying recorded values.
+
+Wrap complete optional sizing and plan preparation in `allocation::advisory`, including nested constructors. The scope is thread-local, leaves capture hooks installed, and excludes hints from terminal fault ordinals. Checked `allocation::boxed` and vector/map reservations preserve fallible allocation. Preparation demand follows requested sizes and original acquired counts; allocator spare capacity belongs only to storage checks and byte accounting.
+
+DLC/mod names, descriptors and mount paths use native stored lengths. `cdlc_manager::prepare` grows owned text off-thread; `observe_prepared` reauthenticates controls and copies current values into that storage without allocating. A changed or unprepared span keeps its named refusal.
 
 Preparing a read plan is fallible; executing it does not allocate. Its controls must cover every owned operand that selects later addresses. Hints run only after those controls pass and acquire no bytes. A stopped plan reports its completed prefix and attempted failure so continuation need not reread them. Valid geometry alone proves neither dependencies nor object lifetime.
 
@@ -66,6 +75,16 @@ Verify both [the pinned executable](src/build.rs) and the site's bytes before in
 
 [carmy/strategic_action.rs](src/carmy/strategic_action.rs) supplies the current ladder glyph and ETA rail operands with their native gates and effective modifier queries. These consumers retain their own acquisition and cadence; carried ETA cannot supply current glyph inputs. A query failure withholds that row's ladder glyph. The save omits the effective modifiers, while serialized route, target and strategic truth remain independently comparable.
 
+[Selected route operands](src/country_naval_movement_inputs/areas.rs) retain native area identities and graph occurrences, while [current commander operands](src/carmy_leader.rs) keep their independent guards. Borrowed area graphs require the documented native lifetime boundary. [Weather display reads](src/cweather_manager/display_grid.rs) use the live dimensions and retained boundary without a startup baseline. Optional air-wing pool and raid operands share [cair_wing.rs](src/cair_wing.rs) without replacing core-row failures.
+
+Technology inventories preserve one row per positive template database index, including repeated lexer handles and native holes. The shared acquisition dictionary reads each indexed template once per pass; researched membership authenticates the exact retained instance pointer and keeps native strict signed-handle ordering.
+
 ## Measurement
 
 Measure acquisition with the current [read counters](src/read_counts.rs) and their definitions. Decoding an owned copy is not another native read. [Unit-scale fixtures](tests/support/unit_world.rs) and the opt-in scale tests model native walks; synthetic timings do not establish gameplay slowdown or live hook correctness.
+
+[Selected transport inputs](src/selected_transport_units.rs) borrow original attack, movement and railway observations within their callback lifetime. [Convoy inputs](src/cconvoys/transport.rs) retain the original cache attempt, ordered pool and signed reservations. [Mission observations](src/transport_ledger_observation.rs) keep strict icon results independent from nullable transport receivers, authenticating class, full handle and registry identity. Optional failures and capacity omissions retain their separate meanings; loans never wait for tasks, retry reads or refresh native caches.
+
+[Directed-war queries](src/directed_war_queries.rs) retain exact reached receiver/target/cell demand without predicate values. The admitted hourly [relation pass](src/crelation_status.rs) reauthenticates those identities and reads the current pointer/retired predicate. Its sparse packets remain partial; missing demand stays unknown, and a duplicate demand cannot retry an existing sparse cell's failure. Receiver packets cover positive countries; raw-zero and positive aliases to reserved targets use the authenticated reserved object.
+
+Campaign clock text uses the native stored string length. `read_clock_prepared` reads fresh bytes into caller-prepared storage without allocation; a storage shortage or native string fault remains explicit.

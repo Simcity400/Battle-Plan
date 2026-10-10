@@ -1,6 +1,8 @@
 //! Battalion composition from the hourly template companion's grouped grids.
 //! Group token +0x5A4 is authored, preserved by 141004D20 and copied by
 //! 140B87080 / 141005F00; no template representative enters this calculation.
+//! 141678490 reads a placed regiment's group through grid getter 140FAA260;
+//! the shared database's air/naval inventory does not establish army reach.
 use super::*;
 use crate::catalogue::{Catalogue, catalogue};
 use installed_content::unit_leader::SubUnits;
@@ -36,11 +38,9 @@ fn group_info(
             };
             (format!("group:{identity}"), group, None)
         }
-        Ok(None) => (
-            format!("unknown:{name}"),
-            name,
-            Some(format!("{name}: authored unit group is absent")),
-        ),
+        // CSubUnitDefinition::constructor@141002DD0 clears +0x5A4 to
+        // token zero; an omitted group is a known native default.
+        Ok(None) => ("group:".into(), "", None),
         Err(why) => (
             format!("unknown:{name}"),
             name,
@@ -257,13 +257,22 @@ mod tests {
         let resolved = group_info(Some(&units), None, "foot");
         assert_eq!(resolved.1.name, "mod_group");
         assert_eq!(resolved.2, None);
-        assert_eq!(
-            group_info(Some(&units), None, "orphan").1.name,
-            "orphan (unknown-group)"
-        );
+        let default = group_info(Some(&units), None, "orphan");
+        assert_eq!(default.0, "group:");
+        assert_eq!(default.1.name, "");
+        assert_eq!(default.2, None);
         assert_eq!(
             group_info(Some(&units), None, "missing").0,
             "unknown:missing"
         );
+    }
+
+    #[test]
+    fn army_size_content_accepts_native_default_groups_without_claiming_army_reach() {
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[(
+            "common/units/mod.txt",
+            "sub_units={foot={group=mod_group} ungrouped={} air={} naval={}}",
+        )]);
+        assert!(check_content(&catalogue).unwrap().is_empty());
     }
 }

@@ -359,6 +359,38 @@ fn fixture() -> Vec<u8> {
         put(&mut bytes, 0x2000 + offset + 12, &3_u32.to_le_bytes());
         put(&mut bytes, data as usize, &values);
     }
+    put(
+        &mut bytes,
+        0x2000 + PROVINCE_CLOCKS,
+        &0x4000_u64.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        0x2000 + PROVINCE_CLOCKS + 8,
+        &5_u32.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        0x2000 + PROVINCE_CLOCKS + 12,
+        &3_u32.to_le_bytes(),
+    );
+    for (index, (hour, night)) in [(0_i32, 0_i64), (-37, i64::MIN), (1002, i64::MAX)]
+        .into_iter()
+        .enumerate()
+    {
+        let clock = 0x4000 + index * sweather_per_province::CLOCK_STRIDE;
+        put(
+            &mut bytes,
+            clock + sweather_per_province::CLOCK_LOCAL_HOUR,
+            &hour.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            clock + sweather_per_province::CLOCK_NIGHT_FACTOR,
+            &night.to_le_bytes(),
+        );
+    }
+    put(&mut bytes, 0x2000 + SUSPEND_FLAGS, &[3, 255]);
     bytes
 }
 
@@ -544,6 +576,13 @@ fn live_counts_not_capacity_control_dense_rows_and_exact_truncation() {
         vec![(0, 0, 255), (1, 128, 0), (2, 255, 0)]
     );
     assert_eq!(
+        provinces[..3]
+            .iter()
+            .map(|row| (row.local_hour, row.night_factor))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (-37, i64::MIN), (1002, i64::MAX)]
+    );
+    assert_eq!(
         reader.provinces(&mut provinces[..1]),
         Outcome::Truncated {
             len: 1,
@@ -567,7 +606,12 @@ fn live_counts_not_capacity_control_dense_rows_and_exact_truncation() {
 
 #[test]
 fn invalid_province_or_display_header_does_not_hide_available_regions() {
-    for (offset, value) in [(PROVINCES_COUNT, -1_i32), (DISPLAY_MUD + 12, 2)] {
+    for (offset, value) in [
+        (PROVINCES_COUNT, -1_i32),
+        (DISPLAY_MUD + 12, 2),
+        (PROVINCE_CLOCKS + 12, -1),
+        (PROVINCE_CLOCKS + 12, 2),
+    ] {
         let mut bytes = fixture();
         put(&mut bytes, 0x2000 + offset, &value.to_le_bytes());
         let memory = SliceMemory {
@@ -611,4 +655,181 @@ fn absent_or_wrong_manager_is_unavailable() {
         Reader::new(&memory, 0, 0x1000),
         Err("weather manager pointer unreadable or absent")
     ));
+}
+
+struct FirstWeatherFault<'a> {
+    inner: SliceMemory<'a>,
+    fault: std::cell::Cell<Option<usize>>,
+    reads: std::cell::RefCell<Vec<usize>>,
+}
+
+impl Memory for FirstWeatherFault<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push(address);
+        if self.fault.get() == Some(address) {
+            self.fault.set(None);
+            return false;
+        }
+        self.inner.copy(address, destination)
+    }
+}
+
+#[test]
+fn movement_weather_original_count_failure_survives_other_region_selectors() {
+    let bytes = fixture();
+    let address = 0x2000 + REGIONS_COUNT;
+    let memory = FirstWeatherFault {
+        inner: SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        },
+        fault: std::cell::Cell::new(Some(address)),
+        reads: Default::default(),
+    };
+    let reader = Reader::new(&memory, 0, 0x1000).unwrap();
+    assert_eq!(
+        reader.movement_record(0, true),
+        Err("movement weather field unreadable")
+    );
+    assert_eq!(
+        reader.movement_record(1, true),
+        Err("movement weather field unreadable")
+    );
+    assert_eq!(reader.movement_record(-1, true), Ok(0));
+    assert_eq!(reader.movement_record(0, false), Ok(0x3000));
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&at| at == address)
+            .count(),
+        1
+    );
+    // A later callback has its own first attempt, even at identical addresses.
+    assert_eq!(
+        Reader::new(&memory, 0, 0x1000)
+            .unwrap()
+            .movement_record(1, true),
+        Ok(0x5000 + sweather_per_region::STRIDE)
+    );
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&at| at == address)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn movement_weather_original_data_failure_survives_admitted_region_selectors() {
+    let bytes = fixture();
+    let address = 0x2000 + REGIONS;
+    let memory = FirstWeatherFault {
+        inner: SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        },
+        fault: std::cell::Cell::new(Some(address)),
+        reads: Default::default(),
+    };
+    let reader = Reader::new(&memory, 0, 0x1000).unwrap();
+    assert_eq!(
+        reader.movement_record(0, true),
+        Err("movement weather field unreadable")
+    );
+    assert_eq!(
+        reader.movement_record(1, true),
+        Err("movement weather field unreadable")
+    );
+    // Native out-of-range/null bypasses the independently failed data word.
+    assert_eq!(reader.movement_record(2, true), Ok(0));
+    let reads = memory.reads.borrow();
+    assert_eq!(reads.iter().filter(|&&at| at == address).count(), 1);
+    assert_eq!(
+        reads
+            .iter()
+            .filter(|&&at| at == 0x2000 + REGIONS_COUNT)
+            .count(),
+        1
+    );
+    assert!(!reads.contains(&0x5000));
+}
+
+#[test]
+fn movement_weather_region_selectors_borrow_original_successful_header_words() {
+    let bytes = fixture();
+    let memory = Traced {
+        inner: SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        },
+        reads: Default::default(),
+    };
+    let reader = Reader::new(&memory, 0, 0x1000).unwrap();
+    assert_eq!(reader.movement_record(0, true), Ok(0x5000));
+    assert_eq!(
+        reader.movement_record(1, true),
+        Ok(0x5000 + sweather_per_region::STRIDE)
+    );
+    assert_eq!(reader.movement_record(2, true), Ok(0));
+    let reads = memory.reads.borrow();
+    assert_eq!(
+        reads
+            .iter()
+            .filter(|&&at| at == 0x2000 + REGIONS_COUNT)
+            .count(),
+        1
+    );
+    assert_eq!(
+        reads.iter().filter(|&&at| at == 0x2000 + REGIONS).count(),
+        1
+    );
+}
+
+#[test]
+fn original_weather_clocks_keep_failure_until_the_reader_retires() {
+    let bytes = fixture();
+    let address = 0x2000 + PROVINCE_CLOCKS;
+    let memory = FirstWeatherFault {
+        inner: SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        },
+        fault: std::cell::Cell::new(Some(address)),
+        reads: Default::default(),
+    };
+    let reader = Reader::new(&memory, 0, 0x1000).unwrap();
+    assert_eq!(
+        reader.province_clocks(),
+        Err("weather clock array unreadable or invalid")
+    );
+    assert_eq!(
+        reader.province_clocks(),
+        Err("weather clock array unreadable or invalid")
+    );
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&at| at == address)
+            .count(),
+        1
+    );
+    let next = Reader::new(&memory, 0, 0x1000).unwrap();
+    assert_eq!(next.province_clocks().unwrap().count, 3);
+    assert_eq!(next.province_clocks().unwrap().data, 0x4000);
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&at| at == address)
+            .count(),
+        2
+    );
 }

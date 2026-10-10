@@ -333,25 +333,39 @@ pub(super) fn append(context: &Context<'_>, input: &CounterHover, out: &mut Tool
         } else {
             None
         };
+        let divisions = if input.railway_gun {
+            None
+        } else {
+            Some(
+                context
+                    .frame
+                    .complete::<tables::Divisions>()
+                    .map_err(|error| error.to_string())?,
+            )
+        };
         let members = input
             .members
             .iter()
-            .map(|&id| {
+            .filter_map(|&id| {
+                // 1418BDBA0 resolves original full references and skips known
+                // dangling ones before demanding a consumer supply packet.
                 let supply = if let Some(guns) = guns {
-                    &guns
-                        .iter()
-                        .find(|row| row.gun == id)
-                        .ok_or_else(|| format!("supply railway gun {id} is absent"))?
-                        .supply
+                    let index = guns.binary_search_by_key(&id, |row| row.gun).ok()?;
+                    Ok(&guns[index].supply)
                 } else {
-                    &context.status(id)?.supply
+                    if divisions
+                        .is_some_and(|rows| rows.binary_search_by_key(&id, |row| row.id).is_err())
+                    {
+                        return None;
+                    }
+                    context.status(id).map(|status| &status.supply)
                 };
-                match supply {
+                Some(supply.and_then(|supply| match supply {
                     Recorded::NotRecorded => Err("consumer supply inputs were not recorded".into()),
                     Recorded::Value(value) => value.as_ref().ok_or_else(|| {
                         "consumer supply inputs were unreadable when recorded".into()
                     }),
-                }
+                }))
             })
             .collect::<Vec<Result<&UnitSupplyInputs, String>>>();
         Ok::<_, String>(members)
@@ -366,15 +380,17 @@ pub(super) fn append(context: &Context<'_>, input: &CounterHover, out: &mut Tool
     let mut result = Tooltip::default();
     member_footer(context, &members, &mut result);
     if !result.body.is_empty() {
-        crate::combat::text::ensure_newlines(&mut out.body, 2);
-        out.body.push_str(&result.body);
+        // Ordinary1418C295F/297B appends the footer to title, independently
+        // of the ETA/statistics body already produced by the generic handler.
+        crate::combat::text::ensure_newlines(&mut out.title, 2);
+        out.title.push_str(&result.body);
     }
     for (reason, count) in result.refused {
         *out.refused.entry(reason).or_default() += count;
     }
 }
 
-fn member_footer(
+pub(super) fn member_footer(
     context: &Context<'_>,
     members: &[Result<&UnitSupplyInputs, String>],
     out: &mut Tooltip,

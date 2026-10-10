@@ -159,11 +159,45 @@ pub struct Row {
 /// form, and any failed read, makes the table unavailable. A country whose rows
 /// do not fit is counted unread and its values are not read.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, rows: &mut [Row]) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(rows))
+}
+
+/// Worker storage grows from the original native headers before publication.
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    rows: &mut Vec<Row>,
+) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Growing(rows))
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    rows: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
     match walk_inner(memory, base, game_state, rows) {
         Ok((len, 0)) => Outcome::Rows { len },
         Ok((len, unread_rows)) => Outcome::Truncated { len, unread_rows },
         Err(reason) => Outcome::Unavailable { reason },
     }
+}
+
+/// Live roster and archetype headers bound complete logistics storage before attach.
+/// PostDailyUpdate@14135FFA0 uses this archetype list for each eligible country.
+pub fn row_demand(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+) -> Result<usize, &'static str> {
+    let slots = ccountry::Reader::new(memory, base, game_state)?
+        .count()
+        .saturating_sub(1) as usize;
+    slots
+        .checked_mul(read_archetype_list(memory, base)?.count as usize)
+        .ok_or("logistics row demand overflow")
 }
 
 /// Module vtable addresses the layout is authenticated against.
@@ -184,7 +218,7 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    rows: &mut [Row],
+    mut rows: crate::walk::Buffer<'_, Row>,
 ) -> Result<(usize, u32), &'static str> {
     let countries = ccountry::Reader::new(memory, base, game_state)?;
     let mut control = cgame_state::AiControl::read(memory, game_state)?;
@@ -199,7 +233,7 @@ fn walk_inner(
         window: vtable(window::VTABLE_RVA)?,
     };
     let mut archetypes: Option<Archetypes> = None;
-    let mut len = 0;
+    let mut len = 0_usize;
     let mut unread_rows = 0_u32;
     let mut found = false;
     for slot in 1..countries.count() {
@@ -224,6 +258,11 @@ fn walk_inner(
             return Err("logistics record size differs from the equipment archetype count");
         }
         let count = list.count as usize;
+        // PostDailyUpdate@14135FFA0 visits the full live archetype list.
+        rows.ensure(
+            len.checked_add(count)
+                .ok_or("logistics row count overflow")?,
+        )?;
         if count > rows.len() - len {
             unread_rows = unread_rows
                 .checked_add(list.count)
@@ -633,7 +672,7 @@ pub fn walk_balance_owners(
             history: address(cloop_history::VTABLE_RVA)?,
             window: address(window::VTABLE_RVA)?,
         };
-        let mut len = 0;
+        let mut len = 0_usize;
         let mut unread_rows = 0_u32;
         let mut archetypes = None;
         let mut found = false;

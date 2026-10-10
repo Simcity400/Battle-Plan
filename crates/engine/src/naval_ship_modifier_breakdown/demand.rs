@@ -13,6 +13,17 @@ use std::collections::{HashMap, HashSet};
 pub struct Demand {
     pub rows: usize,
     pub ships: usize,
+    pub damage: usize,
+    pub air_hits: usize,
+    pub naval_hits: usize,
+    pub plane_kills: usize,
+    pub commander_timed_traits: usize,
+    pub custom_sea: usize,
+    pub summary_countries: usize,
+    pub dense_bases: usize,
+    pub dense_wings: usize,
+    pub weapon_sources: usize,
+    pub weapon_terms: usize,
     /// Maximum group scratch needed by any one combat.
     pub groups: usize,
     pub planes: usize,
@@ -121,20 +132,21 @@ fn census_root(
     wanted: [bool; super::KEYS.len()],
     demand: &mut Demand,
 ) -> Result<(), &'static str> {
+    let mut stack = Vec::<super::Frame>::new();
     let mut buffers = super::Buffers {
-        requests: &mut [],
+        requests: crate::walk::Buffer::Fixed(&mut []),
         request_len: 0,
         request_required: 0,
-        roots: &mut [],
+        roots: crate::walk::Buffer::Fixed(&mut []),
         root_len: 0,
         root_required: 0,
-        nodes: &mut [],
+        nodes: crate::walk::Buffer::Fixed(&mut []),
         node_len: 0,
         node_required: 0,
-        text: &mut [],
+        text: crate::walk::Buffer::Fixed(&mut []),
         text_len: 0,
         text_required: 0,
-        stack: &mut [],
+        stack: crate::walk::Buffer::Growing(&mut stack),
         stack_required: 0,
     };
     super::capture_requested_root(
@@ -157,6 +169,14 @@ fn census_root(
 /// the native escape/carrier key candidates bound demand. The shared count-only
 /// census reads effective values, so zero leaves need no names. A torn hint is dropped.
 pub fn demand(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+) -> Result<Demand, &'static str> {
+    crate::allocation::advisory(|| demand_advisory(memory, base, game_state))
+}
+
+fn demand_advisory(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -188,6 +208,25 @@ pub fn demand(
             ..Default::default()
         };
         add(&mut demand.rows, 1)?;
+        let province = pointer(memory, combat, cnaval_combat::PROVINCE)?;
+        let region = pointer(memory, province, crate::cprovince::STRATEGIC_REGION)?;
+        if region != 0 {
+            let template = pointer(memory, region, crate::cstrategic_region::TEMPLATE)?;
+            let capacity = field::<i32>(
+                memory,
+                template,
+                crate::cstrategic_region::TEMPLATE_MODIFIERS_CAPACITY,
+            )?;
+            let count = field::<i32>(
+                memory,
+                template,
+                crate::cstrategic_region::TEMPLATE_MODIFIERS_COUNT,
+            )?;
+            if count < 0 || capacity < count {
+                return Err("naval demand custom sea count invalid");
+            }
+            add(&mut demand.custom_sea, count as usize)?;
+        }
         for &side in &sides {
             crate::cnaval_combatant::side(memory, base, side, combat, false)?;
             add(
@@ -198,15 +237,31 @@ pub fn demand(
                 &mut demand.damage_sources,
                 cnaval_combatant::damage_source_demand(memory, side)?,
             )?;
-            if pointer(memory, side, cnaval_combatant::COMMANDER)? != 0 {
+            for offset in [
+                crate::naval_combat_summary_inputs::COUNTRY_COUNT,
+                crate::naval_combat_summary_inputs::SECONDARY_COUNTRIES + 0x10,
+            ] {
+                let count = usize::try_from(field::<i32>(memory, side, offset)?)
+                    .map_err(|_| "naval demand country count negative")?;
+                add(&mut demand.summary_countries, count)?;
+            }
+            let commander = pointer(memory, side, cnaval_combatant::COMMANDER)?;
+            if commander != 0 {
                 add(&mut demand.commanders, 1)?;
+                let timed = Array::read(
+                    memory,
+                    at(commander, crate::cunit_leader::TIMED_TRAIT_DATA)?,
+                    crate::cunit_leader::TIMED_TRAIT_STRIDE,
+                )
+                .ok_or("naval demand commander timed traits invalid")?;
+                add(&mut demand.commander_timed_traits, timed.count as usize)?;
             }
         }
         // Empty members conservatively include the country-only submarine
         // hover. The native side paths emit at most 1 + 4 + 4 requests each
         // (14160A7B0, 141609460 -> 1415B4BB0).
         let initial = field(memory, base, super::COMBAT_INITIAL_DURATION_RVA)?;
-        super::side_trees(
+        super::side_trees::<false>(
             &mut |request| {
                 add(&mut demand.requests, 1)?;
                 request_keys(&mut roots, request.accumulator, &[request.key])?;
@@ -234,7 +289,7 @@ pub fn demand(
                     insert(&mut groups, group)?;
                 }
             }
-            count_planes(memory, array(memory, side, 0xe0)?, &mut demand)?;
+            count_planes(memory, base, array(memory, side, 0xe0)?, &mut demand)?;
             if array(memory, side, cnaval_combatant::GROUPS)? != forward {
                 return Err("naval demand group roster changed");
             }
@@ -249,8 +304,8 @@ pub fn demand(
         for &group in &groups {
             let side = pointer(memory, group, cfex_group::SIDE)?;
             let active_air = array(memory, group, 0x58)?;
-            count_planes(memory, active_air, &mut demand)?;
-            count_planes(memory, array(memory, group, 0x88)?, &mut demand)?;
+            count_planes(memory, base, active_air, &mut demand)?;
+            count_planes(memory, base, array(memory, group, 0x88)?, &mut demand)?;
             // 14195C7D0 selects at most two escape keys. Each drawable
             // carrier-air slot (141963700) selects two more, deduplicated
             // per member by enumerate_requests. Plane/wing counts cannot
@@ -262,17 +317,40 @@ pub fn demand(
                 add(&mut demand.ships, members.count as usize)?;
                 for index in 0..members.count {
                     let member = element(memory, members, index)?;
+                    for (offset, stride, lane) in [
+                        (crate::cfex_member::DAMAGE_ENTRIES, 0x20, 0),
+                        (0x150, 8, 1),
+                        (0x168, 8, 1),
+                        (0x180, 8, 2),
+                    ] {
+                        let count = Array::read(memory, at(member, offset)?, stride)
+                            .ok_or("naval demand member arena invalid")?
+                            .count as usize;
+                        add(
+                            match lane {
+                                0 => &mut demand.damage,
+                                1 => &mut demand.air_hits,
+                                _ => &mut demand.naval_hits,
+                            },
+                            count,
+                        )?;
+                    }
                     let handle = field(memory, member, crate::cfex_member::SHIP_HANDLE)?;
                     if let Some(ship) = crate::creference_registry::resolve(memory, base, handle)? {
-                        use crate::naval_ship_modifier_inputs::{SourceMode, visit_sources};
-                        visit_sources(
+                        use crate::naval_ship_modifier_inputs::visit_sources;
+                        let context = visit_sources::<false>(
                             memory,
                             base,
                             game_state,
                             ship,
                             side,
-                            SourceMode::Accumulators,
                             &mut |source, accumulator| {
+                                add(&mut demand.weapon_sources, 1)?;
+                                if let Some(root) = accumulator {
+                                    let entries = Array::read(memory, root, 16)
+                                        .ok_or("naval demand weapon terms invalid")?;
+                                    add(&mut demand.weapon_terms, entries.count as usize)?;
+                                }
                                 if let Some(root) = accumulator
                                     && matches!(source.scope, 0..=15)
                                 {
@@ -287,6 +365,7 @@ pub fn demand(
                                 Ok(())
                             },
                         )?;
+                        count_base(memory, base, context.air_base, &mut demand)?;
                     } else {
                         // 14195EEC0's non-ship path reaches at most the four
                         // side accumulators, with the distinct convoy key.
@@ -299,10 +378,17 @@ pub fn demand(
                             },
                             ..Default::default()
                         };
-                        super::convoy(memory, base, game_state, &member, 0x5d, &mut |request| {
-                            add(&mut demand.requests, 1)?;
-                            request_keys(&mut roots, request.accumulator, &[request.key])
-                        })?;
+                        super::convoy::<false>(
+                            memory,
+                            base,
+                            game_state,
+                            &member,
+                            0x5d,
+                            &mut |request| {
+                                add(&mut demand.requests, 1)?;
+                                request_keys(&mut roots, request.accumulator, &[request.key])
+                            },
+                        )?;
                     }
                 }
                 if array(memory, group, offset)? != members {
@@ -329,6 +415,7 @@ pub fn demand(
 
 fn count_planes(
     memory: &impl Memory,
+    base: usize,
     planes: Array,
     demand: &mut Demand,
 ) -> Result<(), &'static str> {
@@ -338,7 +425,23 @@ fn count_planes(
     for index in 0..planes.count {
         let plane = element(memory, planes, index)?;
         let active = array(memory, plane, 0x28)?.count as usize;
-        let all = array(memory, plane, 0x40)?.count as usize;
+        let all_wings = array(memory, plane, 0x40)?;
+        let all = all_wings.count as usize;
+        for index in 0..all_wings.count {
+            let handle = field(
+                memory,
+                all_wings
+                    .element(index, 8)
+                    .ok_or("naval demand wing address overflow")?,
+                0,
+            )?;
+            if let Some(wing) = crate::naval_air_efficiency_inputs::wing(memory, base, handle)? {
+                let kills = Array::read(memory, at(wing, 0x9f8)?, 16)
+                    .ok_or("naval demand wing kills invalid")?;
+                add(&mut demand.plane_kills, kills.count as usize)?;
+            }
+        }
+        count_base(memory, base, field(memory, plane, 0x1c)?, demand)?;
         add(&mut demand.wing_types, all)?;
         add(&mut demand.plane_wings, active)?;
         add(&mut demand.plane_wings, all)?;
@@ -350,6 +453,41 @@ fn count_planes(
             add(
                 &mut demand.plane_air_hits,
                 array(memory, plane, offset)?.count as usize,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// CountAirBaseAircraft@140C3E1D0 walks every dense registered occurrence.
+/// Repeated references conservatively reserve the same base more than once.
+fn count_base(
+    memory: &impl Memory,
+    base: usize,
+    handle: u64,
+    demand: &mut Demand,
+) -> Result<(), &'static str> {
+    if handle == 0 {
+        return Ok(());
+    }
+    let Some(pointer) = crate::creference_registry::resolve(memory, base, handle)? else {
+        return Ok(());
+    };
+    if field::<u64>(memory, pointer, 0)? != at(base, crate::cair_base::VTABLE_RVA)? as u64
+        || field::<u64>(memory, pointer, crate::cair_base::HANDLE)? != handle
+    {
+        return Err("naval demand dense base identity mismatch");
+    }
+    add(&mut demand.dense_bases, 1)?;
+    let containers = array(memory, pointer, crate::cair_base::REGISTERED_CONTAINERS)?;
+    for index in 0..containers.count {
+        let container = element(memory, containers, index)?;
+        let pools = array(memory, container, crate::ccountry_air_container::POOLS)?;
+        for index in 0..pools.count {
+            let pool = element(memory, pools, index)?;
+            add(
+                &mut demand.dense_wings,
+                array(memory, pool, crate::cair_wing_pool::WINGS)?.count as usize,
             )?;
         }
     }
@@ -564,6 +702,9 @@ mod tests {
                     0x100_0018 => bytes[..8].copy_from_slice(&0x1_0000_1269_u64.to_le_bytes()),
                     0x100_0028 => bytes[..8].copy_from_slice(&0x200_0000_u64.to_le_bytes()),
                     0x100_0030 => bytes[..8].copy_from_slice(&0x300_0000_u64.to_le_bytes()),
+                    address if address == 0x100_0000 + cnaval_combat::PROVINCE => {
+                        bytes[..8].copy_from_slice(&0x600_0000_u64.to_le_bytes());
+                    }
                     0x200_0000 | 0x300_0000 => {
                         let vtable = (IMAGE + cnaval_combatant::VTABLE_RVA) as u64;
                         bytes[..8].copy_from_slice(&vtable.to_le_bytes());

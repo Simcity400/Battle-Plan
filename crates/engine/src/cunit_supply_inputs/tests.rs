@@ -284,3 +284,30 @@ fn unrelated_consumer_bytes_and_origin_fields_are_not_read() {
         assert!(capture(&memory, UNIT, &mut [Origin::default()]).is_ok());
     }
 }
+
+#[test]
+fn worker_origins_grow_from_original_header_before_first_and_later_publication() {
+    let mut output = Vec::new();
+    for count in [5000, 11003] {
+        let expected = (0..count)
+            .map(|index| Origin {
+                province: (index % 257) as i32,
+                requested: index as i64 - 7,
+                received: -(index as i64),
+            })
+            .collect::<Vec<_>>();
+        let bytes = fixture(&expected);
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            capture(&memory, UNIT, &mut []).unwrap().origins_len,
+            Err(Failure::OriginsCapacity { required: count })
+        );
+        let inputs =
+            capture_buffer(&memory, UNIT, crate::walk::Buffer::Growing(&mut output)).unwrap();
+        assert_eq!(inputs.origins_len, Ok(count));
+        assert_eq!(&output[..count], &expected);
+    }
+}

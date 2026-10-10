@@ -1,9 +1,9 @@
 //! Stored hourly country rosters; never sort, filter or refresh them.
 
-use super::{CONTROLLED_STATES, CORE_STATES, Country, OWNED_STATES, Reader};
+use super::{CONTROLLED_STATES, CORE_STATES, Country, OWNED_STATES, PRIDE_OF_THE_FLEET, Reader};
 use crate::{
     Memory, ccountry_characters, cpdx_array, cpdx_array::Array, cproduction_status, cstate,
-    cunit_leader,
+    cunit_leader, read, walk::Buffer,
 };
 
 /// Refresh@1406FE3C0 rebuilds these raw country references; controller changes
@@ -17,8 +17,8 @@ pub struct EffectRosterDemand {
 }
 
 pub struct EffectRosters<'a> {
-    pub neighbors: &'a mut [u32],
-    pub policies: &'a mut [u32],
+    pub neighbors: Buffer<'a, u32>,
+    pub policies: Buffer<'a, u32>,
     pub neighbor_len: usize,
     pub policy_len: usize,
     pub required: EffectRosterDemand,
@@ -62,6 +62,12 @@ impl EffectRosters<'_> {
             .ok_or("country neighbor roster unreadable or invalid")?;
         add(&mut self.required.neighbors, source.count)?;
         let count = source.count as usize;
+        // Refresh@1406FE3C0 retains every native neighbor occurrence.
+        self.neighbors.ensure(
+            self.neighbor_len
+                .checked_add(count)
+                .ok_or("country roster demand overflow")?,
+        )?;
         if !fits || count > self.neighbors.len().saturating_sub(self.neighbor_len) {
             return Err("country neighbor roster arena capacity exceeded");
         }
@@ -91,6 +97,11 @@ impl EffectRosters<'_> {
         };
         add(&mut self.required.policies, source.count)?;
         let count = source.count as usize;
+        self.policies.ensure(
+            self.policy_len
+                .checked_add(count)
+                .ok_or("country roster demand overflow")?,
+        )?;
         if !fits || count > self.policies.len().saturating_sub(self.policy_len) {
             return Err("MIO policy roster arena capacity exceeded");
         }
@@ -128,8 +139,8 @@ pub struct RosterDemand {
 pub(super) type Spans = ([RosterSpan; 3], [RosterSpan; 2]);
 
 pub struct CounterRosters<'a> {
-    pub states: &'a mut [u32],
-    pub leaders: &'a mut [u64],
+    pub states: Buffer<'a, u32>,
+    pub leaders: Buffer<'a, u64>,
     pub state_len: usize,
     pub leader_len: usize,
     pub required: RosterDemand,
@@ -173,6 +184,28 @@ pub fn counter_roster_demand(
     base: usize,
     state: usize,
 ) -> Result<RosterDemand, &'static str> {
+    counter_roster_demand_inner(memory, base, state, None)
+}
+
+/// Reuses the authenticated roster census for an independent sparse ship-name
+/// sizing hint. After each country's established headers, observes its full
+/// registered pride reference (+250, getter1406EA580). Observer faults do not
+/// affect roster demand, and the original API performs no added pride reads.
+pub fn counter_roster_demand_with_pride_observer(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    observer: &mut dyn FnMut(Result<u64, &'static str>),
+) -> Result<RosterDemand, &'static str> {
+    counter_roster_demand_inner(memory, base, state, Some(observer))
+}
+
+fn counter_roster_demand_inner(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut observer: Option<&mut dyn FnMut(Result<u64, &'static str>)>,
+) -> Result<RosterDemand, &'static str> {
     let countries = Reader::new(memory, base, state)?;
     let mut demand = RosterDemand::default();
     for slot in 1..countries.count() {
@@ -187,6 +220,15 @@ pub fn counter_roster_demand(
         }
         for leaders in leader_arrays(memory, base, country)? {
             add(&mut demand.leaders, leaders.count)?;
+        }
+        if let Some(observer) = observer.as_mut() {
+            observer(
+                country
+                    .pointer
+                    .checked_add(PRIDE_OF_THE_FLEET)
+                    .and_then(|address| read::<u64>(memory, address))
+                    .ok_or("country pride-name demand reference unreadable"),
+            );
         }
     }
     Ok(demand)
@@ -236,6 +278,18 @@ impl CounterRosters<'_> {
         if !row_fits {
             return Err("country roster row capacity exceeded");
         }
+        // 1406DF460/1406E6500 and the state headers bound the complete
+        // original rosters; worker growth keeps their native order.
+        self.states.ensure(
+            self.state_len
+                .checked_add(state_count)
+                .ok_or("country roster demand overflow")?,
+        )?;
+        self.leaders.ensure(
+            self.leader_len
+                .checked_add(leader_count)
+                .ok_or("country roster demand overflow")?,
+        )?;
         if state_count > self.states.len().saturating_sub(self.state_len) {
             return Err("country state roster arena capacity exceeded");
         }
@@ -285,3 +339,127 @@ impl CounterRosters<'_> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pride_demand_tests {
+    use super::*;
+    use crate::ccountry::synthetic::World;
+    use std::cell::RefCell;
+
+    struct Tracked<'a> {
+        memory: crate::memory::SliceMemory<'a>,
+        denied: Option<usize>,
+        reads: RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Tracked<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, destination.len()));
+            if self
+                .denied
+                .is_some_and(|at| address <= at && at < address.saturating_add(destination.len()))
+            {
+                return false;
+            }
+            self.memory.copy(address, destination)
+        }
+    }
+    fn tracked(world: &World, denied: Option<usize>) -> Tracked<'_> {
+        Tracked {
+            memory: world.memory(),
+            denied,
+            reads: RefCell::default(),
+        }
+    }
+
+    #[test]
+    fn original_roster_hint_has_identical_read_order_without_pride_observer() {
+        let mut world = World::new(0x4000_0000, 3, 0x1100);
+        let pride: Vec<_> = (1..=3)
+            .map(|slot| world.object(slot) + PRIDE_OF_THE_FLEET)
+            .collect();
+        for (address, handle) in pride
+            .iter()
+            .zip([0, (7_u64 << 32) | 51, (9_u64 << 32) | 51])
+        {
+            world.u64(*address, handle);
+        }
+        let old = tracked(&world, Some(pride[1]));
+        assert_eq!(
+            counter_roster_demand(&old, world.module, world.game_state()),
+            Ok(RosterDemand::default())
+        );
+        assert!(
+            old.reads
+                .borrow()
+                .iter()
+                .all(|(address, _)| !pride.contains(address))
+        );
+        let observed = tracked(&world, None);
+        let mut handles = Vec::new();
+        assert_eq!(
+            counter_roster_demand_with_pride_observer(
+                &observed,
+                world.module,
+                world.game_state(),
+                &mut |handle| handles.push(handle)
+            ),
+            Ok(RosterDemand::default())
+        );
+        assert_eq!(
+            handles,
+            [Ok(0), Ok((7_u64 << 32) | 51), Ok((9_u64 << 32) | 51)]
+        );
+        let old_reads = old.reads.into_inner();
+        let observed_reads: Vec<_> = observed
+            .reads
+            .into_inner()
+            .into_iter()
+            .filter(|(address, _)| !pride.contains(address))
+            .collect();
+        assert_eq!(observed_reads, old_reads);
+    }
+
+    #[test]
+    fn independent_pride_read_failure_keeps_roster_sums_and_later_observations() {
+        let mut world = World::new(0x4000_0000, 3, 0x1100);
+        let states = world.alloc(8);
+        world.array(world.object(1) + OWNED_STATES, states, 1);
+        world.u64(world.object(3) + PRIDE_OF_THE_FLEET, (11_u64 << 32) | 51);
+        let memory = tracked(&world, Some(world.object(2) + PRIDE_OF_THE_FLEET));
+        let mut handles = Vec::new();
+        assert_eq!(
+            counter_roster_demand_with_pride_observer(
+                &memory,
+                world.module,
+                world.game_state(),
+                &mut |handle| handles.push(handle)
+            ),
+            Ok(RosterDemand {
+                states: 1,
+                leaders: 0
+            })
+        );
+        assert_eq!(
+            handles,
+            [
+                Ok(0),
+                Err("country pride-name demand reference unreadable"),
+                Ok((11_u64 << 32) | 51)
+            ]
+        );
+        // An unauthenticated country is never offered to the observer.
+        world.u32(world.object(2) + crate::ccountry::ID, 99);
+        let memory = tracked(&world, None);
+        handles.clear();
+        assert!(
+            counter_roster_demand_with_pride_observer(
+                &memory,
+                world.module,
+                world.game_state(),
+                &mut |handle| handles.push(handle)
+            )
+            .is_err()
+        );
+        assert_eq!(handles, [Ok(0)]);
+    }
+}

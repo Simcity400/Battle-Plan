@@ -11,8 +11,8 @@ use std::{
 use installed_content::{
     parser::Item,
     unit_path::{
-        self, Army, ArmyCombat, Country, Fact, MoveWorld, Mover, Occupant, ReachKey, Reachable,
-        Search, StraitFleet,
+        self, Army, ArmyCombat, CounterClass, CounterRequest, Country, Fact, MoveWorld, Mover,
+        Occupant, ReachKey, Reachable, Search, StraitFleet,
     },
 };
 use replay::rows::{
@@ -26,6 +26,11 @@ use super::{
 };
 
 type Index<T> = OnceLock<Result<T, String>>;
+#[path = "reach/selected_common.rs"]
+mod selected_common;
+#[path = "reach/selected_transport.rs"]
+mod selected_transport;
+pub(crate) use selected_common::{CommonCells, CommonText};
 
 /// One country's `CountryWars` row in canonical slots.
 struct Wars {
@@ -44,7 +49,7 @@ fn get<T>(cell: &Index<T>, build: impl FnOnce() -> Result<T, String>) -> Result<
 #[derive(Default)]
 /// Rows are held as their positions in the hour's tables.
 pub struct Cells {
-    invasion_owners: Index<BTreeMap<Country, usize>>,
+    native_relations: Index<crate::map::allegiance::NativeRelations>,
     divisions: Index<BTreeMap<u64, usize>>,
     movement: Index<BTreeMap<u64, usize>>,
     armies: Index<BTreeMap<u32, Vec<Occupant>>>,
@@ -97,6 +102,18 @@ pub struct Moves<'w, 'a> {
     world: &'w World<'a>,
     assets: &'w RaidAssets,
     cells: &'w Cells,
+    counter: Option<&'w dyn CounterFacts>,
+    common: Option<&'w CommonCells<'a>>,
+}
+
+/// Only reached fresh-counter class facts; the existing movement world owns
+/// shared diplomacy, content adjacency and visibility predicates.
+pub(crate) trait CounterFacts: Sync {
+    fn rail_connected(&self, from: u32, to: u32) -> Fact<bool>;
+    fn rail_orders_group(&self, handle: u64) -> Fact<u64>;
+    fn naval_access(&self, moves: &Moves<'_, '_>, handle: u64, to: u32) -> Fact<bool>;
+    fn all_submarine(&self, handle: u64) -> Fact<bool>;
+    fn hostile_allows(&self, moves: &Moves<'_, '_>, handle: u64, to: u32) -> Fact<bool>;
 }
 
 impl<'w, 'a> Moves<'w, 'a> {
@@ -105,7 +122,37 @@ impl<'w, 'a> Moves<'w, 'a> {
             world,
             assets,
             cells,
+            counter: None,
+            common: None,
         }
+    }
+
+    pub(crate) fn for_counter(
+        world: &'w World<'a>,
+        assets: &'w RaidAssets,
+        cells: &'w Cells,
+        counter: &'w dyn CounterFacts,
+    ) -> Self {
+        Self {
+            world,
+            assets,
+            cells,
+            counter: Some(counter),
+            common: None,
+        }
+    }
+
+    pub(crate) fn counter_topology(
+        &self,
+    ) -> Fact<(
+        &installed_content::province_graph::ProvinceGraph,
+        &installed_content::province_geometry::ProvinceGeometry,
+    )> {
+        self.assets.mission_topology()
+    }
+
+    pub(crate) fn counter_discloses(&self, owner: Country, target: Country) -> Fact<bool> {
+        unit_path::discloses(self, owner, target, true)
     }
 
     /// 141534980 / 1415349B0: the shared rule verdict, submarine or navy bit.
@@ -134,6 +181,71 @@ impl<'w, 'a> Moves<'w, 'a> {
         let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
         let mover = Mover { graph, world: self };
         Ok(mover.invasion_sea(source)?.zip(mover.invasion_sea(target)?))
+    }
+
+    /// Fresh counter cache-miss request. It does not demand the raid's
+    /// retreat, strength, organisation, combat roster or commander bans.
+    pub fn counter_route(&self, division: u64, to: u32, request: CounterRequest) -> Fact<Vec<u32>> {
+        let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
+        let row = self
+            .division(division)?
+            .ok_or_else(|| format!("counter unit {division:#x} is not a recorded army"))?;
+        let movement = self.movement(division)?;
+        let army = Army {
+            location: row.province,
+            owner: self.slot(row.logical_owner)?,
+            navy_country: self.slot(if row.expeditionary_owner as i32 > 0 {
+                row.logical_owner
+            } else {
+                row.roster_owner
+            })?,
+            orders_group: row.orders_group,
+            naval_transfer: movement.naval_transfer != 0,
+            exiled: self.move_flags(division)? & DivisionStatusRow::MOVE_EXILED != 0,
+            ..Army::default()
+        };
+        Mover { graph, world: self }.counter_route(&army, row.province, to, request)
+    }
+
+    pub(crate) fn railway_counter_route(
+        &self,
+        row: &replay::rows::RailwayGunCounterInputRow,
+        to: u32,
+        mut request: CounterRequest,
+    ) -> Fact<Vec<u32>> {
+        let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
+        request.class = CounterClass::Railway(row.gun);
+        let unit = Army {
+            location: row.province,
+            owner: self.slot(row.logical_owner)?,
+            naval_transfer: row.naval_transfer != 0,
+            exiled: row.exiled != 0,
+            ..Default::default()
+        };
+        Mover { graph, world: self }.counter_route(&unit, row.province, to, request)
+    }
+
+    pub(crate) fn task_force_counter_route(
+        &self,
+        row: &TaskForceRow,
+        fresh: &replay::rows::FreshTaskForceCounterEta,
+        to: u32,
+        mut request: CounterRequest,
+    ) -> Fact<Vec<u32>> {
+        let graph = self.assets.moves.as_ref().map_err(Clone::clone)?;
+        request.class = CounterClass::TaskForce(row.id);
+        let unit = Army {
+            location: row.province,
+            owner: self.slot(row.logical_owner)?,
+            // Class1 always uses the transport classifier and always checks
+            // cross-landmass; its native route does not read +2F8 transfer.
+            exiled: fresh
+                .exiled
+                .ok_or("fresh ETA task force exile byte was refused")?
+                != 0,
+            ..Default::default()
+        };
+        Mover { graph, world: self }.counter_route(&unit, row.province, to, request)
     }
 
     /// The invasion's forced-transfer request uses only these army operands;
@@ -551,46 +663,101 @@ impl<'w, 'a> Moves<'w, 'a> {
             .ok_or_else(|| format!("province {province} is not recorded"))?;
         Ok((row.state != 0).then_some(row.state))
     }
+
+    fn native_relations(&self) -> Result<&crate::map::allegiance::NativeRelations, String> {
+        get(&self.cells.native_relations, || {
+            crate::map::allegiance::NativeRelations::read(self.world.frame(), &self.world.links)
+                .map_err(|error| error.to_string())
+        })
+    }
 }
 
 impl MoveWorld for Moves<'_, '_> {
-    /// The route unit owner's recorded path-cost operands, from any invasion
-    /// whose unit that owner holds (one hour's reads agree).
+    /// 140DBF240 reads the route owner's directed native relation cache;
+    /// target zero also has its independently recorded war-pointer operands.
+    /// A known true arm suffices even if the other input was refused.
     fn path_friendly(&self, owner: Country, target: Country) -> Fact<bool> {
-        let rows = self.table::<tables::InvasionPreparations>()?;
-        let index = get(&self.cells.invasion_owners, || {
-            let mut out = BTreeMap::new();
-            for (at, row) in rows.iter().enumerate() {
-                if row.unit_owner != 0 {
-                    out.entry(self.slot(row.unit_owner)?).or_insert(at);
-                }
-            }
-            Ok(out)
-        })?;
-        let row = index.get(&owner).map(|&at| &rows[at]).ok_or_else(|| {
-            format!("invasion owner slot {owner} has no recorded path-cost operands")
-        })?;
-        if target != 0 {
-            return Ok(
-                self.at_war(owner, target)? || row.co_belligerents.binary_search(&target).is_ok()
-            );
+        let co_belligerent = self
+            .native_relations()
+            .and_then(|relations| relations.co_belligerent(owner, target));
+        if matches!(co_belligerent, Ok(true)) {
+            return Ok(true);
         }
-        // 1406F3A00 tests the owner country's own id before the war pointer.
-        let raw = self
+        // 1406F3A00's signed-positive receiver-id gate applies to every target.
+        let at_war = self
             .world
             .raw_country(owner)
-            .ok_or_else(|| format!("invasion owner slot {owner} has no country"))?;
-        Ok(
-            ((raw as i32) > 0 && row.zero_war_present != 0 && row.zero_war_retired == 0)
-                || row.zero_co_belligerent != 0,
-        )
+            .ok_or_else(|| format!("country slot {owner} has no Countries row"))
+            .and_then(|raw| {
+                if raw as i32 <= 0 {
+                    Ok(false)
+                } else if target != 0 {
+                    self.at_war(owner, target)
+                } else {
+                    self.native_relations()
+                        .and_then(|relations| relations.zero_at_war(owner))
+                }
+            });
+        match (co_belligerent, at_war) {
+            (Ok(true), _) | (_, Ok(true)) => Ok(true),
+            (Ok(false), Ok(false)) => Ok(false),
+            (Err(why), Ok(false)) | (Ok(false), Err(why)) => Err(why),
+            (Err(cache), Err(war)) => Err(format!("{cache}; {war}")),
+        }
     }
     fn at_war(&self, a: Country, b: Country) -> Fact<bool> {
-        Ok(a != 0 && a != b && self.world.at_war(a, b)?)
+        if a == 0 || a == b {
+            return Ok(false);
+        }
+        let raw = self
+            .world
+            .raw_country(a)
+            .ok_or_else(|| format!("country slot {a} has no Countries row"))?;
+        if raw as i32 <= 0 {
+            return Ok(false);
+        }
+        if b == 0 {
+            return self.native_relations()?.zero_at_war(a);
+        }
+        self.world.at_war(a, b)
     }
 
     fn military_access(&self, a: Country, b: Country) -> Fact<bool> {
         Ok(self.relation_link(a, b)? & RelationLinkRow::MILITARY_ACCESS != 0)
+    }
+
+    fn docking_rights(&self, a: Country, b: Country) -> Fact<bool> {
+        Ok(self.relation_link(a, b)? & RelationLinkRow::DOCKING_RIGHTS != 0)
+    }
+
+    fn counter_rail_connected(&self, from: u32, to: u32) -> Fact<bool> {
+        self.counter
+            .ok_or("fresh counter class facts are unavailable")?
+            .rail_connected(from, to)
+    }
+
+    fn counter_railway_orders_group(&self, handle: u64) -> Fact<u64> {
+        self.counter
+            .ok_or("fresh counter class facts are unavailable")?
+            .rail_orders_group(handle)
+    }
+
+    fn counter_task_force_access(&self, handle: u64, to: u32) -> Fact<bool> {
+        self.counter
+            .ok_or("fresh counter class facts are unavailable")?
+            .naval_access(self, handle, to)
+    }
+
+    fn counter_task_force_submarine(&self, handle: u64) -> Fact<bool> {
+        self.counter
+            .ok_or("fresh counter class facts are unavailable")?
+            .all_submarine(handle)
+    }
+
+    fn counter_task_force_hostile_allows(&self, handle: u64, to: u32) -> Fact<bool> {
+        self.counter
+            .ok_or("fresh counter class facts are unavailable")?
+            .hostile_allows(self, handle, to)
     }
 
     /// A subject relation in force this hour, as `World::overlord` reads
@@ -655,6 +822,14 @@ impl MoveWorld for Moves<'_, '_> {
         self.slot(row.controller)
     }
 
+    fn controller_raw_positive(&self, province: u32) -> Fact<bool> {
+        self.world
+            .provinces
+            .get(&province)
+            .map(|row| row.controller as i32 > 0)
+            .ok_or_else(|| format!("province {province} is not recorded"))
+    }
+
     fn state_owner(&self, province: u32) -> Fact<Country> {
         let row = self
             .world
@@ -662,6 +837,14 @@ impl MoveWorld for Moves<'_, '_> {
             .get(&province)
             .ok_or_else(|| format!("province {province} is not recorded"))?;
         self.slot(row.owner)
+    }
+
+    fn state_owner_raw_positive(&self, province: u32) -> Fact<bool> {
+        self.world
+            .provinces
+            .get(&province)
+            .map(|row| row.owner as i32 > 0)
+            .ok_or_else(|| format!("province {province} is not recorded"))
     }
 
     fn demilitarized(&self, province: u32) -> Fact<bool> {

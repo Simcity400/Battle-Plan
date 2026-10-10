@@ -41,7 +41,7 @@ fn orders_group_definitions_keep_native_order_kind_and_conditional_pointers() {
     assert_eq!(theatre.definitions.len(), 2);
     let army = &theatre.definitions[0];
     assert_eq!(army.id, (57 << 32) | 53);
-    assert_eq!(army.name, b"Army 1");
+    assert_eq!(army.name.as_deref(), Some(b"Army 1".as_slice()));
     assert!(!army.is_army_group);
     assert_eq!(army.motorization_level, 0);
     assert_eq!(army.leader, Some((279 << 32) | 4713));
@@ -65,18 +65,21 @@ fn orders_group_definitions_keep_native_order_kind_and_conditional_pointers() {
 }
 
 #[test]
-fn orders_group_names_keep_native_empty_omission_and_reject_malformed_fields() {
+fn orders_group_names_keep_native_presence_and_reject_malformed_fields() {
     let original = String::from_utf8(ORDER_OF_BATTLE.to_vec()).unwrap();
     for (saved, expected) in [
-        ("", b"".as_slice()),
-        ("name=\"\"", b"".as_slice()),
-        ("name=\"Renamed command\"", b"Renamed command".as_slice()),
+        ("", None),
+        ("name=\"\"", Some(b"".as_slice())),
+        (
+            "name=\"Renamed command\"",
+            Some(b"Renamed command".as_slice()),
+        ),
     ] {
         let text = original.replace("name=\"Army 1\"", saved);
         let pack = parse_text(text.as_bytes()).unwrap();
         let army =
             &pack.theatre_countries.as_ref().unwrap()[b"GER".as_slice()].land[0].definitions[0];
-        assert_eq!(army.name, expected);
+        assert_eq!(army.name.as_deref(), expected);
         assert_eq!(army.id, (57 << 32) | 53);
     }
     for saved in ["name=A name=B", "name=\"\" name=\"\"", "name={bad=x}"] {

@@ -4,7 +4,7 @@ use crate::{
     cpdx_array::Array,
     memory::{RecordField, RecordLayout, RecordSources, read_slice},
     read,
-    walk::Outcome,
+    walk::{Buffer, Outcome},
 };
 
 /// CStrategicNavy primary vtable; constructor 140E88190 installs 14295C640.
@@ -23,12 +23,13 @@ pub const REGION_MISSIONS_STRIDE: usize = 0x18;
 /// CStrategicNavy `CPdxArray<i64>`; 140E88190 constructs +C8, E90CD0 indexes by region id.
 pub const REGIONAL_OPERANDS: usize = 0xc8;
 
-fn with_identity<T>(
-    memory: &impl Memory,
+fn with_identity<M: Memory, T>(
+    memory: &M,
     base: usize,
     state: usize,
     navy: usize,
     country: ccountry::Country,
+    countries: Option<&ccountry::Reader<'_, M>>,
     consume: impl FnOnce() -> Result<T, &'static str>,
 ) -> Result<T, &'static str> {
     let primary = base.checked_add(VTABLE_RVA).ok_or("navy vtable overflow")? as u64;
@@ -43,11 +44,14 @@ fn with_identity<T>(
     if navy == 0
         || read::<u64>(memory, navy) != Some(primary)
         || read::<u64>(memory, secondary_at) != Some(secondary)
-        || ccountry::Reader::new(memory, base, state)?
-            .resolve(owner)?
-            .pointer
-            != country.pointer
     {
+        return Err("navy identity or owner mismatch");
+    }
+    let resolved = match countries {
+        Some(countries) => countries.resolve(owner)?,
+        None => ccountry::Reader::new(memory, base, state)?.resolve(owner)?,
+    };
+    if resolved.pointer != country.pointer {
         return Err("navy identity or owner mismatch");
     }
     consume()
@@ -61,7 +65,20 @@ pub(crate) fn authenticate_owner(
     navy: usize,
     country: ccountry::Country,
 ) -> Result<(), &'static str> {
-    with_identity(memory, base, state, navy, country, || Ok(()))
+    with_identity(memory, base, state, navy, country, None, || Ok(()))
+}
+
+pub(crate) fn authenticate_owner_with_countries<M: Memory>(
+    memory: &M,
+    base: usize,
+    state: usize,
+    navy: usize,
+    country: ccountry::Country,
+    countries: &ccountry::Reader<'_, M>,
+) -> Result<(), &'static str> {
+    with_identity(memory, base, state, navy, country, Some(countries), || {
+        Ok(())
+    })
 }
 
 pub(crate) fn regional_operand(
@@ -88,12 +105,18 @@ pub(crate) fn regional_inputs(
     navy: usize,
     country: ccountry::Country,
 ) -> Result<Array, &'static str> {
-    with_identity(memory, base, state, navy, country, || {
-        let root = navy
-            .checked_add(REGIONAL_OPERANDS)
-            .ok_or("navy regional root overflow")?;
-        Array::read(memory, root, 8).ok_or("navy regional array invalid")
+    with_identity(memory, base, state, navy, country, None, || {
+        regional_array(memory, navy)
     })
+}
+
+/// 140E90CD0's array, after the caller accepts this navy's identity and owner
+/// within the same frozen acquisition. Does not retry that identity proof.
+pub(crate) fn regional_array(memory: &impl Memory, navy: usize) -> Result<Array, &'static str> {
+    let root = navy
+        .checked_add(REGIONAL_OPERANDS)
+        .ok_or("navy regional root overflow")?;
+    Array::read(memory, root, 8).ok_or("navy regional array invalid")
 }
 
 /// CStrategicNavy strategic-region access modes, a `CPdxArray<u8>` (count +0xBC)
@@ -172,7 +195,7 @@ impl ModeSpans {
         &mut self,
         memory: &impl Memory,
         modes: &mut [u8; MODE_SPANS * MODE_CHUNK],
-        output: &mut [AccessRow],
+        output: &mut Buffer<'_, AccessRow>,
         len: &mut usize,
         unread: &mut u32,
     ) -> Result<(), &'static str> {
@@ -238,6 +261,25 @@ pub fn access_modes(
     game_state: usize,
     output: &mut [AccessRow],
 ) -> Outcome {
+    access_modes_buffer(memory, base, game_state, Buffer::Fixed(output))
+}
+
+/// Worker-owned storage grows from the original native headers.
+pub fn access_modes_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<AccessRow>,
+) -> Outcome {
+    access_modes_buffer(memory, base, game_state, Buffer::Growing(output))
+}
+
+pub fn access_modes_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: Buffer<'_, AccessRow>,
+) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let manager = game_state
@@ -273,6 +315,7 @@ pub fn access_modes(
             len: 0,
         };
         let (mut len, mut unread) = (0, 0_u32);
+        let mut required_rows = 0_usize;
         // Slot zero is the reserved sentinel country.
         let mut first = 1;
         while first < slots {
@@ -318,6 +361,11 @@ pub fn access_modes(
                 }
                 let array = Array::from_header(record[20..36].try_into().unwrap(), 1)
                     .ok_or("navy access modes invalid")?;
+                // GetRegionAccessMode@140E91150 indexes the complete native array.
+                required_rows = required_rows
+                    .checked_add(array.count as usize)
+                    .ok_or("navy access row demand overflow")?;
+                output.ensure(required_rows)?;
                 let mut start = 0;
                 while start < array.count {
                     let take = (array.count - start).min(MODE_CHUNK as u32) as usize;
@@ -325,7 +373,7 @@ pub fn access_modes(
                         .element(start, 1)
                         .ok_or("navy access modes overflow")?;
                     if pieces.len == MODE_SPANS {
-                        pieces.flush(memory, &mut modes, output, &mut len, &mut unread)?;
+                        pieces.flush(memory, &mut modes, &mut output, &mut len, &mut unread)?;
                     }
                     pieces.spans[pieces.len] = ModeSpan {
                         address: at,
@@ -339,7 +387,7 @@ pub fn access_modes(
             }
             first += count as u32;
         }
-        pieces.flush(memory, &mut modes, output, &mut len, &mut unread)?;
+        pieces.flush(memory, &mut modes, &mut output, &mut len, &mut unread)?;
         Ok(if unread == 0 {
             Outcome::Rows { len }
         } else {

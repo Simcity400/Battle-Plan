@@ -16,7 +16,19 @@ fn real_status_capture_builds_sorted_full_handle_border_index() {
         seed.division = handle;
         seed.handle = Some(handle);
     }
-    let mut packet = carmy::StatusPacket::new(2).unwrap();
+    let mut packet = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
+        membership: crate::corders_group_member::MembershipCapacity {
+            queries: 2,
+            groups: 1,
+            ..Default::default()
+        },
+        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+            nodes: 1,
+            entries: 1,
+        },
+        ..carmy::StatusCapacities::new(2)
+    })
+    .unwrap();
     let allocated = packet.allocated_bytes();
     assert_eq!(
         packet.capture(&memory, 0, GS, &seeds, Outcome::Rows { len: 2 }, 2),

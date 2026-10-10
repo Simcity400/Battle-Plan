@@ -23,7 +23,7 @@ const POOLVEC0: usize = 0x61400;
 pub(crate) const POOL0: usize = 0x62000;
 const WVEC: usize = 0x62400;
 pub(crate) const W0: usize = 0x63000;
-const W1: usize = 0x63100;
+pub(crate) const W1: usize = 0x63100;
 const CVEC1: usize = 0x64000;
 const CONT2: usize = 0x65000;
 const POOLVEC1: usize = 0x65400;
@@ -261,6 +261,7 @@ fn fixture_inner() -> Vec<u8> {
             cair_wing::SECONDARY_VTABLE_RVA as u64,
         );
         put64(&mut bytes, wing + 24, handle);
+        put64(&mut bytes, wing + cair_wing::POOL, POOL0 as u64);
     }
     // Aces: A0 alive with inline names, A1 dead with heap names.
     ace(
@@ -371,6 +372,27 @@ impl Memory for SyntheticMemory<'_> {
     }
 }
 
+pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
+    let mut bytes = fixture();
+    let bases = bytes.len();
+    let aces = bases + count * 8;
+    bytes.resize(aces + count * 8, 0);
+    header(
+        &mut bytes,
+        MANAGER + engine::cstrategic_air_manager::STATELESS_AIR_BASES,
+        bases,
+        count as u32,
+    );
+    header(&mut bytes, C0 + engine::ccountry::ACES, aces, count as u32);
+    for index in 0..count {
+        // State vectors require each state's id to equal its indexed slot.
+        // Stateless vectors preserve these repeated original occurrences.
+        put64(&mut bytes, bases + index * 8, H0 as u64);
+        put64(&mut bytes, aces + index * 8, A0 as u64);
+    }
+    bytes
+}
+
 pub(crate) fn memory(bytes: &[u8]) -> SyntheticMemory<'_> {
     SyntheticMemory { bytes }
 }
@@ -400,6 +422,7 @@ pub(super) fn collect_typed(
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
+        transport: [0; 5],
     };
     let mut captured = Captured::with_capacities(&capacities);
     let walked = cair_base::walk(memory, BASE, GAME_STATE, &mut captured.bases.rows);
@@ -442,6 +465,7 @@ pub(super) fn collect_split(
         force_full: true,
         base: BASE,
         game_state: GAME_STATE,
+        transport_admission: Default::default(),
     };
     let capacities = Capacities {
         rows: air_rows,
@@ -449,6 +473,7 @@ pub(super) fn collect_split(
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
+        transport: [0; 5],
     };
     let mut air = Captured::with_capacities(&capacities);
     let mut fog =
@@ -458,7 +483,7 @@ pub(super) fn collect_split(
             area_provinces: 8,
             wings: fog_wings,
         });
-    let mut first = AirBasesJob::new();
+    let mut first = AirBasesJob::fixture();
     let report = super::copy_air_bases_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     fog.registrations_raw_mode = true;
@@ -482,11 +507,20 @@ pub(super) fn collect_split(
 }
 
 pub(crate) fn direct(memory: &impl Memory) -> Split {
-    collect_typed(memory, Capacities::default().rows, 65_536, 2048, 4096)
+    collect_typed(memory, Capacities::fixture().rows, 65_536, 2048, 4096)
 }
 
 pub(crate) fn split(memory: &impl Memory) -> (Split, AirBasesCopyReport, AirBasesJob) {
-    collect_split(memory, Capacities::default().rows, 65_536, 2048, 4096)
+    collect_split(memory, Capacities::fixture().rows, 65_536, 2048, 4096)
+}
+
+/// Optional carrier arenas may report their own first-observation demand.
+/// The original bases/registrations/aces storage must remain sufficient.
+pub(crate) fn assert_no_mandatory_growth(job: &AirBasesJob) {
+    assert!(!job.log.grow_for_next());
+    assert!(job.required_census <= job.census.capacity());
+    assert!(job.required_links <= job.seen_links.capacity());
+    assert_eq!(job.grow_for_next(), job.carrier.grow_for_next());
 }
 
 pub(crate) fn direct_with(

@@ -289,12 +289,48 @@ fn registry(
 /// partial table. Lists that fit the staging buffer are still authenticated
 /// under other pressure, so a fault is never hidden as pressure.
 pub fn capture(memory: &impl Memory, base: usize, game: usize, buffers: Buffers<'_>) -> Capture {
-    let Buffers {
-        rows: output,
-        unlocks,
-        registry: table,
-        list,
-    } = buffers;
+    capture_buffer(
+        memory,
+        base,
+        game,
+        crate::walk::Buffer::Fixed(buffers.rows),
+        crate::walk::Buffer::Fixed(buffers.unlocks),
+        crate::walk::Buffer::Fixed(buffers.registry),
+        crate::walk::Buffer::Fixed(buffers.list),
+    )
+}
+
+/// Grow on the worker from the original database, country and unlock headers.
+#[allow(clippy::too_many_arguments)]
+pub fn capture_growing(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    output: &mut Vec<Row>,
+    unlocks: &mut Vec<u32>,
+    registry: &mut Vec<RegistryEntry>,
+    list: &mut Vec<u8>,
+) -> Capture {
+    capture_buffer(
+        memory,
+        base,
+        game,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(unlocks),
+        crate::walk::Buffer::Growing(registry),
+        crate::walk::Buffer::Growing(list),
+    )
+}
+
+fn capture_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    mut output: crate::walk::Buffer<'_, Row>,
+    mut unlocks: crate::walk::Buffer<'_, u32>,
+    mut table: crate::walk::Buffer<'_, RegistryEntry>,
+    mut list: crate::walk::Buffer<'_, u8>,
+) -> Capture {
     let mut capture = Capture {
         outcome: Outcome::Rows { len: 0 },
         required_rows: 0,
@@ -309,9 +345,14 @@ pub fn capture(memory: &impl Memory, base: usize, game: usize, buffers: Buffers<
         prove_ends(memory, observed.entries)?;
         capture.required_registry = registry_slots(observed.entries.count);
         capture.required_list = list_bytes(observed.entries.count)?;
-        let database = registry(memory, base, observed.entries, table, list)?
+        // 1406B0FC0's live database and 1413BA360's list extents
+        // authorize complete storage before interpreting any captured list.
+        table.ensure(capture.required_registry)?;
+        list.ensure(capture.required_list)?;
+        let database = registry(memory, base, observed.entries, &mut table, &mut list)?
             .then(|| &table[..capture.required_registry]);
         let countries = ccountry::Reader::new(memory, base, game)?;
+        output.ensure(countries.count().saturating_sub(1) as usize)?;
         let country_roots = countries.arrays();
         let mut span = [0u8; ROW_SPAN];
         for slot in 1..countries.count() {
@@ -338,6 +379,11 @@ pub fn capture(memory: &impl Memory, base: usize, game: usize, buffers: Buffers<
                 let entries = Array::from_header(header, POINTER)
                     .ok_or("country tactic unlock array invalid")?;
                 let bytes = list_bytes(entries.count)?;
+                list.ensure(bytes)?;
+                let end = start
+                    .checked_add(entries.count as usize)
+                    .ok_or("country tactic unlock count overflows")?;
+                unlocks.ensure(end)?;
                 let fits = database.is_some() && bytes <= list.len();
                 if !fits {
                     prove_ends(memory, entries)?;

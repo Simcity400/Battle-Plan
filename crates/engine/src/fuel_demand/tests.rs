@@ -1,4 +1,5 @@
 use super::*;
+use crate::walk::Buffer;
 use crate::{ccountry, cgame_state, cstrategic_air, cstrategic_air_manager};
 use std::{cell::Cell, collections::BTreeMap};
 
@@ -33,60 +34,139 @@ fn buffers<'a>(
 ) -> Buffers<'a> {
     Buffers {
         countries: BufferRows {
-            rows: countries,
+            rows: Buffer::Fixed(countries),
             len: 0,
             required: 0,
         },
         contexts: BufferRows {
-            rows: contexts,
+            rows: Buffer::Fixed(contexts),
             len: 0,
             required: 0,
         },
         divisions: BufferRows {
-            rows: &mut [],
+            rows: Buffer::Fixed(&mut []),
             len: 0,
             required: 0,
         },
         fleets: BufferRows {
-            rows: &mut [],
+            rows: Buffer::Fixed(&mut []),
             len: 0,
             required: 0,
         },
         tasks: BufferRows {
-            rows: &mut [],
+            rows: Buffer::Fixed(&mut []),
             len: 0,
             required: 0,
         },
         sites: BufferRows {
-            rows: &mut [],
+            rows: Buffer::Fixed(&mut []),
             len: 0,
             required: 0,
         },
         wings: BufferRows {
-            rows: &mut [],
+            rows: Buffer::Fixed(&mut []),
             len: 0,
             required: 0,
         },
         weather: BufferRows {
-            rows: &mut [],
+            rows: Buffer::Fixed(&mut []),
             len: 0,
             required: 0,
         },
-        context_slots,
-        names: &mut [],
+        context_slots: Buffer::Fixed(context_slots),
+        names: Buffer::Fixed(&mut []),
         name_len: 0,
         name_required: 0,
-        roots: &mut [],
-        groups: &mut [],
-        members: &mut [],
-        children: &mut [],
-        roster_scratch: &mut [],
-        group_names: &mut [],
-        group_countries: &mut [],
+        roots: Buffer::Fixed(&mut []),
+        groups: Buffer::Fixed(&mut []),
+        members: Buffer::Fixed(&mut []),
+        children: Buffer::Fixed(&mut []),
+        roster_scratch: Buffer::Fixed(&mut []),
+        group_names: Buffer::Fixed(&mut []),
+        group_countries: Buffer::Fixed(&mut []),
         group_owner_reason: None,
         group_outcomes: None,
         roots_outcome: None,
         navy_reason: None,
+    }
+}
+
+#[test]
+fn cold_and_later_context_index_keeps_five_thousand_original_contexts_and_cached_faults() {
+    const STATE: usize = 0x1000;
+    const REGIONS: usize = 0x100000;
+    let mut contexts = Vec::new();
+    let mut slots = Vec::new();
+    let mut out = buffers(&mut [], &mut [], &mut []);
+    out.contexts.rows = Buffer::Growing(&mut contexts);
+    out.context_slots = Buffer::Growing(&mut slots);
+    for count in [1_500_usize, 5_000] {
+        let mut memory = Map::default();
+        memory.span(STATE, 0x800);
+        memory.span(crate::air_fuel_defines::CONTEXT_THRESHOLD_RVA, 8);
+        for index in 0..count {
+            let region = REGIONS + index * 0x100;
+            memory.span(region, 0x80);
+            memory.put(
+                region,
+                &(crate::cstrategic_region::VTABLE_RVA as u64).to_le_bytes(),
+            );
+            memory.put(
+                region + crate::cstrategic_region::ID,
+                &(index as u32 + 1).to_le_bytes(),
+            );
+        }
+        struct Fault<'a> {
+            memory: &'a Map,
+            at: usize,
+            failures: Cell<usize>,
+        }
+        impl Memory for Fault<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == self.at {
+                    self.failures.set(self.failures.get() + 1);
+                    return false;
+                }
+                self.memory.copy(address, output)
+            }
+        }
+        let source = Fault {
+            memory: &memory,
+            at: REGIONS + 37 * 0x100 + crate::cstrategic_region::PROVINCES_COUNT,
+            failures: Cell::new(0),
+        };
+        out.contexts.len = 0;
+        out.contexts.required = 0;
+        out.context_slots.fill(0);
+        for index in 0..count {
+            let value = super::air::context(&source, 0, STATE, REGIONS + index * 0x100, &mut out);
+            if index == 37 {
+                assert!(value.is_err());
+            } else {
+                assert_eq!(value.unwrap().0, index);
+            }
+        }
+        assert_eq!(out.contexts.len, count);
+        assert_eq!(source.failures.get(), 1);
+        let reads = memory.reads.get();
+        for index in 0..count {
+            let value = super::air::context(&source, 0, STATE, REGIONS + index * 0x100, &mut out);
+            if index == 37 {
+                assert!(value.is_err());
+            } else {
+                assert_eq!(value.unwrap().0, index);
+            }
+        }
+        assert_eq!(
+            source.failures.get(),
+            1,
+            "growth cannot retry a failed original context"
+        );
+        assert_eq!(
+            memory.reads.get(),
+            reads,
+            "all contexts must remain indexed after growth"
+        );
     }
 }
 

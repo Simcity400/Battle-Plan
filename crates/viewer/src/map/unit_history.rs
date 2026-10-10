@@ -21,11 +21,10 @@
 //! `14127D260` passes camera admission false); until then the entity, its
 //! transform and its animation clock survive, so a quick pan back resumes
 //! them. Hidden entities' clocks advance (`14227CE00` -> `14226EF30`). A
-//! selected unit bypasses the phase (`province+0x1764`); the viewer has no
-//! unit selection.
+//! selected unit bypasses the phase (`province+0x1764`), using this viewer's local selection.
 //!
 //! Divisions (transports included) and railway guns share the land path,
-//! naval formations the ship path. Naval combat graphics are destroyed on
+//! naval formations the ship path. Naval combat graphics are deactivated on
 //! land-gate loss (`14127CAA9`); aircraft and trains have their own
 //! managers. The shared creation counter is in [`super::mesh_budget`].
 //!
@@ -53,6 +52,7 @@ use super::{
 };
 
 pub mod naval;
+pub mod naval_combat;
 pub use naval::Sources as NavalSources;
 
 /// The model path an entity follows.
@@ -355,6 +355,11 @@ impl Province {
                 (entity.scale + frame.delta * frame.gates.scale_up).min(1.0)
             };
         }
+        self.arrows = frame.arrows;
+        queued
+    }
+
+    fn finalize_shown(&mut self, frame: Frame, budget: &Budget) {
         // 14127C910 keeps a newly shown kind's bit clear while the counter is
         // spent, so what it creates next frame still grows from zero.
         for kind in 0..2 {
@@ -362,8 +367,6 @@ impl Province {
                 self.shown[kind] = frame.shown[kind];
             }
         }
-        self.arrows = frame.arrows;
-        queued
     }
 
     /// `141276C20` for a request `141277810` queued: `1412785B0` recreates
@@ -431,6 +434,7 @@ pub struct History {
     /// The hour's targets by province and slot.
     targets: BTreeMap<u32, BTreeMap<Slot, Parts>>,
     naval: naval::History,
+    combats: naval_combat::History,
     provinces: BTreeMap<u32, Province>,
     /// Province boxes for camera admission.
     bounds: Arc<BTreeMap<u32, [f32; 4]>>,
@@ -456,6 +460,49 @@ pub struct History {
 }
 
 impl History {
+    pub(super) fn set_selection(&mut self, selected: &BTreeSet<super::unit_selection::Unit>) {
+        self.naval.set_selection(selected);
+    }
+
+    /// Arrow admission is map geometry; a refused 3D entity library must not suppress it.
+    pub(super) fn prepare_arrow_bounds(
+        &mut self,
+        map: &installed_content::map::MapData,
+        known: &Arc<BTreeMap<u32, [f32; 4]>>,
+    ) {
+        if !self.bounds.is_empty() {
+            return;
+        }
+        self.bounds = if known.is_empty() {
+            Arc::new(super::province_admission::province_boxes(
+                &super::map_buildings::ProvinceMap {
+                    width: map.width,
+                    height: map.height,
+                    ids: &map.province_ids,
+                },
+            ))
+        } else {
+            Arc::clone(known)
+        };
+        for &id in self.bounds.keys() {
+            self.provinces.entry(id).or_default();
+        }
+    }
+
+    pub(super) fn select_provinces(&mut self, provinces: BTreeSet<u32>) {
+        self.schedule
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .set_selected(provinces);
+    }
+
+    /// This frame's native province arrow flag, shared rather than independently reculling
+    /// counters, entities and their selected routes.
+    pub(super) fn arrows_admitted(&self, province: u32) -> bool {
+        self.provinces
+            .get(&province)
+            .is_some_and(|province| province.arrows)
+    }
     /// Recorded roster/route inputs; mutable animator and attachment state
     /// belongs to this viewer's frame history (141277A00 / 141653F00).
     pub fn set_naval(&mut self, sources: NavalSources) {
@@ -472,7 +519,7 @@ impl History {
         bounds: Arc<BTreeMap<u32, [f32; 4]>>,
         steady: bool,
     ) {
-        if !Arc::ptr_eq(&self.bounds, &bounds) {
+        if !bounds.is_empty() && !Arc::ptr_eq(&self.bounds, &bounds) {
             // Native updates the show bits of empty provinces too: a stack
             // arriving in a province already shown starts at full scale.
             for &id in bounds.keys() {
@@ -523,6 +570,7 @@ impl History {
     /// show bits drop, so what shows next grows in on a new clock.
     pub fn reset(&mut self, provinces: Option<&BTreeSet<u32>>) {
         self.naval.reset(provinces);
+        self.combats.reset(provinces);
         self.schedule
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -665,6 +713,7 @@ impl History {
             steady: self.steady,
         };
         self.last = Some(time);
+        self.combats.begin_frame(frame.delta);
         // The native literal, advanced before the province updates (unless
         // the frame already advanced it for its map icons); never indexed by
         // the replay hour.
@@ -681,19 +730,35 @@ impl History {
         for (&id, province) in &mut self.provinces {
             buildings(id, budget);
             match schedule.update(id) {
-                Some(Update::InView) => queued.extend(
-                    province
-                        .visit(
-                            self.targets.get(&id),
-                            self.naval.representatives(id, frame),
-                            frame,
-                            &mut self.epoch,
-                            budget,
-                        )
-                        .into_iter()
-                        .map(|(slot, shown)| (id, slot, shown)),
-                ),
-                Some(Update::OffScreen) => province.leave(self.steady),
+                Some(Update::InView) => {
+                    let land_was_shown = province.shown[Kind::Land as usize];
+                    queued.extend(
+                        province
+                            .visit(
+                                self.targets.get(&id),
+                                self.naval.representatives(id, frame),
+                                frame,
+                                &mut self.epoch,
+                                budget,
+                            )
+                            .into_iter()
+                            .map(|(slot, shown)| (id, slot, shown)),
+                    );
+                    self.combats.visit(
+                        id,
+                        self.naval.combat(id),
+                        frame,
+                        land_was_shown,
+                        &mut self.epoch,
+                        budget,
+                    );
+                    province.finalize_shown(frame, budget);
+                }
+                Some(Update::OffScreen) => {
+                    self.combats
+                        .leave(id, province.shown[Kind::Land as usize], self.steady);
+                    province.leave(self.steady);
+                }
                 None => {}
             }
         }
@@ -708,10 +773,15 @@ impl History {
                 budget,
             );
         }
+        // 140DBF240 runs graphical province setters/probes before 14029EAD0
+        // dispatches the animation manager. Admit each private combat player
+        // once here, after this frame's callbacks and before its rendered pose.
+        self.combats.advance(frame.delta);
         let raid_epoch = self.raid_epoch;
         self.provinces
             .values()
             .flat_map(|province| province.entities.values().flat_map(Entity::placed))
+            .chain(self.combats.placed())
             .chain(self.raids.iter().map(|&(mesh, instance)| {
                 (
                     mesh,
@@ -722,6 +792,16 @@ impl History {
                 )
             }))
             .collect()
+    }
+
+    pub(super) fn combat_warnings(&self) -> Vec<String> {
+        self.combats.warnings()
+    }
+
+    pub(super) fn combat_clocks(
+        &self,
+    ) -> BTreeMap<(usize, u32, u32), super::entity_animation::Clock> {
+        self.combats.clocks()
     }
 }
 

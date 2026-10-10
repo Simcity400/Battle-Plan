@@ -8,7 +8,7 @@ pub(super) struct Work {
     captured: u64,
     refused: u64,
     origins_captured: u64,
-    origins_refused: [u64; 4],
+    origins_refused: [u64; 5],
 }
 
 impl Work {
@@ -26,6 +26,7 @@ impl Work {
                 Failure::InvalidOrigins => 1,
                 Failure::OriginsCapacity { .. } => 2,
                 Failure::OriginsChanged => 3,
+                Failure::Allocation => 4,
             };
             self.origins_refused[index] = self.origins_refused[index].saturating_add(1);
         }
@@ -34,7 +35,7 @@ impl Work {
     pub(super) fn status(&self) -> impl serde::Serialize + '_ {
         crate::status::status!({
             "captured": self.captured,
-            "scope": "division and railway-gun supply-footer operand packs; origin fragments fail independently",
+            "scope": "division, railway-gun and task-force supply-footer operand packs; origin fragments fail independently",
             "refused": self.refused,
             "refusal": Failure::Unreadable.reason(),
             "origins_captured": self.origins_captured,
@@ -43,6 +44,7 @@ impl Work {
                 (Failure::InvalidOrigins.reason(), self.origins_refused[1]),
                 (Failure::OriginsCapacity { required: 0 }.reason(), self.origins_refused[2]),
                 (Failure::OriginsChanged.reason(), self.origins_refused[3]),
+                (Failure::Allocation.reason(), self.origins_refused[4]),
             ].into_iter()),
         })
     }

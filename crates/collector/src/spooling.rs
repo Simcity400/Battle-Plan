@@ -44,6 +44,7 @@ use std::{
 
 /// Baseline and borrowed conversion caches for one spool frame.
 pub(crate) struct SpoolConversion<'a, 'cache> {
+    pub(crate) template_names_baseline: Option<&'a [replay::rows::DivisionTemplateRow]>,
     pub(crate) variables_baseline: Option<(BaselineToken, &'a [ScriptVariablesRow])>,
     pub(crate) variables_scratch: &'a mut ScriptVariableComparison,
     pub(crate) characters: Option<&'a mut CharacterConversion<'cache>>,
@@ -411,6 +412,21 @@ fn character_shadow_status<'a>(
     })
 }
 
+/// Borrow only the current branch's complete carry. No native shadow or guessed
+/// daily origin: the equality marker depends on this exact frame's daily bytes.
+fn template_names_cache(
+    cache: &TableCache<CachedTable>,
+    cached_branch: Option<BranchId>,
+    branch: BranchId,
+) -> Option<&[replay::rows::DivisionTemplateRow]> {
+    if cached_branch != Some(branch) {
+        return None;
+    }
+    match cache.get(&TableId::DivisionTemplates) {
+        Some(CachedTable::Complete(rows)) => rows.rows::<tables::DivisionTemplates>(),
+        _ => None,
+    }
+}
 fn character_cache(
     cache: &TableCache<CachedTable>,
     cached_branch: Option<BranchId>,
@@ -439,6 +455,8 @@ struct Campaign<B: SegmentBackend = FileBackend> {
     pending: Vec<PendingBranch>,
     staggered_cache: TableCache<CachedTable>,
     staggered_branch: Option<BranchId>,
+    /// Paired with the latest CountryIntel cache, even before durable publication.
+    country_intel_sample: Option<replay::rows::ReservedCountryIntelSample>,
     /// The latest complete rows of each sliced table on `sliced_branch`.
     sliced_cache: TableCache<Arc<TableRows>>,
     /// The read hour of each (sliced table, owner) in `sliced_cache`.
@@ -501,6 +519,7 @@ impl Campaign {
             pending: Vec::new(),
             staggered_cache: TableCache::new(),
             staggered_branch: None,
+            country_intel_sample: None,
             sliced_cache: TableCache::new(),
             sliced_reads: ReadHours::new(),
             sliced_branch: None,
@@ -833,9 +852,11 @@ impl<B: SegmentBackend> Campaign<B> {
     fn try_apply_staggered_inputs(
         &mut self,
         source: &mut FrameInput,
+        intel_sample: Option<Result<replay::rows::ReservedCountryIntelSample, &'static str>>,
     ) -> io::Result<[bool; TABLE_COUNT]> {
         if self.staggered_branch != Some(source.branch) {
             self.staggered_cache.clear();
+            self.country_intel_sample = None;
             self.staggered_branch = Some(source.branch);
         }
         let mut skipped = [false; TABLE_COUNT];
@@ -911,15 +932,37 @@ impl<B: SegmentBackend> Campaign<B> {
                 // Keep the latest sample even if encoding or writing fails.
                 // Recovery resets the encoder, but can snapshot this allocation
                 // on an off hour without retaining a native capture buffer.
+                if table == TableId::CountryIntel {
+                    self.country_intel_sample = if matches!(&cached, CachedTable::Complete(_)) {
+                        intel_sample
+                            .and_then(Result::ok)
+                            .filter(|sample| sample.sample_hour == source.hour)
+                    } else {
+                        None
+                    };
+                }
                 self.staggered_cache.insert(table, cached);
             }
         }
         Ok(skipped)
     }
 
+    /// RCN is acquired hourly, while this certificate follows the exact daily
+    /// CountryIntel sample selected above. Never fill a refused naming prefix.
+    fn assemble_reserved_intel_sample(&self, source: &mut FrameInput) {
+        let TableInput::Sampled(TableView::Complete(TableRows::ReservedCountryNaming(rows))) =
+            &mut source.tables[TableId::ReservedCountryNaming.index()]
+        else {
+            return;
+        };
+        if let [row] = rows.as_mut_slice() {
+            row.country_intel_sample = replay::rows::Recorded::Value(self.country_intel_sample);
+        }
+    }
+
     #[cfg(test)]
     fn apply_staggered_inputs(&mut self, source: &mut FrameInput) -> [bool; TABLE_COUNT] {
-        self.try_apply_staggered_inputs(source).unwrap()
+        self.try_apply_staggered_inputs(source, None).unwrap()
     }
 
     #[cfg(test)]
@@ -1220,7 +1263,7 @@ impl OrderCounterWitness {
             // Keep the old sample's identity, but conservatively revoke its
             // write binding just as periodic sync/detach failures do.
             if let Err(error) = result
-                && let Some(clock) = captured.clock
+                && let Some(clock) = captured.clock.as_ref()
                 && let Ok(campaign) = std::str::from_utf8(clock.campaign_id.as_bytes())
             {
                 self.invalidate_write(campaign, error);
@@ -1238,7 +1281,10 @@ impl OrderCounterWitness {
         self.sample = Some(BoundOrderCounterSample {
             seq: captured.capture_seq,
             branch,
-            clock: captured.clock,
+            clock: captured
+                .clock
+                .as_ref()
+                .and_then(|clock| clock.copy_owned().ok()),
             callback_qpc: captured.qpc,
             begin: source.qpc_begin,
             end: source.qpc_end,
@@ -1258,6 +1304,7 @@ impl OrderCounterWitness {
         if let Some(sample) = &mut self.sample
             && sample
                 .clock
+                .as_ref()
                 .is_some_and(|clock| clock.campaign_id.as_bytes() == campaign.as_bytes())
         {
             sample.subsequent_io_error = Some(error_reason(error));
@@ -1525,6 +1572,15 @@ fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
 struct Statistics {
     game_score: crate::extended::game_score::Work,
     country_rosters: crate::extended::country_counters::RosterWork,
+    directed_wars: crate::extended::country_directed_wars::Work,
+    reserved_visibility: crate::extended::reserved_visibility::Work,
+    state_map_inputs: crate::acquisition_states::InputWork,
+    railway_map_inputs: crate::acquisition_states::InputWork,
+    fresh_eta_inputs: crate::extended::division_eta_inputs::FreshWork,
+    selected_attack_inputs: crate::extended::attack_inputs::Work,
+    naval_movement: crate::extended::NavalMovementWork,
+    battle_plan_child_fronts: crate::extended::plans::ChildFrontWork,
+    battle_plan_execution: crate::extended::plans::ExecutionWork,
     division_naming: crate::extended::division_presentation::NamingWork,
     counter_tooltip_inputs: crate::extended::division_presentation::CounterWork,
     character_naming: crate::extended::character_inputs::NamingWork,
@@ -1570,12 +1626,23 @@ struct Statistics {
     raid_refused_leaders: u64,
     weather_suspend_failures: u64,
     weather_suspend_last_failure: Option<&'static str>,
+    weather_display_failures: u64,
+    weather_display_last_failure: Option<&'static str>,
 }
 
 impl Default for Statistics {
     fn default() -> Self {
         Self {
             country_rosters: crate::extended::country_counters::RosterWork::default(),
+            directed_wars: Default::default(),
+            reserved_visibility: crate::extended::reserved_visibility::Work::default(),
+            state_map_inputs: crate::acquisition_states::InputWork::default(),
+            railway_map_inputs: crate::acquisition_states::InputWork::default(),
+            fresh_eta_inputs: crate::extended::division_eta_inputs::FreshWork::default(),
+            selected_attack_inputs: crate::extended::attack_inputs::Work::default(),
+            naval_movement: crate::extended::NavalMovementWork::default(),
+            battle_plan_child_fronts: crate::extended::plans::ChildFrontWork::default(),
+            battle_plan_execution: crate::extended::plans::ExecutionWork::default(),
             division_naming: crate::extended::division_presentation::NamingWork::default(),
             counter_tooltip_inputs: crate::extended::division_presentation::CounterWork::default(),
             character_naming: crate::extended::character_inputs::NamingWork::default(),
@@ -1623,6 +1690,8 @@ impl Default for Statistics {
             raid_refused_leaders: 0,
             weather_suspend_failures: 0,
             weather_suspend_last_failure: None,
+            weather_display_failures: 0,
+            weather_display_last_failure: None,
         }
     }
 }
@@ -1689,6 +1758,7 @@ struct CapturedStatistics {
     country_cache_ns: u64,
     raid_reads: crate::extended::RaidReadCounts,
     weather_suspend_failure: Option<&'static str>,
+    weather_display_failure: Option<&'static str>,
 }
 
 impl CapturedStatistics {
@@ -1732,6 +1802,7 @@ impl CapturedStatistics {
             country_cache_ns: captured.country_cache_ns,
             raid_reads,
             weather_suspend_failure: captured.extended.weather_suspend_failure(),
+            weather_display_failure: captured.extended.weather_display_failure(),
         })
     }
 
@@ -1750,6 +1821,10 @@ impl CapturedStatistics {
         stats.country_cache_status = self.country_cache_status;
         stats.country_cache_cost.record_ns(self.country_cache_ns);
         stats.truncated_tables = self.truncated_tables;
+        if let Some(reason) = self.weather_display_failure {
+            stats.weather_display_failures = stats.weather_display_failures.saturating_add(1);
+            stats.weather_display_last_failure = Some(reason);
+        }
         if let Some(reason) = self.weather_suspend_failure {
             stats.weather_suspend_failures = stats.weather_suspend_failures.saturating_add(1);
             stats.weather_suspend_last_failure = Some(reason);
@@ -1778,7 +1853,10 @@ impl PreparedOrderWitness {
             witness
         });
         Self {
-            clock: captured.clock,
+            clock: captured
+                .clock
+                .as_ref()
+                .and_then(|clock| clock.copy_owned().ok()),
             forced,
         }
     }
@@ -1865,6 +1943,17 @@ impl Processor {
     pub(crate) fn observe_input_demand_error(&mut self, reason: &'static str) {
         self.stats.input_demand_errors = self.stats.input_demand_errors.saturating_add(1);
         self.stats.input_demand_last_error = Some(reason);
+    }
+
+    /// Off-thread observations prepare storage without affecting session warnings.
+    pub(crate) fn observe_input_demand<T>(&mut self, result: Result<T, &'static str>) -> Option<T> {
+        match result {
+            Ok(demand) => Some(demand),
+            Err(reason) => {
+                self.observe_input_demand_error(reason);
+                None
+            }
+        }
     }
 
     /// The caller retains the buffer until this succeeds. Opening a campaign may
@@ -1973,7 +2062,7 @@ impl Processor {
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
-        if let Some(clock) = captured.clock {
+        if let Some(clock) = captured.clock.as_ref() {
             crate::allocation::set_context(crate::allocation::Context {
                 campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
                 load_signal: Some(clock.play_session_started_at),
@@ -1983,13 +2072,40 @@ impl Processor {
         } else {
             crate::allocation::set_context(Default::default());
         }
-        if captured.clock.is_some() {
+        if let Some(clock) = captured.clock.as_ref() {
+            captured
+                .extended
+                .observe_attack_inputs(clock.hour, &mut self.stats.selected_attack_inputs);
+            captured
+                .state_inputs
+                .observe(&mut self.stats.state_map_inputs)?;
+            captured
+                .extended
+                .observe_railway_inputs(&mut self.stats.railway_map_inputs)?;
+            captured
+                .extended
+                .observe_fresh_eta_inputs(&mut self.stats.fresh_eta_inputs)?;
+            captured
+                .extended
+                .observe_naval_movement(&mut self.stats.naval_movement)?;
+            captured
+                .extended
+                .observe_battle_plan_child_fronts(&mut self.stats.battle_plan_child_fronts);
+            captured
+                .extended
+                .observe_battle_plan_execution(&mut self.stats.battle_plan_execution);
+            captured
+                .extended
+                .observe_directed_wars(&mut self.stats.directed_wars);
             self.stats
                 .game_score
                 .observe(captured.extended.game_score_status())?;
             captured
                 .extended
                 .observe_country_rosters(&mut self.stats.country_rosters)?;
+            captured
+                .extended
+                .observe_reserved_visibility(&mut self.stats.reserved_visibility)?;
             captured
                 .extended
                 .observe_division_naming(&mut self.stats.division_naming)?;
@@ -2040,7 +2156,7 @@ impl Processor {
         captured: &Captured,
         bound_branch: &mut Option<BranchId>,
     ) -> io::Result<PreparedFrame> {
-        let Some(clock) = captured.clock else {
+        let Some(clock) = captured.clock.as_ref() else {
             self.unknown_loss(1);
             return Err(invalid(
                 "entry clock unreadable; campaign and hour cannot be recorded",
@@ -2110,10 +2226,15 @@ impl Processor {
         );
         let (mut source, pack_ticks) = decoded_with_costs(
             captured,
-            clock,
+            clock.borrowed(),
             branch,
             &mut SpoolConversion {
                 variables_baseline,
+                template_names_baseline: template_names_cache(
+                    &campaign.staggered_cache,
+                    campaign.staggered_branch,
+                    branch,
+                ),
                 variables_scratch: &mut campaign.variables_scratch,
                 characters: Some(&mut characters),
                 lexical: Some(&mut lexical),
@@ -2166,7 +2287,10 @@ impl Processor {
             &mut source.tables,
         )?;
         let retry_full = needs_retry(&source.tables) || sliced_retry;
-        let skipped = campaign.try_apply_staggered_inputs(&mut source)?;
+        let skipped = campaign
+            .try_apply_staggered_inputs(&mut source, captured.extended.country_intel_sample())?;
+        campaign.assemble_reserved_intel_sample(&mut source);
+        crate::fixed_layout::mask_attack(&mut source.tables, captured.fixed_layout.as_ref())?;
         if let Some(layout) = &captured.fixed_layout {
             crate::fixed_layout::apply(&mut source.tables, layout)?;
         }
@@ -2182,7 +2306,7 @@ impl Processor {
         Ok(PreparedFrame {
             source,
             id,
-            clock,
+            clock: clock.copy_owned()?,
             qpc: captured.qpc,
             unknown,
             retry_full,
@@ -2624,6 +2748,11 @@ impl Processor {
             },
             "dropped_frames": stats.dropped_frames,
             "truncated_tables": stats.truncated_tables,
+            "weather_display_reads": {
+                "failures": stats.weather_display_failures,
+                "last_failure": stats.weather_display_last_failure,
+                "scope": "cumulative over processed frames: retained display boundary refused independently; province simulation and display-byte fields remain available",
+            },
             "weather_suspend_reads": {
                 "failures": stats.weather_suspend_failures,
                 "last_failure": stats.weather_suspend_last_failure,
@@ -2669,16 +2798,41 @@ impl Processor {
             "game_score": stats.game_score.status(),
             "division_naming": stats.division_naming.status(),
             "counter_tooltip_inputs": stats.counter_tooltip_inputs.status(),
+            "selected_attack_inputs": stats.selected_attack_inputs.status(),
             "country_rosters": stats.country_rosters.status(),
+            "directed_wars": stats.directed_wars.status(),
+            "fresh_map_inputs": crate::status::status!({
+                "states": stats.state_map_inputs.status(),
+                "railway": stats.railway_map_inputs.status(),
+                "units": stats.fresh_eta_inputs.status(),
+                "naval": stats.naval_movement.status(),
+            }),
+            "battle_plan_child_fronts": stats.battle_plan_child_fronts.status(),
+            "battle_plan_execution": stats.battle_plan_execution.status(),
             "character_naming": stats.character_naming.status(),
             "supply_vehicles": stats.supply_vehicles.status(),
             "script_variable_seeds": stats.variable_seeds.status(),
             "scientist_activity": crate::extended::projects::scientist_active_data(),
             "instant_decisions": crate::extended::visibility::instant_decisions_data(),
+            "political_runtime_scalars": crate::extended::visibility::runtime_scalars_data(),
+            "selected_ordered_enemies":crate::extended::visibility::ordered_enemy_data(),
+            "selected_areas":crate::extended::country_naval_movement_inputs::area_data(),
+            "unit_combat_references":crate::extended::unit_combat_references::data(),
             "air_wing_names": crate::map_capture::air_wing_name_data(),
             "railway_gun_names": crate::extended::railway_guns::name_data(),
             "railway_gun_eta": crate::extended::railway_guns::eta_data(),
+            "division_movement_arrows": crate::extended::division_presentation::movement_arrow_data(),
+            "railway_gun_movement_arrows": crate::extended::railway_guns::movement_arrow_data(),
+            "task_force_movement_arrows": crate::extended::naval_counters::movement_arrow_data(),
+            "task_force_fresh_eta": crate::extended::naval_counters::fresh_eta_data(),
+            "transport_mission_inputs": crate::extended::transport_mission_shared::status(),
+            "transport_convoys": crate::extended::transport_convoys::status(),
+            "transport_boundary_admission": crate::transport_admission::status(),
+            "transport_subject_access": crate::extended::visibility::transport_subject_data(),
+            "ship_strike_readiness": crate::extended::ship_models::strike_data(),
             "country_original_tags": crate::extended::country_appearance::original_tag_data(),
+            "reserved_reverse_visibility": stats.reserved_visibility.status(),
+            "reserved_land_theatres": crate::extended::naval_history::reserved_land_data(),
             "orders_group_tooltip_inputs": crate::extended::group_counters::tooltip_data(),
             "research_walk_ns": research_walk_ns,
             "relations_copy_ns": relations_copy_ns,
@@ -2856,6 +3010,9 @@ fn state_table(
             movement_infrastructure: state.movement_infrastructure,
             continent: replay::rows::Recorded::Value(state.continent),
             manpower_available: state.manpower_available,
+            railway_infrastructure: replay::rows::Recorded::Value(
+                captured.state_inputs.fraction(state.id),
+            ),
             custom_name: engine::allocation::owned_vec(engine::allocation::copy_vec(
                 text(state.custom_name).unwrap_or_default(),
             )),
@@ -2919,10 +3076,11 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> replay::frame
     sampled_frame(
         decoded_with_costs(
             captured,
-            clock,
+            clock.borrowed(),
             branch,
             &mut SpoolConversion {
                 variables_baseline: None,
+                template_names_baseline: None,
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
@@ -2936,7 +3094,7 @@ fn decoded(captured: &Captured, clock: Clock, branch: BranchId) -> replay::frame
 
 fn decoded_with_costs(
     captured: &Captured,
-    clock: Clock,
+    clock: Clock<&[u8]>,
     branch: BranchId,
     conversion: &mut SpoolConversion<'_, '_>,
 ) -> (FrameInput, [Option<i64>; crate::extended::PACK_NAMES.len()]) {
@@ -3000,7 +3158,7 @@ fn decoded_with_costs(
                 std::slice::from_ref(&clock),
                 |clock| CampaignRow {
                     id: engine::allocation::owned_vec(engine::allocation::copy_vec(
-                        clock.campaign_id.as_bytes(),
+                        clock.campaign_id,
                     )),
                 },
             )
@@ -3053,11 +3211,28 @@ fn decoded_with_costs(
                     canonical_slot: link.canonical_slot,
                 },
             ),
-            scalar_table::<tables::Provinces, _>(
+            project_table::<tables::Provinces, _>(
                 conversion.projection.as_deref_mut(),
                 captured.provinces_result,
                 &captured.provinces.rows,
                 |province| u128::from(province.id),
+                |province, previous| {
+                    province.id == previous.id
+                        && province.state == previous.state
+                        && province.owner == previous.owner
+                        && province.controller == previous.controller
+                        && province.victory_points == previous.victory_points
+                        && province.fort_positive == previous.fort_positive
+                        && province.move_gate == previous.move_gate
+                        && province.port_sea == previous.port_sea
+                        && captured
+                            .extended
+                            .province_area_matches(province.id, &previous.selected_areas)
+                        && replay::rows::Recorded::Value(crate::fixed_layout::province_attack(
+                            captured.extended.province_attack(province.id),
+                            captured.fixed_layout.as_ref(),
+                        )) == previous.attack
+                },
                 |province| ProvinceRow {
                     id: province.id,
                     state: province.state,
@@ -3067,6 +3242,13 @@ fn decoded_with_costs(
                     fort_positive: province.fort_positive,
                     move_gate: province.move_gate,
                     port_sea: province.port_sea,
+                    selected_areas: replay::rows::Recorded::Value(
+                        captured.extended.province_area(province.id),
+                    ),
+                    attack: replay::rows::Recorded::Value(crate::fixed_layout::province_attack(
+                        captured.extended.province_attack(province.id),
+                        captured.fixed_layout.as_ref(),
+                    )),
                 },
             ),
             state_table(captured, conversion.projection.as_deref_mut()),
@@ -3136,7 +3318,7 @@ fn decoded_with_costs(
         tables[TableId::BorderConflicts.index()] = border_conflicts_table(captured).into();
         pack_ticks = captured
             .extended
-            .insert_tables(&mut tables, conversion)
+            .insert_tables(clock.hour, &mut tables, conversion)
             .map(Some);
         tables
     };
@@ -3210,6 +3392,8 @@ pub(crate) fn allocation_failure_frame(hour: i32) -> Captured {
     let uuid = b"01234567-89ab-cdef-0123-456789abcdef";
     clock.campaign_id.len = uuid.len();
     clock.campaign_id.bytes[..uuid.len()].copy_from_slice(uuid);
+    engine::allocation::resize_default(&mut frame.map.land_combats.rows, 1).unwrap();
+    engine::allocation::resize_default(&mut frame.map.land_participants, 2).unwrap();
     frame.map.land_combats.rows[0] = engine::cland_combat::Row {
         id: 1,
         attacker_start: 0,
@@ -3229,7 +3413,7 @@ mod tests {
     use super::*;
     use replay::container::{Replay, SeekResult};
     use replay::frame::DecodedFrame;
-    use replay::rows::TableId;
+    use replay::rows::{Recorded, TableId};
 
     #[test]
     fn war_snapshot_work_only_counts_sampled_passes_and_keeps_capacity_scope() {
@@ -3342,7 +3526,7 @@ mod tests {
 
     #[test]
     fn naval_breakdown_status_counts_arena_refusals_before_growth() {
-        use crate::extended::naval_details::fixtures::capture_live_shape;
+        use crate::extended::naval_details::fixtures::capture_live_shape_fixed_breakdown;
         use engine::naval_ship_modifier_breakdown::REQUEST_CAPACITY;
         let mut processor = Processor {
             root: PathBuf::new(),
@@ -3356,7 +3540,7 @@ mod tests {
             unpublished_families: 0,
         };
         let mut source = Captured::new();
-        capture_live_shape(&mut source.extended);
+        capture_live_shape_fixed_breakdown(&mut source.extended);
         source.clock = Some(Clock {
             campaign_id: Default::default(),
             ..clock(10)
@@ -3388,7 +3572,7 @@ mod tests {
             .extended
             .grow(&mut crate::extended::Capacities::default());
         source.extended.reset();
-        capture_live_shape(&mut source.extended);
+        capture_live_shape_fixed_breakdown(&mut source.extended);
         source.clock = Some(Clock {
             campaign_id: Default::default(),
             ..clock(11)
@@ -3458,9 +3642,10 @@ mod tests {
         capture.clock = None;
         let (input, _) = decoded_with_costs(
             &capture,
-            clock(11),
+            clock(11).borrowed(),
             1,
             &mut SpoolConversion {
+                template_names_baseline: None,
                 variables_baseline: Some(baseline),
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
@@ -3597,7 +3782,19 @@ mod tests {
         assert_eq!(first["total_ns"], 300);
         assert_eq!(first["callback_work"]["calls"], 3);
         assert_eq!(first["callback_work"]["total_ns"], 600);
-        assert_eq!(processor.json(), first);
+        // Other tests can update the process-wide acquisition counters between
+        // snapshots. Compare this processor's callback summary and gauges only.
+        let repeated = processor.json();
+        for field in [
+            "hours",
+            "total_ns",
+            "p50_ns",
+            "p95_ns",
+            "max_ns",
+            "callback_work",
+        ] {
+            assert_eq!(repeated[field], first[field], "{field}");
+        }
 
         processor.observe_input_demand_error("country roster header unreadable or invalid");
         processor.observe_input_demand_error("unit leader identity unreadable");
@@ -3829,6 +4026,13 @@ mod tests {
         result
     }
 
+    fn owned_text(bytes: &[u8]) -> engine::capture_text::Owned {
+        engine::capture_text::Owned {
+            bytes: bytes.to_vec(),
+            len: bytes.len(),
+        }
+    }
+
     fn clock(hour: i32) -> Clock {
         Clock {
             game_state: 4096,
@@ -3836,14 +4040,21 @@ mod tests {
             play_time: u64::MAX,
             play_session_started_at: 1234,
             seed: i32::MIN,
-            campaign_id: text(ID),
+            campaign_id: owned_text(ID),
             speed: 5,
             tick_busy: 0,
         }
     }
 
     pub(super) fn captured(hour: i32) -> Captured {
-        let mut captured = Captured::new();
+        // The conversion fixtures write one core row per family, two division
+        // identities/member occurrences and six faction-name bytes.
+        let mut captured = Captured::with_capacities(
+            &[1, 1, 1, 1, 2, 1, 1, 2, 6, 0, 0, 0],
+            &crate::map_capture::MapCapacities::default(),
+            &crate::extended::Capacities::default(),
+        )
+        .unwrap();
         // End-of-hour sampling reads the clock once before the original tick.
         captured.clock = Some(clock(hour));
         captured.qpc = 1000 + i64::from(hour);
@@ -3891,8 +4102,8 @@ mod tests {
     }
 
     fn owned_prepared_fixture(captured: &Captured, branch: BranchId) -> PreparedFrame {
-        let clock = captured.clock.unwrap();
-        let source: FrameInput = decoded(captured, clock, branch).into();
+        let clock = captured.clock.as_ref().unwrap().copy_owned().unwrap();
+        let source: FrameInput = decoded(captured, clock.clone(), branch).into();
         let retry_full = needs_retry(&source.tables);
         PreparedFrame {
             source,
@@ -4028,6 +4239,16 @@ mod tests {
         prepared.retry_full = needs_retry(&prepared.source.tables);
         assert!(prepared.needs_retry());
         assert!(!prepared.allows_early_recycle());
+        let shared = crate::sampling::Shared::new(0, 0, 1);
+        if prepared.needs_retry() {
+            shared.request_retry_full();
+        }
+        assert!(
+            shared
+                .refresh_next
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+        assert!(!shared.force_next.load(std::sync::atomic::Ordering::Acquire));
     }
 
     #[test]
@@ -4363,6 +4584,8 @@ mod tests {
                 fort_positive: 0,
                 move_gate: 0,
                 port_sea: 0,
+                attack: Recorded::Value(replay::rows::ProvinceAttackInputs::default()),
+                selected_areas: Default::default(),
             }]))
         );
         let value = &frame.complete::<tables::Clock>().unwrap()[0];
@@ -4374,6 +4597,7 @@ mod tests {
                 owner: 7,
                 controller: u32::MAX,
                 movement_infrastructure: 0,
+                railway_infrastructure: replay::rows::Recorded::Value(None),
                 continent: replay::rows::Recorded::Value(None),
                 ..Default::default()
             }]))
@@ -4846,6 +5070,7 @@ mod tests {
                 pending: Vec::new(),
                 staggered_cache: TableCache::new(),
                 staggered_branch: None,
+                country_intel_sample: None,
                 sliced_cache: TableCache::new(),
                 sliced_reads: ReadHours::new(),
                 sliced_branch: None,
@@ -4895,7 +5120,7 @@ mod tests {
         campaign
             .lost(
                 &LostObservation {
-                    campaign_id: text(ID),
+                    campaign_id: owned_text(ID),
                     first_hour: 5,
                     last_hour: 7,
                     loaded_hour: Some(4),
@@ -4955,7 +5180,7 @@ mod tests {
         let write = |campaign: &mut Campaign<MemoryBackend>, hour: i32, signal: i64| {
             let mut source = captured(hour);
             source.clock.as_mut().unwrap().play_session_started_at = signal;
-            let current = source.clock.unwrap();
+            let current = source.clock.as_ref().unwrap().copy_owned().unwrap();
             let origin = campaign.tracker.current_branch().map(|_| current.hour);
             assert!(origin.is_none() || origin == Some(hour));
             let branch = campaign.observe(origin, hour, Some(signal)).unwrap();
@@ -5090,7 +5315,7 @@ mod tests {
             unpublished_families: 0,
         };
         let loss = LostObservation {
-            campaign_id: text(b"../invalid"),
+            campaign_id: owned_text(b"../invalid"),
             count: 3,
             first_hour: 1,
             last_hour: 3,
@@ -5099,7 +5324,7 @@ mod tests {
         };
         assert!(processor.lost(&loss).is_err());
         let mut captured = captured(4);
-        captured.clock.as_mut().unwrap().campaign_id = text(b"../invalid");
+        captured.clock.as_mut().unwrap().campaign_id = owned_text(b"../invalid");
         captured.table_reads[TableId::Countries.index()] = ReadCounts {
             copy_calls: 1,
             spans: 1,
@@ -5668,7 +5893,7 @@ mod tests {
     }
 
     #[test]
-    fn a_complete_definitions_read_drops_removed_handles_and_an_empty_one_keeps_all() {
+    fn a_complete_definitions_read_drops_removed_occurrences_and_an_empty_one_keeps_all() {
         use crate::slicing::SliceSelection;
         let definitions = |handles: &[u32]| {
             TableRows::TechnologyDefinitions(
@@ -5676,6 +5901,7 @@ mod tests {
                     .iter()
                     .map(|&technology_handle| replay::rows::TechnologyDefinitionRow {
                         technology_handle,
+                        database_index: technology_handle as i32,
                         ..Default::default()
                     })
                     .collect(),
@@ -5869,6 +6095,247 @@ mod tests {
             province: 7,
             name: vec![0, 0xff, value],
         }])
+    }
+
+    fn reserved_intel_rows(army: i64) -> TableRows {
+        TableRows::CountryIntel(vec![
+            replay::rows::CountryIntelRow {
+                owner_country: 0,
+                target_index: 0,
+                army,
+                ..Default::default()
+            },
+            replay::rows::CountryIntelRow {
+                owner_country: 0,
+                target_index: 2,
+                ..Default::default()
+            },
+        ])
+    }
+
+    fn reserved_intel_sample(
+        source: &FrameInput,
+    ) -> Option<replay::rows::ReservedCountryIntelSample> {
+        let TableInput::Sampled(TableView::Complete(TableRows::ReservedCountryNaming(rows))) =
+            &source.tables[TableId::ReservedCountryNaming.index()]
+        else {
+            panic!("complete RCN fixture")
+        };
+        let replay::rows::Recorded::Value(sample) = rows[0].country_intel_sample else {
+            panic!("assembled field")
+        };
+        sample
+    }
+
+    #[test]
+    fn reserved_intel_certificate_carries_advances_equal_rows_and_clears_fresh_refusal() {
+        use replay::rows::ReservedCountryIntelSample;
+        let (mut campaign, _) = campaign();
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let mut first: FrameInput = staggered_frame(branch, 0, false).into();
+        first.tables[TableId::CountryIntel.index()] =
+            TableView::Complete(reserved_intel_rows(17)).into();
+        let initial = ReservedCountryIntelSample {
+            sample_hour: 0,
+            vector_count: 3,
+        };
+        campaign
+            .try_apply_staggered_inputs(&mut first, Some(Ok(initial)))
+            .unwrap();
+        campaign.assemble_reserved_intel_sample(&mut first);
+        assert_eq!(reserved_intel_sample(&first), Some(initial));
+
+        let mut carried: FrameInput = staggered_frame(branch, 1, true).into();
+        campaign
+            .try_apply_staggered_inputs(&mut carried, None)
+            .unwrap();
+        campaign.assemble_reserved_intel_sample(&mut carried);
+        assert_eq!(reserved_intel_sample(&carried), Some(initial));
+
+        let mut equal: FrameInput = staggered_frame(branch, 2, false).into();
+        equal.tables[TableId::CountryIntel.index()] =
+            TableView::Complete(reserved_intel_rows(17)).into();
+        let latest = ReservedCountryIntelSample {
+            sample_hour: 2,
+            vector_count: 3,
+        };
+        campaign
+            .try_apply_staggered_inputs(&mut equal, Some(Ok(latest)))
+            .unwrap();
+        campaign.assemble_reserved_intel_sample(&mut equal);
+        assert_eq!(reserved_intel_sample(&equal), Some(latest));
+
+        let mut refused: FrameInput = staggered_frame(branch, 3, false).into();
+        refused.tables[TableId::CountryIntel.index()] =
+            TableView::Complete(TableRows::CountryIntel(vec![
+                replay::rows::CountryIntelRow {
+                    owner_country: 1,
+                    target_index: 2,
+                    ..Default::default()
+                },
+            ]))
+            .into();
+        campaign
+            .try_apply_staggered_inputs(&mut refused, Some(Err("reserved body fault")))
+            .unwrap();
+        campaign.assemble_reserved_intel_sample(&mut refused);
+        assert_eq!(reserved_intel_sample(&refused), None);
+        assert!(matches!(
+            refused.tables[TableId::CountryIntel.index()],
+            TableInput::SharedComplete(_)
+        ));
+        let mut after: FrameInput = staggered_frame(branch, 4, true).into();
+        campaign
+            .try_apply_staggered_inputs(&mut after, None)
+            .unwrap();
+        campaign.assemble_reserved_intel_sample(&mut after);
+        assert_eq!(reserved_intel_sample(&after), None);
+    }
+
+    #[test]
+    fn reserved_intel_empty_certificate_prefix_refusal_and_branch_reset_are_distinct() {
+        use replay::rows::ReservedCountryIntelSample;
+        let (mut campaign, _) = campaign();
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let empty = ReservedCountryIntelSample {
+            sample_hour: 0,
+            vector_count: 0,
+        };
+        let mut first: FrameInput = staggered_frame(branch, 0, false).into();
+        campaign
+            .try_apply_staggered_inputs(&mut first, Some(Ok(empty)))
+            .unwrap();
+        first.tables[TableId::ReservedCountryNaming.index()] = unavailable("naming failed").into();
+        campaign.assemble_reserved_intel_sample(&mut first);
+        assert!(
+            matches!(&first.tables[TableId::ReservedCountryNaming.index()],
+            TableInput::Sampled(TableView::Unavailable { reason }) if reason == "naming failed")
+        );
+        assert_eq!(campaign.country_intel_sample, Some(empty));
+        let mut next: FrameInput = staggered_frame(branch, 1, true).into();
+        campaign
+            .try_apply_staggered_inputs(&mut next, None)
+            .unwrap();
+        campaign.assemble_reserved_intel_sample(&mut next);
+        assert_eq!(reserved_intel_sample(&next), Some(empty));
+        let other = branch + 1;
+        let mut reset: FrameInput = staggered_frame(other, 2, true).into();
+        campaign
+            .try_apply_staggered_inputs(&mut reset, None)
+            .unwrap();
+        campaign.assemble_reserved_intel_sample(&mut reset);
+        assert_eq!(reserved_intel_sample(&reset), None);
+        assert_eq!(campaign.country_intel_sample, None);
+    }
+
+    #[test]
+    fn reserved_intel_noncomplete_sample_clears_previous_certificate() {
+        for failed in [
+            TableView::Truncated {
+                rows: TableRows::CountryIntel(Vec::new()),
+                missing: 1,
+            },
+            unavailable("positive intel table failed"),
+        ] {
+            let (mut campaign, _) = campaign();
+            let branch = campaign.observe(None, 0, Some(1)).unwrap();
+            let mut first: FrameInput = staggered_frame(branch, 0, false).into();
+            let sample = replay::rows::ReservedCountryIntelSample {
+                sample_hour: 0,
+                vector_count: 0,
+            };
+            campaign
+                .try_apply_staggered_inputs(&mut first, Some(Ok(sample)))
+                .unwrap();
+            let mut refused: FrameInput = staggered_frame(branch, 1, false).into();
+            refused.tables[TableId::CountryIntel.index()] = failed.into();
+            campaign
+                .try_apply_staggered_inputs(&mut refused, Some(Err("positive prerequisite failed")))
+                .unwrap();
+            campaign.assemble_reserved_intel_sample(&mut refused);
+            assert_eq!(reserved_intel_sample(&refused), None);
+        }
+    }
+
+    #[test]
+    fn reserved_intel_latest_pair_survives_encoding_or_write_failure_recovery() {
+        use replay::frame::{FrameDecoder, TableUpdate};
+        use replay::rows::ReservedCountryIntelSample;
+        for fail_encoding in [false, true] {
+            let (mut campaign, store) = campaign();
+            let branch = campaign.observe(None, 0, Some(1)).unwrap();
+            let mut first: FrameInput = staggered_frame(branch, 0, false).into();
+            first.tables[TableId::CountryIntel.index()] =
+                TableView::Complete(reserved_intel_rows(17)).into();
+            campaign
+                .try_apply_staggered_inputs(
+                    &mut first,
+                    Some(Ok(ReservedCountryIntelSample {
+                        sample_hour: 0,
+                        vector_count: 3,
+                    })),
+                )
+                .unwrap();
+            campaign.assemble_reserved_intel_sample(&mut first);
+            campaign
+                .write(first, 1000, Some(1), 0, &mut WorkSample::default())
+                .unwrap();
+            campaign.observe(None, 1, Some(1)).unwrap();
+            let mut failed: FrameInput = staggered_frame(branch, 1, false).into();
+            failed.tables[TableId::CountryIntel.index()] =
+                TableView::Complete(reserved_intel_rows(-29)).into();
+            let latest = ReservedCountryIntelSample {
+                sample_hour: 1,
+                vector_count: 3,
+            };
+            campaign
+                .try_apply_staggered_inputs(&mut failed, Some(Ok(latest)))
+                .unwrap();
+            campaign.assemble_reserved_intel_sample(&mut failed);
+            if fail_encoding {
+                failed.tables[TableId::UnitIntel.index()] =
+                    TableView::Complete(TableRows::Clock(Vec::new())).into();
+            } else {
+                store.borrow_mut().fail_frame_flush = true;
+            }
+            assert!(
+                campaign
+                    .write(failed, 1001, Some(1), 0, &mut WorkSample::default())
+                    .is_err()
+            );
+            assert_eq!(campaign.country_intel_sample, Some(latest));
+            campaign.observe(None, 2, Some(1)).unwrap();
+            let mut restored: FrameInput = staggered_frame(branch, 2, true).into();
+            campaign
+                .try_apply_staggered_inputs(&mut restored, None)
+                .unwrap();
+            campaign.assemble_reserved_intel_sample(&mut restored);
+            assert_eq!(reserved_intel_sample(&restored), Some(latest));
+            campaign
+                .write(restored, 1002, Some(1), 0, &mut WorkSample::default())
+                .unwrap();
+            let recovered = recover_prefix(store.borrow().segments.get(&1).unwrap());
+            let frame = recovered
+                .records
+                .iter()
+                .find_map(|record| match record {
+                    Record::Frame(frame) => Some(frame),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                frame.tables[TableId::CountryIntel.index()],
+                TableUpdate::Snapshot(reserved_intel_rows(-29))
+            );
+            let decoded = FrameDecoder::new().apply(frame).unwrap();
+            let rcn = decoded
+                .complete::<replay::rows::tables::ReservedCountryNaming>()
+                .unwrap();
+            assert_eq!(
+                rcn[0].country_intel_sample,
+                replay::rows::Recorded::Value(Some(latest))
+            );
+        }
     }
 
     #[test]
@@ -6234,10 +6701,11 @@ mod tests {
         let mut reuse = LexicalConversion::new(Some(&cached), &mut campaign.lexical_conversion);
         let (invalid, packs) = decoded_with_costs(
             &source,
-            clock(1),
+            clock(1).borrowed(),
             branch,
             &mut SpoolConversion {
                 variables_baseline: None,
+                template_names_baseline: None,
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: Some(&mut reuse),
@@ -6486,10 +6954,11 @@ mod tests {
         let mut reuse = IntelConversion::new(1, &mut campaign.intel_shadow);
         let (current, costs) = decoded_with_costs(
             &source,
-            clock(0),
+            clock(0).borrowed(),
             1,
             &mut SpoolConversion {
                 variables_baseline: None,
+                template_names_baseline: None,
                 variables_scratch: &mut ScriptVariableComparison::default(),
                 characters: None,
                 lexical: None,
@@ -6577,10 +7046,11 @@ mod tests {
                         );
                         current = decoded_with_costs(
                             &source,
-                            clock(1),
+                            clock(1).borrowed(),
                             branch,
                             &mut SpoolConversion {
                                 variables_baseline: None,
+                                template_names_baseline: None,
                                 variables_scratch: &mut ScriptVariableComparison::default(),
                                 characters: Some(&mut reuse),
                                 lexical: None,
@@ -6986,5 +7456,240 @@ mod tests {
             "post-truncation refresh must be a snapshot, not delta/unchanged"
         );
         assert_eq!(decoder.apply(&frame).unwrap(), second);
+    }
+
+    // PRIVATE UNRUN: append INSIDE collector/spooling.rs existing tests module.
+
+    #[test]
+    fn shared_attack_scalars_are_masked_after_spool_carry_and_survive_delta_and_independent_keyframes()
+     {
+        use replay::frame::FrameDecoder;
+        use replay::rows::{
+            CountryAttackInputs, CountryCounterInputRow, ProvinceAttackInputs, Recorded,
+            ReservedCountryNamingRow, TableRows, WeatherRegionAttackInputs, WeatherRegionRow,
+        };
+        let (mut campaign, _) = campaign();
+        let branch = campaign.observe(None, 0, Some(1)).unwrap();
+        let held = [
+            (
+                TableId::CountryCounterInputs,
+                Arc::new(TableRows::CountryCounterInputs(vec![
+                    CountryCounterInputRow {
+                        country: 3,
+                        owned_state_count: -23,
+                        controlled_state_count: 17,
+                        attack: Recorded::Value(CountryAttackInputs {
+                            sample_hour: 0,
+                            land_night_attack: Some(i64::MIN),
+                            land_bunker_effectiveness_factor: Some(i64::MAX),
+                        }),
+                        ..Default::default()
+                    },
+                ])),
+            ),
+            (
+                TableId::ReservedCountryNaming,
+                Arc::new(TableRows::ReservedCountryNaming(vec![
+                    ReservedCountryNamingRow {
+                        tag: b"synthetic-reserved".to_vec(),
+                        built: 3,
+                        attack: Recorded::Value(Some(CountryAttackInputs {
+                            sample_hour: 0,
+                            land_night_attack: Some(-17),
+                            land_bunker_effectiveness_factor: Some(29),
+                        })),
+                        ..Default::default()
+                    },
+                ])),
+            ),
+            (
+                TableId::Provinces,
+                Arc::new(TableRows::Provinces(vec![ProvinceRow {
+                    id: 7,
+                    fort_positive: 1,
+                    victory_points: -13,
+                    attack: Recorded::Value(ProvinceAttackInputs {
+                        sample_hour: 0,
+                        fort_sum: Some(3),
+                        land_bunker_effectiveness_factor: Some(47),
+                    }),
+                    ..Default::default()
+                }])),
+            ),
+            (
+                TableId::WeatherRegions,
+                Arc::new(TableRows::WeatherRegions(vec![WeatherRegionRow {
+                    id: 0,
+                    max_snow: i64::MAX,
+                    light_rain: 1,
+                    heavy_rain: 0,
+                    snow: 255,
+                    blizzard: 1,
+                    sandstorm: 2,
+                    arctic_water: 3,
+                    attack: Recorded::Value(WeatherRegionAttackInputs {
+                        sample_hour: 0,
+                        attack: Some(-9_007_199_254_740_993),
+                        breakthrough: Some(100_000),
+                    }),
+                }])),
+            ),
+        ];
+        let valid = engine::fixed_layout::Report {
+            static_token_maximum: 0x6000,
+            gap: Ok(()),
+            modifiers: [Ok(()); engine::modifier_keys::NAMES.len()],
+            tokens: [Ok(()); engine::fixed_layout::TOKENS.len()],
+        };
+        let mut bad = valid;
+        bad.modifiers[engine::modifier_keys::LAND_NIGHT_ATTACK as usize] =
+            Err("fixture fixed slot moved");
+        let layouts: [crate::fixed_layout::Layout; 3] =
+            [Ok(valid), Err("fixture witness interrupted"), Ok(bad)];
+        let mut decoder = FrameDecoder::new();
+        for (hour, layout) in layouts.iter().enumerate() {
+            let mut source: FrameInput = staggered_frame(branch, hour as i32, hour != 0).into();
+            campaign.apply_staggered_inputs(&mut source);
+            // Recovery may supply SharedComplete after assembly. These immutable
+            // held rows deliberately still contain the old nonzero scalar values.
+            for (table, rows) in &held {
+                source.tables[table.index()] = TableInput::SharedComplete(Arc::clone(rows));
+            }
+            crate::fixed_layout::mask_attack(&mut source.tables, Some(layout)).unwrap();
+            crate::fixed_layout::apply(&mut source.tables, layout).unwrap();
+            let frame = campaign.encoder.encode_input(source, hour != 1).unwrap();
+            let decoded = decoder.apply(&frame).unwrap();
+            let country = &decoded.complete::<tables::CountryCounterInputs>().unwrap()[0];
+            assert_eq!(
+                (country.owned_state_count, country.controlled_state_count),
+                (-23, 17)
+            );
+            assert_eq!(
+                country.attack,
+                Recorded::Value(CountryAttackInputs {
+                    sample_hour: 0,
+                    land_night_attack: (hour == 0).then_some(i64::MIN),
+                    land_bunker_effectiveness_factor: (hour == 0).then_some(i64::MAX)
+                })
+            );
+            let reserved = &decoded.complete::<tables::ReservedCountryNaming>().unwrap()[0];
+            assert_eq!(
+                (&reserved.tag[..], reserved.built),
+                (&b"synthetic-reserved"[..], 3)
+            );
+            assert_eq!(
+                reserved.attack,
+                Recorded::Value(Some(CountryAttackInputs {
+                    sample_hour: 0,
+                    land_night_attack: (hour == 0).then_some(-17),
+                    land_bunker_effectiveness_factor: (hour == 0).then_some(29)
+                }))
+            );
+            let province = &decoded.complete::<tables::Provinces>().unwrap()[0];
+            assert_eq!((province.fort_positive, province.victory_points), (1, -13));
+            assert_eq!(
+                province.attack,
+                Recorded::Value(ProvinceAttackInputs {
+                    sample_hour: 0,
+                    fort_sum: Some(3),
+                    land_bunker_effectiveness_factor: (hour == 0).then_some(47)
+                })
+            );
+            let weather = &decoded.complete::<tables::WeatherRegions>().unwrap()[0];
+            assert_eq!(
+                (
+                    weather.light_rain,
+                    weather.heavy_rain,
+                    weather.snow,
+                    weather.blizzard,
+                    weather.sandstorm,
+                    weather.arctic_water
+                ),
+                (1, 0, 255, 1, 2, 3)
+            );
+            assert_eq!(
+                weather.attack,
+                Recorded::Value(WeatherRegionAttackInputs {
+                    sample_hour: 0,
+                    attack: (hour == 0).then_some(-9_007_199_254_740_993),
+                    breakthrough: (hour == 0).then_some(100_000)
+                })
+            );
+            if hour != 1 {
+                let alone = FrameDecoder::new().apply(&frame).unwrap();
+                for (table, _) in &held {
+                    assert_eq!(alone.tables[table.index()], decoded.tables[table.index()]);
+                }
+            }
+        }
+        // Masking cloned SharedComplete rows; it did not mutate recovery owners.
+        let TableRows::CountryCounterInputs(rows) = &*held[0].1 else {
+            unreachable!()
+        };
+        assert_eq!(
+            rows[0].attack,
+            Recorded::Value(CountryAttackInputs {
+                sample_hour: 0,
+                land_night_attack: Some(i64::MIN),
+                land_bunker_effectiveness_factor: Some(i64::MAX)
+            })
+        );
+    }
+
+    #[test]
+    fn province_attack_mask_is_part_of_the_scalar_projection_comparison_certificate() {
+        use crate::projection::{Projection, ProjectionScratch, scalar_table};
+        use replay::rows::{ProvinceAttackInputs, Recorded};
+        let mut encoder = replay::frame::FrameEncoder::new();
+        let mut scratch = ProjectionScratch::default();
+        let mut decoder = replay::frame::FrameDecoder::new();
+        // Native fixed-slot changes must remain invisible when the fixed layout
+        // is refused. The healthy fort sum and sample hour are still exact inputs.
+        let raw = ProvinceAttackInputs {
+            sample_hour: 17,
+            fort_sum: Some(3),
+            land_bunker_effectiveness_factor: Some(47),
+        };
+        for (hour, bunker, equal) in [(0, 47, false), (1, -29, true)] {
+            let native = [ProvinceRow {
+                id: 7,
+                fort_positive: 1,
+                attack: Recorded::Value(ProvinceAttackInputs {
+                    land_bunker_effectiveness_factor: Some(bunker),
+                    ..raw
+                }),
+                ..Default::default()
+            }];
+            let input = scalar_table::<tables::Provinces, _>(
+                Some(&mut Projection::new(&encoder, 1, hour, false, &mut scratch)),
+                Outcome::Rows { len: 1 },
+                &native,
+                |row| u128::from(row.id),
+                |row| {
+                    let mut projected = row.clone();
+                    let Recorded::Value(value) = &row.attack else {
+                        panic!("current scalar fixture")
+                    };
+                    projected.attack =
+                        Recorded::Value(crate::fixed_layout::province_attack(*value, None));
+                    projected
+                },
+            );
+            assert_eq!(matches!(input, TableInput::ComparedEqual(_)), equal);
+            let mut frame: FrameInput = staggered_frame(1, hour, false).into();
+            frame.tables[TableId::Provinces.index()] = input;
+            // Production final masking leaves already-certified province inputs
+            // intact; it must not force conversion or invalidate the certificate.
+            crate::fixed_layout::mask_attack(&mut frame.tables, None).unwrap();
+            let encoded = encoder.encode_input(frame, false).unwrap();
+            let actual = decoder.apply(&encoded).unwrap();
+            assert_eq!(
+                actual.complete::<tables::Provinces>().unwrap()[0].attack,
+                Recorded::Value(ProvinceAttackInputs {
+                    land_bunker_effectiveness_factor: None,
+                    ..raw
+                })
+            );
+        }
     }
 }

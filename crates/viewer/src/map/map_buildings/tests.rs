@@ -1228,6 +1228,32 @@ fn health_thresholds_come_from_the_content() {
 }
 
 #[test]
+fn health_state_preserves_native_wrapping_and_exceptional_words() {
+    let defines = defines();
+    // 1410C5FE0: the partial multiplication wraps to -400,000, whose
+    // truncating division is zero. Widening it would incorrectly choose idle.
+    assert_eq!(
+        health_state(1, 0, i64::MAX - 3, &defines),
+        (false, true, false)
+    );
+    // 1416648D0: adding a healthy level crosses the signed 64-bit boundary.
+    assert_eq!(health_state(2, 1, i64::MAX, &defines), (true, false, false));
+    let sentinel = Defines {
+        damaged: 0xffff_ffff + 1,
+        ..defines
+    };
+    for word in [i64::MIN, i64::MIN + 1, i64::MAX] {
+        assert!(health_state(1, 0, word, &sentinel).1);
+        let at_threshold = Defines {
+            damaged: 0xffff_ffff,
+            ..sentinel
+        };
+        assert!(!health_state(1, 0, word, &at_threshold).1);
+    }
+    assert!(!health_state(0, 0, 0, &sentinel).1);
+}
+
+#[test]
 fn slots_are_looked_up_by_their_truncated_position() {
     // A 4 x 3 map: world z is `height - 1 - row`, so row 0 is z = 2.
     let ids = [1, 1, 2, 2, 1, 1, 2, 0, 3, 3, 3, 3];

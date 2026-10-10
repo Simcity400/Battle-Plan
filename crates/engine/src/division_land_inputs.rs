@@ -2,7 +2,10 @@
 //! Fixed fields are owned DivisionSeed copies; only contributor entries remain
 //! live here. Supply classification belongs to the future dashboard product.
 use crate::{
-    Memory, carmy, carmy_manpower_values, cpdx_array::Array, manpower_value_entry, walk::Outcome,
+    Memory, carmy, carmy_manpower_values,
+    cpdx_array::Array,
+    manpower_value_entry,
+    walk::{Buffer, Outcome},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -46,6 +49,49 @@ pub fn capture(
     contributors: &mut [Contributor],
     scratch: Scratch<'_>,
 ) -> Walk {
+    capture_buffer(
+        memory,
+        base,
+        sources,
+        source,
+        Buffer::Fixed(rows),
+        Buffer::Fixed(contributors),
+        scratch,
+    )
+}
+
+/// Contributor headers are retained in the original census. The writer
+/// 140C5B610 visits their complete native count, without a country ratio.
+pub fn capture_growing(
+    memory: &impl Memory,
+    base: usize,
+    sources: &[carmy::DivisionSeed],
+    source: Outcome,
+    rows: &mut Vec<Row>,
+    contributors: &mut Vec<Contributor>,
+    scratch: Scratch<'_>,
+) -> Walk {
+    capture_buffer(
+        memory,
+        base,
+        sources,
+        source,
+        Buffer::Growing(rows),
+        Buffer::Growing(contributors),
+        scratch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_buffer(
+    memory: &impl Memory,
+    base: usize,
+    sources: &[carmy::DivisionSeed],
+    source: Outcome,
+    mut rows: Buffer<'_, Row>,
+    mut contributors: Buffer<'_, Contributor>,
+    scratch: Scratch<'_>,
+) -> Walk {
     let mut result = Walk {
         outcome: source,
         contributors: 0,
@@ -58,8 +104,9 @@ pub fn capture(
         if !matches!(source, Outcome::Rows { .. }) || source.len() > sources.len() {
             return Err("division land census incomplete");
         }
-        let mut len = 0;
-        let mut used = 0;
+        rows.ensure(source.len())?;
+        let mut len = 0_usize;
+        let mut used = 0_usize;
         let mut required = 0usize;
         let mut stopped = false;
         use crate::memory::{RecordLayout, RecordSources, packed_fields};
@@ -71,9 +118,14 @@ pub fn capture(
         const TWO: [crate::memory::RecordField; 1] = packed_fields([(0, PAIR)]);
         const ONE_LAYOUT: RecordLayout<'static> = RecordLayout::new(&ONE, PAIR).unwrap();
         const TWO_LAYOUT: RecordLayout<'static> = RecordLayout::new(&TWO, PAIR).unwrap();
-        if scratch.pointers.len() < rows.len()
-            || scratch.ordinals.len() < rows.len()
-            || scratch.first.len() < rows.len()
+        let scratch_rows = if rows.is_growing() {
+            source.len()
+        } else {
+            rows.len()
+        };
+        if scratch.pointers.len() < scratch_rows
+            || scratch.ordinals.len() < scratch_rows
+            || scratch.first.len() < scratch_rows
         {
             return Err("division land gather scratch unavailable");
         }
@@ -111,6 +163,10 @@ pub fn capture(
             required = required
                 .checked_add(array.count as usize)
                 .ok_or("division manpower demand overflow")?;
+            contributors.ensure(
+                used.checked_add(array.count as usize)
+                    .ok_or("division manpower demand overflow")?,
+            )?;
             if stopped || len == rows.len() || array.count as usize > contributors.len() - used {
                 stopped = true;
                 continue;
@@ -225,5 +281,116 @@ fn contributor(bytes: &[u8]) -> Contributor {
                 .unwrap(),
         ),
         amount: i32::from_le_bytes(bytes[manpower_value_entry::COUNT..].try_into().unwrap()),
+    }
+}
+
+#[cfg(test)]
+mod sizing_tests {
+    use super::*;
+    use crate::memory::SliceMemory;
+
+    fn seeds(count: usize, contributors: u32) -> Vec<carmy::DivisionSeed> {
+        let mut header = [0; 24];
+        header[..8].copy_from_slice(&(carmy_manpower_values::VTABLE_RVA as u64).to_le_bytes());
+        header[8..16].copy_from_slice(&0x1000u64.to_le_bytes());
+        header[16..20].copy_from_slice(&contributors.to_le_bytes());
+        header[20..24].copy_from_slice(&contributors.to_le_bytes());
+        (0..count)
+            .map(|ordinal| carmy::DivisionSeed {
+                division: ((ordinal as u64 + 1) << 32) | 1,
+                primary_vtable: Some(carmy::VTABLE_RVA as u64),
+                handle: Some(((ordinal as u64 + 1) << 32) | 1),
+                counter_supply_status: Some(-5),
+                supply_grace_maximum: Some(7),
+                supply_grace_remaining: Some(-2),
+                naval_transfer_membership: Some(0),
+                manpower_values: Some(header),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn original_census_grows_land_rows_and_mod_sized_manpower_lists_before_publication() {
+        let mut rows = Vec::new();
+        let mut contributors = Vec::new();
+        let mut pointers = vec![0; 5_000];
+        let mut ordinals = vec![0; 5_000];
+        let mut first = vec![[0; 2 * manpower_value_entry::STRIDE]; 5_000];
+        for (count, entries) in [(1_500, 3), (3_000, 3), (5_000, 137)] {
+            let sources = seeds(count, entries);
+            let bytes: Vec<u8> = (0..entries)
+                .flat_map(|ordinal| {
+                    let mut entry = [0; 8];
+                    entry[..4].copy_from_slice(&(ordinal + 1).to_le_bytes());
+                    entry[4..].copy_from_slice(&(-(ordinal as i32)).to_le_bytes());
+                    entry
+                })
+                .collect();
+            let acquired = capture_growing(
+                &SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes,
+                },
+                0,
+                &sources,
+                Outcome::Rows { len: count },
+                &mut rows,
+                &mut contributors,
+                Scratch {
+                    pointers: &mut pointers,
+                    ordinals: &mut ordinals,
+                    first: &mut first,
+                },
+            );
+            assert_eq!(acquired.outcome, Outcome::Rows { len: count });
+            if count == 5_000 {
+                assert!(rows.len() > count);
+            }
+            assert_eq!(acquired.contributors, count * entries as usize);
+            for (ordinal, row) in rows[..count].iter().enumerate() {
+                assert_eq!(row.division, sources[ordinal].division);
+                assert_eq!(row.len, entries as usize);
+                assert_eq!(row.received_supply, -5);
+                assert_eq!(
+                    contributors[row.start + row.len - 1],
+                    Contributor {
+                        country: entries,
+                        amount: -(entries as i32 - 1)
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn original_land_fault_precedes_capacity_and_any_contributor_read() {
+        struct NoReads;
+        impl Memory for NoReads {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                panic!("invalid original seed must stop before contributor reads")
+            }
+        }
+        let mut sources = seeds(5_000, 137);
+        sources[0].primary_vtable = None;
+        let acquired = capture_growing(
+            &NoReads,
+            0,
+            &sources,
+            Outcome::Rows { len: sources.len() },
+            &mut Vec::new(),
+            &mut Vec::new(),
+            Scratch {
+                pointers: &mut vec![0; sources.len()],
+                ordinals: &mut vec![0; sources.len()],
+                first: &mut vec![[0; 2 * manpower_value_entry::STRIDE]; sources.len()],
+            },
+        );
+        assert_eq!(
+            acquired.outcome,
+            Outcome::Unavailable {
+                reason: "division land primary identity unavailable"
+            }
+        );
     }
 }

@@ -86,10 +86,13 @@ fn l4e9_eng_plate_keeps_its_anchor_at_both_session_c_heights() {
     assert_eq!(roster(pol.id).count(), 8);
     for (force, name) in [(eng.id, b"CL".as_slice()), (pol.id, b"SS".as_slice())] {
         assert_eq!(
-            counter_order::hull_icon(roster(force).map(|(ship, model)| counter_order::Hull {
-                strength: ship.strength,
-                model,
-            })),
+            counter_order::hull_icon(
+                roster(force).map(|(ship, model)| counter_order::Hull {
+                    strength: ship.strength,
+                    model,
+                }),
+                Err("unreached equipment content"),
+            ),
             counter_order::HullIcon::Resolved(Some(name.to_vec()))
         );
     }
@@ -250,6 +253,7 @@ fn a_hidden_unit_pass_reads_no_naval_table() {
     let type_tints = type_tint::Index::default();
     let sources = NavalSources {
         type_tints: &type_tints,
+        equipment: Err("unreached variant content"),
         vision: &vision,
         native: &native,
         country_ids: &country_ids,

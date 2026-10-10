@@ -57,7 +57,7 @@ impl VehicleWork {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     nodes: usize,
     countries: usize,
@@ -68,18 +68,7 @@ pub struct Capacities {
     /// Maximal nonzero controller-access runs across all countries.
     access_runs: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            nodes: 16384,
-            countries: 512,
-            paths: 131072,
-            entries: 4096,
-            access: 262144,
-            access_runs: 65536,
-        }
-    }
-}
+
 impl Capacities {
     /// TrainInventory has one row per country supply system.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
@@ -87,6 +76,28 @@ impl Capacities {
         raise(&mut self.countries, rows(slots, 1));
     }
 }
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let nodes = supply_node::storage_demand(memory, base, state);
+        let trains = ccountry_supply_system::train_storage_demand(memory, base, state);
+        if let Ok(count) = nodes {
+            crate::country_scale::raise(&mut self.nodes, count);
+        }
+        if let Ok(demand) = trains {
+            crate::country_scale::raise(&mut self.countries, demand.countries);
+            crate::country_scale::raise(&mut self.entries, demand.entries);
+            crate::country_scale::raise(&mut self.access, demand.access);
+            crate::country_scale::raise(&mut self.access_runs, demand.access);
+        }
+        nodes.and(trains).map(|_| ())
+    }
+}
+
 /// One share of the node census: its rows and their path arena.
 pub struct Part {
     nodes: CaptureRows<supply_node::Row>,
@@ -136,7 +147,7 @@ impl Part {
         self.reset();
         self.provinces
             .begin(memory, context.base, context.game_state);
-        let nodes = supply_node::walk_part(
+        let nodes = supply_node::walk_part_growing(
             memory,
             context.base,
             context.game_state,
@@ -205,7 +216,7 @@ impl Trains {
         let _reads = crate::read_accounting::table(TableId::TrainInventory);
         let begin = qpc();
         self.reset();
-        let trains = ccountry_supply_system::walk_trains(
+        let trains = ccountry_supply_system::walk_trains_growing(
             memory,
             context.base,
             context.game_state,
@@ -267,6 +278,7 @@ impl Captured {
 
     /// Whole-family capture on the calling thread, for a callback that never
     /// dispatched the parts.
+    #[cfg(test)]
     pub(crate) fn capture_owned(
         &mut self,
         memory: &impl Memory,
@@ -286,6 +298,7 @@ impl Captured {
         CaptureReport::default()
     }
 
+    #[cfg(test)]
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let context = CaptureContext {
             base,

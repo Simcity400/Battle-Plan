@@ -611,6 +611,7 @@ fn tooltip_operand_oracle_compares_wing_name_bytes_and_reports_capture_failures(
     let mut air = installed_content::save::air::Pack::default();
     air.wings.push(installed_content::save::air::Wing {
         id: wing,
+        pool_type: b"fixture_plane".to_vec(),
         name: Some(name.to_vec()),
         accidents: None,
         experience: installed_content::save::Decimal::parse(b"0").unwrap(),
@@ -619,6 +620,7 @@ fn tooltip_operand_oracle_compares_wing_name_bytes_and_reports_capture_failures(
             allow_zero: false,
         },
         ace: None,
+        raid: None,
     });
     let run = |frame: &mut DecodedFrame,
                air: &installed_content::save::air::Pack,

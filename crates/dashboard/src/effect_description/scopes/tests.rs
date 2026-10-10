@@ -670,6 +670,95 @@ fn unrecorded_subjects_refuse_the_subject_roster() {
 }
 
 #[test]
+fn subject_roster_preserves_alias_duplicates_after_native_filters() {
+    let mut fixture = Fixture::new();
+    let TableView::Complete(TableRows::CountryLinks(links)) =
+        &mut *fixture.frame.tables[TableId::CountryLinks.index()]
+    else {
+        unreachable!()
+    };
+    links.extend([
+        CountryLinkRow {
+            id: 101,
+            canonical_slot: 1,
+        },
+        CountryLinkRow {
+            id: 301,
+            canonical_slot: 3,
+        },
+    ]);
+    let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].subjects = vec![-1, 0, 100, 101, 301, 200, 300, 301].into();
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
+    else {
+        unreachable!()
+    };
+    rows[1].owned_state_count = 0;
+    // 1413DE2A0/1413DE500 retain repeated canonical targets; neither
+    // alias resolution nor the existence/caller filters deduplicate them.
+    let out = fixture.render(
+        "every_subject_country={army_experience=2}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert_eq!(
+        out.text,
+        "(\u{12}CCCGamma, \u{12}CCCGamma, \u{12}CCCGamma):\n   XP2\n"
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn subject_roster_reads_existence_before_excluding_caller_alias() {
+    let mut fixture = Fixture::new();
+    let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].subjects = vec![101].into();
+    let TableView::Complete(TableRows::CountryLinks(links)) =
+        &mut *fixture.frame.tables[TableId::CountryLinks.index()]
+    else {
+        unreachable!()
+    };
+    links.push(CountryLinkRow {
+        id: 101,
+        canonical_slot: 1,
+    });
+    let TableView::Complete(TableRows::CountryCounterInputs(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryCounterInputs.index()]
+    else {
+        unreachable!()
+    };
+    rows.retain(|row| row.country != 100);
+    // Native +0x484 is read before vf32's alias-aware self exclusion.
+    // Do not hide a reached unavailable count behind that later exclusion.
+    let out = fixture.render(
+        "every_subject_country={army_experience=2} random_subject_country={army_experience=3}",
+        &mut fresh(),
+        Content::default(),
+    );
+    assert!(out.text.is_empty());
+    assert_eq!(
+        out.refusals.values().sum::<usize>(),
+        2,
+        "{:?}",
+        out.refusals
+    );
+    assert!(
+        out.refusals
+            .keys()
+            .all(|why| why.contains("CountryCounterInputs"))
+    );
+}
+
+#[test]
 fn recorded_country_subject_and_character_rosters_select_natively() {
     let mut fixture = Fixture::new();
     let out = fixture.render(

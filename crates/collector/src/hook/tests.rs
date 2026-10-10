@@ -110,3 +110,75 @@ fn disabling_flush_failure_rolls_back_to_owned_patch_and_can_retry() {
     assert!(!hook.is_enabled());
     assert_eq!(unsafe { invoke(site) }, 7);
 }
+
+#[test]
+fn owned_family_restores_after_capture_stop_without_clearing_it() {
+    const CHILD: &str = "BATTLE_PLAN_HOOK_RESTORE_AFTER_CAPTURE_STOP";
+    if std::env::var_os(CHILD).is_none() {
+        // Isolate the process-global capture stop hook from other fixture threads.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "hook::tests::owned_family_restores_after_capture_stop_without_clearing_it",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "restore child failed: {:?}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let _guard = FAMILY_TEST.lock().unwrap();
+    let code = TestCode::new();
+    let sites: Vec<_> = [0, 64]
+        .into_iter()
+        .map(|offset| code.stub(offset, original as *const () as usize))
+        .collect();
+    let mut hooks: Vec<_> = sites
+        .iter()
+        .map(|&(site, bytes)| {
+            unsafe { Hook::new(site, callback as *const () as usize, bytes) }.unwrap()
+        })
+        .collect();
+    assert_eq!(Hook::set_family_enabled(&mut hooks, true), Ok(true));
+    engine::allocation::set_stop_hook(Some(|| true));
+    assert!(engine::allocation::capture_stopped());
+    assert_eq!(
+        engine::allocation::vec::<u8>(1).unwrap_err().kind(),
+        io::ErrorKind::OutOfMemory
+    );
+    assert!(
+        Hook::set_family_enabled(&mut hooks, true).is_err(),
+        "stopped capture cannot enable"
+    );
+    assert!(
+        publication_storage::<&mut Hook>(hooks.len(), true).is_err(),
+        "stopped capture cannot prepare publication adapters"
+    );
+    let mut threads = Threads::open_excluding(&[unsafe { GetCurrentThreadId() }]).unwrap();
+    threads.suspend().unwrap();
+    threads.resume().unwrap();
+    drop(threads);
+    let mut family = publication_storage(hooks.len(), false).unwrap();
+    family.extend(hooks.iter_mut());
+    assert_eq!(Hook::set_enabled_batch(&mut family, false), Ok(true));
+    drop(family);
+    assert!(
+        engine::allocation::capture_stopped(),
+        "restore must not clear the terminal gate"
+    );
+    assert!(hooks.iter().all(|hook| !hook.is_enabled()));
+    for &(site, bytes) in &sites {
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(site as *const u8, 16) },
+            bytes
+        );
+        assert_eq!(unsafe { invoke(site) }, 7);
+    }
+}

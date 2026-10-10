@@ -66,6 +66,16 @@ fn run_with_membership(
     rows: Vec<CountryFactoriesRow>,
     membership: &installed_content::save::PartialMapMembership,
 ) -> io::Result<Report> {
+    run_with_states(saved, content, rows, membership, Vec::new())
+}
+
+fn run_with_states(
+    saved: &Save,
+    content: &Buildings,
+    rows: Vec<CountryFactoriesRow>,
+    membership: &installed_content::save::PartialMapMembership,
+    states: Vec<replay::rows::StateRow>,
+) -> io::Result<Report> {
     let mut frame = DecodedFrame {
         branch: 1,
         hour: 2,
@@ -77,6 +87,7 @@ fn run_with_membership(
     };
     *frame.tables[TableId::CountryFactories.index()] =
         TableView::Complete(TableRows::CountryFactories(rows));
+    *frame.tables[TableId::States.index()] = TableView::Complete(TableRows::States(states));
     let germany = CountryRow {
         id: 5,
         tag: b"GER".to_vec(),
@@ -92,6 +103,44 @@ fn run_with_membership(
     report.membership_content(membership);
     compare(&frame, saved, membership, content, &links, &mut report)?;
     Ok(report)
+}
+
+#[test]
+fn unowned_state_factories_follow_positive_control_and_never_charge_null_control() {
+    let mut saved = save(CLEAN, CLEAN);
+    let state = saved.states.get_mut(&2).unwrap();
+    state.owner = None;
+    state.controller = None;
+    let membership = installed_content::save::MapMembership {
+        provinces: BTreeMap::from([(1, Some(1)), (2, Some(2)), (3, Some(3))]),
+    }
+    .into();
+    for (controller, levels) in [(0, [3, 0, 5]), (u32::MAX, [3, 0, 5]), (5, [3, 3, 7])] {
+        let states = vec![replay::rows::StateRow {
+            id: 2,
+            controller,
+            ..Default::default()
+        }];
+        let mut rows = vec![row(5, levels), row(6, [1, 0, 1])];
+        let report = run_with_states(
+            &saved,
+            &content(""),
+            rows.clone(),
+            &membership,
+            states.clone(),
+        )
+        .unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["CountryFactories"], 2);
+        rows[0].civilian_levels += 1;
+        assert_eq!(
+            run_with_states(&saved, &content(""), rows, &membership, states)
+                .unwrap()
+                .differences
+                .len(),
+            1
+        );
+    }
 }
 
 #[test]
@@ -125,7 +174,7 @@ fn an_excluded_state_keeps_all_saved_factory_input_comparisons() {
 }
 
 #[test]
-fn excluded_state_missing_saved_control_is_refused_and_missing_capture_is_reported() {
+fn excluded_state_unsaved_control_requires_capture_and_missing_factory_capture_is_reported() {
     let membership = super::super::state_history_tests::membership(
         "state={id=1 provinces={1}} \
          state={id=2 provinces={2} history={free_operative={operative=a}}} \
@@ -147,7 +196,11 @@ fn excluded_state_missing_saved_control_is_refused_and_missing_capture_is_report
         &membership,
     )
     .unwrap_err();
-    assert!(error.to_string().contains("state 2 lacks its owner"));
+    assert!(
+        error
+            .to_string()
+            .contains("unowned state 2 has no captured controller")
+    );
 }
 
 #[test]

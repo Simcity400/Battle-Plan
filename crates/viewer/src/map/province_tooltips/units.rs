@@ -85,6 +85,18 @@ impl Content {
     pub fn warnings(&self) -> &[String] {
         self.subunits.warnings()
     }
+
+    /// Authenticated CSubUnitDefinition+0x58C database identity. Zero is the
+    /// producer-proved native null singleton, not a failed token lookup.
+    pub(crate) fn subunit(&self, index: u32) -> Result<(&str, u64), String> {
+        if index == 0 {
+            return Ok(("", 0));
+        }
+        let name = self.subunits.name(index).ok_or_else(|| {
+            format!("sub-unit database index {index} is absent from the content")
+        })??;
+        Ok((name, self.subunits.category(name.as_bytes())?))
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -390,19 +402,19 @@ fn format_entries(entries: &[Entry], loc: &Localisation, nato: bool) -> Result<S
         }
         .map_err(|e| e.to_string())?;
         text.push_str(&value);
-        // 141006BC0: executable prefixes/mask and settings +0x2AC frame.
-        let prefix = if entry.category & 0x80004003C1 != 0 {
-            "ship_"
-        } else {
-            "unit_"
-        };
-        text.push_str(&format!(
-            "\u{13}{prefix}{}_icon_small|{} ",
-            entry.name,
-            u8::from(nato) + 1
-        ));
+        text.push_str(&subunit_icon(&entry.name, entry.category, nato));
     }
     Ok(text)
+}
+
+/// 141006BC0: executable category mask/prefix and viewer-local NATO frame.
+pub(crate) fn subunit_icon(name: &str, category: u64, nato: bool) -> String {
+    let prefix = if category & 0x80004003C1 != 0 {
+        "ship_"
+    } else {
+        "unit_"
+    };
+    format!("\u{13}{prefix}{name}_icon_small|{} ", u8::from(nato) + 1)
 }
 
 fn invalid_fixed(value: i64) -> bool {
@@ -432,12 +444,30 @@ fn count_range(
     hour: i32,
     d: CountDefines,
 ) -> [i32; 2] {
+    count_range_seeded(
+        count,
+        intel,
+        index.wrapping_add(0x4A2).wrapping_add(seed as u32),
+        hour,
+        [d.minimum, d.maximum, d.range],
+    )
+}
+
+/// 141417870's count law, with the caller's native salt already applied.
+/// Land composition uses subtype +0x4A2; air-base estimates use country +0x5E2.
+pub(crate) fn count_range_seeded(
+    count: i32,
+    intel: i64,
+    seed: u32,
+    hour: i32,
+    [minimum, maximum, range]: [i64; 3],
+) -> [i32; 2] {
     let value = i64::from(count) << 15;
     if value <= 0 {
         return [0; 2];
     }
-    let delta = intel.wrapping_sub(d.minimum);
-    let denominator = d.maximum.wrapping_sub(d.minimum);
+    let delta = intel.wrapping_sub(minimum);
+    let denominator = maximum.wrapping_sub(minimum);
     if denominator == 0 || invalid_fixed(delta) {
         return [count; 2];
     }
@@ -445,7 +475,7 @@ fn count_range(
     if ratio >= 100_000 {
         return [count; 2];
     }
-    let width = (100_000_i64.wrapping_sub(ratio.max(0))).wrapping_mul(d.range) / 100_000;
+    let width = (100_000_i64.wrapping_sub(ratio.max(0))).wrapping_mul(range) / 100_000;
     let spread = value
         .wrapping_mul(fixed15(width))
         .wrapping_shr(15)
@@ -461,9 +491,7 @@ fn count_range(
         day -= length;
         month += 1;
     }
-    let salt = index
-        .wrapping_add(0x4A2)
-        .wrapping_add(seed as u32)
+    let salt = seed
         .wrapping_add(count as u32)
         .wrapping_add(month as u32)
         .wrapping_add((date / 8760).wrapping_mul(12) as u32);

@@ -145,6 +145,129 @@ fn many_provinces(count: usize) -> Vec<u8> {
     bytes
 }
 
+#[test]
+fn owned_province_census_grows_for_mod_map_on_five_thousand_country_world() {
+    use crate::{ccountry::synthetic::World, cterrain_type, province_definition as definition};
+    let mut capture = Capture::default();
+    for count in [20_000_u32, 25_000] {
+        let mut world = World::new(0, 5_000, 0x1100);
+        let roster = world.alloc((count as usize + 1) * 8);
+        world.array(
+            world.game_state() + cgame_state::PROVINCES,
+            roster,
+            count + 1,
+        );
+        let state = world.alloc(0x928);
+        world.u64(state, cstate::VTABLE_RVA as u64);
+        world.u32(state + cstate::ID, 1);
+        let terrain = world.alloc(0x100);
+        world.u64(terrain, cterrain_type::VTABLE_RVA as u64);
+        world.u32(terrain + cterrain_type::DATABASE_INDEX, 7);
+        for id in 1..=count {
+            let province = world.alloc(0x230);
+            let fields = world.alloc(0x100);
+            world.u64(roster + id as usize * 8, province as u64);
+            world.u64(province, VTABLE_RVA as u64);
+            world.u32(province + ID, id);
+            world.u64(province + STATE, state as u64);
+            world.u64(province + DEFINITION, fields as u64);
+            world.u32(fields + definition::ID, id);
+            world.u64(fields + definition::TERRAIN, terrain as u64);
+        }
+        assert_eq!(
+            conflict_group_demand(&world.memory(), 0, world.game_state()),
+            Ok(0)
+        );
+        assert_eq!(
+            capture.walk_growing(&world.memory(), 0, world.game_state()),
+            Outcome::Rows {
+                len: count as usize
+            }
+        );
+        assert_eq!(capture.rows[count as usize - 1].id, count);
+        assert_eq!(capture.conflict_walk.outcome, Outcome::Rows { len: 0 });
+        assert!(capture.conflicts.len() >= count as usize);
+    }
+}
+
+#[test]
+fn owned_border_conflict_rows_and_groups_grow_from_original_tree_header() {
+    let memory = conflict_fixture();
+    let mut fixed = Capture::with_capacity(3, 0, 0);
+    assert_eq!(fixed.walk(&memory, 0, 0x1000), Outcome::Rows { len: 3 });
+    assert_eq!(
+        fixed.conflict_walk.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 1
+        }
+    );
+    let mut capture = Capture::default();
+    assert_eq!(conflict_group_demand(&memory, 0, 0x1000), Ok(2));
+    assert_eq!(
+        capture.walk_growing(&memory, 0, 0x1000),
+        Outcome::Rows { len: 3 }
+    );
+    assert_eq!(capture.conflict_walk.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(capture.conflict_walk.groups_len, 1);
+    assert!(capture.groups.len() >= 2);
+    assert_eq!(capture.conflicts[0].province, 2);
+}
+
+#[test]
+fn border_conflict_sources_and_handles_grow_for_five_thousand_provinces() {
+    use crate::{
+        ccountry::synthetic::{START, World},
+        province_definition,
+    };
+    struct Combined<'a> {
+        world: SliceMemory<'a>,
+        conflict: &'a ConflictMemory,
+    }
+    impl Memory for Combined<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == REGISTRY_ROOT {
+                self.conflict.copy(address, output)
+            } else if address >= START {
+                self.world.copy(address, output)
+            } else {
+                self.conflict.copy(address, output)
+            }
+        }
+    }
+    let fixture = conflict_fixture();
+    let mut world = World::new(0, 5_000, 0x1100);
+    let roster = world.alloc(5_001 * 8);
+    world.array(world.game_state() + cgame_state::PROVINCES, roster, 5_001);
+    for id in 1..=5_000 {
+        let province = world.alloc(0x230);
+        let definition = world.alloc(0x100);
+        world.put(province, &fixture.bytes[0x1200..0x1430]);
+        world.put(definition, &fixture.bytes[0xa100..0xa200]);
+        world.u64(roster + id as usize * 8, province as u64);
+        world.u32(province + ID, id);
+        world.u64(province + DEFINITION, definition as u64);
+        world.u32(definition + province_definition::ID, id);
+    }
+    let memory = Combined {
+        world: world.memory(),
+        conflict: &fixture,
+    };
+    assert_eq!(
+        conflict_group_demand(&memory, 0, world.game_state()),
+        Ok(10_000)
+    );
+    let mut capture = Capture::default();
+    assert_eq!(
+        capture.walk_growing(&memory, 0, world.game_state()),
+        Outcome::Rows { len: 5_000 }
+    );
+    assert_eq!(capture.conflict_walk.outcome, Outcome::Rows { len: 5_000 });
+    assert_eq!(capture.conflict_walk.groups_len, 5_000);
+    assert_eq!(capture.conflicts[4_999].groups_start, 4_999);
+    assert_eq!(capture.groups[4_999], capture.groups[0]);
+}
+
 fn province_names_fixture() -> Vec<u8> {
     let mut bytes = many_provinces(3);
     for index in 0..3 {
@@ -286,6 +409,8 @@ fn exact_field_batches_cover_boundaries_and_shared_states_are_read_once_per_walk
                 controller: u32::MAX - index as u32 - 1,
                 victory_points: 0,
                 fort_positive: 0,
+                attack_fort_sum: Some(0),
+                attack_state: Some(0x13000),
                 // A land province with no owner area; the fixture has none.
                 move_gate: u8::from((index + 1) % 4 == 1) * Row::MOVE_NULL_OWNER_AREA,
                 port_sea: 0,
@@ -389,7 +514,10 @@ fn state_cache_full_pointer_keys_survive_collisions_and_failures_are_not_cached(
     let first = 0x13000_usize;
     let second = (0x14000_usize..0x1000000)
         .step_by(16)
-        .find(|&pointer| StateCache::slot(pointer) == StateCache::slot(first))
+        .find(|&pointer| {
+            StateCache::new(2048).unwrap().slot(pointer)
+                == StateCache::new(2048).unwrap().slot(first)
+        })
         .unwrap();
     struct States {
         pointers: [usize; 2],
@@ -424,7 +552,7 @@ fn state_cache_full_pointer_keys_survive_collisions_and_failures_are_not_cached(
         fail: Cell::new(false),
         owner_reads: Cell::new(0),
     };
-    let mut cache = StateCache::new();
+    let mut cache = StateCache::new(2048).unwrap();
     assert_eq!(cache.resolve(&memory, 0, first), Ok((1, u32::MAX)));
     assert_eq!(cache.resolve(&memory, 0, second), Ok((2, u32::MAX - 1)));
     assert_eq!(cache.resolve(&memory, 0, first), Ok((1, u32::MAX)));
@@ -434,7 +562,7 @@ fn state_cache_full_pointer_keys_survive_collisions_and_failures_are_not_cached(
     assert_eq!(memory.owner_reads.get(), 2);
     // A new walk observes the live failure, and a failed first observation
     // leaves no successful entry behind for the following retry.
-    let mut cache = StateCache::new();
+    let mut cache = StateCache::new(2048).unwrap();
     memory.fail.set(true);
     assert_eq!(
         cache.resolve(&memory, 0, second),
@@ -448,7 +576,7 @@ fn state_cache_full_pointer_keys_survive_collisions_and_failures_are_not_cached(
 }
 
 #[test]
-fn state_cache_probe_exhaustion_falls_back_without_evicting_successes() {
+fn state_cache_retains_collisions_beyond_the_former_probe_limit() {
     struct States(std::cell::Cell<usize>);
     impl Memory for States {
         fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -464,23 +592,22 @@ fn state_cache_probe_exhaustion_falls_back_without_evicting_successes() {
             true
         }
     }
+    let mut cache = StateCache::new(2048).unwrap();
     let pointers: Vec<_> = (1_usize..1_000_000)
         .map(|id| id * 0x1000)
-        .filter(|&pointer| StateCache::slot(pointer) == StateCache::slot(0x1000))
-        .take(STATE_CACHE_PROBES + 1)
+        .filter(|&pointer| cache.slot(pointer) == cache.slot(0x1000))
+        .take(33)
         .collect();
-    assert_eq!(pointers.len(), STATE_CACHE_PROBES + 1);
+    assert_eq!(pointers.len(), 33);
     let memory = States(std::cell::Cell::new(0));
-    let mut cache = StateCache::new();
     for &pointer in pointers.iter().chain(pointers.iter().rev()) {
         assert_eq!(
             cache.resolve(&memory, 0, pointer),
             Ok(((pointer >> 12) as u32, 123))
         );
     }
-    // The overflow state is acquired twice; the other 32 states keep their
-    // original exact-pointer entries despite that uncached observation.
-    assert_eq!(memory.0.get(), STATE_CACHE_PROBES + 2);
+    // Every collision keeps its original authenticated observation.
+    assert_eq!(memory.0.get(), pointers.len());
 }
 
 #[test]
@@ -620,6 +747,8 @@ fn scattered_fields_preserve_native_values_without_reading_struct_gaps() {
                     controller: 0xf123_4567,
                     victory_points: 0,
                     fort_positive: 0,
+                    attack_fort_sum: Some(0),
+                    attack_state: Some(0x1a00),
                     move_gate: Row::MOVE_NULL_OWNER_AREA,
                     port_sea: 0,
                 },
@@ -630,6 +759,8 @@ fn scattered_fields_preserve_native_values_without_reading_struct_gaps() {
                     controller: 0,
                     victory_points: 0,
                     fort_positive: 0,
+                    attack_fort_sum: Some(0),
+                    attack_state: Some(0),
                     move_gate: 0,
                     port_sea: 0,
                 },
@@ -934,8 +1065,10 @@ fn fort_scratch_keeps_exact_pointer_field_and_fault_order_across_short_batches()
             .map(|&(address, len, _)| (address, len))
             .collect();
         let memory = dense_trace(&bytes, None);
+        let fort_sum = MovementBatch::new().fort_sum(&memory, array(count as u32));
+        assert_eq!(fort_sum, Ok(count as i32 * 3));
         assert_eq!(
-            MovementBatch::new().fort_positive(&memory, array(count as u32)),
+            fort_sum.map(|sum| u8::from(sum > 0)),
             Ok(u8::from(count != 0))
         );
         assert_eq!(*memory.reads.borrow(), addresses);
@@ -946,10 +1079,7 @@ fn fort_scratch_keeps_exact_pointer_field_and_fault_order_across_short_batches()
                 movement.building_pointers.fill(usize::MAX);
                 movement.building_indirect.fill(0xff);
                 movement.building_fields.fill(0xff);
-                assert_eq!(
-                    movement.fort_positive(&memory, array(count as u32)),
-                    Err(reason)
-                );
+                assert_eq!(movement.fort_sum(&memory, array(count as u32)), Err(reason));
                 assert_eq!(*memory.reads.borrow(), addresses[..=index]);
             }
         }
@@ -957,8 +1087,10 @@ fn fort_scratch_keeps_exact_pointer_field_and_fault_order_across_short_batches()
     let mut movement = MovementBatch::new();
     for count in [65, 1, 0, 2, 64, 1] {
         let memory = dense_trace(&bytes, None);
+        let fort_sum = movement.fort_sum(&memory, array(count));
+        assert_eq!(fort_sum, Ok(count as i32 * 3));
         assert_eq!(
-            movement.fort_positive(&memory, array(count)),
+            fort_sum.map(|sum| u8::from(sum > 0)),
             Ok(u8::from(count != 0))
         );
         let addresses: Vec<_> = expected(count as usize)
@@ -973,10 +1105,9 @@ fn fort_scratch_keeps_exact_pointer_field_and_fault_order_across_short_batches()
         BUILDINGS - 0x1000 + cbuilding::HEALTHY_LEVEL,
         &(-1_i16).to_le_bytes(),
     );
-    assert_eq!(
-        movement.fort_positive(&dense_trace(&bytes, None), array(1)),
-        Ok(0)
-    );
+    let fort_sum = movement.fort_sum(&dense_trace(&bytes, None), array(1));
+    assert_eq!(fort_sum, Ok(-3));
+    assert_eq!(fort_sum.map(|sum| u8::from(sum > 0)), Ok(0));
     for (data, count, reason) in [
         (usize::MAX, 2, "province building index invalid"),
         (usize::MAX - 7, 1, "province building pointer unreadable"),
@@ -984,7 +1115,7 @@ fn fort_scratch_keeps_exact_pointer_field_and_fault_order_across_short_batches()
     ] {
         let memory = dense_trace(&bytes, None);
         assert_eq!(
-            movement.fort_positive(&memory, Array { data, count }),
+            movement.fort_sum(&memory, Array { data, count }),
             Err(reason)
         );
         assert!(memory.reads.borrow().is_empty());
@@ -1030,6 +1161,8 @@ fn ownership_comes_from_the_state_and_raw_controller_zero_is_preserved() {
             controller: 0,
             victory_points: 0,
             fort_positive: 0,
+            attack_fort_sum: Some(0),
+            attack_state: Some(0x1600),
             move_gate: Row::MOVE_NULL_OWNER_AREA,
             port_sea: 0,
         }
@@ -1156,7 +1289,7 @@ fn scattered_reference_walk(
             reason: "province table has no province slots",
         };
     }
-    let mut states = StateCache::new();
+    let mut states = StateCache::new(2048).unwrap();
     let mut batch = ProvinceBatch::new();
     let mut movement = MovementBatch::new();
     let mut pointers = [0_usize; BATCH_ROWS];
@@ -1199,7 +1332,8 @@ fn scattered_reference_walk(
             return Outcome::Unavailable { reason };
         }
         for (row, fields) in output[admitted..len].iter_mut().zip(&fields[..staged]) {
-            row.fort_positive = fields.fort_positive;
+            row.fort_positive = u8::from(fields.fort_sum > 0);
+            row.attack_fort_sum = Some(fields.fort_sum);
             row.move_gate = fields.move_gate;
             row.port_sea = fields.port_sea;
         }
@@ -1804,4 +1938,99 @@ fn allocation_capacity_overflow_owned_capture_buffers() {
     );
     assert_eq!(geometry.allocated_bytes(), before);
     assert_eq!(geometry.capacities.provinces, 2);
+}
+
+#[test]
+fn province_names_grow_on_first_and_later_mod_sized_samples_without_restarting_reads() {
+    let mut rows = Vec::new();
+    let mut arena = Vec::new();
+    for (count, name_len) in [(5000_usize, 4_usize), (5000, 64), (20000, 64)] {
+        let table = 0x3000;
+        let objects = table + (count + 1) * 8;
+        let stride = (NAME_OVERRIDE + 32).max(ID + 4);
+        let heap = objects + count * stride;
+        let mut bytes = vec![0_u8; heap + count * (name_len + 1)];
+        put(
+            &mut bytes,
+            cgame_state::PROVINCES,
+            &((table + 0x1000) as u64).to_le_bytes(),
+        );
+        for at in [8, 12] {
+            put(
+                &mut bytes,
+                cgame_state::PROVINCES + at,
+                &((count + 1) as u32).to_le_bytes(),
+            );
+        }
+        for index in 0..count {
+            let object = objects + index * stride;
+            put(
+                &mut bytes,
+                table + (index + 1) * 8,
+                &((object + 0x1000) as u64).to_le_bytes(),
+            );
+            put(&mut bytes, object, &(VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, object + ID, &((index + 1) as u32).to_le_bytes());
+            let literal = object + NAME_OVERRIDE;
+            if name_len <= 15 {
+                put(&mut bytes, literal, &vec![b'N'; name_len]);
+                put(&mut bytes, literal + 24, &15_u64.to_le_bytes());
+            } else {
+                let source = heap + index * (name_len + 1);
+                put(
+                    &mut bytes,
+                    literal,
+                    &((source + 0x1000) as u64).to_le_bytes(),
+                );
+                put(&mut bytes, source, &vec![b'N'; name_len]);
+                put(&mut bytes, literal + 24, &(name_len as u64).to_le_bytes());
+            }
+            put(&mut bytes, literal + 16, &(name_len as u64).to_le_bytes());
+        }
+        let fixed = SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            walk_names(&fixed, 0, 0x1000, &mut [], &mut []).outcome,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: count as u32
+            }
+        );
+        let memory = TracedMemory {
+            bytes: &bytes,
+            blocked: None,
+            guards: std::cell::Cell::new(0),
+            reads: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut expected_rows = vec![NameRow::default(); count];
+        let mut expected_text = vec![0; count * name_len];
+        let expected = walk_names(&memory, 0, 0x1000, &mut expected_rows, &mut expected_text);
+        let trace = memory.reads.replace(Vec::new());
+        let captured = walk_names_growing(&memory, 0, 0x1000, &mut rows, &mut arena);
+        assert_eq!(captured, expected);
+        assert_eq!(captured.outcome, Outcome::Rows { len: count });
+        assert_eq!(&rows[..count], expected_rows.as_slice());
+        assert_eq!(&arena[..count * name_len], expected_text.as_slice());
+        assert_eq!(*memory.reads.borrow(), trace);
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|&&(at, _)| at == 0x1000 + cgame_state::PROVINCES)
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn default_geometry_has_no_chosen_province_or_neighbour_population() {
+    assert_eq!(
+        GeometryCapacities::default(),
+        GeometryCapacities {
+            provinces: 0,
+            neighbour_entries: 0
+        }
+    );
 }

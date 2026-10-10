@@ -1,4 +1,4 @@
-//! Hourly owning-thread drain. Each row retains a native event's own hour;
+//! Admitted worker drain. Each row retains a native event's own hour;
 //! projection uses only frame-owned increments and never live pointers.
 use crate::{
     air_losses as producer,
@@ -31,6 +31,9 @@ pub struct Captured {
     roster_outcome: Outcome,
 }
 impl Captured {
+    pub fn vacant() -> Self {
+        Self::with_capacities(&Capacities::default())
+    }
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.events),
@@ -53,10 +56,15 @@ impl Captured {
         grow_vec(&mut self.rows.rows, capacity.events);
         grow_vec(&mut self.roster, capacity.roster);
     }
-    pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
+    pub fn fail(&mut self, reason: &'static str) {
+        let outcome = Outcome::Unavailable { reason };
+        self.rows.fail(outcome);
+        self.roster_outcome = outcome;
+    }
+    pub fn capture_growing(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         self.reset();
         let start = qpc();
-        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
+        self.rows.outcome = match producer::drain_growing(&mut self.rows.rows) {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };

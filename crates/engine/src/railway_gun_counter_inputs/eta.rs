@@ -5,7 +5,7 @@
 //! The land branch applies outer scale then `140E75CB0`'s fresh supply factor.
 //! No client duration/path cache is read, and no engine getter is called.
 
-use super::{EtaOperands, Row, at};
+use super::{EtaOperands, FreshEtaObservations, Row, at};
 use crate::{
     Memory, carmy, cequipment_variant, cgame_state, cnaval_unit_transfer, cpdx_array::Array,
     cprovince, crailway_manager, creference_registry::HeaderResolver, fixed_layout, fixed5,
@@ -133,6 +133,34 @@ fn supply_factor(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn maximum_speed(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    gun: usize,
+    named: &mut railway_gun_speed::NamedBonuses<'_>,
+    registry: &mut HeaderResolver,
+    layout: &OnceCell<Result<fixed_layout::Report, &'static str>>,
+    observations: &mut FreshEtaObservations,
+) -> Result<i64, &'static str> {
+    *observations
+        .maximum_speed
+        .get_or_insert_with(|| equipment_speed(memory, base, state, gun, named, registry, layout))
+}
+
+pub(super) fn land_supply_factor(
+    memory: &impl Memory,
+    base: usize,
+    gun: usize,
+    exiled: bool,
+    observations: &mut FreshEtaObservations,
+) -> Result<i64, &'static str> {
+    *observations
+        .land_supply_factor
+        .get_or_insert_with(|| supply_factor(memory, base, gun, exiled))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn capture(
     memory: &impl Memory,
     base: usize,
@@ -143,6 +171,7 @@ pub(super) fn capture(
     named: &mut railway_gun_speed::NamedBonuses<'_>,
     registry: &mut HeaderResolver,
     layout: &OnceCell<Result<fixed_layout::Report, &'static str>>,
+    observations: &mut FreshEtaObservations,
 ) -> Result<EtaOperands, &'static str> {
     let (gun, from) = source;
     let numerator = field::<i64>(memory, gun, carmy::MOVEMENT_NUMERATOR)?;
@@ -179,14 +208,29 @@ pub(super) fn capture(
             .wrapping_mul(field::<i64>(memory, base, NAVAL_SCALE_RVA)?)
             / fixed5::SCALE
     } else {
-        let base_speed = equipment_speed(memory, base, state, gun, named, registry, layout)?;
+        let base_speed = maximum_speed(
+            memory,
+            base,
+            state,
+            gun,
+            named,
+            registry,
+            layout,
+            observations,
+        )?;
         let rail = crailway_manager::railway_percentage(memory, base, state, from, to)?;
         let speed = base_speed.wrapping_add(
             rail.wrapping_mul(field::<i64>(memory, base, RAIL_MAX_RVA)?) / fixed5::SCALE,
         );
         let scaled =
             speed.wrapping_mul(field::<i64>(memory, base, LAND_SCALE_RVA)?) / fixed5::SCALE;
-        scaled.wrapping_mul(supply_factor(memory, base, gun, row.exiled)?) / fixed5::SCALE
+        scaled.wrapping_mul(land_supply_factor(
+            memory,
+            base,
+            gun,
+            row.exiled,
+            observations,
+        )?) / fixed5::SCALE
     };
     Ok(EtaOperands {
         numerator,

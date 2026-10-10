@@ -24,15 +24,62 @@ use crate::map::{
 use eframe::{egui, wgpu};
 use replay::{frame::TableView, rows::TableId};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
 
 mod embedded;
+mod faction_highlight;
 mod presentation;
 mod timeline;
+
+/// Guard the README's frame-budget boundary at both production entry points.
+#[cfg(test)]
+#[test]
+fn faction_hover_frame_path_uses_only_prepared_border_inputs() {
+    let source = include_str!("app.rs");
+    let body = source
+        .split("\n    fn update_faction_highlight(")
+        .nth(1)
+        .unwrap()
+        .split("\n    fn map_tooltip(")
+        .next()
+        .unwrap();
+    for rebuild in ["political::regions(", "demilitarized_zone("] {
+        assert!(
+            !body.contains(rebuild),
+            "faction hover reaches {rebuild} on the frame path"
+        );
+    }
+    let source = include_str!("map/scene.rs");
+    let body = source
+        .split("\n    pub fn set_faction_highlight(")
+        .nth(1)
+        .or_else(|| {
+            source
+                .split("\n    pub(crate) fn set_faction_highlight(")
+                .nth(1)
+        })
+        .unwrap()
+        .split("pub fn demilitarized_edges(")
+        .next()
+        .unwrap();
+    for rebuild in [
+        "ClassPlan::matching(",
+        "ZonePlan::matching(",
+        "ZonePlan::custom_highlight(",
+    ] {
+        assert!(
+            !body.contains(rebuild),
+            "faction upload reaches {rebuild} on the frame path"
+        );
+    }
+}
+
+#[cfg(test)]
+mod render_failure_tests;
 
 /// Per-rebuild CPU laps of one window frame, printed with `BATTLE_PLAN_VIEWER_PROFILE`.
 struct Laps {
@@ -179,6 +226,8 @@ struct ShownHour {
     snow: (map::weather::Summary, [u32; 2], Duration),
     /// The header's country list and viewing tag, built with the hour.
     header: Arc<hours::Header>,
+    /// Worker-built regions, zone and ordinary plans for pointer highlights.
+    borders: Option<(Arc<hours::Political>, Arc<hours::Borders>)>,
 }
 
 impl ShownHour {
@@ -284,9 +333,8 @@ struct Uploaded {
     borders: Option<u64>,
     rails: Option<u64>,
     buildings: Option<u64>,
-    /// The snow and mud grid on the GPU. Weather changes only in an hour's own
-    /// update window, so most hours rasterise the same grid; comparing it is a
-    /// memcmp beside a whole-texture write and the winter-volume pass.
+    /// Last snow/mud snapshot handed to the scene. Its graphics refresh/fade
+    /// continues locally after application; equal snapshots retain that history.
     snow_mud: Option<Arc<map::weather::SnowMud>>,
     /// The intel map on the GPU; hours with the same fog share one.
     intel: Option<Arc<map::textures::IntelMap>>,
@@ -461,6 +509,176 @@ struct OverlayKey {
     ui_scale: f32,
     perspective: map::perspective::Choice,
     counter_settings: map::counters::CounterSettings,
+    selected: Arc<BTreeSet<map::unit_selection::Unit>>,
+    hovered: Option<map::unit_selection::Unit>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapHit {
+    Raid,
+    Combat(usize),
+    NavalObserver(usize),
+    PortTooltip(usize),
+    Unit(usize),
+    Base,
+    Pin(usize),
+    Blocked,
+}
+
+fn land_hover_matches_unit(
+    hover: &map::counters::CounterHover,
+    unit: &map::unit_selection::Hit,
+) -> bool {
+    let kind = if hover.railway_gun {
+        map::unit_selection::Kind::RailwayGun
+    } else {
+        map::unit_selection::Kind::Division
+    };
+    unit.kind == kind && unit.members == hover.members
+}
+
+/// Follow document::compose's GUI passes on equal native layer keys. Within
+/// a combat window, the actual Part attachment order decides which observer wins.
+fn top_map_hit(
+    point: [f32; 2],
+    report: &map::counters::CounterReport,
+    raid: Option<&map::raids::tooltips::Hit>,
+) -> Option<MapHit> {
+    let mut top = None;
+    let mut offer = |layer, pass, order, target| {
+        let key = (layer, pass, order);
+        if top.as_ref().is_none_or(|(previous, _)| key >= *previous) {
+            top = Some((key, target));
+        }
+    };
+    for (index, hit) in report
+        .faction_pin_hovers
+        .iter()
+        .enumerate()
+        .filter(|(_, hit)| hit.contains(point))
+    {
+        offer(hit.layer, 0, index, MapHit::Pin(index));
+    }
+    for (index, hit) in report
+        .base_hits
+        .iter()
+        .enumerate()
+        .filter(|(_, hit)| hit.contains(point))
+    {
+        offer(hit.layer, 1, index, MapHit::Base);
+    }
+    if let Some(hit) = raid.filter(|hit| hit.contains(point)) {
+        offer(
+            hit.layer,
+            2,
+            0,
+            if hit.supported {
+                MapHit::Raid
+            } else {
+                MapHit::Blocked
+            },
+        );
+    }
+    for (index, hit) in report
+        .unit_hits
+        .iter()
+        .enumerate()
+        .filter(|(_, hit)| hit.contains(point))
+    {
+        offer(
+            hit.layer,
+            if hit.port { 1 } else { 4 },
+            index,
+            MapHit::Unit(index),
+        );
+    }
+    // The shared root handler reaches inherited children outside an unclipped
+    // counter's layout-size box. Keep their plate's existing layer and draw order.
+    for hover in report
+        .task_force_hovers
+        .iter()
+        .filter(|hover| hover.contains(point))
+    {
+        if let Some(hit) = report
+            .unit_hits
+            .get(hover.unit_hit)
+            .filter(|hit| hover.matches(hit))
+        {
+            offer(
+                hit.layer,
+                4,
+                hover.unit_hit,
+                if hover.supported {
+                    MapHit::Unit(hover.unit_hit)
+                } else {
+                    MapHit::Blocked
+                },
+            );
+        }
+    }
+    for (index, hover) in report
+        .task_force_port_hovers
+        .iter()
+        .enumerate()
+        .filter(|(_, hover)| hover.contains(point))
+    {
+        if let Some(hit) = report
+            .unit_hits
+            .get(hover.unit_hit)
+            .filter(|hit| hover.matches(hit))
+        {
+            let target = if !hover.supported || !hover.has_tooltip() {
+                MapHit::Blocked
+            } else if hover.control == map::counter_tooltips::task_force_port::Control::Unbound {
+                MapHit::PortTooltip(index)
+            } else {
+                MapHit::Unit(hover.unit_hit)
+            };
+            offer(hit.layer, 1, hover.unit_hit, target);
+        }
+    }
+    for (index, hit) in report
+        .naval_marker_hovers
+        .iter()
+        .enumerate()
+        .filter(|(_, hit)| hit.contains(point))
+    {
+        offer(
+            hit.layer,
+            6,
+            hit.order,
+            if hit.supported {
+                MapHit::NavalObserver(index)
+            } else {
+                MapHit::Blocked
+            },
+        );
+    }
+    // A clickable observer also appears in the naval tooltip list: the same
+    // object and attachment order retains its click callback.
+    for (index, hit) in report
+        .combat_hits
+        .iter()
+        .enumerate()
+        .filter(|(_, hit)| hit.contains(point))
+    {
+        let pass = if matches!(hit.selection, crate::combat::Selection::Land(_)) {
+            5
+        } else {
+            6
+        };
+        offer(
+            hit.layer,
+            pass,
+            hit.order,
+            if hit.supported {
+                MapHit::Combat(index)
+            } else {
+                MapHit::Blocked
+            },
+        );
+    }
+    top.map(|(_, target)| target)
 }
 
 pub struct Viewer {
@@ -573,6 +791,7 @@ pub struct Viewer {
     label_report: LabelReport,
     /// The raid offer cycle, advanced off the frame path.
     raid_lane: crate::raid_lane::RaidLane,
+    faction_highlight: faction_highlight::Lane,
     raid_tooltips: map::raids::tooltips::lane::Lane,
     land_marker_tooltips: crate::combat::land_marker_tooltips::Cache,
     naval_marker_tooltips: crate::combat::naval_marker_tooltips::Cache,
@@ -599,6 +818,7 @@ pub struct Viewer {
     /// game's options are) and its counters' memory from one update to the next; a new
     /// document starts it afresh.
     counter_view: map::counters::CounterView,
+    unit_selection: map::unit_selection::Selection,
     /// The hour's camera-independent icon tables, parsed once per (branch,
     /// hour, perspective) and reused by every frame's icon rebuild while the
     /// camera moves. A still camera never rebuilds at all (`overlay_at`), so
@@ -863,7 +1083,13 @@ impl Viewer {
             // dump of the same state can be the same frame; the checkbox starts
             // where the command line put it.
             postfx: options.postfx,
-            graphics: Default::default(),
+            graphics: dashboard::protocol::MapGraphics {
+                day_night: config.day_night.unwrap_or(true),
+                show_allied_plans: options
+                    .allied_plans
+                    .unwrap_or(config.show_allied_plans.unwrap_or(false)),
+                ..Default::default()
+            },
             ui_scale,
             match_game: None,
             monitor_seen: None,
@@ -905,6 +1131,7 @@ impl Viewer {
             last_frame: Instant::now(),
             label_report: LabelReport::default(),
             raid_lane: Default::default(),
+            faction_highlight: Default::default(),
             raid_tooltips: Default::default(),
             land_marker_tooltips: Default::default(),
             naval_marker_tooltips: Default::default(),
@@ -919,6 +1146,7 @@ impl Viewer {
             overlay_at: None,
             overlay_tables: None,
             counter_view,
+            unit_selection: Default::default(),
             perspective,
             country_filter: String::new(),
             // capture
@@ -955,6 +1183,7 @@ impl Viewer {
     pub(crate) fn install_map(&mut self, document: Document, scene: Scene, revision: String) {
         self.counter_view =
             map::counters::CounterView::new(self.options.counter_settings(document.game_counters));
+        self.unit_selection = Default::default();
         self.document = Some(document);
         self.scene = Some(scene);
         self.revision = Some(revision);
@@ -966,6 +1195,16 @@ impl Viewer {
 
     pub(crate) fn has_map(&self) -> bool {
         self.document.is_some() && self.scene.is_some()
+    }
+
+    /// Embedded scopes feed the same counter setting the standalone header owns.
+    pub(crate) fn set_embedded_graphics(&mut self, graphics: dashboard::protocol::MapGraphics) {
+        self.graphics = graphics;
+        if let Some(document) = &self.document {
+            self.counter_view.settings.nato = graphics
+                .nato_counters
+                .unwrap_or_else(|| self.options.counter_settings(document.game_counters).nato);
+        }
     }
 
     pub(crate) fn retire_map<T: Send + 'static>(&mut self, frame: &eframe::Frame, permit: T) {
@@ -984,6 +1223,7 @@ impl Viewer {
             self.prepared_overlay.take(),
             self.unit_models.take(),
             std::mem::take(&mut self.raid_lane),
+            std::mem::take(&mut self.faction_highlight),
             permit,
         );
         if let Some(dropper) = &self.dropper {
@@ -1445,7 +1685,11 @@ impl Viewer {
             .and_then(|hours| hours.take_engaged())
             .or(self.engaged_carry.take());
         self.ready.clear();
-        self.shown = None;
+        if let Some(dropper) = &self.dropper {
+            dropper.drop_later(self.shown.take());
+        } else {
+            self.shown = None;
+        }
         self.last_view = None;
         // close zoom
         self.unit_models = None;
@@ -1467,10 +1711,14 @@ impl Viewer {
         self.overlay = None;
         self.prepared_overlay = None;
         self.counter_report = CounterReport::default();
+        self.unit_selection = Default::default();
         self.overlay_fraction = None;
         self.overlay_at = None;
         self.overlay_tables = None;
         self.raid_lane = Default::default();
+        if let Some(dropper) = &self.dropper {
+            dropper.drop_later(std::mem::take(&mut self.faction_highlight));
+        }
     }
 
     /// Records a lap of the frame that is being timed, if one is.
@@ -1541,12 +1789,19 @@ impl Viewer {
                 self.counter_view = map::counters::CounterView::new(
                     self.options.counter_settings(document.game_counters),
                 );
+                if self.embedded.is_none() {
+                    self.graphics.full_resolution = document.game_full_resolution;
+                }
                 self.document = Some(document);
                 // The loader built the whole hour-independent scene; the
                 // frames only upload hour data into it from here.
                 self.scene = Some(scene);
                 self.uploaded = Uploaded::default();
                 self.loading = None;
+                if let (Some(embedded), Some(source)) = (&self.embedded, &self.source) {
+                    let graphics = embedded.service().map_settings(&source.replay()).graphics;
+                    self.set_embedded_graphics(graphics);
+                }
                 if let Some(opened) = self.opened
                     && map::counter_move::profiling()
                 {
@@ -1725,6 +1980,106 @@ impl Viewer {
         }
     }
 
+    fn map_hit(&self, point: [f32; 2]) -> Option<MapHit> {
+        top_map_hit(
+            point,
+            &self.counter_report,
+            self.prepared_overlay
+                .as_ref()
+                .and_then(|map| map.raid_at(point)),
+        )
+    }
+
+    /// A pin owns hover only when its presented GUI object is the top hit.
+    fn faction_pin_at(&self, point: [f32; 2]) -> Option<&map::counters::faction_pings::PinHover> {
+        let MapHit::Pin(index) = self.map_hit(point)? else {
+            return None;
+        };
+        self.counter_report.faction_pin_hovers.get(index)
+    }
+
+    fn update_faction_highlight(
+        &mut self,
+        document: &Document,
+        device: &eframe::wgpu::Device,
+        point: Option<[f32; 2]>,
+    ) -> Result<(), String> {
+        let Ok(color) = &document.border_assets.faction_highlight_color else {
+            return Ok(());
+        };
+        let selected = point
+            .and_then(|point| self.faction_pin_at(point))
+            .map(|hit| Arc::clone(&hit.regions))
+            .unwrap_or_default();
+        let Some(shown) = &self.shown else {
+            return Ok(());
+        };
+        let Some((political, borders)) = &shown.borders else {
+            return Ok(());
+        };
+        let key = faction_highlight::Key {
+            epoch: shown.epoch,
+            branch: shown.branch,
+            hour: shown.hour,
+            perspective: self.perspective.clone(),
+            borders: borders.id,
+            regions: Arc::clone(&selected),
+        };
+        let scene = self.scene.as_mut().expect("scene built");
+        if self.faction_highlight.requested() != Some(&key)
+            && !scene.faction_highlight_regions().is_empty()
+        {
+            scene
+                .set_border_plans(device, &borders.classes, &borders.highlighted)
+                .map_err(|why| why.to_string())?;
+        }
+        let content = Arc::clone(&document.content);
+        let political = Arc::clone(political);
+        let borders = Arc::clone(borders);
+        let Some(hours) = &self.hours else {
+            return Ok(());
+        };
+        let dropper = self.dropper.as_ref().expect("hour retirement worker");
+        if let Some(plan) = self.faction_highlight.update(
+            key,
+            |job| hours.try_submit(job),
+            move || {
+                let provinces = selected
+                    .iter()
+                    .flat_map(|id| {
+                        content
+                            .strategic_regions
+                            .get(id)
+                            .into_iter()
+                            .flat_map(|region| region.provinces.iter().copied())
+                    })
+                    .collect();
+                map::scene::FactionHighlight::new(
+                    &content.border_meshes,
+                    &political.layers.regions,
+                    &borders.zone,
+                    &provinces,
+                )
+            },
+            dropper,
+        ) {
+            let result = scene.set_faction_highlight(
+                device,
+                &plan,
+                &self
+                    .faction_highlight
+                    .requested()
+                    .expect("requested highlight")
+                    .regions,
+                *color,
+            );
+            dropper.drop_later(plan);
+            result.map_err(|why| why.to_string())?;
+            self.faction_highlight.installed();
+        }
+        Ok(())
+    }
+
     fn map_tooltip(
         &mut self,
         document: &Document,
@@ -1733,10 +2088,12 @@ impl Viewer {
         ctx: &egui::Context,
     ) -> Option<(Arc<map::raids::tooltips::Tooltip>, [f32; 4], Option<u32>)> {
         let point = point?;
-        if let Some(hit) = self
-            .prepared_overlay
-            .as_ref()
-            .and_then(|map| map.raid_at(point))
+        let target = self.map_hit(point);
+        if matches!(target, Some(MapHit::Raid))
+            && let Some(hit) = self
+                .prepared_overlay
+                .as_ref()
+                .and_then(|map| map.raid_at(point))
         {
             let crate::playback::Current::Frame(frame) = document.playback.current() else {
                 return None;
@@ -1746,6 +2103,7 @@ impl Viewer {
                 Arc::clone(&document.content),
                 Arc::clone(frame),
                 ours,
+                self.counter_view.settings.nato,
                 hit.key.clone(),
                 ctx,
             )?;
@@ -1755,8 +2113,17 @@ impl Viewer {
                 None,
             ));
         }
-        if let Some((id, rect)) =
-            crate::combat::land_marker_tooltips::hit(&self.counter_report.combat_hits, point)
+        let land_hit = match target {
+            Some(MapHit::Combat(index)) => {
+                let hit = &self.counter_report.combat_hits[index];
+                match hit.selection {
+                    crate::combat::Selection::Land(id) => Some((id, hit.rect)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some((id, rect)) = land_hit
             && let crate::playback::Current::Frame(frame) = document.playback.current()
         {
             let viewer = self.overlay_tables.as_ref()?.3.ours();
@@ -1784,10 +2151,19 @@ impl Viewer {
             );
             return Some((text, rect, None));
         }
-        if let Some((id, rect)) = crate::combat::naval_marker_tooltips::hit(
-            &self.counter_report.naval_marker_hovers,
-            point,
-        ) && let crate::playback::Current::Frame(frame) = document.playback.current()
+        let naval_hit = match target {
+            Some(MapHit::Combat(index)) => Some(&self.counter_report.combat_hits[index]),
+            Some(MapHit::NavalObserver(index)) => {
+                Some(&self.counter_report.naval_marker_hovers[index])
+            }
+            _ => None,
+        }
+        .and_then(|hit| match hit.selection {
+            crate::combat::Selection::Naval(id) => Some((id, hit.rect)),
+            _ => None,
+        });
+        if let Some((id, rect)) = naval_hit
+            && let crate::playback::Current::Frame(frame) = document.playback.current()
         {
             let viewer = self.overlay_tables.as_ref()?.3.ours();
             let index = match self
@@ -1809,13 +2185,11 @@ impl Viewer {
                     .request(document, frame, viewer, id, index.as_deref());
             return Some((text, rect, None));
         }
-        if let Some(hit) = self
-            .counter_report
-            .land_hovers
-            .iter()
-            .rev()
-            .find(|hit| hit.contains(point))
-            && let crate::playback::Current::Frame(frame) = document.playback.current()
+        if let Some(hit) = self.counter_report.land_hovers.iter().rev().find(|hit| {
+            hit.contains(point)
+                && matches!(target, Some(MapHit::Unit(index))
+                if land_hover_matches_unit(hit, &self.counter_report.unit_hits[index]))
+        }) && let crate::playback::Current::Frame(frame) = document.playback.current()
         {
             let vision = self.overlay_tables.as_ref()?.3.vision();
             let text = self.counter_tooltips.request(
@@ -1826,6 +2200,46 @@ impl Viewer {
                 self.counter_view.settings.nato,
             );
             return Some((text, hit.rect, None));
+        }
+        if let Some(hit) = self
+            .counter_report
+            .task_force_hovers
+            .iter()
+            .rev()
+            .find(|hit| {
+                hit.contains(point)
+                    && matches!(target, Some(MapHit::Unit(index))
+                if index == hit.unit_hit && hit.matches(&self.counter_report.unit_hits[index]))
+            })
+            && let crate::playback::Current::Frame(frame) = document.playback.current()
+        {
+            if !hit.supported {
+                return None;
+            }
+            let vision = self.overlay_tables.as_ref()?.3.vision();
+            let text = self.counter_tooltips.request_task_force(
+                &document.content,
+                frame,
+                hit,
+                vision,
+                self.counter_view.settings.nato,
+            );
+            return Some((text, hit.rect, None));
+        }
+        if let Some((_, hit)) = self.counter_report.task_force_port_hovers.iter().enumerate().rev()
+            .find(|(hover_index, hit)| hit.contains(point) && hit.has_tooltip()
+                && self.counter_report.unit_hits.get(hit.unit_hit).is_some_and(|unit| hit.matches(unit))
+                && (matches!(target, Some(MapHit::Unit(index)) if index == hit.unit_hit)
+                    || matches!(target, Some(MapHit::PortTooltip(index)) if index == *hover_index)))
+            && let crate::playback::Current::Frame(frame) = document.playback.current()
+        {
+            if !hit.supported { return None; }
+            let vision = self.overlay_tables.as_ref()?.3.vision();
+            let text = self.counter_tooltips.request_task_force_port(&document.content, frame, hit, vision, self.counter_view.settings.nato);
+            return Some((text, hit.rect, None));
+        }
+        if target.is_some() {
+            return None;
         }
         let crate::playback::Current::Frame(frame) = document.playback.current() else {
             return None;
@@ -1852,6 +2266,7 @@ impl Viewer {
             province,
             vision,
             self.counter_view.settings.nato,
+            self.unit_selection.ordered_units(),
         );
         Some((text, [0.0, 0.0, extent[0], extent[1]], Some(province)))
     }
@@ -1992,6 +2407,7 @@ impl Viewer {
                 self.combat.tactics_open = false;
             } else {
                 self.combat.close();
+                self.unit_selection.clear();
             }
         }
         let engaged = self
@@ -2013,6 +2429,7 @@ impl Viewer {
                 extent,
                 &self.perspective,
                 engaged.as_deref(),
+                self.counter_view.settings.nato,
                 false,
                 animation_time,
                 false,
@@ -2178,6 +2595,21 @@ impl Viewer {
         self.fade = Some(fade);
         laps.lap("panel_camera_units");
         let now = document.hour().map_err(|error| error.to_string())?;
+        self.unit_selection.observe(
+            document.playback.branch(),
+            &self.perspective.country,
+            now.vision(&self.perspective)
+                .map_err(|error| error.to_string())?
+                .ours(),
+            now.frame,
+        );
+        self.counter_view.selected = Arc::clone(self.unit_selection.units());
+        self.counter_view.hovered = point.filter(|_| !over_combat).and_then(|point| {
+            let MapHit::Unit(index) = self.map_hit(point)? else {
+                return None;
+            };
+            self.counter_report.unit_hits[index].units().next()
+        });
         self.last_view = Some(hours::View {
             camera,
             viewport: pixels,
@@ -2204,6 +2636,8 @@ impl Viewer {
             ui_scale,
             perspective: self.perspective.clone(),
             counter_settings: self.counter_view.settings,
+            selected: Arc::clone(self.unit_selection.units()),
+            hovered: self.counter_view.hovered,
         };
         let (overlay_ms, additions) = {
             let overlay_timer = Instant::now();
@@ -2332,6 +2766,12 @@ impl Viewer {
             // render takes it.
             if let Some(scene) = self.scene.as_mut() {
                 scene.share_province_schedule(self.counter_view.presentation.schedule());
+                scene.set_movement_selection(
+                    &document.content,
+                    now.frame,
+                    self.overlay_tables.as_ref().expect("parsed above").3.ours(),
+                    self.unit_selection.units().as_ref(),
+                );
                 scene.advance_provinces(camera, pixels);
             }
             if self.overlay_fraction != Some(document.hour_fraction) {
@@ -2367,14 +2807,27 @@ impl Viewer {
             if response.clicked()
                 && !over_combat
                 && let Some(point) = point
-                && let Some(hit) = self
-                    .counter_report
-                    .combat_hits
-                    .iter()
-                    .rev()
-                    .find(|hit| hit.contains(point))
             {
-                self.combat.open(hit.selection);
+                match self.map_hit(point) {
+                    Some(MapHit::Combat(index)) => self
+                        .combat
+                        .open(self.counter_report.combat_hits[index].selection),
+                    target @ (Some(MapHit::Unit(_)) | None) => {
+                        let hit = match target {
+                            Some(MapHit::Unit(index)) => {
+                                Some(&self.counter_report.unit_hits[index])
+                            }
+                            _ => None,
+                        };
+                        let shift = ui.input(|input| input.modifiers.shift);
+                        if self.unit_selection.click(hit, shift) {
+                            self.counter_view.selected = Arc::clone(self.unit_selection.units());
+                            self.overlay_at = None;
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                    _ => {}
+                }
             }
             let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
             laps.lap("overlay_draw");
@@ -2392,6 +2845,7 @@ impl Viewer {
                     extent,
                     &self.perspective,
                     engaged.as_deref(),
+                    self.counter_view.settings.nato,
                     true,
                     animation_time,
                     true,
@@ -2436,15 +2890,31 @@ impl Viewer {
             if self.capture.is_some()
                 && let crate::playback::Current::Frame(frame) = document.playback.current()
             {
-                let tooltips = self.counter_report.land_hovers.iter().map(|hover| {
-                    map::counter_tooltips::build(
-                        &document.content,
-                        frame,
-                        hover,
-                        &self.counter_report.perspective,
-                        self.counter_view.settings.nato,
-                    )
-                });
+                let batch = map::counter_tooltips::Batch::new(
+                    &document.content,
+                    frame,
+                    &self.counter_report.perspective,
+                    self.counter_view.settings.nato,
+                );
+                let tooltips = self
+                    .counter_report
+                    .land_hovers
+                    .iter()
+                    .map(|hover| batch.build(hover))
+                    .chain(
+                        self.counter_report
+                            .task_force_hovers
+                            .iter()
+                            .filter(|hover| hover.supported)
+                            .map(|hover| batch.build_task_force(hover)),
+                    );
+                let tooltips = tooltips.chain(
+                    self.counter_report
+                        .task_force_port_hovers
+                        .iter()
+                        .filter(|hover| hover.supported && hover.has_tooltip())
+                        .map(|hover| batch.build_task_force_port(hover)),
+                );
                 let refused = map::counter_tooltips::count_refusals(tooltips);
                 for (reason, count) in refused {
                     let current = tooltip_refused.entry(reason).or_default();
@@ -2478,6 +2948,7 @@ impl Viewer {
             || warnings,
         );
         laps.lap("diagnostics");
+        self.update_faction_highlight(document, &state.device, point.filter(|_| !over_combat))?;
         let overlay = self.overlay.as_ref().expect("built above");
         let mut combined;
         let label_batch = if additions.is_empty() {
@@ -2492,6 +2963,12 @@ impl Viewer {
         // is what a dump's own pair of frames does.
         let scene = self.scene.as_mut().unwrap();
         scene.set_graphics(self.graphics);
+        scene.set_movement_selection(
+            &document.content,
+            document.frame().map_err(|error| error.to_string())?,
+            self.overlay_tables.as_ref().expect("parsed above").3.ours(),
+            self.unit_selection.units().as_ref(),
+        );
         scene.label_frame(u64::from(self.profile_frame));
         scene
             .render(
@@ -2500,7 +2977,8 @@ impl Viewer {
                 Request {
                     size: pixels,
                     camera,
-                    day_night: DayNight::at_hour(document.playback.hour()),
+                    day_night: DayNight::at_hour(document.playback.hour())
+                        .with_cycle(self.graphics.day_night),
                     animation_time,
                     // The window runs one clock, so the map scene shares it.
                     map_time: animation_time,
@@ -3206,6 +3684,239 @@ fn engaged_relayout(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn task_force_children_outside_the_plate_keep_its_priority_and_block_unknown_hit_forms() {
+        use map::{
+            counter_tooltips::task_force::{Control, Hover},
+            sprites::layer,
+            unit_selection::{Blocker, Hit, Kind},
+        };
+        let mut report = map::counters::CounterReport::default();
+        report.unit_hits.push(Hit {
+            ours: true,
+            port: false,
+            rect: [20., 20., 66., 33.],
+            kind: Kind::TaskForce,
+            members: Arc::from([7]),
+            layer: layer(10, 0, 0),
+        });
+        // Native carrier/order children can begin left of an unclipped root.
+        report.task_force_hovers.push(Hover {
+            control: Control::Carrier,
+            unit_hit: 0,
+            rect: [4., 20., 16., 16.],
+            hit: None,
+            authored: None,
+            supported: true,
+            ours: true,
+            coarse: false,
+            hidden: false,
+            members: Arc::from([7]),
+        });
+        let point = [8., 24.];
+        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Unit(0)));
+        report.base_hits.push(Blocker {
+            rect: [0., 0., 40., 40.],
+            layer: layer(11, 0, 0),
+        });
+        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Base));
+        report.base_hits.clear();
+        report.task_force_hovers[0].supported = false;
+        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Blocked));
+        // A stale/mismatched ordinal cannot dispatch to another class's plate.
+        report.unit_hits[0].kind = Kind::Division;
+        assert_eq!(top_map_hit(point, &report, None), None);
+
+        // An opaque unbound port child stops the native walk; its authored
+        // tooltip can still be shown without selecting the plate underneath.
+        use map::counter_tooltips::task_force_port as port;
+        report.unit_hits[0].kind = Kind::TaskForce;
+        report.unit_hits[0].port = true;
+        report.task_force_port_hovers.push(port::Hover {
+            control: port::Control::Unbound,
+            unit_hit: 0,
+            rect: [4., 20., 16., 16.],
+            hit: None,
+            authored: None,
+            supported: true,
+            members: Arc::from([7]),
+            metadata: port::Metadata {
+                country: 1,
+                visibility: 250,
+                enemy: Ok(false),
+                hold_fire: Some(false),
+                idle: Some(false),
+                no_regions: Some(false),
+                pride: Some(false),
+            },
+        });
+        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Blocked));
+        let gui = installed_content::gui::native::read(
+            br#"guiTypes = { iconType = {
+            name = unbound pdx_tooltip = TITLE
+        } }"#,
+        );
+        report.task_force_port_hovers[0].authored =
+            port::Authored::read(gui.template("unbound").unwrap(), false);
+        assert_eq!(
+            top_map_hit(point, &report, None),
+            Some(MapHit::PortTooltip(0))
+        );
+    }
+
+    #[test]
+    fn map_hits_follow_signed_layers_compose_order_and_actual_combat_attachment() {
+        use map::{
+            sprites::layer,
+            unit_selection::{Blocker, Hit, Kind},
+        };
+        let rect = [0.0, 0.0, 20.0, 20.0];
+        let point = [5.0, 5.0];
+        let mut report = map::counters::CounterReport::default();
+        report.unit_hits.push(Hit {
+            ours: true,
+            port: false,
+            rect,
+            kind: Kind::Division,
+            members: Arc::from([7]),
+            layer: layer(-3, 0, 0),
+        });
+        report.base_hits.push(Blocker {
+            rect,
+            layer: layer(-3, 0, 0),
+        });
+        report
+            .faction_pin_hovers
+            .push(map::counters::faction_pings::PinHover {
+                rect,
+                regions: Arc::from([1]),
+                layer: layer(-3, 0, 0),
+            });
+        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Unit(0)));
+        report.base_hits[0].layer = layer(4, 0, 0);
+        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Base));
+        report.faction_pin_hovers[0].layer = layer(5, 0, 0);
+        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Pin(0)));
+        report.faction_pin_hovers.clear();
+        let raid = map::raids::tooltips::Hit {
+            origin: [0.0, 0.0],
+            size: [20.0, 20.0],
+            key: map::raids::tooltips::Key::Raid {
+                id: 1,
+                reference_type: 4,
+                incoming: false,
+            },
+            layer: layer(-2, 0, 0),
+            supported: true,
+        };
+        assert_eq!(top_map_hit(point, &report, Some(&raid)), Some(MapHit::Base));
+        report.base_hits.clear();
+        assert_eq!(top_map_hit(point, &report, Some(&raid)), Some(MapHit::Raid));
+        let mut same_layer_raid = raid.clone();
+        same_layer_raid.layer = report.unit_hits[0].layer;
+        assert_eq!(
+            top_map_hit(point, &report, Some(&same_layer_raid)),
+            Some(MapHit::Unit(0))
+        );
+        report.unit_hits[0].port = true;
+        assert_eq!(
+            top_map_hit(point, &report, Some(&same_layer_raid)),
+            Some(MapHit::Raid)
+        );
+        report.unit_hits[0].port = false;
+        report.combat_hits.push(crate::combat::Hit {
+            selection: crate::combat::Selection::Land(1),
+            rect,
+            layer: layer(-1, 0, 0),
+            order: 0,
+            supported: true,
+        });
+        assert_eq!(
+            top_map_hit(point, &report, Some(&raid)),
+            Some(MapHit::Combat(0))
+        );
+        report.combat_hits[0].layer = layer(-4, 0, 0);
+        assert_eq!(top_map_hit(point, &report, Some(&raid)), Some(MapHit::Raid));
+        report.combat_hits[0] = crate::combat::Hit {
+            selection: crate::combat::Selection::Naval(1),
+            rect,
+            layer: layer(5, 0, 0),
+            order: 1,
+            supported: true,
+        };
+        let mut observer = report.combat_hits[0].clone();
+        observer.order = 2;
+        report.naval_marker_hovers.push(observer);
+        assert_eq!(
+            top_map_hit(point, &report, None),
+            Some(MapHit::NavalObserver(0))
+        );
+        report.combat_hits[0].order = 2;
+        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Combat(0)));
+        report.combat_hits[0].supported = false;
+        report.naval_marker_hovers[0].supported = false;
+        report
+            .faction_pin_hovers
+            .push(map::counters::faction_pings::PinHover {
+                rect,
+                regions: Arc::from([1]),
+                layer: layer(4, 0, 0),
+            });
+        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Blocked));
+        report.combat_hits[0].supported = true;
+        report.naval_marker_hovers[0].supported = true;
+        assert_eq!(top_map_hit(point, &report, None), Some(MapHit::Combat(0)));
+        report.faction_pin_hovers.clear();
+        report.combat_hits.clear();
+        report.naval_marker_hovers.clear();
+        let mut refused_raid = raid.clone();
+        refused_raid.supported = false;
+        assert_eq!(
+            top_map_hit(point, &report, Some(&refused_raid)),
+            Some(MapHit::Blocked)
+        );
+        assert_eq!(top_map_hit([20.0, 5.0], &report, Some(&raid)), None);
+    }
+
+    #[test]
+    fn overlapping_land_and_naval_units_keep_separate_tooltip_namespaces() {
+        use map::{
+            counters::{CounterControl, CounterHover},
+            unit_selection::{Hit, Kind},
+        };
+        let members = Arc::from([7]);
+        let hover = CounterHover {
+            control: CounterControl::Normal,
+            rect: [0.0, 0.0, 20.0, 20.0],
+            authored: None,
+            remaining: None,
+            ours: true,
+            coarse: false,
+            hidden: false,
+            railway_gun: false,
+            members: Arc::clone(&members),
+            timing: Arc::from([]),
+        };
+        let mut unit = Hit {
+            ours: true,
+            port: false,
+            rect: hover.rect,
+            kind: Kind::TaskForce,
+            members,
+            layer: 0,
+        };
+        assert!(!land_hover_matches_unit(&hover, &unit));
+        unit.kind = Kind::Division;
+        assert!(land_hover_matches_unit(&hover, &unit));
+        unit.kind = Kind::RailwayGun;
+        assert!(!land_hover_matches_unit(&hover, &unit));
+        let gun_hover = CounterHover {
+            railway_gun: true,
+            ..hover
+        };
+        assert!(land_hover_matches_unit(&gun_hover, &unit));
+    }
 
     /// Uses the runtime's measured reservation and late collector after the first repaint.
     pub(crate) fn assert_diagnostics(

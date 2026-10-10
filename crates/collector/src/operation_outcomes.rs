@@ -24,8 +24,6 @@ static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static LOGS: Mutex<Vec<Box<Log>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<std::borrow::Cow<'static, str>> = OnceLock::new();
 static REQUIRED_LANES: AtomicUsize = AtomicUsize::new(1);
-// Initial staging only; observed native demand grows off-thread without a cap.
-const INITIAL_BYTE_CAPACITY: usize = 4096;
 static COUNTERS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
 const FAILURE_NAMES: [&str; 34] = [
     "operation completion address overflow",
@@ -196,8 +194,12 @@ impl Lane {
     fn ring(&self) -> &ByteRing {
         unsafe { &*(self.byte_ring.load(Ordering::Acquire) as *const ByteRing) }
     }
+    #[cfg(test)]
     fn grow_bytes(&self) -> Result<(), &'static str> {
-        let required = self.required_bytes.load(Ordering::Relaxed);
+        self.grow_bytes_for(0)
+    }
+    fn grow_bytes_for(&self, floor: usize) -> Result<(), &'static str> {
+        let required = self.required_bytes.load(Ordering::Relaxed).max(floor);
         if required > self.ring().bytes.len() {
             let capacity = required.checked_next_power_of_two().ok_or_else(|| {
                 let _ = engine::allocation::oom();
@@ -364,6 +366,12 @@ pub fn restore_sequence(previous: u64) -> Result<(), &'static str> {
 /// Off-thread only. Old published allocations survive every replacement and
 /// are freed only after disabled hooks, active originals and workers drain.
 pub fn resize(entries: usize) {
+    presize(entries, 0);
+}
+/// Live operation-description demand and rejected-byte pressure prepare every
+/// lane off-thread. The completion callback still copies its original
+/// 1413EEB8B/1413EEBA0 retained descriptor exactly once into admitted storage.
+pub fn presize(entries: usize, bytes: usize) {
     if !RUNTIME_ENABLED.load(Ordering::Relaxed) {
         return;
     }
@@ -372,7 +380,7 @@ pub fn resize(entries: usize) {
         // A new byte ring is published independently of record storage: old
         // records retain their ring, so byte growth loses no observation epoch.
         for lane in &old.lanes {
-            if let Err(reason) = lane.grow_bytes() {
+            if let Err(reason) = lane.grow_bytes_for(bytes) {
                 count(reason);
             }
         }
@@ -402,12 +410,7 @@ pub fn resize(entries: usize) {
                 )
             }));
         }
-        boxed(Log::new(
-            entries,
-            INITIAL_BYTE_CAPACITY,
-            thread_slots(),
-            &required,
-        )?)
+        boxed(Log::new(entries, bytes, thread_slots(), &required)?)
     })();
     let fresh = match fresh {
         Ok(fresh) => fresh,
@@ -597,15 +600,25 @@ pub struct Handoff {
     sequence: u64,
     lanes: usize,
 }
-pub fn handoff(cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
+pub fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::Acquire) {
         return Err("operation completion hooks unavailable");
     }
     let log = log().ok_or("operation completion staging unavailable")?;
-    handoff_from(log, cursors)
+    handoff_buffer(log, engine::walk::Buffer::Growing(cursors))
 }
+#[cfg(test)]
 fn handoff_from(log: &Log, cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
+    handoff_buffer(log, engine::walk::Buffer::Fixed(cursors))
+}
+fn handoff_buffer(
+    log: &Log,
+    mut cursors: engine::walk::Buffer<'_, LaneCursor>,
+) -> Result<Handoff, &'static str> {
     let lanes = log.registered.load(Ordering::Acquire).min(log.lanes.len());
+    cursors
+        .ensure(lanes)
+        .map_err(|_| "operation completion handoff allocation failed")?;
     if cursors.len() < lanes {
         COUNTERS[5].fetch_add(1, Ordering::Relaxed);
         invalidate();
@@ -1179,6 +1192,32 @@ mod tests {
         assert_eq!(bytes, [0xff, 0, b'x', 0xff, 0, b'x']);
     }
     #[test]
+    fn table_retry_preserves_admitted_operation_completion() {
+        let _serial = TEST.lock().unwrap();
+        let log = new_log(1, 32);
+        prime(&log);
+        let fixture = Fixture::new(b"modded outcome");
+        complete(&log, &fixture, 1);
+        let mut cursors = [LaneCursor::default()];
+        let handoff = handoff_from(&log, &mut cursors).unwrap();
+        let shared = crate::sampling::Shared::new(0, 0, 1);
+        shared.request_retry_full();
+        let recovery = shared.force_next.swap(false, Ordering::AcqRel);
+        let refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
+        if recovery {
+            invalidate();
+        }
+        let mut events = [Event::default()];
+        let mut bytes = [0; 32];
+        let drained = handoff.drain(&cursors, &mut events, &mut bytes).unwrap();
+        assert_eq!(drained.copied, 1);
+        assert_eq!(events[0].definition_token, 0xfabc_1234);
+        assert_eq!(&bytes[..drained.bytes], b"modded outcome");
+        assert!(refresh);
+        assert!(!shared.force_next.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn operation_completion_overflow_withholds_whole_interval_and_retains_exact_growth() {
         let _serial = TEST.lock().unwrap();
         let log = new_log(1, 2);
@@ -1263,6 +1302,61 @@ mod tests {
                 .iter()
                 .all(|event| event.definition_token == 0xfabc_1234)
         );
+    }
+    #[test]
+    fn operation_completion_live_description_floor_prepares_the_first_burst() {
+        let _serial = TEST.lock().unwrap();
+        let log = new_log(5000, 0);
+        prime(&log);
+        let description = vec![b'x'; 5001];
+        for lane in &log.lanes {
+            lane.grow_bytes_for(5000 * description.len()).unwrap();
+        }
+        let fixture = Fixture::new(&description);
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            for owner in 1..=5000 {
+                fixture.identify(owner, owner);
+                complete(&log, &fixture, 1);
+            }
+        });
+        let (events, bytes) = drain(&log).unwrap();
+        assert_eq!(events.len(), 5000);
+        assert!(events.iter().all(|event| event.description_error == 0));
+        assert_eq!(bytes.len(), 5000 * description.len());
+        for copied in bytes.chunks_exact(description.len()) {
+            assert_eq!(copied, description);
+        }
+        let later = Fixture::new(&vec![b'y'; 10003]);
+        for lane in &log.lanes {
+            lane.grow_bytes_for(10003).unwrap();
+        }
+        complete(&log, &later, 1);
+        let (events, bytes) = drain(&log).unwrap();
+        assert_eq!(events[0].description_error, 0);
+        assert_eq!(bytes.len(), 10003);
+    }
+    #[test]
+    fn operation_completion_worker_handoff_grows_original_lane_count_before_sealing() {
+        let _serial = TEST.lock().unwrap();
+        let mut cursors = Vec::new();
+        for count in [5000, 12000] {
+            let log = Log::new(1, 0, count, &[]).unwrap();
+            log.registered.store(count, Ordering::Release);
+            for (index, lane) in log.lanes.iter().enumerate() {
+                lane.published.store(index as u64, Ordering::Release);
+                lane.published_attempts
+                    .store(index as u64 + 7, Ordering::Release);
+            }
+            let epoch = EPOCH.load(Ordering::Acquire);
+            let handoff =
+                handoff_buffer(&log, engine::walk::Buffer::Growing(&mut cursors)).unwrap();
+            assert_eq!(handoff.lanes, count);
+            assert_eq!(handoff.epoch, epoch);
+            assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
+            assert_eq!(cursors[count - 1].cursor, count as u64 - 1);
+            assert_eq!(cursors[count - 1].attempts, count as u64 + 6);
+            assert!(handoff_from(&log, &mut []).is_err());
+        }
     }
     #[test]
     fn operation_completion_refused_native_form_is_named_counted_and_withholds_interval() {
@@ -1592,17 +1686,18 @@ mod tests {
         unsafe {
             release();
         }
-        resize(4_097);
+        let description = b"pending before country count grew";
+        presize(4_097, description.len());
         let old = log().unwrap();
         old.registered.store(1, Ordering::Relaxed);
         prime(old);
-        complete(old, &Fixture::new(b"pending before country count grew"), 1);
+        complete(old, &Fixture::new(description), 1);
         let pointer = LOG.load(Ordering::Acquire);
         let epoch = EPOCH.load(Ordering::Acquire);
         resize(4_098);
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
-        assert_eq!(drain(old).unwrap().1, b"pending before country count grew");
+        assert_eq!(drain(old).unwrap().1, description);
         unsafe {
             release();
         }

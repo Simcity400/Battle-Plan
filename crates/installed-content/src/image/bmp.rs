@@ -47,6 +47,13 @@ struct Header {
     palette_entries: usize,
 }
 
+/// The validated 24-bit bitmap extent without allocating its decoded pixels.
+pub fn rgb_dimensions(input: &[u8]) -> io::Result<[u32; 2]> {
+    let header = header(input, 24)?;
+    header.rows(input)?;
+    Ok([header.width, header.height])
+}
+
 fn header(input: &[u8], bits: u16) -> io::Result<Header> {
     if input.get(..2) != Some(b"BM") {
         return Err(invalid("file does not start with the BMP magic"));
@@ -235,6 +242,13 @@ mod tests {
         }
         bytes.extend_from_slice(pixels);
         bytes
+    }
+
+    #[test]
+    fn rgb_extent_validates_the_same_header_and_rows_without_decoding() {
+        let bytes = bitmap(40, 2, 2, 24, &[], 0, &[0; 16]);
+        assert_eq!(rgb_dimensions(&bytes).unwrap(), [2, 2]);
+        assert!(rgb_dimensions(&bytes[..bytes.len() - 1]).is_err());
     }
 
     #[test]

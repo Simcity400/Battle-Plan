@@ -811,6 +811,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "shader-pipeline",
  "ts-rs",
  "uuid",
  "zstd",

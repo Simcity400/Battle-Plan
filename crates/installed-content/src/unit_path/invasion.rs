@@ -63,25 +63,35 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
         if from == to {
             return Ok(vec![from]);
         }
-        let graph = self.graph;
-        if graph.ids.iter().any(|&id| id > u16::MAX as u32) {
-            return Err(
-                "invasion path province id exceeds the native u16 node representation".into(),
-            );
-        }
-        let source = graph
-            .dense(from)
-            .ok_or_else(|| format!("invasion source {from} is undefined"))?;
-        let target = graph
-            .dense(to)
-            .ok_or_else(|| format!("invasion target {to} is undefined"))?;
+        // Preserve this caller's unsupported-content refusal before vf70;
+        // counter requests own a different native precheck order.
+        self.native_endpoints(from, to)?;
         // 140E18350 invokes vf70 with naval=true, no mode-2 node gate.
         if !self.province_access_for_move(army, to, true)? {
             return Ok(Vec::new());
         }
+        Ok(self
+            .native_route(army, from, to, stop_at_owner, |from, to| {
+                self.invasion_edge(army, from, to)
+            })?
+            .unwrap_or_default())
+    }
+
+    /// Shared 140E174F0 native A* loop. None is search failure; Some(empty)
+    /// is successful equal endpoints. Request callers own their prechecks.
+    pub(super) fn native_route(
+        &self,
+        army: &Army,
+        from: u32,
+        to: u32,
+        stop_at_owner: Option<Country>,
+        mut admits: impl FnMut(u32, u32) -> Fact<bool>,
+    ) -> Fact<Option<Vec<u32>>> {
+        let graph = self.graph;
+        let (source, target) = self.native_endpoints(from, to)?;
         let centroid = |at: usize| {
             graph.centroids[at]
-                .ok_or_else(|| format!("invasion province {} has no centroid", graph.ids[at]))
+                .ok_or_else(|| format!("unit path province {} has no centroid", graph.ids[at]))
         };
         let [tx, ty] = centroid(target)?;
         let mut nodes = vec![Node::default(); graph.ids.len()];
@@ -99,11 +109,11 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
                     route.push(graph.ids[cursor]);
                     cursor = nodes[cursor].parent;
                     if route.len() > nodes.len() {
-                        return Err("invasion path predecessor cycle".into());
+                        return Err("unit path predecessor cycle".into());
                     }
                 }
                 route.reverse();
-                return Ok(route);
+                return Ok(Some(route));
             }
             closed[at] = true;
             let id = graph.ids[at];
@@ -122,12 +132,12 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
                     continue;
                 }
                 let other = graph.ids[next];
-                if !self.invasion_edge(army, id, other)? {
+                if !admits(id, other)? {
                     continue;
                 }
                 let mut cost = edge.distance.ok_or_else(|| {
                     format!(
-                        "invasion edge {id}->{other} distance is unavailable: {}",
+                        "unit path edge {id}->{other} distance is unavailable: {}",
                         graph
                             .unavailable
                             .get(&(id.min(other), id.max(other)))
@@ -166,7 +176,27 @@ impl<W: MoveWorld + ?Sized> Mover<'_, W> {
                 heap_push(&mut heap, (node.f, next as u32));
             }
         }
-        Ok(Vec::new())
+        Ok(None)
+    }
+
+    fn native_endpoints(&self, from: u32, to: u32) -> Fact<(usize, usize)> {
+        // MoveGraph::new sorts definition IDs, so its last ID proves the bound.
+        if self
+            .graph
+            .ids
+            .last()
+            .is_some_and(|&id| id > u16::MAX as u32)
+        {
+            return Err("unit path province id exceeds the native u16 node representation".into());
+        }
+        Ok((
+            self.graph
+                .dense(from)
+                .ok_or_else(|| format!("unit path source {from} is undefined"))?,
+            self.graph
+                .dense(to)
+                .ok_or_else(|| format!("unit path target {to} is undefined"))?,
+        ))
     }
 
     fn invasion_edge(&self, army: &Army, from: u32, to: u32) -> Fact<bool> {

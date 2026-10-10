@@ -4,7 +4,7 @@ struct Params {
     stride: u32, packed_ids: u32, count: u32, dispatch_stride: u32,
     opacity: u32, no_color: u32, distance_cap: u32, distance_in_b: u32,
 }
-struct Region { color: u32, alpha_offset: u32, alpha_count: u32, radius: u32 }
+struct Region { color: u32, alpha_offset: u32, alpha_count: u32, radius: u32, attributes: u32 }
 struct Cell { bits: array<u32, 8>, distance: u32 }
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var<storage, read> ids: array<u32>;
@@ -123,23 +123,30 @@ fn nearest(x: u32, y: u32, radius: u32) -> u32 {
     return best;
 }
 fn rgb(c: u32) -> vec3<u32> { return vec3<u32>(c & 255u, (c >> 8u) & 255u, (c >> 16u) & 255u); }
-struct Sample { color: vec4<u32>, opacity: u32 }
+struct Sample { color: vec4<u32>, effects: vec4<u32> }
 fn sample_pixel(x: u32, y: u32) -> Sample {
     let key = region_at(x, y);
     if key == 0u {
         if distance_at(y / 16u * p.columns + x / 16u) <= 1u {
             var sum = vec3<u32>(0u); var count = 0u;
+            var fx = vec2<u32>(0u); var gradient = 0u; var has_gradient = false;
             for (var dy = -1; dy <= 1; dy++) {
                 for (var dx = -1; dx <= 1; dx++) {
                     let nx = i32(x) + dx; let ny = i32(y) + dy;
                     if (dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= i32(p.width) || ny >= i32(p.height) { continue; }
                     let neighbour = region_at(u32(nx), u32(ny));
-                    if neighbour != 0u { sum += rgb(regions[neighbour].color); count++; }
+                    if neighbour != 0u {
+                        sum += rgb(regions[neighbour].color); count++;
+                        let attr = regions[neighbour].attributes;
+                        //141587F70 accumulates control and contested as bytes.
+                        fx = (fx + vec2<u32>(attr & 255u, (attr >> 8u) & 255u)) & vec2<u32>(255u);
+                        if (attr & (1u << 24u)) != 0u { gradient += (attr >> 16u) & 255u; has_gradient = true; }
+                    }
                 }
             }
-            if count != 0u { return Sample(vec4<u32>(sum / count, 255u), p.opacity); }
+            if count != 0u { return Sample(vec4<u32>(sum / count, select(255u, gradient / count, has_gradient)), vec4<u32>(fx.x / count, p.opacity, 0u, fx.y / count)); }
         }
-        return Sample(vec4<u32>(rgb(p.no_color), 255u), 0u);
+        return Sample(vec4<u32>(rgb(p.no_color), 255u), vec4<u32>(0u));
     }
     let region = regions[key];
     let squared = nearest(x, y, region.radius);
@@ -147,7 +154,8 @@ fn sample_pixel(x: u32, y: u32) -> Sample {
     if squared < region.alpha_count {
         a = (alpha[region.alpha_offset + squared / 4u] >> ((squared & 3u) * 8u)) & 255u;
     }
-    return Sample(vec4<u32>(rgb(region.color), a), p.opacity);
+    if (region.attributes & (1u << 24u)) != 0u { a = (region.attributes >> 16u) & 255u; }
+    return Sample(vec4<u32>(rgb(region.color), a), vec4<u32>(region.attributes & 255u, p.opacity, 0u, (region.attributes >> 8u) & 255u));
 }
 fn pack(c: vec4<u32>) -> u32 { return c.x | (c.y << 8u) | (c.z << 16u) | (c.w << 24u); }
 @compute @workgroup_size(8, 8)
@@ -157,14 +165,14 @@ fn field(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) 
     let cell = dirty[n];
     let xy = vec2<u32>(cell % p.columns, cell / p.columns) * 8u + local.xy;
     if xy.x >= p.width / 2u || xy.y >= p.height / 2u { return; }
-    var sum = vec4<u32>(0u); var covered = 0u;
+    var sum = vec4<u32>(0u); var effects = vec4<u32>(0u);
     for (var dx = 0u; dx < 2u; dx++) {
         let a = sample_pixel(xy.x * 2u + dx, xy.y * 2u);
         let b = sample_pixel(xy.x * 2u + dx, xy.y * 2u + 1u);
         sum += (a.color + b.color) / 2u;
-        covered += (a.opacity + b.opacity) / 2u;
+        effects += (a.effects + b.effects) / 2u;
     }
     let at = xy.y * p.stride + xy.x;
     output[at] = pack(sum / 2u);
-    output[at + p.stride * (p.height / 2u)] = (covered / 2u) << 8u;
+    output[at + p.stride * (p.height / 2u)] = pack(effects / 2u);
 }

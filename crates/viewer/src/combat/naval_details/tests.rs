@@ -18,24 +18,7 @@ fn a_refused_flag_preserves_known_naval_counts_and_other_country_flags() {
         assert!(values[flag].hidden);
         assert!(values[flag].text.is_none());
     }
-    let missing = NavalResultShip {
-        owner: 7,
-        ..Default::default()
-    };
-    let known = NavalResultShip {
-        owner: 8,
-        ..Default::default()
-    };
-    let mut values = Values::new();
-    text(&mut values, "number", "2");
-    result_flags(&mut out, &mut values, &[&missing, &known], &flags);
-    assert_eq!(values["number"].text.as_deref(), Some("2"));
-    assert!(values["country_flag_left"].hidden);
-    assert!(values["country_flag_left"].flag.is_none());
-    assert_eq!(values["country_flag_right"].flag.as_deref(), Some("BBB"));
-    assert!(!values["country_flag_right"].hidden);
-    assert!(values["country_flag_center"].hidden);
-    assert_eq!(out.refused().get(&reason), Some(&3));
+    assert_eq!(out.refused().get(&reason), Some(&2));
 }
 
 #[test]

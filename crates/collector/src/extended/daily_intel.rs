@@ -6,7 +6,7 @@
 //! also returns it. A walk that finds it on loan is skipped rather than waited
 //! for, the hour carries the last sample, and the next hour walks instead.
 
-use crate::table_capture::{CaptureRows, grow_vec};
+use crate::table_capture::{CaptureRows, grow_capacity};
 use engine::allocation::{filled, oom};
 use engine::country_intel_row::Row;
 use std::sync::{
@@ -18,6 +18,8 @@ pub(crate) struct Buffer {
     pub rows: CaptureRows<Row>,
     /// Fixed copy window for the bulk record reads; it never grows.
     pub scratch: Vec<u8>,
+    /// Optional reserved suffix pressure cannot change the positive outcome.
+    pub reserved_required: usize,
 }
 
 impl Buffer {
@@ -50,6 +52,7 @@ impl Home {
         let buffer = Box::new(Buffer {
             rows,
             scratch: filled(scratch, 0)?,
+            reserved_required: 0,
         });
         Ok(Self(Arc::new(Inner {
             bytes: AtomicUsize::new(buffer.allocated_bytes()),
@@ -144,14 +147,16 @@ impl Loan {
             return;
         };
         let mut buffer = match self.buffer.take() {
-            Some(mut buffer) => {
-                buffer.rows.grow(capacity);
-                buffer
-            }
+            Some(buffer) => buffer,
             None => {
                 let mut slot = home.slot();
                 match slot.buffer.take() {
-                    Some(buffer) if buffer.rows.rows.len() < *capacity => buffer,
+                    Some(buffer)
+                        if buffer.rows.rows.len() < *capacity
+                            || buffer.reserved_required > *capacity =>
+                    {
+                        buffer
+                    }
                     idle => {
                         slot.buffer = idle;
                         return;
@@ -159,9 +164,11 @@ impl Loan {
                 }
             }
         };
-        grow_vec(&mut buffer.rows.rows, *capacity);
+        grow_capacity(capacity, buffer.reserved_required);
+        buffer.rows.grow(capacity);
         // Pressure is consumed; an idle buffer must not grow from it again.
         buffer.rows.reset();
+        buffer.reserved_required = 0;
         home.0
             .bytes
             .store(buffer.allocated_bytes(), Ordering::Relaxed);
@@ -229,5 +236,46 @@ mod tests {
             assert!(matches!(held.borrow(true), Walk::Ready(_)));
         }
         assert!(matches!(loan.borrow(true), Walk::Ready(_)));
+    }
+
+    #[test]
+    fn optional_suffix_pressure_grows_without_poisoning_complete_positive_rows() {
+        let home = Home::new(4, 32);
+        let mut loan = Loan::new(home.clone());
+        let Walk::Ready(buffer) = loan.borrow(true) else {
+            panic!("free buffer")
+        };
+        buffer.rows.outcome = Outcome::Rows { len: 2 };
+        buffer.reserved_required = 13;
+        let mut capacity = 4;
+        loan.grow(&mut capacity);
+        assert!(capacity >= 13);
+        let grown = capacity;
+        loan.grow(&mut capacity);
+        assert_eq!(capacity, grown);
+        let Walk::Ready(buffer) = loan.borrow(true) else {
+            panic!("returned buffer")
+        };
+        assert_eq!(buffer.reserved_required, 0);
+        assert_eq!(buffer.rows.rows.len(), capacity);
+        assert_eq!(buffer.scratch.len(), 32);
+    }
+
+    #[test]
+    fn released_optional_suffix_pressure_is_consumed_by_idle_growth_once() {
+        let home = Home::new(4, 32);
+        let mut loan = Loan::new(home);
+        let Walk::Ready(buffer) = loan.borrow(true) else {
+            panic!("free buffer")
+        };
+        buffer.rows.outcome = Outcome::Rows { len: 2 };
+        buffer.reserved_required = 11;
+        loan.release();
+        let mut capacity = 4;
+        loan.grow(&mut capacity);
+        assert!(capacity >= 11);
+        let grown = capacity;
+        loan.grow(&mut capacity);
+        assert_eq!(capacity, grown);
     }
 }

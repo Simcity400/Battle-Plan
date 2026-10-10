@@ -26,35 +26,34 @@ pub const TABLES: [TableId; N] = [
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("stability inputs, fingerprints and tree lines", 0, &[0, 1])];
 
-/// Tree lines per country slot and identity/text bytes per line the first
-/// capture is sized for. Most hours read one slice of the countries; a full
-/// hour that does not fit truncates and grows both off-thread.
-const LINES_PER_COUNTRY: usize = 4;
-const BYTES_PER_LINE: usize = 16;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     inputs: usize,
     lines: usize,
     bytes: usize,
+    demand: native::Demand,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            inputs: 512,
-            lines: 512 * LINES_PER_COUNTRY,
-            bytes: 512 * LINES_PER_COUNTRY * BYTES_PER_LINE,
-        }
-    }
-}
-
 impl Capacities {
-    /// One input row and a few lines per country slot. Never lowers.
+    /// One input row per country slot. Native line/text demand is independent.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         let inputs = crate::country_scale::rows(slots, 1);
         self.inputs = self.inputs.max(inputs);
-        self.lines = self.lines.max(inputs.saturating_mul(LINES_PER_COUNTRY));
-        self.bytes = self.bytes.max(self.lines.saturating_mul(BYTES_PER_LINE));
+    }
+
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let demand = native::demand(memory, base, state)?;
+        self.inputs = self.inputs.max(demand.inputs);
+        self.lines = self.lines.max(demand.lines);
+        self.bytes = self.bytes.max(demand.bytes);
+        self.demand.children = self.demand.children.max(demand.children);
+        self.demand.candidates = self.demand.candidates.max(demand.candidates);
+        self.demand.values = self.demand.values.max(demand.values);
+        Ok(())
     }
 }
 
@@ -96,7 +95,7 @@ impl Captured {
             inputs: CaptureRows::new(capacity.inputs),
             lines: CaptureRows::new(capacity.lines),
             bytes: Arena::new(capacity.bytes),
-            scratch: native::Scratch::try_new()
+            scratch: native::Scratch::with_demand(capacity.demand)
                 .map_err(crate::allocation::io)
                 .unwrap_or_else(|_| native::Scratch::vacant()),
             selection: SliceSelection::new(true),
@@ -115,6 +114,10 @@ impl Captured {
             + self.lines.allocated_bytes()
             + self.bytes.allocated_bytes()
             + self.scratch.allocated_bytes()
+            + self
+                .context
+                .as_ref()
+                .map_or(0, |context| context.language.capacity())
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.inputs.grow(&mut capacity.inputs);
@@ -208,9 +211,7 @@ impl Captured {
             self.selection.scan_ticks = qpc().saturating_sub(started).max(0) as u64;
         }
         let context = native::Context::read(memory, base, game_state, keys)?;
-        self.context = Some(context);
         let mut inputs = 0;
-        let mut unread_inputs = 0_u32;
         let mut lines = Outcome::Rows { len: 0 };
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
@@ -221,7 +222,7 @@ impl Captured {
             }
             let mut input = native::InputRow::default();
             let start = lines.len();
-            let walk = native::walk_country(
+            let walk = native::walk_country_growing(
                 memory,
                 base,
                 &countries,
@@ -229,39 +230,33 @@ impl Captured {
                 &context,
                 &mut self.scratch,
                 &mut input,
-                &mut self.lines.rows[start..],
-                &mut self.bytes.first[self.bytes.len..],
+                &mut self.lines.rows,
+                &mut self.bytes.first,
+                start,
+                self.bytes.len,
             )?;
-            // Spans are relative to this country's arena window.
             let offset = self.bytes.len;
-            if let Outcome::Rows { len } = walk.lines {
-                for row in &mut self.lines.rows[start..start + len] {
-                    row.identity.start += offset;
-                    row.text.start += offset;
-                }
-            }
             self.bytes.required = self
                 .bytes
                 .required
                 .max(offset.saturating_add(walk.required_bytes));
             self.bytes.len += walk.bytes_len;
             lines = combine(lines, walk.lines)?;
-            if inputs < self.inputs.rows.len() {
-                self.inputs.rows[inputs] = input;
-                inputs += 1;
-            } else {
-                unread_inputs += 1;
+            if self.inputs.rows.len() <= inputs {
+                engine::allocation::resize_default(
+                    &mut self.inputs.rows,
+                    inputs
+                        .checked_add(1)
+                        .ok_or("stability input count overflow")?,
+                )
+                .map_err(|_| "stability input storage allocation failed")?;
             }
+            self.inputs.rows[inputs] = input;
+            inputs += 1;
         }
-        self.inputs.outcome = if unread_inputs == 0 {
-            Outcome::Rows { len: inputs }
-        } else {
-            Outcome::Truncated {
-                len: inputs,
-                unread_rows: unread_inputs,
-            }
-        };
+        self.inputs.outcome = Outcome::Rows { len: inputs };
         self.lines.outcome = lines;
+        self.context = Some(context);
         Ok(())
     }
 
@@ -270,7 +265,7 @@ impl Captured {
     }
 
     pub fn tables(&self) -> [TableView; N] {
-        let Some(context) = self.context else {
+        let Some(context) = self.context.as_ref() else {
             // The read failed or was skipped before it reached any country.
             return self.outcomes().map(|outcome| match outcome {
                 Outcome::Unavailable { reason } => unavailable(reason),
@@ -278,7 +273,7 @@ impl Captured {
             });
         };
         let keys = context.keys.keys.map(|key| key.unwrap_or(u32::MAX));
-        let language = context.language.as_bytes();
+        let language = context.language.as_slice();
         let d = context.defines;
         let inputs = table::<tables::CountryStabilityInputs, _>(
             self.inputs.outcome,
@@ -438,7 +433,7 @@ mod tests {
         let mut capacity = Capacities::default();
         capacity.raise_for_countries(20_000);
         assert!(capacity.inputs >= 20_000);
-        assert!(capacity.lines >= 20_000 * LINES_PER_COUNTRY);
+        assert_eq!(capacity.lines, 0);
         let raised = capacity;
         capacity.raise_for_countries(10);
         assert!(capacity == raised);
@@ -446,7 +441,11 @@ mod tests {
 
     #[test]
     fn rows_without_their_reads_globals_are_not_published() {
-        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut captured = Captured::with_capacities(&Capacities {
+            lines: 2,
+            bytes: 9,
+            ..Default::default()
+        });
         captured.bytes.first[..9].copy_from_slice(b"idea_aDec");
         captured.bytes.len = 9;
         captured.lines.rows[0] = native::LineRow {

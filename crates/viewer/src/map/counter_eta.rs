@@ -1,24 +1,28 @@
-//! The arrival line a moving division shows, from its derived remaining durations.
+//! The arrival line a moving unit shows, from its fresh counter query.
 //!
 //! The game words it from one ceiling at two sites. `CArmyDivisionView::idea_tooltip`
 //! (`armiesview.cpp`, `141691B40`) takes `eta_remaining` (`140BECF90`) over the stored route —
-//! what `DivisionEtaInputs` reconstructs — and writes `UNIT_VIEW_MOVE_HOURS` or
+//! what the legacy `DivisionEtaInputs` operands reconstruct — and writes `UNIT_VIEW_MOVE_HOURS` or
 //! `UNIT_VIEW_MOVE_DAYS_HOURS`. `CUnitCounterItem::tooltip_builder` (`1418C00D0`) writes the same
 //! sentence on the **map counter** as `UNIT_MOVING_HOURS` / `UNIT_MOVING_DAYS_HOURS`, and switches
 //! to the `_NONPLAYER` pair over the **next** province for a unit the viewing player does not own
 //! (`ccountry_tag::same_country` against the idler's country). The viewer has no division view, so
 //! its counter hover carries the line, in the counter tooltip's own wording.
 //!
-//! Counter tooltip ETA uses the stored route (the division panel's value); the native counter
-//! shows a client-UI path-cache cost filled by hover/selection queries (140BED3A0), which is
-//! unrecorded. The seed is five unit updates (140BE9902); 140BF0300 also decays viewer levels,
-//! but its tail at 140BF08E0 decrements entry+0x10 in the stride-0x18 path-cache vector at
-//! CUnit+0x308/count+0x314 and compacts expired entries. Each shown destination-ETA line counts
-//! this limitation. Fresh sample H showed 38 h natively and 30 h here: on a cache miss,
-//! 140BED280 → 140BED3A0 searches a route instead of using 140BECF90's stored route.
+//! The counter arrival uses 140BED280 → 140BED3A0's cache-miss calculation:
+//! a new native route search followed by 140BECF90 over that searched route.
+//! Fresh inputs must match the displayed frame's hour, with independent
+//! transport, normal, railway and naval refusals. Actual first-edge progress is subtracted
+//! only when the searched first edge matches the stored ordinary first edge.
+//! The native interface's retained duration cache and route option are local
+//! presentation state; the viewer uses its explicit default route policy and
+//! does not read or capture that cache. A retained native cache value may differ
+//! from a fresh query until its five-unit-update lifetime expires.
 //!
-//! Both sites do the same arithmetic: [`engine::cunit::eta_hours`] (`14047BDE0`), narrowed to i32,
-//! shown only when positive, split into `hours / 24` days and `hours % 24` hours.
+//! Both sites use [`engine::cunit::eta_hours`] (`14047BDE0`), narrowed to i32.
+//! The division view's legacy `arrival` test helper omits nonpositive hours. The map
+//! counter's [`map_arrival`] formats every reached query result: signed days<1
+//! uses total hours, otherwise days and the hours remainder.
 
 use engine::cunit::eta_hours;
 
@@ -32,7 +36,8 @@ pub struct Arrival {
 }
 
 /// What `remaining` fixed5 hours arrive at, or `None` where the game writes no line at all: a
-/// route already run out, and any negative or sentinel duration.
+/// route already run out or any duration whose narrowed total hours is nonpositive.
+#[cfg(test)]
 pub fn arrival(remaining: i64) -> Option<Arrival> {
     let total = eta_hours(remaining) as i32;
     if total < 1 {
@@ -42,6 +47,24 @@ pub fn arrival(remaining: i64) -> Option<Arrival> {
         days: total / 24,
         hours: total % 24,
     })
+}
+
+/// CUnitCounterItem@1418C00D0 formats every reached query result. The native
+/// days<1 arm passes the total signed hours, including zero and negative hours.
+pub(crate) fn map_arrival(remaining: i64) -> Arrival {
+    let total = eta_hours(remaining) as i32;
+    let days = total / 24;
+    if days < 1 {
+        Arrival {
+            days: 0,
+            hours: total,
+        }
+    } else {
+        Arrival {
+            days,
+            hours: total % 24,
+        }
+    }
 }
 
 /// The game's own sentence in the viewer's language: `UNIT_MOVING_HOURS` or
@@ -112,6 +135,26 @@ mod tests {
         // 4294967295 is the engine's zero-denominator sentinel: a duration like any
         // other here, and the game words it the same way.
         assert_eq!(arrival(4_294_967_295).unwrap().days, 1789);
+    }
+
+    #[test]
+    fn map_counter_formats_zero_negative_and_narrowed_total_hours() {
+        assert_eq!(map_arrival(0), Arrival { days: 0, hours: 0 });
+        assert_eq!(
+            map_arrival(-2_900_000),
+            Arrival {
+                days: 0,
+                hours: -29
+            }
+        );
+        assert_eq!(map_arrival(2_900_000), Arrival { days: 1, hours: 5 });
+        assert_eq!(
+            map_arrival((i64::from(i32::MAX) + 1) * 100_000),
+            Arrival {
+                days: 0,
+                hours: i32::MIN
+            }
+        );
     }
 
     #[test]

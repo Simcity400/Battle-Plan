@@ -16,11 +16,15 @@ pub struct Demand {
     pub cached_name_text: usize,
     /// Successful origin-header demand only; a failed hint never records zero.
     pub supply_origins: usize,
+    /// Original real-template grouped headers bound selected coast-input memos.
+    pub transport_members: usize,
     pub requests: usize,
     pub roots: usize,
     pub nodes: usize,
     pub text: usize,
     pub depth: usize,
+    /// An optional off-thread hint failed; readable capacity floors survive.
+    pub failure: Option<&'static str>,
 }
 
 impl Demand {
@@ -30,11 +34,13 @@ impl Demand {
             terrain_text: self.terrain_text.max(other.terrain_text),
             cached_name_text: self.cached_name_text.max(other.cached_name_text),
             supply_origins: self.supply_origins.max(other.supply_origins),
+            transport_members: self.transport_members.max(other.transport_members),
             requests: self.requests.max(other.requests),
             roots: self.roots.max(other.roots),
             nodes: self.nodes.max(other.nodes),
             text: self.text.max(other.text),
             depth: self.depth.max(other.depth),
+            failure: other.failure,
         }
     }
 }
@@ -95,6 +101,14 @@ fn storage<T: Default + Clone>(count: usize) -> Result<Vec<T>, &'static str> {
 }
 
 pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand, &'static str> {
+    crate::allocation::advisory(|| demand_advisory(memory, base, state))
+}
+
+fn demand_advisory(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> Result<Demand, &'static str> {
     let count = match carmy::walk(memory, base, state, &mut []) {
         Outcome::Rows { len } => len,
         Outcome::Truncated { len, unread_rows } => len
@@ -136,14 +150,32 @@ pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand,
         rows: visited,
         ..Default::default()
     };
+    let mut transport_registry = crate::creference_registry::HeaderResolver::default();
     for seed in &seeds {
-        if let Some(member) = seed.name_member.filter(|member| *member != 0)
-            && let Ok(bytes) = crate::cname_group_member::cached_name_demand(&headers, base, member)
-        {
-            super::add(&mut demand.cached_name_text, bytes)?;
+        match crate::selected_transport_units::member_demand(
+            &headers,
+            base,
+            seed,
+            &mut transport_registry,
+        ) {
+            Ok(count) => super::add(&mut demand.transport_members, count)?,
+            Err(reason) => {
+                demand.failure.get_or_insert(reason);
+            }
         }
-        if let Ok(count) = crate::cunit_supply_inputs::origin_demand(&headers, seed.pointer) {
-            super::add(&mut demand.supply_origins, count)?;
+        if let Some(member) = seed.name_member.filter(|member| *member != 0) {
+            match crate::cname_group_member::cached_name_demand(&headers, base, member) {
+                Ok(bytes) => super::add(&mut demand.cached_name_text, bytes)?,
+                Err(reason) => {
+                    demand.failure.get_or_insert(reason);
+                }
+            }
+        }
+        match crate::cunit_supply_inputs::origin_demand(&headers, seed.pointer) {
+            Ok(count) => super::add(&mut demand.supply_origins, count)?,
+            Err(reason) => {
+                demand.failure.get_or_insert(reason.reason());
+            }
         }
         // Exercise affects only training, which has no modifier-tree source.
         let inputs = carmy_attrition::capture(
@@ -185,21 +217,21 @@ pub fn demand(memory: &impl Memory, base: usize, state: usize) -> Result<Demand,
     let mut roots: [Root; 0] = [];
     let mut nodes: [RawNode; 0] = [];
     let mut text = [];
-    let mut stack: [Frame; 0] = [];
+    let mut stack = Vec::<Frame>::new();
     let mut buffers = Buffers {
-        requests: &mut empty_requests,
+        requests: crate::walk::Buffer::Fixed(&mut empty_requests),
         request_len: 0,
         request_required: 0,
-        roots: &mut roots,
+        roots: crate::walk::Buffer::Fixed(&mut roots),
         root_len: 0,
         root_required: 0,
-        nodes: &mut nodes,
+        nodes: crate::walk::Buffer::Fixed(&mut nodes),
         node_len: 0,
         node_required: 0,
-        text: &mut text,
+        text: crate::walk::Buffer::Fixed(&mut text),
         text_len: 0,
         text_required: 0,
-        stack: &mut stack,
+        stack: crate::walk::Buffer::Growing(&mut stack),
         stack_required: 0,
     };
     let limits = StackLimits::current();

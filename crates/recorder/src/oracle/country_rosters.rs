@@ -44,7 +44,7 @@ pub(super) fn compare_owned(
     }
     // 140D32BD0 saves every +0x68 slot, including null references. Its +0x80
     // object list supplies the payloads through 1415CE720 -> 1415CE460.
-    for (tag, handles) in &save.country_rosters.owned_goals {
+    for (tag, handles) in report.canonical_countries(&save.country_rosters.owned_goals) {
         let recorded = by_tag.remove(tag.as_slice()).unwrap_or_default();
         let label = format!("OwnedWargoals {}", String::from_utf8_lossy(tag));
         if recorded.keys().copied().ne(0..recorded.len() as u32) {
@@ -208,6 +208,44 @@ pub(super) fn compare_lists(
             .get(&row.country)
             .ok_or_else(|| invalid("country roster has no recorded country"))?;
         let label = format!("CountryCounterInputs {}", String::from_utf8_lossy(tag));
+        if let Some(cache) = report.recorded(
+            &row.co_belligerents,
+            "CountryCounterInputs.co_belligerents",
+            &label,
+        ) {
+            report.limitation(
+                if cache.is_some() {
+                    "directed CRelationStatus+0x310 cache truth is runtime-only; saved wars and factions cannot certify rebuild timing"
+                } else {
+                    "directed co-belligerent cache was unavailable at capture"
+                },
+                format!("{label}.co_belligerents"),
+            );
+        }
+        if let Some(war) = report.recorded(&row.zero_war, "CountryCounterInputs.zero_war", &label) {
+            report.limitation(
+                if war.is_some() {
+                    "slot-zero relation war-pointer presence and raw retired byte are runtime-only; zero is outside the saved country census"
+                } else {
+                    "slot-zero war operands were unavailable at capture"
+                },
+                format!("{label}.zero_war"),
+            );
+        }
+        if let Some(subject) = report.recorded(
+            &row.zero_subject,
+            "CountryCounterInputs.zero_subject",
+            &label,
+        ) {
+            report.limitation(
+                if subject.is_some() {
+                    "slot-zero subject pointer/type/raw parties are runtime-only: the saved relation matrix omits slot0; native VM witnesses are required"
+                } else {
+                    "slot-zero subject operands were unavailable at capture"
+                },
+                format!("{label}.zero_subject"),
+            );
+        }
         let owned_states = report.recorded(
             &row.owned_states,
             "CountryCounterInputs.owned_states",
@@ -345,6 +383,245 @@ pub(super) fn compare_lists(
     );
     Ok(())
 }
+
+/// Current-hour owner domains; saves do not serialize the composed values.
+pub(super) fn compare_movement(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
+    let rows = complete::<tables::CountryCounterInputs>(frame)?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let links = complete::<tables::CountryLinks>(frame).map(|rows| {
+        rows.iter()
+            .map(|row| (row.id, row.canonical_slot))
+            .collect::<BTreeMap<_, _>>()
+    });
+    let mut controllers = None;
+    let mut naval_demands = None;
+    for row in rows {
+        let label = format!("CountryCounterInputs {}.movement", row.country);
+        let Some(movement) =
+            report.recorded(&row.movement, "CountryCounterInputs.movement", &label)
+        else {
+            continue;
+        };
+        let Some(movement) = movement else {
+            report.difference(
+                &label,
+                "unavailable",
+                "required current-hour movement packet",
+            );
+            continue;
+        };
+        equal(
+            report,
+            format!("{label}.sample_hour"),
+            movement.sample_hour,
+            frame.hour,
+        );
+        if movement.sample_hour != frame.hour {
+            continue;
+        }
+        let mut naval_demanded = false;
+        if movement.naval.is_none() || movement.theatre.is_none() {
+            report.attempt(&format!("{label}.naval demand"), |_| {
+                let slots = naval_demands
+                    .get_or_insert_with(|| super::map_inputs::navy_owner_slots(frame))
+                    .as_ref()
+                    .map_err(|reason| invalid(reason.to_string()))?;
+                let links = links
+                    .as_ref()
+                    .map_err(|reason| invalid(reason.to_string()))?;
+                let slot = links
+                    .get(&row.country)
+                    .filter(|&&slot| slot != 0)
+                    .ok_or_else(|| {
+                        invalid("naval movement demand owner has no positive country link")
+                    })?;
+                naval_demanded = slots.contains(slot);
+                Ok(())
+            });
+        }
+        if movement.river.is_some()
+            || movement.transport.is_some()
+            || movement.naval.is_some()
+            || movement.theatre.is_some()
+        {
+            report.attempt(&format!("{label}.owner"), |_| {
+                let links = links
+                    .as_ref()
+                    .map_err(|reason| invalid(reason.to_string()))?;
+                if row.country == 0 || !links.contains_key(&row.country) {
+                    return Err(invalid(
+                        "country movement owner has no positive country link",
+                    ));
+                }
+                Ok(())
+            });
+        }
+        if let Some(river) = &movement.river {
+            report.attempt(&format!("{label}.river"), |report| {
+                if controllers.is_none() {
+                    let links = links
+                        .as_ref()
+                        .map_err(|reason| invalid(reason.to_string()))?;
+                    let mut domain = BTreeSet::new();
+                    for province in complete::<tables::Provinces>(frame)? {
+                        domain.insert(if province.controller == 0 {
+                            0
+                        } else {
+                            *links
+                                .get(&province.controller)
+                                .ok_or_else(|| invalid("movement controller has no country link"))?
+                        });
+                    }
+                    controllers = Some(domain);
+                }
+                if river
+                    .windows(2)
+                    .any(|pair| pair[0].target_slot >= pair[1].target_slot)
+                {
+                    return Err(invalid(format!(
+                        "{label}.river keys are not unique and increasing"
+                    )));
+                }
+                let actual: BTreeSet<_> = river.iter().map(|entry| entry.target_slot).collect();
+                equal(
+                    report,
+                    format!("{label}.river controller domain"),
+                    &actual,
+                    controllers.as_ref().unwrap(),
+                );
+                for entry in river {
+                    if entry.modifier.is_none() {
+                        report.difference(
+                            format!("{label}.river target {}", entry.target_slot),
+                            "unavailable",
+                            "required runtime modifier",
+                        );
+                    }
+                }
+                Ok(())
+            });
+        } else {
+            report.limitation("owner river domain was not demanded or unavailable; absence is not a complete empty domain", format!("{label}.river"));
+        }
+        if let Some(transport) = &movement.transport {
+            report.attempt(&format!("{label}.transport"), |report| {
+                if transport
+                    .windows(2)
+                    .any(|pair| pair[0].region >= pair[1].region)
+                {
+                    return Err(invalid(format!(
+                        "{label}.transport keys are not unique and increasing"
+                    )));
+                }
+                for entry in transport {
+                    if entry.speed.is_none() {
+                        report.difference(
+                            format!("{label}.transport region {}", entry.region),
+                            "unavailable",
+                            "required runtime speed",
+                        );
+                    }
+                }
+                Ok(())
+            });
+        } else {
+            report.limitation("owner transport domain was not demanded or unavailable; absence is not a complete empty domain", format!("{label}.transport"));
+        }
+        if let Some(naval) = &movement.naval {
+            report.attempt(&format!("{label}.naval owner slot"), |report| {
+                let links = links
+                    .as_ref()
+                    .map_err(|reason| invalid(reason.to_string()))?;
+                let expected = links
+                    .get(&row.country)
+                    .ok_or_else(|| invalid("naval movement owner has no country link"))?;
+                equal(
+                    report,
+                    format!("{label}.naval.navy_slot"),
+                    naval.navy_slot,
+                    *expected,
+                );
+                Ok(())
+            });
+            for (name, values) in [
+                ("foreign_navy_slots", &naval.foreign_navy_slots),
+                ("supply_hubs", &naval.supply_hubs),
+            ] {
+                match values {
+                    None => report.difference(
+                        format!("{label}.naval.{name}"),
+                        "unavailable",
+                        "required native stored list",
+                    ),
+                    Some(values) if !naval.present && !values.is_empty() => report.difference(
+                        format!("{label}.naval.{name}"),
+                        values,
+                        "empty for observed null navy",
+                    ),
+                    Some(_) => {}
+                }
+            }
+        } else if naval_demanded {
+            report.difference(
+                format!("{label}.naval"),
+                "unavailable",
+                "required moving task-force owner navy domain",
+            );
+        } else {
+            report.limitation("owner naval domain was not demanded or unavailable; absence is not an observed null navy", format!("{label}.naval"));
+        }
+        if let Some(theatre) = &movement.theatre {
+            report.attempt(&format!("{label}.theatre"), |report| {
+                compare_theatre_areas(frame, theatre, &format!("{label}.theatre"), report)
+            });
+        } else if naval_demanded {
+            report.difference(
+                format!("{label}.theatre"),
+                "unavailable",
+                "required moving task-force owner controller-area membership",
+            );
+        } else {
+            report.limitation("owner theatre domain was not demanded or unavailable; absence does not certify empty pointer membership", format!("{label}.theatre"));
+        }
+    }
+    report.compared("CountryCounterInputs.movement", rows.len());
+    report.limitation("effective river-against relation modifiers and raw owner/region transport speeds are live composed operands, not direct saved scalar values. Saved diplomacy, ideas, weather and equipment do not certify their accumulation or refresh state; the transport region domain's native census also has no independent text-save comparator", "CountryCounterInputs.movement runtime operands");
+    report.limitation("no exact text-save comparator is proved for the native navy's stored foreign physical-slot and supply-hub lists; their order, repeated and zero occurrences require a matched runtime witness, independently of current diplomacy or country aliases", "CountryCounterInputs.movement naval stored lists");
+    Ok(())
+}
+
+pub(super) fn compare_theatre_areas(
+    frame: &DecodedFrame,
+    theatre: &replay::rows::TheatreControllerAreas,
+    label: &str,
+    report: &mut Report,
+) -> io::Result<()> {
+    if theatre.provinces.contains(&0) || theatre.provinces.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(invalid(format!(
+            "{label} provinces are not positive, unique and increasing"
+        )));
+    }
+    let provinces: BTreeSet<_> = complete::<tables::Provinces>(frame)?
+        .iter()
+        .map(|row| row.id)
+        .collect();
+    if let Some(id) = theatre
+        .provinces
+        .iter()
+        .find(|&&id| !provinces.contains(&id))
+    {
+        return Err(invalid(format!("{label} names unknown province {id}")));
+    }
+    report.limitation("membership compares retained theatre area pointers against actual CProvince+D0, including a separate null-area witness; saved theatre descriptors cannot certify this runtime pointer equality", label);
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "country_rosters/zero_subject_tests.rs"]
+mod zero_subject_tests;
 
 #[cfg(test)]
 mod tests;

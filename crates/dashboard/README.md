@@ -117,6 +117,13 @@ verification and uncovered-read reporting. Keep its named, counted diagnostics
 visible after lazy reads. Missing artwork leaves independent text and values
 available with its reason.
 
+Sprite images select an authored strip frame at time zero. All sprite images
+run the stack's Up program through [shader-pipeline artwork](../shader-pipeline/src/artwork.rs),
+including masking and active animation records; PNGs carry straight shader output
+for the host to composite. Effect/compiler/device failures remain named refusals.
+Trait assignment icons use registered spelling and the native GUI constructor's
+fallback retry; a declared but refused sprite never takes that retry.
+
 Use the shared localiser and plain-text helpers. Stored display text without a
 proven localisation key keeps the shared recording-language guard; a literal
 never becomes a key. Scoped text, triggers and descriptions use the same
@@ -124,6 +131,10 @@ recorded-hour evaluator and caller-owned event graph/variable session. Missing
 operands and unsupported reached forms retain named, counted refusals, without
 invented scopes, roster order or rebuilt native caches. Native evidence and exact
 form handling belong beside those helpers.
+
+Faction naming preserves complete empty bindings and successfully localised empty strings as known empty text. Missing inputs retain a null name and a named reason; a literal never becomes a localisation key.
+
+Place-name consumers retain successful empty state/region text separately from unavailable inputs and preserve each caller's native naming ladder. Army composition treats an omitted authored sub-unit group as the known token-zero default; offline inventory does not prove that every air/naval definition reaches an Army grid. Equipment icons retain own-type, technology, family and pool fallback for a null archetype, keeping real empty equipment names distinct from that null object. Political names, descriptions and sprites use the selected definition's authored spelling after a case-alias lookup.
 
 `content_check::check` visits products in registry order, shares preparation per
 stack and calls their real loaders. Offline findings belong to that preparation,

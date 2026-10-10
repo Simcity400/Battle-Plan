@@ -11,15 +11,15 @@ use replay::{
     rows::{CountryRow, NavalSupremacyRow, SunkConvoyRow, SunkShipEntry, tables},
 };
 
-use super::{Report, complete, country_tag, invalid};
+use super::{Report, complete, country_tag, invalid, serialized_text};
 
 mod railways;
 mod theatres;
 
-pub(super) use railways::compare_rail_edges;
 use railways::compare_railways;
-pub(super) use theatres::compare_order_of_battle;
+pub(super) use railways::{compare_rail_edges, compare_railway_buildings};
 use theatres::compare_theatres;
+pub(super) use theatres::{compare_order_of_battle, omitted_regular_group_units};
 
 fn equal<T: std::fmt::Debug + PartialEq>(
     report: &mut Report,
@@ -44,14 +44,6 @@ fn flag(value: u8) -> io::Result<bool> {
             "naval history raw flag exceeds the save's 0/1 representation",
         )),
     }
-}
-
-fn serialized_text<'a>(report: &mut Report, field: &str, bytes: &'a [u8]) -> &'a [u8] {
-    let end = installed_content::parser::c_string(bytes).len();
-    if end < bytes.len() {
-        report.limitation("native text serialization ends at the first NUL; captured trailing bytes are not save-comparable", field);
-    }
-    &bytes[..end]
 }
 
 pub(super) fn compare(

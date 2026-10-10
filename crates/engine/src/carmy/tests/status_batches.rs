@@ -1,6 +1,9 @@
 use super::*;
 fn manpower_fixture(values: &[i32]) -> PresentationMemory {
     let mut source = presentation_fixture();
+    source
+        .bytes
+        .resize(source.bytes.len().max(0x16000 + values.len() * 8), 0);
     array(
         &mut source.bytes,
         A1 + carmy::MANPOWER_DATA,
@@ -21,7 +24,17 @@ fn manpower_fixture(values: &[i32]) -> PresentationMemory {
 
 fn packet(manpower: usize) -> carmy::StatusPacket {
     carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
+        membership: crate::corders_group_member::MembershipCapacity {
+            queries: 2,
+            groups: 1,
+            ..Default::default()
+        },
         manpower,
+        thresholds: 3,
+        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+            nodes: 1,
+            entries: 1,
+        },
         ..carmy::StatusCapacities::new(2)
     })
     .unwrap()
@@ -197,4 +210,153 @@ fn status_capture_preserves_primary_word_faults_and_source_admission() {
     let mut rows = [carmy::StatusRow::default()];
     assert_eq!(captured.project(&mut rows), expected);
     assert_eq!(rows[0].division, seeds[0].division);
+}
+
+#[test]
+fn worker_manpower_and_lazy_thresholds_grow_before_first_and_later_payloads() {
+    let mut growing = packet(0);
+    growing.enable_growth();
+    for count in [5_000, 12_000] {
+        growing.clear();
+        let mut source = manpower_fixture(&vec![1; count]);
+        source.bytes.resize(0x40000 + (count + 1) * 8, 0);
+        let mut header = vec![0; 16];
+        array(&mut header, 0, 0x40000, count as u32 + 1);
+        source
+            .globals
+            .insert(carmy::EXPERIENCE_THRESHOLDS_RVA, header);
+        // Native 140BEA660 stops at its first strict upper threshold. Keep
+        // one unread suffix to prove storage growth adds no payload reads.
+        p64(&mut source.bytes, 0x40000 + (count - 1) * 8, 151);
+        p64(&mut source.bytes, 0x40000 + count * 8, u64::MAX);
+        let actual = ScalarBatchMemory::new(&source);
+        let result = growing.capture_level(&actual, 0, A1).unwrap();
+        assert_eq!((result.manpower_len, result.thresholds_len), (count, count));
+        assert_eq!(growing.manpower, vec![1; count]);
+        assert!(growing.thresholds.capacity() > count);
+        assert!(!actual.reads.borrow().contains(&(0x40000 + count * 8, 8)));
+        let expected = ScalarBatchMemory::new(&source);
+        let mut fixed = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
+            manpower: count,
+            thresholds: count + 1,
+            ..carmy::StatusCapacities::new(2)
+        })
+        .unwrap();
+        let reference = fixed.capture_level(&expected, 0, A1).unwrap();
+        assert_eq!(reference.thresholds_len, result.thresholds_len);
+        assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
+        growing.clear();
+        let fault = 0x16004 + (count - 1) * 8;
+        let actual = ScalarBatchMemory::new(&source);
+        actual.fault.set(Some(fault));
+        assert_eq!(
+            growing.capture_level(&actual, 0, A1),
+            Err("division presentation field unreadable")
+        );
+        assert_eq!(growing.manpower.len(), count - 1);
+        assert_eq!(
+            actual
+                .reads
+                .borrow()
+                .iter()
+                .filter(|&&(at, _)| at == fault)
+                .count(),
+            1
+        );
+        assert!(growing.thresholds_header.is_none());
+    }
+}
+
+#[test]
+fn worker_acclimatization_entries_and_registry_grow_from_original_5000_and_later_headers() {
+    use crate::{
+        acclimatization_category as category, acclimatization_data as data,
+        acclimatization_entry::Entry,
+    };
+    let mut growing = packet(0);
+    growing.enable_growth();
+    for count in [5_000, 12_000] {
+        growing.clear();
+        let mut source = presentation_fixture();
+        source.bytes.resize(0x80000 + count * 0x40, 0);
+        let object = A1 + carmy::ACCLIMATIZATION;
+        array(
+            &mut source.bytes,
+            object + data::DATA,
+            0x30000,
+            count as u32,
+        );
+        p64(&mut source.bytes, object + data::MAXIMUM, 250_000);
+        source
+            .globals
+            .insert(category::REGISTRY_RVA, 0x20000_u64.to_le_bytes().to_vec());
+        array(&mut source.bytes, 0x20000, 0x60000, count as u32);
+        for index in 0..count {
+            let pointer = 0x80000 + index * 0x40;
+            p64(&mut source.bytes, 0x30000 + index * 16, pointer as u64);
+            p64(&mut source.bytes, 0x30008 + index * 16, index as u64);
+            p64(&mut source.bytes, 0x60000 + index * 8, pointer as u64);
+            p32(
+                &mut source.bytes,
+                pointer + category::TOKEN,
+                index as u32 + 1,
+            );
+        }
+        let mut seeds = [carmy::DivisionSeed {
+            pointer: A1,
+            division: presentation_source()[0].division,
+            ..Default::default()
+        }];
+        carmy::capture_division_seeds(&source, &mut seeds);
+        let actual = ScalarBatchMemory::new(&source);
+        assert_eq!(
+            growing.read_acclimatization(&actual, 0, &seeds[0]),
+            Ok(250_000)
+        );
+        let entries: Vec<_> = (0..count)
+            .map(|index| Entry {
+                category: index as u32 + 1,
+                weight: index as i64,
+            })
+            .collect();
+        assert_eq!(growing.acclimatization, entries);
+        assert_eq!(
+            growing.required_capacities().acclimatization_categories,
+            count
+        );
+        let expected = ScalarBatchMemory::new(&source);
+        let mut fixed = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
+            acclimatization: count,
+            acclimatization_categories: count,
+            ..carmy::StatusCapacities::new(2)
+        })
+        .unwrap();
+        assert_eq!(
+            fixed.read_acclimatization(&expected, 0, &seeds[0]),
+            Ok(250_000)
+        );
+        assert_eq!(*actual.reads.borrow(), *expected.reads.borrow());
+    }
+}
+
+#[test]
+fn acquired_status_demand_excludes_allocator_spare_capacity() {
+    const COUNT: usize = 5_001;
+    let source = manpower_fixture(&vec![1; COUNT]);
+    let mut packet = carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
+        units: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    packet.enable_growth();
+    packet.manpower.reserve(30_000);
+    packet.thresholds.reserve(30_000);
+    for _ in 0..20 {
+        packet.clear();
+        let input = packet.capture_level(&source, 0, A1).unwrap();
+        assert_eq!(input.manpower_len, COUNT);
+        assert_eq!(packet.capacities.manpower, COUNT);
+        assert_eq!(packet.capacities.thresholds, 3);
+        assert_eq!(packet.required_capacities().manpower, COUNT);
+    }
 }

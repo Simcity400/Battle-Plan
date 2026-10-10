@@ -17,7 +17,7 @@ use crate::{
     nproject_cprogram_status, nproject_cproject_pool,
     nproject_cproject_state_machine::{self as machine, State},
     nproject_sproject_history as history,
-    walk::Outcome,
+    walk::{Buffer, Outcome},
 };
 
 /// NProject::CProject primary vtable; confirmed by pinned executable RTTI.
@@ -127,7 +127,7 @@ fn for_each_pool<M: Memory>(
 /// the owning country. Only capacity limits the walk; exact engine-native
 /// values are neither rounded nor inferred from the saved completion flags.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
-    walk_tables(memory, base, game_state, output, None).0
+    walk_tables(memory, base, game_state, Buffer::Fixed(output), None).0
 }
 
 /// One authenticated pool census produces both tables. Lifecycle/state failures
@@ -140,6 +140,38 @@ pub fn walk_with_history(
     projects: &mut [Row],
     histories: &mut [history::Row],
 ) -> (Outcome, Outcome) {
+    walk_with_history_buffer(
+        memory,
+        base,
+        game_state,
+        Buffer::Fixed(projects),
+        Buffer::Fixed(histories),
+    )
+}
+
+pub fn walk_with_history_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    projects: &mut Vec<Row>,
+    histories: &mut Vec<history::Row>,
+) -> (Outcome, Outcome) {
+    walk_with_history_buffer(
+        memory,
+        base,
+        game_state,
+        Buffer::Growing(projects),
+        Buffer::Growing(histories),
+    )
+}
+
+pub fn walk_with_history_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    projects: Buffer<'_, Row>,
+    histories: Buffer<'_, history::Row>,
+) -> (Outcome, Outcome) {
     walk_tables(memory, base, game_state, projects, Some(histories))
 }
 
@@ -147,13 +179,13 @@ fn walk_tables(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    projects: &mut [Row],
-    mut histories: Option<&mut [history::Row]>,
+    mut projects: Buffer<'_, Row>,
+    mut histories: Option<Buffer<'_, history::Row>>,
 ) -> (Outcome, Outcome) {
-    let mut project_len = 0;
+    let mut project_len = 0_usize;
     let mut project_unread = 0_u32;
     let mut project_error = None;
-    let mut history_len = 0;
+    let mut history_len = 0_usize;
     let mut history_unread = 0_u32;
     let mut history_error = None;
     let mut headers = [0; RECORD_SIZE * BATCH];
@@ -168,6 +200,14 @@ fn walk_tables(
             .ok_or("project vtable overflow")? as u64;
         let decoder = machine::Decoder::new(base)?;
         for_each_pool(memory, base, game_state, |countries, country, pool| {
+            // 14146F0B0 supplies the original signed project-pool extent.
+            if project_error.is_none() {
+                projects.ensure(
+                    project_len
+                        .checked_add(pool.count as usize)
+                        .ok_or("project row count overflow")?,
+                )?;
+            }
             let mut index = 0;
             // Alias resolution is valid for this one synchronous pool census.
             // It never survives into another callback or comparison read.
@@ -298,11 +338,15 @@ fn walk_tables(
                             }
                         }
                     }
-                    if let Some(output) =
-                        histories.as_deref_mut().filter(|_| history_error.is_none())
-                    {
+                    if let Some(output) = histories.as_mut().filter(|_| history_error.is_none()) {
                         let result = (|| {
                             let array = history_array(bytes[..HEADER_LEN].try_into().unwrap())?;
+                            // 140FCF9A0 retains this history vector in its parent header.
+                            output.ensure(
+                                history_len
+                                    .checked_add(array.count as usize)
+                                    .ok_or("project history row count overflow")?,
+                            )?;
                             let read_count =
                                 (array.count as usize).min(output.len() - history_len) as u32;
                             history_unread = history_unread
@@ -343,7 +387,7 @@ fn walk_tables(
             project_error = Some("duplicate country-local project id");
         }
     }
-    if let Some(histories) = histories.filter(|_| history_error.is_none()) {
+    if let Some(mut histories) = histories.filter(|_| history_error.is_none()) {
         histories[..history_len].sort_unstable_by_key(|row| (row.owner, row.project, row.ordinal));
         if histories[..history_len].windows(2).any(|pair| {
             (pair[0].owner, pair[0].project, pair[0].ordinal)
@@ -623,36 +667,40 @@ mod tests {
                 false,
             ),
         ] {
-            let memory = FaultMemory {
-                memory: SliceMemory {
-                    base: 0,
-                    bytes: &bytes,
-                },
-                fault,
-                failures: Cell::new(0),
-            };
-            let mut histories = [history::Row::default(); MANY_COUNT];
-            let result = walk_with_history(
-                &memory,
-                0,
-                GAME,
-                &mut [Row::default(); MANY_COUNT],
-                &mut histories,
-            );
-            assert_eq!(result.0, Outcome::Unavailable { reason });
-            assert_eq!(
-                result.1,
+            for growing in [false, true] {
+                let memory = FaultMemory {
+                    memory: SliceMemory {
+                        base: 0,
+                        bytes: &bytes,
+                    },
+                    fault,
+                    failures: Cell::new(0),
+                };
+                let mut projects = vec![Row::default(); if growing { 0 } else { MANY_COUNT }];
+                let mut histories =
+                    vec![history::Row::default(); if growing { 0 } else { MANY_COUNT }];
+                let result = walk_with_history_buffer(
+                    &memory,
+                    0,
+                    GAME,
+                    Buffer::for_worker(&mut projects, growing),
+                    Buffer::for_worker(&mut histories, growing),
+                );
+                assert_eq!(result.0, Outcome::Unavailable { reason });
+                assert_eq!(
+                    result.1,
+                    if history_readable {
+                        Outcome::Rows { len: MANY_COUNT }
+                    } else {
+                        Outcome::Unavailable { reason }
+                    }
+                );
+                assert_eq!(memory.failures.get(), 1);
                 if history_readable {
-                    Outcome::Rows { len: MANY_COUNT }
-                } else {
-                    Outcome::Unavailable { reason }
-                }
-            );
-            assert_eq!(memory.failures.get(), 1);
-            if history_readable {
-                for (index, history) in histories.iter().enumerate() {
-                    assert_eq!(history.project, 17 + index as u32);
-                    assert_eq!(history.date, i32::MIN + index as i32);
+                    for (index, history) in histories[..MANY_COUNT].iter().enumerate() {
+                        assert_eq!(history.project, 17 + index as u32);
+                        assert_eq!(history.date, i32::MIN + index as i32);
+                    }
                 }
             }
         }

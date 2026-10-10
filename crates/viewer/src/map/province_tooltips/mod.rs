@@ -1,11 +1,13 @@
-//! Political-map province location tooltip (140DEBC90), without unit selection.
+//! Political-map location and viewer-selected unit tooltip (140DF0A40).
 mod border;
 pub(super) mod clock;
+mod selected_attack;
+mod selection;
 pub(super) mod units;
 mod weather;
 pub(crate) use units::assets as unit_assets;
 
-use super::{perspective::Vision, raids::tooltips::Tooltip};
+use super::{perspective::Vision, raids::tooltips::Tooltip, unit_selection::Unit};
 use crate::{document, table_access::TokenNames};
 use installed_content::{
     country_names::CountryNames,
@@ -86,12 +88,18 @@ impl Content {
 /// The province, viewing country and fog setting a tooltip was built for,
 /// and whether NATO counters were on.
 type CacheKey = (u32, u32, bool, bool);
+type TooltipSources = (
+    Arc<document::Content>,
+    Arc<DecodedFrame>,
+    Arc<Vision>,
+    Arc<Vec<Unit>>,
+);
 
 #[derive(Default)]
 pub struct Cache {
     held: Option<(CacheKey, Arc<Tooltip>)>,
     // Keep source identities alive across hour refreshes.
-    source: Option<(Arc<document::Content>, Arc<DecodedFrame>, Arc<Vision>)>,
+    source: Option<TooltipSources>,
 }
 impl Cache {
     pub fn request(
@@ -101,19 +109,26 @@ impl Cache {
         province: u32,
         vision: &Arc<Vision>,
         nato: bool,
+        selected: &Arc<Vec<Unit>>,
     ) -> Arc<Tooltip> {
         let key = (province, vision.ours(), vision.fog(), nato);
-        if let Some((held_content, held_frame, held_vision)) = &self.source
+        if let Some((held_content, held_frame, held_vision, held_selected)) = &self.source
             && Arc::ptr_eq(content, held_content)
             && Arc::ptr_eq(frame, held_frame)
             && Arc::ptr_eq(vision, held_vision)
+            && Arc::ptr_eq(selected, held_selected)
             && let Some((held, text)) = &self.held
             && *held == key
         {
             return Arc::clone(text);
         }
-        let text = Arc::new(build(content, frame, province, vision, nato));
-        self.source = Some((Arc::clone(content), Arc::clone(frame), Arc::clone(vision)));
+        let text = Arc::new(build(content, frame, province, vision, nato, selected));
+        self.source = Some((
+            Arc::clone(content),
+            Arc::clone(frame),
+            Arc::clone(vision),
+            Arc::clone(selected),
+        ));
         self.held = Some((key, Arc::clone(&text)));
         text
     }
@@ -156,6 +171,7 @@ fn build(
     id: u32,
     vision: &Vision,
     nato: bool,
+    selected: &[Unit],
 ) -> Tooltip {
     let mut out = Tooltip::default();
     let provinces = match frame.complete::<tables::Provinces>() {
@@ -231,7 +247,9 @@ fn build(
             Err(e) => line(&mut out, "pin header", 0, Err(e)),
         }
     }
-    // 140DF0A40's click/ping footer is omitted: replay has neither native action.
+    let selected = selection::build(&context, selected, nato);
+    selection::append(&mut out, selected, &content.names.localisation);
+    // Native click/ping/order footers are omitted: replay has no such actions.
     out
 }
 
@@ -434,30 +452,39 @@ impl Context<'_> {
             "local time/night",
             1,
             (|| {
-                let flags = self
+                let weather = self
                     .frame
-                    .complete::<tables::SimulationFeatures>()
+                    .complete::<tables::WeatherProvinces>()
                     .map_err(|e| e.to_string())?
-                    .first()
-                    .ok_or("simulation features absent")?
-                    .weather_suspend
-                    .require("SimulationFeatures.weather_suspend")?;
-                let centroid = self
-                    .content
-                    .province_geometry
-                    .map_position(p.id)
-                    .ok_or("province centroid absent")?;
-                let clock = clock::derive(
-                    self.frame.hour,
-                    centroid,
-                    [self.content.map.width, self.content.map.height],
-                    self.content
-                        .province_hover
-                        .clock
-                        .as_ref()
-                        .map_err(Clone::clone)?,
-                    *flags,
-                )?;
+                    .iter()
+                    .find(|row| row.id == p.id)
+                    .ok_or("province weather absent")?;
+                let clock = clock::resolve(weather, || {
+                    let flags = self
+                        .frame
+                        .complete::<tables::SimulationFeatures>()
+                        .map_err(|e| e.to_string())?
+                        .first()
+                        .ok_or("simulation features absent")?
+                        .weather_suspend
+                        .require("SimulationFeatures.weather_suspend")?;
+                    let centroid = self
+                        .content
+                        .province_geometry
+                        .map_position(p.id)
+                        .ok_or("province centroid absent")?;
+                    clock::derive(
+                        self.frame.hour,
+                        centroid,
+                        [self.content.map.width, self.content.map.height],
+                        self.content
+                            .province_hover
+                            .clock
+                            .as_ref()
+                            .map_err(Clone::clone)?,
+                        *flags,
+                    )
+                })?;
                 self.loc(
                     "PROV_TOOLTIP_LOCAL_TIME",
                     &[

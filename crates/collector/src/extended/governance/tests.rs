@@ -212,8 +212,12 @@ fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {
     input.slot.index = 2;
     input.slot.technology_present = 1;
     input.slot.technology_handle = 77;
-    input.token.bytes[..3].copy_from_slice(b"abc");
-    input.token.len = 3;
+    input.template_index = 3;
+    input.slot.database_index = 3;
+    let mut token = engine::msvc_string::Text::default();
+    token.bytes[..3].copy_from_slice(b"abc");
+    token.len = 3;
+    input.token = engine::research_inputs::Text::Inline(token);
     input.progress_raw = i64::MAX;
     input.speed_bonus_raw = i64::MIN;
     captured.research_inputs.rows.push(input);
@@ -226,6 +230,7 @@ fn hourly_research_conversion_preserves_native_inputs_and_bonus_failures() {
         panic!("inputs missing")
     };
     assert_eq!(rows[0].index, 2);
+    assert_eq!(rows[0].database_index, replay::rows::Recorded::Value(3));
     assert_eq!(rows[0].token, b"abc");
     assert_eq!(rows[0].progress_raw, i64::MAX);
     assert_eq!(rows[0].speed_bonus_raw, i64::MIN);
@@ -255,8 +260,10 @@ fn hourly_modifier_conversion_preserves_identity_signed_operands_and_source_text
         source_id: 91,
         ..Default::default()
     };
-    row.name.bytes[..4].copy_from_slice(b"idea");
-    row.name.len = 4;
+    let mut name = engine::msvc_string::Text::default();
+    name.bytes[..4].copy_from_slice(b"idea");
+    name.len = 4;
+    row.name = engine::research_inputs::Text::Inline(name);
     captured.research_modifiers.rows.push(row);
     captured.research_modifiers.outcome = Outcome::Rows { len: 1 };
     let tables = captured.tables();
@@ -369,7 +376,8 @@ fn focus_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_dro
     };
     let initial = LOCAL.snapshot().current.payload_vectors;
     assert_eq!(initial, expected(&job));
-    assert!(!job.prepare([4, 6], 20));
+    assert!(job.prepare([4, 6], 20));
+    assert!(job.grow_for_next());
     job.grow();
     let grown = LOCAL.snapshot().current.payload_vectors;
     assert!(grown > initial);
@@ -452,7 +460,11 @@ fn prior_failure_and_unread_count_survive_later_empty_country() {
 }
 #[test]
 fn native_decision_source_keys_and_non_utf8_literals_survive_conversion() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut capacity = Capacities::default();
+    capacity.rows[9] = 1;
+    capacity.decision_text = 2;
+    capacity.decision_countries = 1;
+    let mut captured = Captured::with_capacities(&capacity);
     captured.decisions.rows[0] = cdecision_status::Row {
         container: cdecision_status::Container::Targeted,
         token_len: 2,
@@ -678,7 +690,7 @@ pub(crate) mod focus_test_kit {
 }
 
 #[test]
-fn focus_copy_decode_is_byte_identical_with_truncation() {
+fn focus_copy_decode_is_byte_identical_from_cold_and_small_reusable_storage() {
     use focus_test_kit::Fixture;
     let fixture = Fixture::world();
     let memory = fixture.memory();
@@ -723,7 +735,7 @@ fn focus_copy_decode_is_byte_identical_with_truncation() {
         &typed.focus_text.first[..typed.focus_text.len]
     );
 
-    // Truncated pooled buffers truncate identically with exact demand.
+    // Small reusable buffers grow from this same original native demand.
     let mut small = Capacities::default();
     small.rows[0] = 1;
     small.rows[1] = 1;
@@ -741,10 +753,9 @@ fn focus_copy_decode_is_byte_identical_with_truncation() {
         replayed_small.completed.outcome,
         typed_small.completed.outcome
     );
-    assert!(matches!(
-        replayed_small.focus.outcome,
-        Outcome::Truncated { .. }
-    ));
+    assert_eq!(replayed_small.focus.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(replayed_small.completed.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(replayed_small.focus_text.len, 88);
     assert_eq!(
         replayed_small.focus_text.required,
         typed_small.focus_text.required
@@ -753,15 +764,10 @@ fn focus_copy_decode_is_byte_identical_with_truncation() {
 }
 
 #[test]
-fn focus_truncation_matrix_matches_direct_with_same_caps() {
-    // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-    // copy→decode against the SAME memory with the SAME pooled caps,
-    // asserting identical outcome (incl. len/unread) and identical rows.
-    // Fixture holds 2 focus rows and 3 completed rows; focus cap 1 is
-    // the overflow-by-one arm (total 2 == cap+1), completed cap 2 the
-    // overflow arm (total 3 == cap+1), cap 0 the zero/massive arm.
-    // u32 unread saturation is not reachable and is covered by the
-    // walk's own saturating arithmetic.
+fn focus_storage_matrix_grows_before_publication_and_matches_direct() {
+    // Each prior reusable extent, including empty storage, produces complete
+    // first output from the original native headers. Fixed engine shortage
+    // behavior remains covered by cnational_focus_progress's fixed walk tests.
     use focus_test_kit::Fixture;
     let fixture = Fixture::world();
     let memory = fixture.memory();
@@ -790,6 +796,9 @@ fn focus_truncation_matrix_matches_direct_with_same_caps() {
         let mut ticks = [0; 2];
         replayed.decode_focus_payload(focus_test_kit::BASE, &first, &mut ticks);
         Fixture::assert_matches_typed(&replayed, &typed);
+        assert_eq!(replayed.focus.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(replayed.completed.outcome, Outcome::Rows { len: 3 });
+        assert_eq!(replayed.focus_text.len, 88);
     }
     // Exact-fit arm pins Rows on both tables.
     let mut caps = Capacities::default();
@@ -1057,19 +1066,16 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
         }
         for index in 0..2 {
             let technology = 0x1_b000 + (owner * 2 + index) * 0x200;
-            let definition = (owner + index) % 2;
+            let definition = index;
             let template = 0x1_c000 + definition * 0x600;
             fixture.w64(roster + index * 8, technology as u64);
             fixture.w64(technology, (BASE + ctechnology::VTABLE_RVA) as u64);
-            fixture.w32(
-                technology + ctechnology::DEFINITION_INDEX,
-                [0x8000_0001, 3][definition],
-            );
+            fixture.w32(technology + ctechnology::DEFINITION_INDEX, 0x8000_0001);
             fixture.w64(technology + ctechnology::STATUS, status as u64);
             fixture.w64(technology + ctechnology::TEMPLATE, template as u64);
         }
     }
-    for (index, handle) in [0x8000_0001, 3].into_iter().enumerate() {
+    for (index, handle) in [0x8000_0001, 0x8000_0001].into_iter().enumerate() {
         let template = 0x1_c000 + index * 0x600;
         fixture.w64(
             template + ctechnology_template::ID,
@@ -1119,18 +1125,23 @@ fn first_research_capture_grows_all_storage_and_keeps_native_and_definition_orde
     assert_eq!(
         captured.technologies.rows[..4]
             .iter()
-            .map(|row| (row.country, row.technology_handle))
+            .map(|row| (row.country, row.database_index, row.technology_handle))
             .collect::<Vec<_>>(),
-        [(1, 0x8000_0001), (1, 3), (2, 3), (2, 0x8000_0001)]
+        [
+            (1, 1, 0x8000_0001),
+            (1, 2, 0x8000_0001),
+            (2, 1, 0x8000_0001),
+            (2, 2, 0x8000_0001)
+        ]
     );
     assert_eq!(
         captured
             .definitions
             .rows
             .iter()
-            .map(|row| row.technology_handle)
+            .map(|row| (row.database_index, row.technology_handle))
             .collect::<Vec<_>>(),
-        [3, 0x8000_0001]
+        [(1, 0x8000_0001), (2, 0x8000_0001)]
     );
     assert_eq!(
         captured.allocated_bytes(),
@@ -1246,57 +1257,61 @@ fn inactive_focus_bypasses_owned_capacity_and_decode_preflights() {
 }
 
 #[test]
-fn focus_preflights_primary_grants_before_any_source_read() {
+fn focus_cold_worker_storage_preserves_native_faults_without_deferred_retry() {
     use focus_test_kit::{BASE, Fixture};
     let fixture = Fixture::world();
-    for storage in 0..3 {
-        let memory = engine::memory::CountedMemory::new(FocusReads {
-            memory: fixture.memory(),
-            reads: Default::default(),
-            fault: Some(0x1_6000),
-            failed: Default::default(),
-        });
-        let mut captured = Fixture::captured();
-        let ctx = captured.focus_copy_context(BASE, 0x1_0000, true);
-        let mut job = FocusJob::new();
-        match storage {
-            0 => job.rows.truncate(ctx.rows[0] - 1),
-            1 => job.completed.truncate(ctx.rows[1] - 1),
-            _ => job.bytes.truncate(ctx.bytes - 1),
-        }
-        let native = read_accounting::Capture::new();
-        let report = copy_focus_refresh(&memory, ctx, &mut job);
-        assert!(!report.raw_ok, "storage={storage}");
-        assert_eq!(native.finish(), read_accounting::ZERO);
-        assert_eq!(memory.0.reads.get(), 0);
-        assert_eq!(memory.0.failed.get(), 0);
-        assert!(job.outcomes.iter().all(Option::is_none));
-        let native = read_accounting::Capture::new();
-        captured.capture(&memory, BASE, 0x1_0000, 0, true);
-        assert!(native.finish()[TABLES[0].index()].spans > 0);
-        assert_eq!(memory.0.failed.get(), 1);
-        assert!(matches!(
-            captured.focus.outcome,
-            Outcome::Unavailable { .. }
-        ));
-        assert!(job.grow_for_next());
-        job.grow();
-        assert!(!job.grow_for_next());
-        job.clear();
-        assert!(job.is_provisioned());
-        assert_eq!(job.outcomes, [None; 2]);
-    }
+    let memory = engine::memory::CountedMemory::new(FocusReads {
+        memory: fixture.memory(),
+        reads: Default::default(),
+        fault: Some(0x1_6000),
+        failed: Default::default(),
+    });
+    let mut captured = Fixture::captured();
+    let ctx = captured.focus_copy_context(BASE, 0x1_0000, true);
+    let mut job = FocusJob::new();
+    assert_eq!(job.capacities(), ([0; 2], 0));
+    let native = read_accounting::Capture::new();
+    let report = copy_focus_refresh(&memory, ctx, &mut job);
+    assert!(report.raw_ok);
+    assert!(native.finish()[TABLES[0].index()].spans > 0);
+    assert_eq!(memory.0.failed.get(), 1);
+    let reads = memory.0.reads.get();
+    captured.decode_focus_payload(BASE, &job, &mut [0; 2]);
+    assert_eq!(memory.0.reads.get(), reads);
+    assert_eq!(memory.0.failed.get(), 1);
+    assert!(matches!(
+        captured.focus.outcome,
+        Outcome::Unavailable { .. }
+    ));
+    assert_eq!(captured.completed.outcome, captured.focus.outcome);
+    assert!(!job.grow_for_next());
+    job.clear();
+    assert!(job.is_provisioned());
+    assert_eq!(job.outcomes, [None; 2]);
+}
+
+#[test]
+fn fixed_focus_prepare_refuses_unprovisioned_storage_before_any_source_read() {
+    use focus_test_kit::{BASE, Fixture};
+    let fixture = Fixture::world();
     let memory = FocusReads {
         memory: fixture.memory(),
         reads: Default::default(),
-        fault: None,
+        fault: Some(0x1_6000),
         failed: Default::default(),
     };
     let captured = Fixture::captured();
     let ctx = captured.focus_copy_context(BASE, 0x1_0000, true);
-    let report = copy_focus_refresh(&memory, ctx, &mut FocusJob::default());
-    assert!(!report.raw_ok);
+    let native = read_accounting::Capture::new();
+    let mut job = FocusJob::default();
+    let prepared = job.prepare(ctx.rows, ctx.bytes);
+    if prepared {
+        copy_focus_pass(&mut job, &memory, ctx.base, ctx.game_state, &mut [0; 2]);
+    }
+    assert!(!prepared);
+    assert_eq!(native.finish(), read_accounting::ZERO);
     assert_eq!(memory.reads.get(), 0);
+    assert_eq!(memory.failed.get(), 0);
 }
 
 #[test]
@@ -1389,21 +1404,23 @@ fn focus_native_faults_are_terminal_and_decode_cannot_retry_sources() {
 }
 
 #[test]
-fn focus_install_checks_original_grants_and_keeps_unaffected_table() {
+fn focus_install_rejects_short_owned_payloads_and_keeps_unaffected_table() {
     use focus_test_kit::{BASE, Fixture};
     let fixture = Fixture::world();
     for changed in 0..3 {
         let mut captured = Fixture::captured();
-        let (_, first) = Fixture::copy_first(&mut captured, &fixture.memory());
+        let (_, mut first) = Fixture::copy_first(&mut captured, &fixture.memory());
         match changed {
             0 => {
-                captured.focus.rows.pop();
+                first.rows.truncate(first.outcomes[0].unwrap().len() - 1);
             }
             1 => {
-                captured.completed.rows.pop();
+                first
+                    .completed
+                    .truncate(first.outcomes[1].unwrap().len() - 1);
             }
             _ => {
-                captured.focus_text.first.pop();
+                first.bytes.truncate(first.bytes_len - 1);
             }
         }
         captured.decode_focus_payload(BASE, &first, &mut [0; 2]);

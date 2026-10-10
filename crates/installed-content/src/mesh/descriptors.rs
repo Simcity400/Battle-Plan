@@ -135,6 +135,8 @@ pub struct EntityDefinition {
     /// `clone`, the entity this one inherits from before its own overrides.
     pub clone: Option<String>,
     pub scale: Option<f32>,
+    /// Native held `cull_radius`, default 1. A clone keeps its parent's radius.
+    pub cull_radius: Option<f32>,
     /// `attach`, in file order.
     pub attachments: Vec<Attachment>,
     /// `default_state`; the engine's own default is `idle`.
@@ -239,6 +241,8 @@ fn entity_game_data(items: &[parser::Item]) -> Option<Result<EntityGameData, Str
 pub struct Locator {
     pub transform: Transform,
     pub parent_joint: Option<String>,
+    /// Registration mesh whose skeleton ordinal a clone copies unchanged.
+    pub origin_mesh: Option<String>,
 }
 
 /// Authored state variants retain their order and events, including states with no clip.
@@ -249,12 +253,29 @@ pub struct EntityState {
     pub looping: bool,
     pub next_state: Option<String>,
     pub chance: f32,
+    /// Native `14233CC10` Fixed5 chance, stored as the low i32 word.
+    /// Parsed states retain the genuine omitted/failed-read zero. `None`
+    /// preserves legacy manually constructed states' float weighting.
+    pub chance_weight: Option<i32>,
     pub blend: f32,
     pub speed: f32,
     pub start: f32,
     pub random_start: f32,
     pub propagate: Vec<(String, String)>,
     pub events: Vec<EntityEvent>,
+    /// State-mode `game_data.hitmiss_effect` rows (`140B65040`), in authored order.
+    pub naval_hitmiss_effects: Vec<NavalHitMissEffect>,
+    /// A named unsupported form. Consumers
+    /// must refuse these timings instead of treating the retained prefix as complete.
+    pub naval_hitmiss_error: Option<String>,
+}
+
+/// `SNavalHitMissDataReader::vf4@140B65260`: each appended row starts at zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NavalHitMissEffect {
+    pub time: f32,
+    /// Native `small` = 0 and `big` = 1; an unknown type retains the previous value.
+    pub kind: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -270,6 +291,190 @@ pub struct EntityEvent {
     pub keep_particle: bool,
     pub trigger_once: bool,
 }
+
+fn state_naval_hitmiss_effects(
+    items: &[parser::Item],
+) -> (Vec<NavalHitMissEffect>, Option<String>) {
+    let mut effects = Vec::new();
+    let mut error = None;
+    for data in items.iter().filter(|item| item.keyword_is("game_data")) {
+        let parser::Value::Block(fields) = &data.value else {
+            error.get_or_insert_with(|| "state game_data is not a native block".into());
+            continue;
+        };
+        for field in fields {
+            if !field.keyword_is("hitmiss_effect") {
+                // 140B65040 reports an unexpected field. Its recovery
+                // (1424AD270) does nothing for a consumed literal scalar;
+                // CPersistent::Read logs/clears that error and continues.
+                if fully_consumed_literal(field) {
+                    continue;
+                }
+                // An unknown block skip resolves variables. The tree cannot
+                // reproduce that table or an unresolved value's block expansion.
+                error.get_or_insert_with(|| {
+                    format!(
+                        "state game_data has unexpected field {} (140B65040)",
+                        String::from_utf8_lossy(field.key.as_deref().unwrap_or_default())
+                    )
+                });
+                continue;
+            }
+            let parser::Value::Block(record) = &field.value else {
+                error.get_or_insert_with(|| "state hitmiss_effect is not a native block".into());
+                continue;
+            };
+            // 140B65040 zeroes one 8-byte row before reading and appending it.
+            let mut effect = NavalHitMissEffect::default();
+            for member in record {
+                let time = member.keyword_is("time");
+                let kind = member.keyword_is("type");
+                if !time && !kind {
+                    // 140B65260 ignores unknown scalar fields. An unconsumed
+                    // block is read as subsequent keys by CPersistent::Read;
+                    // unresolved variables can alter that same reader table.
+                    if !fully_consumed_literal(member) {
+                        error.get_or_insert_with(|| {
+                            "state hitmiss_effect has an unsettled unknown member (140B65260)"
+                                .into()
+                        });
+                    }
+                    continue;
+                }
+                let Some(value) = member.value.scalar() else {
+                    error.get_or_insert_with(|| {
+                        "state hitmiss_effect time/type has an unconsumed block (140B65260)".into()
+                    });
+                    continue;
+                };
+                if !member.quoted() && value.starts_with(b"@") {
+                    error.get_or_insert_with(|| {
+                        "state hitmiss_effect time/type needs an unresolved script variable".into()
+                    });
+                    continue;
+                }
+                if time {
+                    // ReadFloat@1424AB9D0 uses the shared CRT prefix scan;
+                    // a conversion that stores nothing leaves the previous bits.
+                    // Its scalar error recovery does not poison the following rows.
+                    if let Some(value) = crt::scan_f32(value) {
+                        effect.time = value;
+                    }
+                } else {
+                    // ReadStringInto@1424ABB50 then String_ToLowerInPlace:
+                    // exact whole-string comparisons, including quoted values.
+                    // A reported LF becomes "Unreadable String", hence leaves
+                    // the prior kind just as every other unknown type does.
+                    let value = parser::read_string(value);
+                    if value.eq_ignore_ascii_case(b"small") {
+                        effect.kind = 0;
+                    } else if value.eq_ignore_ascii_case(b"big") {
+                        effect.kind = 1;
+                    }
+                }
+            }
+            effects.push(effect);
+        }
+    }
+    (effects, error)
+}
+
+/// Unknown scalar fields are fully consumed only when no script-variable
+/// definition/reference can change the native token's kind or block recovery.
+fn fully_consumed_literal(item: &parser::Item) -> bool {
+    item.key
+        .as_deref()
+        .is_some_and(|key| item.key_quoted || !key.starts_with(b"@"))
+        && literal_value(item).is_some()
+}
+
+fn literal_value(item: &parser::Item) -> Option<&[u8]> {
+    let value = item.value.scalar()?;
+    (item.quoted() || !value.starts_with(b"@")).then_some(value)
+}
+
+/// Structural consumption checks for the reached state text and naval-data
+/// readers only. Encoding refusals and known scalar no-ops do not unsettle a file.
+fn unsettled_state_data(fields: &[parser::Item]) -> Option<&'static str> {
+    for field in fields {
+        if field.keyword_is("name") || field.keyword_is("animation") {
+            if literal_value(field).is_none() {
+                return Some(
+                    "state name/animation input has unsettled native consumption (14233CC10)",
+                );
+            }
+        } else if field.keyword_is("game_data") {
+            let parser::Value::Block(data) = &field.value else {
+                return Some("state game_data carrier is not a native block (14233CC10)");
+            };
+            for member in data {
+                if !member.keyword_is("hitmiss_effect") {
+                    if !fully_consumed_literal(member) {
+                        return Some(
+                            "state game_data member has unsettled native skip (140B65040)",
+                        );
+                    }
+                    continue;
+                }
+                let parser::Value::Block(record) = &member.value else {
+                    return Some("hitmiss_effect carrier is not a native block (140B65040)");
+                };
+                for value in record {
+                    if value.keyword_is("time") || value.keyword_is("type") {
+                        if literal_value(value).is_none() {
+                            return Some(
+                                "hitmiss_effect time/type input has unsettled native consumption (140B65260)",
+                            );
+                        }
+                    } else if !fully_consumed_literal(value) {
+                        return Some(
+                            "hitmiss_effect member has unsettled native consumption (140B65260)",
+                        );
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// SEntityStateReader::vf4@14233CC10 writes both name and animation with
+/// strncpy(255), followed by a NUL. No whitespace trim or LF replacement.
+fn state_text(items: &[parser::Item], key: &str, error: &mut Option<String>) -> String {
+    let mut stored: &[u8] = b"";
+    for field in items.iter().filter(|item| item.keyword_is(key)) {
+        let Some(value) = field.value.scalar() else {
+            error.get_or_insert_with(|| format!("state {key} has an unconsumed block (14233CC10)"));
+            stored = b"";
+            continue;
+        };
+        if !field.quoted() && value.starts_with(b"@") {
+            error.get_or_insert_with(|| format!("state {key} needs an unresolved script variable"));
+            stored = b"";
+            continue;
+        }
+        let value = parser::c_string(value);
+        stored = &value[..value.len().min(255)];
+    }
+    // Each native write replaces the stored bytes. An earlier unrepresentable
+    // truncation must not refuse a later valid overwrite of the same field.
+    match std::str::from_utf8(stored) {
+        Ok(value) => value.to_owned(),
+        Err(_) => {
+            error.get_or_insert_with(|| {
+                format!("state {key} native 255-byte text is not UTF-8 (14233CC10)")
+            });
+            String::new()
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "descriptors/naval_hitmiss_tests.rs"]
+mod naval_hitmiss_tests;
+#[cfg(test)]
+#[path = "descriptors/naval_locator_tests.rs"]
+mod naval_locator_tests;
 
 fn number(items: &[parser::Item], key: &[u8], fallback: f32) -> f32 {
     text(items, key)
@@ -318,6 +523,9 @@ pub struct InheritedEntity<'a> {
     pub unbound_mesh: Option<&'a str>,
     /// `scale`, from the nearest link that declares one.
     pub scale: Option<f32>,
+    /// The ordinary ancestor's held radius: the native clone reader never
+    /// sets the authorship byte that would allow a child to replace it.
+    pub cull_radius: Option<f32>,
     /// `default_state`, from the nearest link that declares one.
     pub default_state: Option<&'a str>,
     /// Every attachment reachable through the chain, merged down it as each
@@ -360,6 +568,9 @@ impl Descriptors {
             out.mesh = out.mesh.or(current.mesh.as_deref());
             out.unbound_mesh = out.unbound_mesh.or(current.unbound_mesh.as_deref());
             out.scale = out.scale.or(current.scale);
+            if current.clone.is_none() {
+                out.cull_radius = current.cull_radius;
+            }
             out.game_data = out.game_data.or(current.game_data.as_ref());
             out.default_state = out.default_state.or(current.default_state.as_deref());
             out.get_state_from_parent = out.get_state_from_parent.or(current.get_state_from_parent);
@@ -481,9 +692,56 @@ impl Descriptors {
 /// own path, which an `animation` block's `file` resolves against.
 pub fn parse_descriptors(bytes: &[u8], path: &str) -> io::Result<Descriptors> {
     let document = parser::parse(bytes)?;
+    settled_state_carriers(&document, path)?;
     let mut out = Descriptors::default();
     let _ = collect(&document, path, &mut out);
     Ok(out)
+}
+
+/// Unported entity-field consumption can shift the surrounding native file
+/// out of tree alignment. Refuse the file before registering any declaration;
+/// representation-only failures remain scoped to the final stored state text.
+fn settled_state_carriers(document: &parser::Document, path: &str) -> io::Result<()> {
+    for item in document
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("entity"))
+        .filter_map(|item| item.value.items())
+        .flatten()
+        .filter(|item| item.keyword_is("state"))
+    {
+        let parser::Value::Block(fields) = &item.value else {
+            return Err(invalid(format!(
+                "{path}: scalar/tagged entity state carrier leaves the native file reader alignment unsupported (14233BF40)"
+            )));
+        };
+        if let Some(reason) = unsettled_state_data(fields) {
+            return Err(invalid(format!(
+                "{path}: {reason}; descriptor file refused"
+            )));
+        }
+    }
+    for entity in document
+        .items
+        .iter()
+        .filter(|item| item.keyword_is("entity"))
+    {
+        let Some(fields) = entity.value.items() else {
+            continue;
+        };
+        for field in fields
+            .iter()
+            .filter(|field| field.keyword_is("cull_radius"))
+        {
+            if literal_value(field).is_none() {
+                let name = last_text(fields, "name").unwrap_or_default();
+                return Err(invalid(format!(
+                    "{path}: entity {name} cull_radius variable/block/tagged carrier has unsupported native consumption (14233C3FC); descriptor file refused"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Adds one file's blocks; returns the names that replaced an earlier block.
@@ -695,7 +953,12 @@ impl Roster {
         }) {
             return Ok(None);
         }
-        match parser::parse(&bytes).or_else(|_| parser::parse(&balanced_blocks(&bytes))) {
+        match parser::parse(&bytes)
+            .or_else(|_| parser::parse(&balanced_blocks(&bytes)))
+            .and_then(|document| {
+                settled_state_carriers(&document, path)?;
+                Ok(document)
+            }) {
             Ok(document) => Ok(Some(document)),
             Err(error) => {
                 for name in lexical_names(&bytes) {
@@ -834,6 +1097,18 @@ impl Entities {
         let Some(mut definition) = entity_definition(value) else {
             return Ok(());
         };
+        // An unsupported state name can prevent lookup of its timing list
+        // altogether. Surface the refusal through the existing entity diagnostics.
+        roster
+            .logged
+            .extend(definition.states.iter().filter_map(|state| {
+                state.naval_hitmiss_error.as_ref().map(|reason| {
+                    format!(
+                        "{name} in {path}: state {:?} is unsupported: {reason}",
+                        state.name
+                    )
+                })
+            }));
         definition.name = name.clone();
         definition.clone = None;
         // 142272140 binds the named object only when it is a `pdxmesh`, and
@@ -855,6 +1130,9 @@ impl Entities {
             None => kept,
         };
         definition.unbound_mesh = definition.mesh.is_none().then_some(unbound).flatten();
+        for (_, locator) in &mut definition.locators {
+            locator.origin_mesh = definition.mesh.clone();
+        }
         let entry = match parent {
             Some((parent, version)) => (overlay(parent, definition), version),
             None => (definition, stored.unwrap_or(version)),
@@ -870,12 +1148,8 @@ impl Entities {
 fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinition {
     let mut attachments = parent.attachments;
     merge_attachments(&mut attachments, child.attachments);
-    let mut locators: Vec<(String, Locator)> = Vec::new();
-    for (name, locator) in child.locators.into_iter().chain(parent.locators) {
-        if !locators.iter().any(|(held, _)| *held == name) {
-            locators.push((name, locator));
-        }
-    }
+    //14227CEF0 copies the parent's ordered array and ignores child locators.
+    let locators = parent.locators;
     let own: BTreeSet<String> = child
         .states
         .iter()
@@ -894,6 +1168,8 @@ fn overlay(parent: EntityDefinition, child: EntityDefinition) -> EntityDefinitio
         unbound_mesh: child.unbound_mesh,
         clone: None,
         scale: child.scale.or(parent.scale),
+        //14227D0AF tests description+448, but token500 never sets that byte.
+        cull_radius: parent.cull_radius,
         attachments,
         default_state: child.default_state.or(parent.default_state),
         states,
@@ -1108,16 +1384,25 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         .collect();
     let states = items
         .iter()
-        .filter(|item| item.key.as_deref() == Some(b"state"))
+        .filter(|item| item.keyword_is("state"))
         .filter_map(|item| {
-            let block = item.value.items()?;
+            // Both public and layered registration paths preflight these
+            // immediate carriers before projecting any declaration in the file.
+            let parser::Value::Block(block) = &item.value else {
+                return None;
+            };
+            let (naval_hitmiss_effects, mut naval_hitmiss_error) =
+                state_naval_hitmiss_effects(block);
+            let name = state_text(block, "name", &mut naval_hitmiss_error);
+            let animation = state_text(block, "animation", &mut naval_hitmiss_error);
             Some(EntityState {
-                name: unquote(text(block, b"name")?),
-                animation: text(block, b"animation").map(unquote).unwrap_or_default(),
+                name,
+                animation,
                 // 14233CC10: +0x21C, true by default (142281510).
                 looping: parser::read_bool_field(block, "looping", true),
                 next_state: text(block, b"next_state").map(unquote),
                 chance: number(block, b"chance", 1.0),
+                chance_weight: Some(state_chance_weight(block)),
                 blend: number(block, b"animation_blend_time", 0.0),
                 speed: number(block, b"animation_speed", 1.0),
                 start: number(block, b"animation_start_time", 0.0),
@@ -1155,6 +1440,8 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
                         trigger_once: parser::read_bool_field(event, "trigger_once", false),
                     })
                     .collect(),
+                naval_hitmiss_effects,
+                naval_hitmiss_error,
             })
         })
         .collect();
@@ -1165,6 +1452,16 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
         unbound_mesh: None,
         clone: text(items, b"clone").map(unquote),
         scale: text(items, b"scale").and_then(|value| crt::scan_f32(value.as_bytes())),
+        //1422813B0 initializes +44C to 1;14233C3FC scans into the held
+        //word, so a failed later scan preserves its previous value.
+        cull_radius: Some(
+            items
+                .iter()
+                .filter(|item| item.keyword_is("cull_radius"))
+                .fold(1.0, |held, item| {
+                    item.value.scalar().and_then(crt::scan_f32).unwrap_or(held)
+                }),
+        ),
         attachments,
         default_state: text(items, b"default_state").map(unquote),
         // 14233BF40: +0x414; +0x415 marks authorship even on failure.
@@ -1206,6 +1503,7 @@ fn entity_definition(value: &parser::Value) -> Option<EntityDefinition> {
                     Locator {
                         transform,
                         parent_joint: text(fields, b"parent_joint").map(unquote),
+                        origin_mesh: None,
                     },
                 ))
             })
@@ -1221,6 +1519,27 @@ fn text<'a>(items: &'a [parser::Item], key: &[u8]) -> Option<&'a str> {
         .and_then(|item| item.value.scalar_str())
 }
 
+/// Each native chance read starts with zero; only a positive Fixed5 result
+/// is copied to the state's low word (`14233CC10`, `142281510`).
+fn state_chance_weight(items: &[parser::Item]) -> i32 {
+    items
+        .iter()
+        .filter(|item| item.keyword_is("chance"))
+        .map(|item| {
+            let value = item
+                .value
+                .scalar()
+                .and_then(crate::fixed5::script_fixed5)
+                .unwrap_or(0);
+            if value > 0 { value as i32 } else { 0 }
+        })
+        .next_back()
+        .unwrap_or(0)
+}
+
 fn unquote(text: &str) -> String {
     text.trim().trim_matches('"').to_string()
 }
+
+#[cfg(test)]
+mod naval_chance_tests;

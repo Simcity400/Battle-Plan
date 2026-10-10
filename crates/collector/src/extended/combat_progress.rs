@@ -60,7 +60,6 @@ pub struct Captured {
     pointers: Vec<usize>,
     identities: Vec<[u8; 16]>,
     len: usize,
-    missing: u32,
     failure: Option<&'static str>,
 }
 
@@ -77,7 +76,6 @@ impl Captured {
                 capacity.variants,
             )),
             len: 0,
-            missing: 0,
             failure: None,
         }
     }
@@ -85,7 +83,6 @@ impl Captured {
         self.rows.reset();
         self.equipment.reset();
         self.len = 0;
-        self.missing = 0;
         self.failure = None;
     }
     pub fn allocated_bytes(&self) -> usize {
@@ -106,7 +103,6 @@ impl Captured {
     pub fn begin(&mut self) {
         self.equipment.reset();
         self.len = 0;
-        self.missing = 0;
         self.failure = None;
     }
     pub fn visit(&mut self, memory: &impl Memory, base: usize, source: cland_combat::Source) {
@@ -122,25 +118,37 @@ impl Captured {
                     return;
                 }
             };
-        let count = attacker.equipment.count as usize + defender.equipment.count as usize;
-        let Some(required) = self.equipment.required.checked_add(count) else {
-            self.failure = Some("land loss arena demand overflow");
-            return;
-        };
-        self.equipment.required = required;
-        // Keep complete demand even when storage is short. Grow only on recycle.
-        if count
-            > self
+        let storage = (|| {
+            let count = (attacker.equipment.count as usize)
+                .checked_add(defender.equipment.count as usize)
+                .ok_or("land loss arena demand overflow")?;
+            self.equipment.required = self
                 .equipment
-                .first
-                .len()
-                .saturating_sub(self.equipment.len)
-            || count > self.pointers.len().min(self.identities.len())
-            || self.len >= self.rows.rows.len().min(self.losses.len())
-        {
-            self.missing = self.missing.saturating_add(1);
-            return;
-        }
+                .required
+                .checked_add(count)
+                .ok_or("land loss arena demand overflow")?;
+            let rows = self
+                .len
+                .checked_add(1)
+                .ok_or("land loss row demand overflow")?;
+            // Worker-only World acquisition. SCombatSideData@140CD15D0
+            // owns the pools traversed by 140FFDB00's full +0x2C count.
+            // Grow from these original LossPlan headers before reading entries.
+            engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(rows)?;
+            engine::walk::Buffer::Growing(&mut self.losses).ensure(rows)?;
+            engine::walk::Buffer::Growing(&mut self.equipment.first)
+                .ensure(self.equipment.required)?;
+            engine::walk::Buffer::Growing(&mut self.pointers).ensure(count)?;
+            engine::walk::Buffer::Growing(&mut self.identities).ensure(count)?;
+            Ok::<usize, &'static str>(count)
+        })();
+        let count = match storage {
+            Ok(count) => count,
+            Err(reason) => {
+                self.failure = Some(reason);
+                return;
+            }
+        };
         let start = self.equipment.len;
         if let Err(reason) = engine::cstats_observer::LossPlan::copy_sides(
             [attacker, defender],
@@ -175,19 +183,17 @@ impl Captured {
         }
     }
     pub fn finish(&mut self, parent: Outcome) {
-        let missing = self.missing.saturating_add(match parent {
+        let missing = match parent {
             Outcome::Truncated { unread_rows, .. } => unread_rows,
             _ => 0,
-        });
+        };
         self.rows.outcome = match (self.failure, parent) {
             (Some(reason), _) | (_, Outcome::Unavailable { reason }) => {
                 Outcome::Unavailable { reason }
             }
-            _ if self.len.saturating_add(self.missing as usize) != parent.len() => {
-                Outcome::Unavailable {
-                    reason: "combat progress visits differ from parent census",
-                }
-            }
+            _ if self.len != parent.len() => Outcome::Unavailable {
+                reason: "combat progress visits differ from parent census",
+            },
             _ if missing != 0 => Outcome::Truncated {
                 len: self.len,
                 unread_rows: missing,
@@ -202,7 +208,7 @@ impl Captured {
         match self.rows.outcome {
             Outcome::Rows { .. } => 0,
             Outcome::Truncated { unread_rows, .. } => u64::from(unread_rows),
-            Outcome::Unavailable { .. } => u64::from(self.missing.max(1)),
+            Outcome::Unavailable { .. } => 1,
         }
     }
     #[cfg(test)]

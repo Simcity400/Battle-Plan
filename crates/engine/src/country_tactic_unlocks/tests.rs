@@ -520,3 +520,57 @@ fn five_thousand_countries_cost_two_copies_each() {
     // and the fixed roots.
     assert!(copies <= 2 * COUNTRIES + 2 * (TACTICS + 1) + 16, "{copies}");
 }
+
+#[test]
+fn growing_tactic_capture_handles_5000_countries_and_larger_lists_without_a_poll() {
+    let mut memory = Fixture::new();
+    const COUNT: usize = 5_000;
+    let (countries, links, doctrine, first_country, list) =
+        (0x100000, 0x110000, 0x200000, 0x300000, 0x120000);
+    memory.array(GAME + cgame_state::COUNTRIES, countries, COUNT as u32 + 1);
+    memory.array(GAME + cgame_state::COUNTRY_LINKS, links, COUNT as u32 + 1);
+    memory.put(countries, 0u64.to_le_bytes());
+    memory.put(links, 0u32.to_le_bytes());
+    memory.array(SYSTEM + DOCTRINE_ROWS, doctrine, COUNT as u32 + 1);
+    for slot in 0..1_024 {
+        memory.put(list + slot * 8, (TACTIC_B as u64).to_le_bytes());
+    }
+    for slot in 1..=COUNT {
+        let country = first_country + slot * 0x100;
+        memory.put(countries + slot * 8, (country as u64).to_le_bytes());
+        memory.put(links + slot * 4, (slot as u32).to_le_bytes());
+        memory.put(country, (ccountry::VTABLE_RVA as u64).to_le_bytes());
+        memory.put(country + ccountry::ID, (slot as u32).to_le_bytes());
+        let row = doctrine + slot * DOCTRINE_STRIDE;
+        memory.put(row + ROW_TAG, [0; ROW_SPAN]);
+        memory.put(row + ROW_TAG, (slot as u32).to_le_bytes());
+        memory.array(row + TACTICS, list, 32);
+    }
+    let (mut rows, mut unlocks, mut registry, mut staging) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let first = capture_growing(
+        &memory,
+        0,
+        GAME,
+        &mut rows,
+        &mut unlocks,
+        &mut registry,
+        &mut staging,
+    );
+    assert_eq!(first.outcome, Outcome::Rows { len: COUNT });
+    assert_eq!(first.required_unlocks, COUNT * 32);
+    assert_eq!(unlocks[COUNT * 32 - 1], 2);
+    memory.array(doctrine + DOCTRINE_STRIDE + TACTICS, list, 1_024);
+    let later = capture_growing(
+        &memory,
+        0,
+        GAME,
+        &mut rows,
+        &mut unlocks,
+        &mut registry,
+        &mut staging,
+    );
+    assert_eq!(later.outcome, Outcome::Rows { len: COUNT });
+    assert_eq!(later.required_unlocks, COUNT * 32 + 992);
+    assert_eq!(rows[0].unlock_count, 1_024);
+}

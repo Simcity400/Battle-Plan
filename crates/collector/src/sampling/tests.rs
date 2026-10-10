@@ -1,5 +1,369 @@
 use super::*;
 
+struct NoDivisionReads;
+impl engine::Memory for NoDivisionReads {
+    fn copy(&self, address: usize, _: &mut [u8]) -> bool {
+        panic!("division handoff retried native input at {address:#x}");
+    }
+}
+
+struct NoRosterRetry<'a>(&'a [u8]);
+impl engine::Memory for NoRosterRetry<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        use super::divisions_test_kit as kit;
+        assert!(
+            ![kit::C0 + ccountry::DIVISIONS, kit::C1 + ccountry::DIVISIONS].contains(&address),
+            "dependent worker retried the original division roster"
+        );
+        assert!(
+            !(kit::A1..kit::A3 + 0x1000).contains(&address),
+            "dependent worker retried original unit inputs at {address:#x}"
+        );
+        kit::memory(self.0).copy(address, output)
+    }
+}
+
+#[test]
+fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inputs() {
+    let shared = Shared::new(0, 0, 1);
+    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let mut batch = acquisition::Batch::new(&pool);
+    let payload = DivisionsJob::new_worker();
+    let owner = Arc::clone(payload.census.unit_inputs().unwrap());
+    let context = DivisionsCopyContext {
+        game_state: usize::MAX,
+        details_active: false,
+        ..Default::default()
+    };
+    let request = acquisition::Job::DivisionInputs(acquisition::RawRequest {
+        countries: Arc::new(Cache::try_with_capacity(0).unwrap()),
+        context,
+        payload,
+    });
+    let reads = crate::read_accounting::Capture::new();
+    let completed = crate::allocation_failure_tests::with_allocations_denied(|| {
+        // SAFETY: rejection must return the owned packet without executing it.
+        unsafe { finish_acquisition(&shared, &mut batch, PendingAcquisition::Rejected(request)) }
+    });
+    assert!(matches!(
+        completed.report,
+        Err(acquisition::Failure::Stopped)
+    ));
+    assert_eq!(completed.table_reads, crate::read_accounting::ZERO);
+    let acquisition::Job::DivisionInputs(mut request) = completed.request else {
+        panic!("rejected division input owner lost");
+    };
+    assert!(Arc::ptr_eq(
+        &owner,
+        request.payload.census.unit_inputs().unwrap()
+    ));
+    assert!(!request.payload.inputs_captured);
+    let report = copy_divisions_core_refresh(&NoDivisionReads, context, &mut request.payload);
+    assert!(!report.raw_ok);
+    assert!(request.payload.core_finished);
+    assert_eq!(request.payload.payload_bytes(), [0; 6]);
+    assert!(Arc::ptr_eq(
+        &owner,
+        request.payload.census.unit_inputs().unwrap()
+    ));
+    assert!(!copy_divisions_core_refresh(&NoDivisionReads, context, &mut request.payload).raw_ok);
+    assert_eq!(reads.finish(), crate::read_accounting::ZERO);
+    let counters = pool.calibration().roles[acquisition::Role::Divisions as usize].counters;
+    assert_eq!(counters.inline_completed, 0);
+    assert_eq!(pool.calibration().executor.uncollected, 0);
+}
+
+#[test]
+fn failed_division_inputs_keep_the_original_roster_fault_through_core_and_decode() {
+    use super::divisions_test_kit as kit;
+    struct FirstRosterFault<'a> {
+        bytes: &'a [u8],
+        attempts: std::cell::Cell<usize>,
+    }
+    impl engine::Memory for FirstRosterFault<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == kit::C0 + ccountry::DIVISIONS {
+                self.attempts.set(self.attempts.get() + 1);
+                if self.attempts.get() == 1 {
+                    return false;
+                }
+            }
+            kit::memory(self.bytes).copy(address, output)
+        }
+    }
+    let bytes = kit::fixture();
+    let memory = FirstRosterFault {
+        bytes: &bytes,
+        attempts: Default::default(),
+    };
+    let context = DivisionsCopyContext {
+        base: kit::BASE,
+        game_state: kit::GAME_STATE,
+        ..Default::default()
+    };
+    let mut job = DivisionsJob::new_worker();
+    // Storage admission succeeds; the original native failure remains an outcome.
+    assert!(copy_divisions_inputs_refresh_growing(
+        &memory, context, &mut job
+    ));
+    let reason = "division roster unreadable or invalid";
+    let unavailable = Outcome::Unavailable { reason };
+    let owner = Arc::clone(job.census.unit_inputs().unwrap());
+    assert_eq!(owner.outcome(), unavailable);
+    assert_eq!(owner.intel_sources().outcome, unavailable);
+    assert_eq!(memory.attempts.get(), 1);
+    let report = copy_divisions_core_refresh(&NoDivisionReads, context, &mut job);
+    assert!(report.raw_ok);
+    assert_eq!(job.source_outcome(usize::MAX), unavailable);
+    assert_eq!(job.details.outcomes(), [unavailable; 5]);
+    assert!(Arc::ptr_eq(&owner, job.census.unit_inputs().unwrap()));
+    let repeated = copy_divisions_core_refresh(&NoDivisionReads, context, &mut job);
+    assert_eq!(repeated.raw_bytes, report.raw_bytes);
+    assert_eq!(repeated.copy_ticks, report.copy_ticks);
+    assert_eq!(memory.attempts.get(), 1);
+    let mut frame = Captured::new();
+    decode_divisions_payload(&mut frame, kit::BASE, &mut job, &mut [0; 6]);
+    assert_eq!(frame.divisions_result, unavailable);
+    for table in crate::decode::DIVISIONS.into_iter().skip(1) {
+        assert_eq!(frame.extended.outcomes()[table.index()], unavailable);
+    }
+    assert_eq!(memory.attempts.get(), 1);
+}
+
+#[test]
+fn missing_and_short_original_unit_packets_refuse_every_dependent_worker() {
+    use super::divisions_test_kit as kit;
+    use crate::division_census::UnitInputs;
+    let bytes = kit::fixture();
+    let memory = NoRosterRetry(&bytes);
+    let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
+    let seed = carmy::DivisionSeed {
+        pointer: kit::A1,
+        roster_owner: Some(1),
+        ..Default::default()
+    };
+    for inputs in [
+        None,
+        Some(Arc::new(UnitInputs::fixture(
+            vec![seed],
+            Outcome::Rows { len: 2 },
+        ))),
+        Some(Arc::new(UnitInputs::fixture(
+            vec![seed],
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1,
+            },
+        ))),
+        Some(Arc::new(UnitInputs::fixture(
+            Vec::new(),
+            Outcome::Unavailable {
+                reason: "original division input read failed",
+            },
+        ))),
+    ] {
+        let mut presentation = acquisition::Job::Presentation(acquisition::PresentationRequest {
+            countries: Arc::clone(&countries),
+            context: extended::division_presentation::CaptureContext {
+                base: kit::BASE,
+                game_state: kit::GAME_STATE,
+                hour: 0,
+                force_full: true,
+            },
+            captured: extended::division_presentation::Captured::vacant(),
+            inputs: inputs.clone(),
+            store: None,
+        });
+        assert!(matches!(
+            acquisition::run_for_test(&mut presentation, &memory),
+            acquisition::Report::Presentation(_)
+        ));
+        let acquisition::Job::Presentation(presentation) = presentation else {
+            unreachable!()
+        };
+        assert!(
+            presentation
+                .captured
+                .outcomes()
+                .iter()
+                .all(|outcome| matches!(outcome, Outcome::Unavailable { .. }))
+        );
+
+        let mut frame = Captured::new();
+        frame.extended.install_unit_inputs(inputs.clone());
+        assert!(frame.extended.plan_eta_input_ranges() > 0);
+        let mut eta = acquisition::Job::EtaInputs(frame.extended.take_eta_inputs_request(
+            0,
+            &countries,
+            kit::BASE,
+            kit::GAME_STATE,
+            0,
+            true,
+            Box::default(),
+        ));
+        let acquisition::Report::EtaInputs(report) = acquisition::run_for_test(&mut eta, &memory)
+        else {
+            unreachable!()
+        };
+        let acquisition::Job::EtaInputs(eta) = eta else {
+            unreachable!()
+        };
+        frame.extended.restore_eta_inputs_request(eta, Ok(report));
+        assert!(matches!(
+            frame.extended.outcomes()[TableId::DivisionEtaInputs.index()],
+            Outcome::Unavailable { .. }
+        ));
+
+        let mut intel = acquisition::Job::Intel(acquisition::IntelRequest {
+            countries: Arc::clone(&countries),
+            context: extended::fog::IntelCopyContext {
+                base: kit::BASE,
+                game_state: kit::GAME_STATE,
+                row_limit: 0,
+            },
+            payload: Default::default(),
+            inputs: inputs.clone(),
+            input_failure: None,
+        });
+        assert!(matches!(
+            acquisition::run_for_test(&mut intel, &memory),
+            acquisition::Report::Intel(_)
+        ));
+        let acquisition::Job::Intel(intel) = intel else {
+            unreachable!()
+        };
+        let mut fog = extended::fog::Captured::vacant();
+        fog.decode_intel_payload(&intel.payload, &mut [0; 1]);
+        assert!(matches!(fog.outcomes()[4], Outcome::Unavailable { .. }));
+    }
+}
+
+#[test]
+fn missing_and_short_owned_division_source_packets_refuse_final_equipment_consumers() {
+    use super::divisions_test_kit as kit;
+    use extended::new_divisions::{Counters, Mark};
+    let bytes = kit::fixture();
+    let context = DivisionsCopyContext {
+        base: kit::BASE,
+        game_state: kit::GAME_STATE,
+        ..Default::default()
+    };
+    let countries = Arc::new(Cache::try_with_capacity(0).unwrap());
+    let hour = replay::cadence::refresh_slot(TableId::DivisionEquipment).unwrap() as i32;
+    // Exercise the final equipment consumers on their native slot; a full
+    // refresh also acquires the independent fuel contributor roster.
+    assert!(!replay::cadence::should_walk(
+        TableId::CountryFuel,
+        hour,
+        false
+    ));
+    for displaced_length in [0, 1] {
+        let mut job = DivisionsJob::new_worker();
+        assert!(copy_divisions_inputs_refresh_growing(
+            &kit::memory(&bytes),
+            context,
+            &mut job
+        ));
+        assert!(copy_divisions_core_refresh(&kit::memory(&bytes), context, &mut job).raw_ok);
+        assert_eq!(job.source_outcome(usize::MAX), Outcome::Rows { len: 3 });
+        let mut sink = extended::Captured::with_capacities(&extended::Capacities {
+            division_sources: displaced_length,
+            ..Default::default()
+        });
+        // The original packet has moved; its displaced zero/short buffer cannot
+        // masquerade as a second complete observation of the same census.
+        job.supply_sources(&mut sink, usize::MAX, None);
+        let mut frame = Captured::new();
+        job.supply_sources(&mut frame.extended, usize::MAX, None);
+        frame.extended.set_new_division_mark(Mark::Above(Counters {
+            unit: 0,
+            registry: 0,
+        }));
+        let mut provinces = Vec::new();
+        let mut request = frame.extended.take_final_inputs_request(
+            &countries,
+            kit::BASE,
+            kit::GAME_STATE,
+            hour,
+            false,
+            &mut provinces,
+            Outcome::Unavailable {
+                reason: "test province packet absent",
+            },
+        );
+        let report = request.capture(&NoRosterRetry(&bytes));
+        frame
+            .extended
+            .restore_final_inputs_request(request, report, None, &mut provinces);
+        let unavailable = Outcome::Unavailable {
+            reason: "division source packet incomplete",
+        };
+        for table in [
+            TableId::NewDivisionEquipment,
+            TableId::DivisionEquipment,
+            TableId::ArmyUpgradeGroups,
+            TableId::ArmyUpgradeRequests,
+            TableId::ArmyUpgradeDeliveries,
+            TableId::ArmyUpgradeProduced,
+        ] {
+            assert_eq!(frame.extended.outcomes()[table.index()], unavailable);
+        }
+    }
+}
+
+#[test]
+fn rejected_allocating_worker_preserves_payload_without_callback_reads() {
+    let shared = Shared::new(0, 0, 1);
+    let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS).unwrap();
+    let mut batch = acquisition::Batch::new(&pool);
+    let mut selection = crate::slicing::SliceSelection::new(true);
+    selection.reset(5, false);
+    let mut payload = extended::intel::RelationsJob::new();
+    payload.selection = Some(selection);
+    payload.fingerprints = Some(Box::new(crate::slicing::SliceFingerprints::new()));
+    let store = payload.fingerprints.as_deref().unwrap() as *const _;
+    let request = acquisition::Job::Relations(acquisition::RawRequest {
+        countries: Arc::new(Cache::try_with_capacity(1).unwrap()),
+        context: extended::intel::RelationsCopyContext {
+            base: 0,
+            game_state: usize::MAX,
+            active: [true; 2],
+            opinion_cap: 4,
+            tuple_cap: 4,
+            epoch: 0,
+        },
+        payload,
+    });
+    let reads = crate::read_accounting::Capture::new();
+    let completed = crate::allocation_failure_tests::with_allocations_denied(|| {
+        // SAFETY: the rejected request acquired no native state; it must only
+        // return its owned storage for the caller's named unavailable outcome.
+        unsafe { finish_acquisition(&shared, &mut batch, PendingAcquisition::Rejected(request)) }
+    });
+    assert!(matches!(
+        completed.report,
+        Err(acquisition::Failure::Stopped)
+    ));
+    assert_eq!(completed.table_reads, crate::read_accounting::ZERO);
+    assert_eq!(reads.finish(), crate::read_accounting::ZERO);
+    let acquisition::Job::Relations(request) = completed.request else {
+        panic!("rejected worker lost its payload");
+    };
+    let mut captured = extended::intel::Captured::vacant();
+    let (returned, payload) = captured.join_relations(
+        request.payload,
+        Default::default(),
+        Some(acquisition_failure_reason(acquisition::Failure::Stopped)),
+    );
+    assert_eq!(
+        returned.as_deref().map(|value| value as *const _),
+        Some(store)
+    );
+    assert!(payload.is_err());
+    assert!(captured.relations_raw_mode);
+    assert_eq!(pool.calibration().executor.uncollected, 0);
+}
+
 #[test]
 fn failed_division_job_publishes_hourly_census_reason_even_without_details() {
     let mut frame = Captured::new();
@@ -220,6 +584,7 @@ fn divisions_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and
         capacity_charge: Charge::empty_on(&LOCAL),
         ..Default::default()
     };
+    job.census.reserve_sources(1);
     job.update_capacity_charge();
     let expected =
         |job: &DivisionsJob| job.census.allocated_bytes() + job.details.allocated_bytes() as u64;
@@ -231,18 +596,23 @@ fn divisions_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and
     assert_eq!(grown, expected(&job));
     assert!(
         job.details
-            .ready_for([0, job.census.source_capacity(), 0, 0, 0])
+            .ready_for([0, job.census.source_requirement(), 0, 0, 0])
     );
     let mut frame = Captured::new();
     let frame_before = frame.allocated_bytes();
     let payload_before = expected(&job);
+    let detail_bytes = job.details.allocated_bytes() as u64;
+    assert!(
+        detail_bytes
+            >= job.census.source_requirement() as u64
+                * size_of::<engine::carmy_upgrades_requests::Row>() as u64
+    );
     decode_divisions_payload(&mut frame, 0, &mut job, &mut [0; 6]);
     let payload_after = expected(&job);
     assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, payload_after);
     assert_eq!(
         frame.allocated_bytes() as u64 + payload_after - frame_before as u64 - payload_before,
-        (job.census.source_capacity() - extended::production::Capacities::default().rows[7]) as u64
-            * size_of::<engine::carmy_upgrades_requests::Row>() as u64
+        detail_bytes
     );
     job.clear();
     assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, payload_after);
@@ -301,7 +671,12 @@ fn a_dropped_frame_invalidates_its_sliced_reads_and_a_clockless_one_does_not() {
         frame.clock = clock;
         drop_owned_frame(&shared, frame, index);
         // Hour 7's slice (owner 7) was not published: read it again at hour 8.
-        assert_eq!(early_at(8), expected, "clock {:?}", clock.map(|c| c.hour));
+        assert_eq!(
+            early_at(8),
+            expected,
+            "clock {:?}",
+            frame.clock.as_ref().map(|c| c.hour)
+        );
     }
 }
 
@@ -471,6 +846,42 @@ fn decode_queue_full_takes_the_existing_gap_branch_with_existing_counters() {
 }
 
 #[test]
+fn cold_core_and_division_worker_buffers_have_no_chosen_population_capacity() {
+    assert_eq!(INITIAL_CAPACITIES, [0; 12]);
+    let frame = Captured::with_capacities(
+        &INITIAL_CAPACITIES,
+        &MapCapacities::default(),
+        &extended::Capacities {
+            division_sources: 0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for capacity in [
+        frame.order_counters.rows.capacity(),
+        frame.countries.capacity(),
+        frame.provinces.rows.capacity(),
+        frame.provinces.conflicts.capacity(),
+        frame.provinces.groups.capacity(),
+        frame.states.capacity(),
+        frame.state_names.capacity(),
+        frame.divisions.capacity(),
+        frame.wars.capacity(),
+        frame.factions.capacity(),
+        frame.faction_names.capacity(),
+        frame.faction_members.capacity(),
+    ] {
+        assert_eq!(capacity, 0);
+    }
+    assert_eq!(frame.division_fallback.allocated_bytes(), 0);
+    let job = DivisionsJob::new_worker();
+    assert_eq!(job.census.allocated_bytes(), 0);
+    assert_eq!(job.census.source_requirement(), 0);
+    assert_eq!(job.details.allocated_bytes(), 0);
+    assert_eq!(job.payload_bytes(), [0; 6]);
+}
+
+#[test]
 fn pool_initialization_allocates_all_slots_and_counts_actual_bytes() {
     let shared = Shared::new(0, 0, 1);
     assert_eq!(shared.free.capacity(), BUFFERS);
@@ -572,10 +983,10 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
 
     let shared = Shared::new(0, 0, 1);
     let index = shared.take_frame().unwrap();
-    unsafe { (&mut *shared.pending.get()).push(Some(clock(40, 7))) };
+    unsafe { (&mut *shared.pending.get()).push(Some(clock(40, 7).borrowed())) };
     let acquisitions = AtomicUsize::new(0);
     let completed = unsafe {
-        guarded_acquisition(&shared, Some(clock(41, 7)), || {
+        guarded_acquisition(&shared, Some(clock(41, 7).borrowed()), || {
             acquisitions.fetch_add(1, Ordering::Relaxed);
             std::panic::panic_any(PanicOnDrop);
         })
@@ -591,7 +1002,7 @@ fn acquisition_panic_stops_admission_and_preserves_losses_without_waiting() {
     // During a delayed hook restore, record the next hour as a loss without
     // running acquisition again or consuming another capture buffer.
     assert!(!unsafe {
-        guarded_acquisition(&shared, Some(clock(42, 7)), || {
+        guarded_acquisition(&shared, Some(clock(42, 7).borrowed()), || {
             acquisitions.fetch_add(1, Ordering::Relaxed);
         })
     });
@@ -616,7 +1027,7 @@ fn clock(hour: i32, signal: i64) -> Clock {
         play_time: 0,
         play_session_started_at: signal,
         seed: 1,
-        campaign_id: Text::default(),
+        campaign_id: Owned::default(),
         speed: 4,
         tick_busy: 0,
     }
@@ -625,10 +1036,10 @@ fn clock(hour: i32, signal: i64) -> Clock {
 #[test]
 fn lost_ranges_preserve_reload_origins_and_never_bridge_discontinuities() {
     let mut batch = LossBatch::default();
-    batch.push(Some(clock(10, 1)));
-    batch.push(Some(clock(11, 1)));
-    batch.push(Some(clock(5, 2)));
-    batch.push(Some(clock(8, 2)));
+    batch.push(Some(clock(10, 1).borrowed()));
+    batch.push(Some(clock(11, 1).borrowed()));
+    batch.push(Some(clock(5, 2).borrowed()));
+    batch.push(Some(clock(8, 2).borrowed()));
     let runs: Vec<_> = batch.iter().collect();
     assert_eq!(runs.len(), 3);
     assert_eq!(
@@ -644,8 +1055,8 @@ fn lost_ranges_preserve_reload_origins_and_never_bridge_discontinuities() {
 fn end_of_hour_losses_record_the_entry_hour_as_the_lost_and_loaded_hour() {
     assert_eq!(SAMPLE_BOUNDARY, replay::identity::SampleBoundary::EndOfHour);
     let mut batch = LossBatch::default();
-    batch.push(Some(clock(20, 3)));
-    batch.push(Some(clock(21, 3)));
+    batch.push(Some(clock(20, 3).borrowed()));
+    batch.push(Some(clock(21, 3).borrowed()));
     let runs: Vec<_> = batch.iter().collect();
     assert_eq!(runs.len(), 1);
     assert_eq!(
@@ -692,7 +1103,7 @@ fn fallback_census_growth_consumes_the_failed_attempt_once() {
     use super::divisions_test_kit as kit;
     let bytes = kit::fixture();
     let mut frame = Captured::new();
-    frame.division_fallback = crate::division_census::Census::default();
+    frame.division_fallback = crate::division_census::Census::new_worker();
     frame
         .division_fallback
         .capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
@@ -727,7 +1138,19 @@ fn fallback_census_growth_consumes_the_failed_attempt_once() {
 }
 
 fn cadence_clock(hour: i32, signal: i64) -> Clock {
-    clock(hour, signal)
+    let mut clock = clock(hour, signal);
+    clock.campaign_id = Owned {
+        bytes: b"campaign".to_vec(),
+        len: 8,
+    };
+    clock
+}
+
+// Production prepares the campaign copy before the callback.
+fn prepared_cadence() -> CadenceState {
+    let mut cadence = CadenceState::default();
+    cadence.prev_campaign.prepare(8).unwrap();
+    cadence
 }
 
 #[test]
@@ -769,48 +1192,95 @@ fn cadence_rotation_walks_recorded_families_once_per_24_hours() {
 
 #[test]
 fn native_world_change_forces_full_acquisition_with_matching_clock_fields() {
-    let mut cadence = CadenceState::default();
-    assert!(cadence.force_full(&cadence_clock(100, 1)));
+    let mut cadence = prepared_cadence();
+    assert!(cadence.force_full(&cadence_clock(100, 1).borrowed()));
     cadence.prev_world = crate::world_lifetime::generation() + 1;
-    assert!(!cadence.continuous(&cadence_clock(101, 1)));
-    assert!(cadence.force_full(&cadence_clock(101, 1)));
-    assert!(cadence.continuous(&cadence_clock(102, 1)));
-    assert!(!cadence.force_full(&cadence_clock(102, 1)));
+    assert!(!cadence.continuous(&cadence_clock(101, 1).borrowed()));
+    assert!(cadence.force_full(&cadence_clock(101, 1).borrowed()));
+    assert!(cadence.continuous(&cadence_clock(102, 1).borrowed()));
+    assert!(!cadence.force_full(&cadence_clock(102, 1).borrowed()));
 }
 
 #[test]
 fn branch_starts_loads_and_gaps_force_full_refresh_but_keyframes_do_not() {
-    let mut cadence = CadenceState::default();
-    assert!(cadence.force_full(&cadence_clock(100, 1)));
-    assert!(!cadence.force_full(&cadence_clock(101, 1)));
-    assert!(!cadence.force_full(&cadence_clock(102, 1)));
-    assert!(cadence.force_full(&cadence_clock(103, 2)));
-    assert!(cadence.force_full(&cadence_clock(500, 2)));
+    let mut cadence = prepared_cadence();
+    assert!(cadence.force_full(&cadence_clock(100, 1).borrowed()));
+    assert!(!cadence.force_full(&cadence_clock(101, 1).borrowed()));
+    assert!(!cadence.force_full(&cadence_clock(102, 1).borrowed()));
+    assert!(cadence.force_full(&cadence_clock(103, 2).borrowed()));
+    assert!(cadence.force_full(&cadence_clock(500, 2).borrowed()));
     for hour in 501..=500 + 2 * 720 {
-        assert!(!cadence.force_full(&cadence_clock(hour, 2)), "hour {hour}");
+        assert!(
+            !cadence.force_full(&cadence_clock(hour, 2).borrowed()),
+            "hour {hour}"
+        );
     }
-    let mut fresh = CadenceState::default();
-    assert!(fresh.force_full(&cadence_clock(10, 1)));
+    let mut fresh = prepared_cadence();
+    assert!(fresh.force_full(&cadence_clock(10, 1).borrowed()));
     let mut changed = cadence_clock(11, 1);
     changed.campaign_id.bytes[0] ^= 1;
-    assert!(fresh.force_full(&changed));
+    assert!(fresh.force_full(&changed.borrowed()));
 }
 
 #[test]
 fn periodic_keyframe_keeps_observation_continuous_but_load_gap_and_campaign_do_not() {
-    let mut cadence = CadenceState::default();
-    assert!(!cadence.continuous(&cadence_clock(100, 1)));
-    cadence.force_full(&cadence_clock(100, 1));
+    let mut cadence = prepared_cadence();
+    assert!(!cadence.continuous(&cadence_clock(100, 1).borrowed()));
+    cadence.force_full(&cadence_clock(100, 1).borrowed());
     for hour in 101..=820 {
         let clock = cadence_clock(hour, 1);
-        assert!(cadence.continuous(&clock));
-        assert!(!cadence.force_full(&clock));
+        assert!(cadence.continuous(&clock.borrowed()));
+        assert!(!cadence.force_full(&clock.borrowed()));
     }
-    assert!(!cadence.continuous(&cadence_clock(822, 1)));
-    assert!(!cadence.continuous(&cadence_clock(821, 2)));
+    assert!(!cadence.continuous(&cadence_clock(822, 1).borrowed()));
+    assert!(!cadence.continuous(&cadence_clock(821, 2).borrowed()));
     let mut changed = cadence_clock(821, 1);
     changed.campaign_id.bytes[0] ^= 1;
-    assert!(!cadence.continuous(&changed));
+    assert!(!cadence.continuous(&changed.borrowed()));
+}
+
+#[test]
+fn table_retry_preserves_admitted_politics_mutations() {
+    use crate::politics_changes::{self as politics, Event, LaneCursor, StagingFixture};
+    let _serial = politics::STAGING_TEST.lock().unwrap();
+    let memory = engine::memory::SliceMemory {
+        base: 0,
+        bytes: &[],
+    };
+    let fixture = StagingFixture::new(1, 1);
+    fixture.observe(
+        Event {
+            country: 5_000,
+            before: 100,
+            after: 73,
+            ..Default::default()
+        },
+        &memory,
+    );
+    let mut cursors = [LaneCursor::default()];
+    let handoff = fixture.handoff(&mut cursors).unwrap();
+    let shared = Shared::new(0, 0, 1);
+    let mut cadence = prepared_cadence();
+    cadence.force_full(&cadence_clock(61320026, 1).borrowed());
+    shared.request_retry_full();
+    let clock = cadence_clock(61320027, 1);
+    let continuous = cadence.continuous(&clock.borrowed());
+    let recovery = shared.force_next.swap(false, Ordering::AcqRel);
+    let refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
+    assert!(cadence.force_full(&clock.borrowed()) | recovery | refresh);
+    if !continuous || recovery {
+        politics::invalidate();
+    }
+    let mut events = [Event::default()];
+    let mut bytes = [0; 128];
+    let drained = handoff.drain(&cursors, &mut events, &mut bytes).unwrap();
+    assert_eq!(drained.copied, 1);
+    assert_eq!(
+        (events[0].country, events[0].before, events[0].after),
+        (5_000, 100, 73)
+    );
+    assert!(!shared.force_next.load(Ordering::Acquire));
+    assert!(!shared.refresh_next.load(Ordering::Acquire));
 }
 
 #[test]
@@ -1185,7 +1655,7 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
     assert_eq!(first_sources[0].template, 0x3455_0000_0034);
     assert_eq!(first_sources[0].country, 1);
     let mut frame = Captured::new();
-    first.supply_sources(&mut frame.extended, frame.divisions.len());
+    first.supply_sources(&mut frame.extended, frame.divisions.len(), None);
     frame
         .extended
         .install_unit_inputs(first.census.unit_inputs().cloned());
@@ -1518,6 +1988,7 @@ fn divisions_seeded_worker_rejects_changed_context_without_reacquiring_inputs() 
     let context = DivisionsCopyContext {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
+        row_capacity: 64,
         ..Default::default()
     };
     let mut job = DivisionsJob::new();
@@ -1701,8 +2172,8 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
     use crate::naval_result_sources::{self as sources, Entry, tests::Observation};
     let _observation = Observation::new();
     sources::tests::setup(1, 0);
-    sources::boundary(Some(clock(40, 7)));
-    sources::boundary(Some(clock(41, 7)));
+    sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
+    sources::boundary(Some(clock(41, 7).with_campaign_id(0)));
     let shared = Shared::new(0, 0, 1);
     shared.roster_ready.store(true, Ordering::Release);
     let held: Vec<_> = (0..BUFFERS).map(|_| shared.take_frame().unwrap()).collect();
@@ -1715,7 +2186,7 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
             Dispatch {
                 world_generation: crate::world_lifetime::generation(),
                 index,
-                entry: Some(clock(41, 7)),
+                entry: Some(clock(41, 7).borrowed()),
                 entry_ticks: 0,
                 dispatched: 0,
             },
@@ -1730,12 +2201,12 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
     // recycled frame. That must not make the lost event interval complete.
     shared.recycle_frame(held[0]);
     assert_eq!(shared.take_frame(), Some(held[0]));
-    sources::boundary(Some(clock(42, 7)));
+    sources::boundary(Some(clock(42, 7).with_campaign_id(0)));
     assert_eq!(
         sources::drain(&mut entries).unwrap_err(),
         "naval result sources recovery interval is partial"
     );
-    sources::boundary(Some(clock(43, 7)));
+    sources::boundary(Some(clock(43, 7).with_campaign_id(0)));
     assert_eq!(sources::drain(&mut entries).unwrap(), 0);
     assert_eq!(shared.dropped.load(Ordering::Relaxed), 1);
     let losses = unsafe { &*shared.pending.get() };
@@ -1751,14 +2222,14 @@ fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
     use crate::naval_result_sources::{self as sources, Entry, tests::Observation};
     let _observation = Observation::new();
     sources::tests::setup(1, 0);
-    sources::boundary(Some(clock(40, 7)));
-    sources::boundary(Some(clock(41, 7)));
+    sources::boundary(Some(clock(40, 7).with_campaign_id(0)));
+    sources::boundary(Some(clock(41, 7).with_campaign_id(0)));
     let shared = Shared::new(0, 0, 1);
     let mut forwarded = false;
     assert!(!unsafe {
         synthetic_callback(
             &shared,
-            Some(clock(41, 7)),
+            Some(clock(41, 7).borrowed()),
             || panic!("synthetic acquisition failure"),
             || forwarded = true,
         )
@@ -1769,4 +2240,192 @@ fn contained_acquisition_failure_marks_the_naval_event_interval_unavailable() {
         sources::drain(&mut [Entry::default(); 1]).unwrap_err(),
         "naval result sources lost observation; interval unavailable"
     );
+}
+
+struct CampaignClockMemory {
+    bytes: Vec<u8>,
+}
+impl engine::Memory for CampaignClockMemory {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+            output.copy_from_slice(&0x1000_u64.to_le_bytes());
+            true
+        } else if address == cgame_state::PLAY_SESSION_STARTED_AT_RVA && output.len() == 8 {
+            output.copy_from_slice(&7_i64.to_le_bytes());
+            true
+        } else {
+            engine::memory::SliceMemory {
+                base: 0x1000,
+                bytes: &self.bytes,
+            }
+            .copy(address, output)
+        }
+    }
+}
+fn campaign_clock_memory(len: usize) -> CampaignClockMemory {
+    let mut bytes = vec![0; 0x2001 + len];
+    bytes[cgame_state::CURRENT_HOUR..cgame_state::CURRENT_HOUR + 4]
+        .copy_from_slice(&42_i32.to_le_bytes());
+    let campaign = cgame_state::CAMPAIGN_ID;
+    let payload = if len <= 15 { campaign } else { 0x2000 };
+    bytes[payload..payload + len].fill(b'a');
+    if len > 15 {
+        bytes[campaign..campaign + 8].copy_from_slice(&0x3000_u64.to_le_bytes());
+    }
+    bytes[campaign + 16..campaign + 24].copy_from_slice(&(len as u64).to_le_bytes());
+    bytes[campaign + 24..campaign + 32].copy_from_slice(&(len.max(15) as u64).to_le_bytes());
+    CampaignClockMemory { bytes }
+}
+fn campaign_shared() -> Shared {
+    Shared::with_sizing(0, 0, 1, &crate::country_scale::Sizing::for_slots(0)).unwrap()
+}
+
+#[test]
+fn campaign_clock_callback_keeps_long_identity_and_loss_bytes_under_allocator_denial() {
+    let mut memory = campaign_clock_memory(5_001);
+    let shared = campaign_shared();
+    shared.prepare_clock_capture(&memory).unwrap();
+    let index = shared.take_frame().unwrap();
+    let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+    let before = frame.allocated_bytes();
+    let mut capture = shared.wait_clock_preparation(&memory);
+    let cadence = unsafe { &mut *shared.cadence.get() };
+    let pending = unsafe { &mut *shared.pending.get() };
+    crate::allocation_failure_tests::with_allocations_denied(|| {
+        let (entry, epoch) = capture.read(&memory, 0).unwrap();
+        assert_eq!(epoch, 1);
+        assert_eq!(entry.campaign_id.len(), 5_001);
+        assert!(cadence.force_full(&entry));
+        frame.set_clock(Some(entry));
+        pending.push(Some(entry));
+        frame.set_clock(None);
+        frame.set_clock(Some(entry));
+        assert_eq!(
+            frame.clock.as_ref().unwrap().campaign_id.as_bytes(),
+            entry.campaign_id
+        );
+    });
+    assert_eq!(frame.allocated_bytes(), before);
+    assert_eq!(
+        pending.iter().next().unwrap().campaign_id.as_bytes().len(),
+        5_001
+    );
+    // A change beyond the former chosen text boundary must change observer identity.
+    memory.bytes[0x2000 + 5_000] = b'b';
+    memory.bytes[cgame_state::CURRENT_HOUR..cgame_state::CURRENT_HOUR + 4]
+        .copy_from_slice(&43_i32.to_le_bytes());
+    crate::allocation_failure_tests::with_allocations_denied(|| {
+        let (entry, epoch) = capture.read(&memory, 0).unwrap();
+        assert_eq!(epoch, 2);
+        assert!(!cadence.continuous(&entry));
+        assert!(cadence.force_full(&entry));
+        pending.push(Some(entry));
+        frame.set_clock(Some(entry));
+        assert_eq!(
+            frame.clock.as_ref().unwrap().campaign_id.as_bytes().last(),
+            Some(&b'b')
+        );
+    });
+    assert_eq!(pending.iter().count(), 2);
+    assert_eq!(frame.allocated_bytes(), before);
+    drop(capture);
+    shared.recycle_frame(index);
+}
+
+#[test]
+fn campaign_clock_growth_waits_for_spool_preparation_without_callback_allocation() {
+    let short = campaign_clock_memory(1);
+    let long = campaign_clock_memory(5_001);
+    let shared = campaign_shared();
+    shared.prepare_clock_capture(&short).unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            while shared.clock_required() < 5_001 {
+                std::thread::yield_now();
+            }
+            loop {
+                shared.prepare_clock_capture(&long).unwrap();
+                if shared
+                    .clock_capture
+                    .try_lock()
+                    .is_ok_and(|capture| capture.prepared >= 5_001)
+                {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        });
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            let mut capture = shared.wait_clock_preparation(&long);
+            let (entry, _) = capture.read(&long, 0).unwrap();
+            let index = shared.take_frame().unwrap();
+            let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+            frame.set_clock(Some(entry));
+            assert_eq!(
+                frame.clock.as_ref().unwrap().campaign_id.as_bytes().len(),
+                5_001
+            );
+            shared.recycle_frame(index);
+        });
+    });
+}
+
+#[test]
+fn campaign_clock_gate_does_not_block_frame_return_or_shutdown() {
+    let short = campaign_clock_memory(1);
+    let long = campaign_clock_memory(5_001);
+    let shared = campaign_shared();
+    shared.prepare_clock_capture(&short).unwrap();
+    let capture = shared.wait_clock_preparation(&short);
+    // Spool remains able to process/return frames while a callback holds the clock.
+    shared.prepare_clock_capture(&long).unwrap();
+    assert_eq!(capture.prepared, 1);
+    drop(capture);
+    shared.cancel_buffer_wait.store(true, Ordering::Release);
+    let mut capture = shared.wait_clock_preparation(&long);
+    assert!(capture.read(&long, 0).is_err());
+}
+
+#[test]
+fn campaign_clock_in_service_frames_prepare_before_republication() {
+    let short = campaign_clock_memory(1);
+    let long = campaign_clock_memory(5_001);
+    let shared = campaign_shared();
+    shared.prepare_clock_capture(&short).unwrap();
+    let held: Vec<_> = (0..BUFFERS).map(|_| shared.take_frame().unwrap()).collect();
+    shared.clock_required.store(5_001, Ordering::Release);
+    shared.prepare_clock_capture(&long).unwrap();
+    for index in held {
+        shared.recycle_frame_prepared(index);
+    }
+    crate::allocation_failure_tests::with_allocations_denied(|| {
+        let mut capture = shared.wait_clock_preparation(&long);
+        let (entry, _) = capture.read(&long, 0).unwrap();
+        for _ in 0..BUFFERS {
+            let index = shared.take_frame().unwrap();
+            let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+            frame.set_clock(Some(entry));
+            assert_eq!(
+                frame.clock.as_ref().unwrap().campaign_id.as_bytes().len(),
+                5_001
+            );
+            shared.recycle_frame(index);
+        }
+    });
+}
+
+#[test]
+fn campaign_clock_optional_preparation_denial_is_named_and_nonterminal() {
+    let memory = campaign_clock_memory(5_001);
+    let shared = campaign_shared();
+    crate::allocation_failure_tests::with_allocations_denied(|| {
+        shared.prepare_clock_capture(&memory).unwrap();
+    });
+    assert!(!crate::allocation::failed());
+    assert_eq!(
+        shared.clock_status(),
+        (0, 1, Some("clock preparation advisory allocation failed"))
+    );
+    shared.prepare_clock_capture(&memory).unwrap();
+    assert_eq!(shared.clock_capture.lock().unwrap().prepared, 5_001);
 }

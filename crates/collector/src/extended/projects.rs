@@ -72,7 +72,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("scientist rosters and specializations", 8, &[8, 9]),
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],
     pub program_names: usize,
@@ -89,36 +89,46 @@ pub struct Capacities {
     pub counteroperatives: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: [
-                256, 32768, 1024, 2048, 1024, 512, 256, 32, 2048, 8192, 128, 64, 1024, 1, 64, 64,
-                256, 512, 1024,
-            ],
-            raid_equipment_items: 1024,
-            raid_equipment_archetypes: 1024,
-            counteroperatives: 1024,
-            raid_transports: 256,
-            program_names: 8192,
-            program_candidates: 1024,
-            raid_type_tokens: 4096,
-            raid_show_for: 256,
-        }
-    }
-}
 impl Capacities {
+    /// Pool+0x1c is the live extent walked at 14146F0B0 with stride 0x1c0;
+    /// 140FCF9A0 retains each project's reward-history array. Empty outputs
+    /// count every authenticated pool/header without reading lifecycle children.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let (projects, histories) =
+            nproject_cproject::walk_with_history(memory, base, state, &mut [], &mut []);
+        let demand = |outcome| match outcome {
+            Outcome::Rows { len } => Ok(len),
+            Outcome::Truncated { len, unread_rows } => len
+                .checked_add(unread_rows as usize)
+                .ok_or("project row demand overflow"),
+            Outcome::Unavailable { reason } => Err(reason),
+        };
+        // 14187F220/14049FC30 bound the rooted program pointer vectors.
+        let programs = nproject_cprogram::walk(memory, base, state, &mut [], &mut [], &mut []);
+        if let Outcome::Unavailable { reason } = programs.outcome
+            && reason != "program pointer scratch capacity insufficient"
+        {
+            return Err(reason);
+        }
+        grow_capacity(&mut self.program_candidates, programs.required_candidates);
+        grow_capacity(&mut self.rows[0], programs.required_candidates);
+        grow_capacity(&mut self.rows[1], demand(projects)?);
+        grow_capacity(&mut self.rows[2], demand(histories)?);
+        Ok(())
+    }
+
     /// RaidCountries has one row per canonical slot and Nukes exactly two
-    /// per country (`cnuke::TYPE_COUNT`); Projects holds each country's pool
-    /// of special-project definitions (the default's per-country factor).
+    /// per country (`cnuke::TYPE_COUNT`). Project pools use live demand.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
-        raise(&mut self.rows[1], rows(slots, 64));
         raise(&mut self.rows[4], rows(slots, 2));
         raise(&mut self.rows[5], rows(slots, 1));
         raise(&mut self.rows[17], rows(slots, 1));
-        // Every country holds its eligible raid types.
-        raise(&mut self.raid_type_tokens, rows(slots, 8));
     }
 
     /// The live type-token demand of every raid parent and the player cache
@@ -254,22 +264,11 @@ impl Captured {
             raid_equipment_amounts: Arena::new(capacity.raid_equipment_items),
             raid_equipment_archetype_tokens: Arena::new(capacity.raid_equipment_archetypes),
             raid_equipment_archetype_amounts: Arena::new(capacity.raid_equipment_archetypes),
-            speed_memo: engine::modifier_definition::DefinitionMemo::try_with_capacity(
-                if capacity.rows[14] == 0 { 0 } else { 3 },
-            )
-            .map_err(crate::allocation::io)
-            .unwrap_or_default(),
+            speed_memo: engine::modifier_definition::DefinitionMemo::default(),
             raid_reads: super::RaidReadCounts::default(),
             raid_type_tokens: Arena::new(capacity.raid_type_tokens),
             raid_show_for: Arena::new(capacity.raid_show_for),
-            raid_type_memo: if capacity.raid_type_tokens == 0 {
-                ccountry_raid_status::TypeTokens::empty()
-            } else {
-                // Grown from the database's count after the first walk.
-                ccountry_raid_status::TypeTokens::try_with_definitions(64)
-                    .map_err(crate::allocation::io)
-                    .unwrap_or_else(|_| ccountry_raid_status::TypeTokens::empty())
-            },
+            raid_type_memo: ccountry_raid_status::TypeTokens::empty(),
             names: Arena::new(capacity.program_names),
             candidates: owned_vec(default_vec(capacity.program_candidates)),
             required_candidates: 0,
@@ -402,7 +401,7 @@ impl Captured {
         grow_vec(&mut self.candidates, capacity.program_candidates);
     }
 
-    /// Acquisition uses preallocated buffers while the hourly callback waits.
+    /// Worker acquisition grows from original headers while the callback waits.
     /// Definition/reward/specialization tokens retain their native u32 bits.
     /// Acquire current rows using the existing staggered project cadence.
     pub fn capture(
@@ -431,7 +430,7 @@ impl Captured {
             let begin = qpc();
             self.capture_programs(|candidates, rows, names| {
                 let _reads = read_accounting::table(TABLES[0]);
-                nproject_cprogram::walk(memory, base, game_state, candidates, rows, names)
+                nproject_cprogram::walk_growing(memory, base, game_state, candidates, rows, names)
             });
             ticks[0] = elapsed(begin);
             let begin = qpc();
@@ -440,7 +439,7 @@ impl Captured {
                 &mut self.history,
                 |projects, histories| {
                     let _reads = read_accounting::table(TABLES[1]);
-                    nproject_cproject::walk_with_history(
+                    nproject_cproject::walk_with_history_growing(
                         memory, base, game_state, projects, histories,
                     )
                 },
@@ -449,7 +448,7 @@ impl Captured {
             let begin = qpc();
             capture_rows(&mut self.breakthroughs, |rows| {
                 let _reads = read_accounting::table(TABLES[3]);
-                nproject_cbreakthrough_progress::walk(memory, base, game_state, rows)
+                nproject_cbreakthrough_progress::walk_growing(memory, base, game_state, rows)
             });
             ticks[3] = elapsed(begin);
         }
@@ -459,7 +458,7 @@ impl Captured {
                     let _reads = read_accounting::table(TABLES[$index]);
                     let begin = qpc();
                     capture_rows(&mut self.$field, |rows| {
-                        $module::walk(memory, base, game_state, rows)
+                        $module::walk_growing(memory, base, game_state, rows)
                     });
                     ticks[$index] = elapsed(begin);
                 } else {
@@ -474,11 +473,11 @@ impl Captured {
         if active[5] || active[10] || active[11] {
             let begin = qpc();
             let _reads = read_accounting::table(TABLES[5]);
-            let walk = craid_system::walk(
+            let walk = craid_system::walk_growing(
                 memory,
                 base,
                 game_state,
-                craid_system::Buffers {
+                craid_system::GrowingBuffers {
                     parents: &mut self.raid_countries.rows,
                     type_tokens: &mut self.raid_type_tokens.first,
                     instances: &mut self.raids.rows,
@@ -511,12 +510,12 @@ impl Captured {
                 .raid_type_tokens
                 .len
                 .min(self.raid_type_tokens.first.len());
-            let walk = cplayer_status_cache::walk(
+            let walk = cplayer_status_cache::walk_buffer(
                 memory,
                 base,
                 game_state,
-                &mut self.raid_player.rows,
-                &mut self.raid_type_tokens.first[start..],
+                engine::walk::Buffer::Growing(&mut self.raid_player.rows),
+                engine::walk::Buffer::GrowingFrom(&mut self.raid_type_tokens.first, start),
                 &mut self.raid_type_memo,
             );
             if let Some(row) = self.raid_player.rows.first_mut() {
@@ -538,7 +537,7 @@ impl Captured {
         if active[14] {
             let _reads = read_accounting::table(TABLES[14]);
             let begin = qpc();
-            let walk = raid_speed_inputs::walk(
+            let walk = raid_speed_inputs::walk_growing(
                 memory,
                 base,
                 game_state,
@@ -558,12 +557,12 @@ impl Captured {
         if active[15] {
             let _reads = read_accounting::table(TABLES[15]);
             let begin = qpc();
-            let walk = raid_equipment::walk(
+            let walk = raid_equipment::walk_growing(
                 memory,
                 base,
                 game_state,
                 &mut self.raid_equipment.rows,
-                raid_equipment::Arenas {
+                raid_equipment::GrowingArenas {
                     variants: &mut self.raid_equipment_variants.first,
                     amounts: &mut self.raid_equipment_amounts.first,
                     archetype_tokens: &mut self.raid_equipment_archetype_tokens.first,
@@ -603,7 +602,7 @@ impl Captured {
         } else {
             let begin = qpc();
             let _reads = read_accounting::table(TABLES[17]);
-            let read = engine::raid_intel_inputs::walk(
+            let read = engine::raid_intel_inputs::walk_growing(
                 memory,
                 base,
                 game_state,
@@ -620,7 +619,7 @@ impl Captured {
             let begin = qpc();
             let torn = &mut self.raid_reads.torn_memo_reads;
             capture_rows(&mut self.raid_paths, |rows| {
-                raid_path_memo::walk(memory, base, game_state, rows, torn)
+                raid_path_memo::walk_growing(memory, base, game_state, rows, torn)
             });
             ticks[12] = elapsed(begin);
         } else {
@@ -635,11 +634,11 @@ impl Captured {
                 &mut self.scientist_skills,
                 |scientists, skills| {
                     let _reads = read_accounting::table(TABLES[8]);
-                    let walk = scientist_roster::walk(
+                    let walk = scientist_roster::walk_growing(
                         memory,
                         base,
                         game_state,
-                        &mut scientist_roster::Buffers { scientists, skills },
+                        &mut scientist_roster::GrowingBuffers { scientists, skills },
                     );
                     (walk.scientists, walk.skills)
                 },
@@ -664,9 +663,9 @@ impl Captured {
     fn capture_programs(
         &mut self,
         walk: impl FnOnce(
-            &mut [usize],
-            &mut [nproject_cprogram::Row],
-            &mut [u8],
+            &mut Vec<usize>,
+            &mut Vec<nproject_cprogram::Row>,
+            &mut Vec<u8>,
         ) -> nproject_cprogram::NameWalk,
     ) {
         let result = walk(
@@ -1069,14 +1068,14 @@ pub(crate) use owned::{
     ProjectsCopyContext, ProjectsCopyReport, ProjectsJob, copy_projects_refresh,
 };
 
-fn capture_rows<R>(captured: &mut CaptureRows<R>, walk: impl FnOnce(&mut [R]) -> Outcome) {
+fn capture_rows<R>(captured: &mut CaptureRows<R>, walk: impl FnOnce(&mut Vec<R>) -> Outcome) {
     captured.outcome = bounded(walk(&mut captured.rows), captured.rows.len());
 }
 
 fn capture_pair<P, C>(
     parents: &mut CaptureRows<P>,
     instances: &mut CaptureRows<C>,
-    walk: impl FnOnce(&mut [P], &mut [C]) -> (Outcome, Outcome),
+    walk: impl FnOnce(&mut Vec<P>, &mut Vec<C>) -> (Outcome, Outcome),
 ) {
     let (parent, child) = walk(&mut parents.rows, &mut instances.rows);
     parents.outcome = bounded(parent, parents.rows.len());

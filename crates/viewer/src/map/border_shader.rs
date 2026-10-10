@@ -35,7 +35,6 @@ pub struct Inputs<'a> {
     pub intel: &'a wgpu::TextureView,
     pub shadow: &'a wgpu::TextureView,
     pub time: f32,
-    pub selection: [f32; 4],
 }
 
 pub struct Run<'a> {
@@ -47,6 +46,8 @@ pub struct Run<'a> {
 pub struct Batch<'a> {
     pub texture: &'a wgpu::TextureView,
     pub alpha: f32,
+    /// Palette color for this native reason group within a material bucket.
+    pub selection: [f32; 4],
     pub runs: Vec<Run<'a>>,
 }
 
@@ -168,7 +169,7 @@ impl Border {
                 }
                 retained = super::shader_constants::WorldPixelConstants::border(
                     inputs.time,
-                    inputs.selection,
+                    batch.selection,
                     batch.alpha,
                 );
                 let buffers = BTreeMap::from([
@@ -181,7 +182,7 @@ impl Border {
                     self.retained.bind(&mut tracked, &buffers, &textures);
                     super::shader_constants::WorldPixelConstants::border(
                         inputs.time,
-                        inputs.selection,
+                        batch.selection,
                         batch.alpha,
                     )
                     .retain(&mut tracked);

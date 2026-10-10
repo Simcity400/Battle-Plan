@@ -714,7 +714,8 @@ fn equipment_rosters_compare_in_saved_order_and_absent_foreign_is_empty() {
 
 #[test]
 fn licences_and_the_deployment_queue_compare_exactly_against_a_real_save_shape() {
-    let (saved, countries, conveyors, lines, manpower, equipment) = deployment_context();
+    let (saved, countries, mut conveyors, lines, manpower, equipment) = deployment_context();
+    conveyors[0].name.extend_from_slice(b"\0tail");
     let links: BTreeMap<u32, &CountryRow> = countries.iter().map(|row| (row.id, row)).collect();
     let licenses = vec![
         replay::rows::ProductionLicenseRow {
@@ -1193,6 +1194,20 @@ military_deployment_conveyor={
     compare_deployment(&frame, &saved, &links, &tokens, &mut report).unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert!(report.differences[0].contains("custom_flag_a"));
+    let saved_clear = production::parse(
+        &parser::parse(
+            String::from_utf8(SAVE.to_vec())
+                .unwrap()
+                .replace("type=0 override=", "type=0 is_name_ordered=no override=")
+                .as_bytes(),
+        )
+        .unwrap()
+        .items,
+    )
+    .unwrap();
+    let mut report = Report::default();
+    compare_deployment(&frame, &saved_clear, &links, &tokens, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
 }
 
 #[test]

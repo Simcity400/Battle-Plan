@@ -16,17 +16,25 @@ pub const TABLES: [TableId; N] = [TableId::ProvinceNames];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("province name overrides and province census", 0, &[0])];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     bytes: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 512,
-            bytes: 32 * 1024,
-        }
+
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        // Serialize@140E6CA90 retains each override's observed string length.
+        let demand = cprovince::walk_names(memory, base, state, &mut [], &mut []);
+        let rows = crate::country_scale::table_demand::rows(demand.outcome)?;
+        crate::country_scale::raise(&mut self.rows, rows);
+        crate::country_scale::raise(&mut self.bytes, demand.required_bytes);
+        Ok(())
     }
 }
 
@@ -79,7 +87,7 @@ impl Captured {
             return [0];
         }
         let started = qpc();
-        let first = cprovince::walk_names(
+        let first = cprovince::walk_names_growing(
             memory,
             base,
             game_state,
@@ -263,7 +271,7 @@ mod tests {
 
     #[test]
     fn conversion_preserves_bytes_and_rejects_invalid_arena_ranges() {
-        let mut capture = Captured::with_capacities(&Capacities::default());
+        let mut capture = Captured::with_capacities(&Capacities { rows: 1, bytes: 3 });
         capture.names.rows[0] = cprovince::NameRow {
             province: 85,
             start: 0,

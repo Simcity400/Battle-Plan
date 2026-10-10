@@ -14,11 +14,11 @@ use crate::{
     frame::{DecodedFrame, FrameDecoder, FrameEncoder, Metrics, TableUpdate, TableView},
     identity::{Identity, Roster, SessionStart, Verification},
     rows::{
-        AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, CountryLinkRow, CountryRow, DivisionRow,
-        FactionMemberRow, FactionRow, FleetRow, HumanControllerRow, LandCombatRow,
-        NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ProvinceRow, Recorded, RowCodec,
-        RowRef, ShipRow, StateRow, TableId, TableRows, TableSchema, TaskForceRow, WarRelationRow,
-        tables,
+        AirWingRaidReference, AirWingRow, ArmyOrderRow, CampaignRow, ClockRow, CountryLinkRow,
+        CountryRow, DivisionRow, FactionMemberRow, FactionRow, FleetRow, HumanControllerRow,
+        LandCombatRow, NavalCombatParticipantRow, NavalCombatRow, PlayerRow, ProvinceAttackInputs,
+        ProvinceRow, Recorded, RowCodec, RowRef, ShipRow, StateRow, TableId, TableRows,
+        TableSchema, TaskForceRow, WarRelationRow, tables,
     },
     spool::{
         ControlRecord, Record, Recovery, SegmentBackend, SegmentSink, SegmentedSpool,
@@ -629,6 +629,21 @@ fn add_map_rows(index: usize, tables: &mut [TableView]) {
                 name: Recorded::Value(
                     [None, Some(Vec::new()), Some(vec![0xff, 0, b'W'])][tick % 3].clone(),
                 ),
+                strategic_bombing_raw: Recorded::Value([None, Some(0), Some(i64::MIN)][tick % 3]),
+                pool_subunit: Recorded::Value([None, Some(0), Some(u32::MAX)][tick % 3]),
+                raid_reference: Recorded::Value(
+                    [
+                        None,
+                        Some(AirWingRaidReference {
+                            raw: 0,
+                            resolves: false,
+                        }),
+                        Some(AirWingRaidReference {
+                            raw: u64::MAX,
+                            resolves: true,
+                        }),
+                    ][tick % 3],
+                ),
             },
         );
         push_map::<tables::ArmyOrders>(
@@ -719,6 +734,15 @@ fn source_with_faults(
             fort_positive: u8::from((index + id as usize).is_multiple_of(3)),
             move_gate: [0, 1, 2, 3][(index + id as usize) % 4],
             port_sea: [0, 1, -1, i32::MAX][id as usize % 4],
+            attack: ProvinceAttackInputs {
+                sample_hour: hour,
+                fort_sum: [None, Some(i32::MIN), Some(0), Some(i32::MAX)]
+                    [(index + id as usize) % 4],
+                land_bunker_effectiveness_factor: [None, Some(i64::MIN), Some(0), Some(i64::MAX)]
+                    [(index / 3 + id as usize) % 4],
+            }
+            .into(),
+            selected_areas: Default::default(),
         })
         .collect();
     if index % 17 < 5 {
@@ -731,6 +755,8 @@ fn source_with_faults(
             fort_positive: 0,
             move_gate: 0,
             port_sea: 0,
+            attack: Default::default(),
+            selected_areas: Default::default(),
         });
     }
     let mut states: Vec<_> = (0..=2)
@@ -739,6 +765,9 @@ fn source_with_faults(
             owner: [2, 19][(index / 37 + id as usize) % 2],
             controller: [0, 7, 19][(index / 5 + id as usize) % 3],
             movement_infrastructure: [i64::MIN, 0, 100_000, i64::MAX][(index + id as usize) % 4],
+            railway_infrastructure: [None, Some(0), Some(i64::MIN), Some(i64::MAX)]
+                [(index + id as usize) % 4]
+                .into(),
             manpower_available: [i32::MIN, 0, i32::MAX][(index + id as usize) % 3],
             continent: crate::rows::Recorded::Value(Some((index + id as usize) as u32)),
             // Empty, ASCII and non-UTF-8 names, changing on their own cadence.
@@ -1252,7 +1281,7 @@ fn synthesize() -> Campaign {
                     }
                 }
                 TableUpdate::Unchanged { .. } => coverage.unchanged_tables += 1,
-                TableUpdate::Unavailable { .. } => {
+                TableUpdate::Unavailable { .. } | TableUpdate::Incompatible { .. } => {
                     coverage.unavailable_tables += 1;
                     if let Some(domain_index) = domain_index {
                         coverage.domains[domain_index].unavailable += 1;

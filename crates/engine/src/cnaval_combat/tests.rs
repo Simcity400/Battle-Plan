@@ -14,7 +14,7 @@ fn capture_details(
         memory,
         base,
         game_state,
-        details,
+        crate::walk::Buffer::Fixed(details),
         ships,
         groups,
         buffers,
@@ -233,40 +233,40 @@ fn side_units_keep_stored_order_and_report_their_demand() {
             naval_hits: &mut Vec::new(),
             lengths: [0; 3],
             required: [0; 3],
-            planes: &mut [],
+            planes: crate::walk::Buffer::Fixed(&mut []),
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: &mut [],
-            plane_naval_hits: &mut [],
+            plane_air_hits: crate::walk::Buffer::Fixed(&mut []),
+            plane_naval_hits: crate::walk::Buffer::Fixed(&mut []),
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: &mut [],
+            plane_kills: crate::walk::Buffer::Fixed(&mut []),
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
             weapon_terms: &mut Vec::new(),
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
-            commander_inputs: &mut [],
+            commander_inputs: crate::walk::Buffer::Fixed(&mut []),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: arena,
+            side_units: crate::walk::Buffer::Fixed(arena),
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: &mut [0; 64],
+            custom_sea: crate::walk::Buffer::Fixed(&mut [0; 64]),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: &mut [(0, 0); 64],
+            damage_sources: crate::walk::Buffer::Fixed(&mut [(0, 0); 64]),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: &mut [0; 512],
+            wing_types: crate::walk::Buffer::Fixed(&mut [0; 512]),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: &mut [0; 1024],
+            plane_wings: crate::walk::Buffer::Fixed(&mut [0; 1024]),
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
@@ -274,7 +274,7 @@ fn side_units_keep_stored_order_and_report_their_demand() {
             &DetailMemory(world.memory()),
             IMAGE,
             GS,
-            &mut details,
+            crate::walk::Buffer::Fixed(&mut details),
             &mut vec![cfex_member::DetailsRow::default(); 2],
             &mut vec![0; 4],
             &mut buffers,
@@ -333,10 +333,10 @@ fn null_commander_never_falls_back_to_the_last_leader() {
         let mut arenas = cnaval_combatant::SideArenas {
             countries: &mut countries,
             countries_len: &mut countries_len,
-            units: &mut units,
+            units: crate::walk::Buffer::Fixed(&mut units),
             units_len: &mut units_len,
             units_required: &mut units_required,
-            damage_sources: &mut damage_sources,
+            damage_sources: crate::walk::Buffer::Fixed(&mut damage_sources),
             damage_sources_len: &mut damage_sources_len,
             damage_sources_required: &mut damage_sources_required,
         };
@@ -380,40 +380,40 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
         naval_hits: &mut Vec::new(),
         lengths: [0; 3],
         required: [0; 3],
-        planes: &mut [],
+        planes: crate::walk::Buffer::Fixed(&mut []),
         planes_len: 0,
         planes_required: 0,
-        plane_air_hits: &mut [],
-        plane_naval_hits: &mut [],
+        plane_air_hits: crate::walk::Buffer::Fixed(&mut []),
+        plane_naval_hits: crate::walk::Buffer::Fixed(&mut []),
         plane_hit_lengths: [0; 2],
         plane_hit_required: [0; 2],
-        plane_kills: &mut [],
+        plane_kills: crate::walk::Buffer::Fixed(&mut []),
         plane_kills_len: 0,
         plane_kills_required: 0,
         weapon_sources: &mut Vec::new(),
         weapon_terms: &mut Vec::new(),
         weapon_lengths: [0; 2],
         weapon_required: [0; 2],
-        commander_inputs: &mut [],
+        commander_inputs: crate::walk::Buffer::Fixed(&mut []),
         commander_inputs_len: 0,
         commander_inputs_required: 0,
         commander_timed_traits: &mut Vec::new(),
         commander_timed_traits_len: 0,
-        side_units: &mut [],
+        side_units: crate::walk::Buffer::Fixed(&mut []),
         side_units_len: 0,
         side_units_required: 0,
         summary_countries: &mut Vec::new(),
         summary_countries_len: 0,
-        custom_sea: &mut [0; 64],
+        custom_sea: crate::walk::Buffer::Fixed(&mut [0; 64]),
         custom_sea_len: 0,
         custom_sea_required: 0,
-        damage_sources: &mut [(0, 0); 64],
+        damage_sources: crate::walk::Buffer::Fixed(&mut [(0, 0); 64]),
         damage_sources_len: 0,
         damage_sources_required: 0,
-        wing_types: &mut [0; 512],
+        wing_types: crate::walk::Buffer::Fixed(&mut [0; 512]),
         wing_types_len: 0,
         wing_types_required: 0,
-        plane_wings: &mut [0; 1024],
+        plane_wings: crate::walk::Buffer::Fixed(&mut [0; 1024]),
         plane_wings_len: 0,
         plane_wings_required: 0,
     };
@@ -422,7 +422,7 @@ fn detail_rows_preserve_native_widths_and_report_bounded_copy_cost() {
         &memory,
         IMAGE,
         GS,
-        &mut details,
+        crate::walk::Buffer::Fixed(&mut details),
         &mut ships,
         &mut vec![0; 4],
         &mut buffers,
@@ -538,40 +538,40 @@ fn detail_storage_grows_once_from_original_counts_with_equal_faults_and_reads() 
             naval_hits: &mut vec![Default::default(); initial],
             lengths: [0; 3],
             required: [0; 3],
-            planes: &mut [],
+            planes: crate::walk::Buffer::Fixed(&mut []),
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: &mut [],
-            plane_naval_hits: &mut [],
+            plane_air_hits: crate::walk::Buffer::Fixed(&mut []),
+            plane_naval_hits: crate::walk::Buffer::Fixed(&mut []),
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: &mut [],
+            plane_kills: crate::walk::Buffer::Fixed(&mut []),
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
             weapon_terms: &mut Vec::new(),
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
-            commander_inputs: &mut [],
+            commander_inputs: crate::walk::Buffer::Fixed(&mut []),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: &mut [],
+            side_units: crate::walk::Buffer::Fixed(&mut []),
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: &mut [0; 64],
+            custom_sea: crate::walk::Buffer::Fixed(&mut [0; 64]),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: &mut [(0, 0); 64],
+            damage_sources: crate::walk::Buffer::Fixed(&mut [(0, 0); 64]),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: &mut [0; 512],
+            wing_types: crate::walk::Buffer::Fixed(&mut [0; 512]),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: &mut [0; 1024],
+            plane_wings: crate::walk::Buffer::Fixed(&mut [0; 1024]),
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
@@ -657,40 +657,40 @@ fn side_external_planes_keep_their_first_group_owner() {
             naval_hits: &mut Vec::new(),
             lengths: [0; 3],
             required: [0; 3],
-            planes,
+            planes: crate::walk::Buffer::Fixed(planes),
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: &mut [],
-            plane_naval_hits: &mut [],
+            plane_air_hits: crate::walk::Buffer::Fixed(&mut []),
+            plane_naval_hits: crate::walk::Buffer::Fixed(&mut []),
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: &mut [],
+            plane_kills: crate::walk::Buffer::Fixed(&mut []),
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
             weapon_terms: &mut Vec::new(),
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
-            commander_inputs: &mut [],
+            commander_inputs: crate::walk::Buffer::Fixed(&mut []),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: &mut [],
+            side_units: crate::walk::Buffer::Fixed(&mut []),
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: &mut [0; 64],
+            custom_sea: crate::walk::Buffer::Fixed(&mut [0; 64]),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: &mut [(0, 0); 64],
+            damage_sources: crate::walk::Buffer::Fixed(&mut [(0, 0); 64]),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: &mut [0; 512],
+            wing_types: crate::walk::Buffer::Fixed(&mut [0; 512]),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: &mut [0; 1024],
+            plane_wings: crate::walk::Buffer::Fixed(&mut [0; 1024]),
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
@@ -813,6 +813,171 @@ fn table_capacity_and_group_scratch_have_explicit_independent_outcomes() {
             reason: "naval group scratch capacity exceeded"
         }
     );
+}
+
+#[test]
+fn core_combat_rows_groups_and_members_follow_first_and_later_mod_headers() {
+    let mut combats = Vec::new();
+    let mut participants = Vec::new();
+    let mut groups = Vec::new();
+    for count in [5_000_usize, 12_000] {
+        let mut world = World::new();
+        let registry = GS + world.0.len();
+        world.0.resize(world.0.len() + count * 8, 0);
+        world.array(
+            GS + cgame_state::COMBATS + 8,
+            registry,
+            count as u32,
+            count as u32,
+        );
+        for index in 0..count {
+            world.u64(registry + index * 8, BODY as u64);
+        }
+        for side in [ATTACKING, DEFENDING] {
+            world.array(side + cnaval_combatant::GROUPS, 0, 0, 0);
+        }
+        let captured = walk_timed_growing(
+            &world.memory(),
+            IMAGE,
+            GS,
+            &mut combats,
+            &mut participants,
+            &mut groups,
+            |_| 0,
+        )
+        .capture;
+        assert_eq!(captured.combats, Outcome::Rows { len: count });
+        assert_eq!(combats[count - 1].registry_ordinal, count as u32 - 1);
+
+        let mut world = World::new();
+        let blocks = GS + world.0.len();
+        let roots = blocks + count * 0x300;
+        world.0.resize(world.0.len() + count * (0x300 + 8), 0);
+        world.array(
+            ATTACKING + cnaval_combatant::GROUPS,
+            roots,
+            count as u32,
+            count as u32,
+        );
+        world.array(DEFENDING + cnaval_combatant::GROUPS, 0, 0, 0);
+        for index in 0..count {
+            let block = blocks + index * 0x300;
+            world.u64(roots + index * 8, block as u64);
+            for (group, opponent, member, slots, side) in [
+                (block, block + 0x40, block + 0x80, block + 0x2e0, ATTACKING),
+                (block + 0x40, block, block + 0x1b0, block + 0x2e8, DEFENDING),
+            ] {
+                world.u64(group, (IMAGE + cfex_group::VTABLE_RVA) as u64);
+                world.u64(group + cfex_group::SIDE, side as u64);
+                world.u64(group + cfex_group::OPPONENT_GROUP, opponent as u64);
+                world.array(group + cfex_group::MEMBERS, slots, 1, 1);
+                world.u64(slots, member as u64);
+                world.u64(member, (IMAGE + cfex_member::VTABLE_RVA) as u64);
+                world.u64(member + cfex_member::GROUP, group as u64);
+                world.u32(member + cfex_member::BATTLE_SLOT, index as u32);
+            }
+        }
+        let fixed = walk(&world.memory(), IMAGE, GS, &mut [], &mut [], &mut []);
+        assert!(matches!(
+            fixed.participants,
+            Outcome::Unavailable {
+                reason: "naval group scratch capacity exceeded"
+            }
+        ));
+        let demand = storage_demand(&world.memory(), IMAGE, GS);
+        assert_eq!(
+            demand.combats,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(
+            demand.participants,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: (count * 2) as u32
+            }
+        );
+        assert_eq!(demand.required_group_capacity, count * 2);
+        let captured = walk_timed_growing(
+            &world.memory(),
+            IMAGE,
+            GS,
+            &mut combats,
+            &mut participants,
+            &mut groups,
+            |_| 0,
+        )
+        .capture;
+        assert_eq!(captured.combats, Outcome::Rows { len: 1 });
+        assert_eq!(captured.participants, Outcome::Rows { len: count * 2 });
+        assert_eq!(captured.required_group_capacity, count * 2);
+        assert!(
+            participants[..count * 2]
+                .iter()
+                .enumerate()
+                .all(|(index, row)| row.battle_slot == (index / 2) as u32)
+        );
+    }
+}
+
+#[test]
+fn growing_core_combat_capacity_preserves_every_original_fault_and_read() {
+    use std::cell::{Cell, RefCell};
+    struct Trace<'a> {
+        memory: SliceMemory<'a>,
+        fault: Option<usize>,
+        reads: RefCell<Vec<(usize, usize)>>,
+        calls: Cell<usize>,
+    }
+    impl Memory for Trace<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let index = self.calls.get();
+            self.calls.set(index + 1);
+            self.reads.borrow_mut().push((address, output.len()));
+            self.fault != Some(index) && self.memory.copy(address, output)
+        }
+    }
+    let world = World::new();
+    let run = |growing, fault| {
+        let memory = Trace {
+            memory: world.memory(),
+            fault,
+            reads: Default::default(),
+            calls: Cell::new(0),
+        };
+        let mut combats = vec![Row::default(); if growing { 0 } else { 1 }];
+        let mut participants = vec![cnaval_combatant::Row::default(); if growing { 0 } else { 2 }];
+        let mut groups = vec![0; if growing { 0 } else { 2 }];
+        let capture = if growing {
+            walk_timed_growing(
+                &memory,
+                IMAGE,
+                GS,
+                &mut combats,
+                &mut participants,
+                &mut groups,
+                |_| 0,
+            )
+            .capture
+        } else {
+            walk(
+                &memory,
+                IMAGE,
+                GS,
+                &mut combats,
+                &mut participants,
+                &mut groups,
+            )
+        };
+        (capture, memory.reads.into_inner())
+    };
+    let expected = run(false, None);
+    assert_eq!(run(true, None), expected);
+    for index in 0..expected.1.len() {
+        assert_eq!(run(true, Some(index)), run(false, Some(index)));
+    }
 }
 
 #[test]
@@ -994,40 +1159,40 @@ fn a_registry_past_4096_combats_is_walked_whole_and_truncates_by_demand() {
             naval_hits: &mut Vec::new(),
             lengths: [0; 3],
             required: [0; 3],
-            planes: &mut [],
+            planes: crate::walk::Buffer::Fixed(&mut []),
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: &mut [],
-            plane_naval_hits: &mut [],
+            plane_air_hits: crate::walk::Buffer::Fixed(&mut []),
+            plane_naval_hits: crate::walk::Buffer::Fixed(&mut []),
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: &mut [],
+            plane_kills: crate::walk::Buffer::Fixed(&mut []),
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
             weapon_terms: &mut Vec::new(),
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
-            commander_inputs: &mut [],
+            commander_inputs: crate::walk::Buffer::Fixed(&mut []),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: &mut [],
+            side_units: crate::walk::Buffer::Fixed(&mut []),
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: &mut [0; 64],
+            custom_sea: crate::walk::Buffer::Fixed(&mut [0; 64]),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: &mut [(0, 0); 64],
+            damage_sources: crate::walk::Buffer::Fixed(&mut [(0, 0); 64]),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: &mut [0; 512],
+            wing_types: crate::walk::Buffer::Fixed(&mut [0; 512]),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: &mut [0; 1024],
+            plane_wings: crate::walk::Buffer::Fixed(&mut [0; 1024]),
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
@@ -1059,7 +1224,7 @@ fn a_registry_past_4096_combats_is_walked_whole_and_truncates_by_demand() {
 #[allow(clippy::type_complexity)]
 fn walk_whole(
     world: &World,
-    planes: usize,
+    plane_capacity: usize,
 ) -> (
     Capture,
     DetailsRow,
@@ -1067,7 +1232,21 @@ fn walk_whole(
     usize,
     usize,
 ) {
-    let mut rows = [DetailsRow::default(); 1];
+    walk_whole_mode(world, plane_capacity, false)
+}
+
+fn walk_whole_mode(
+    world: &World,
+    planes: usize,
+    growing: bool,
+) -> (
+    Capture,
+    DetailsRow,
+    Vec<cfex_member::DetailsRow>,
+    usize,
+    usize,
+) {
+    let mut rows = vec![DetailsRow::default(); 1];
     let mut ships = Vec::new();
     let mut plane_rows = vec![crate::cfex_air::Row::default(); planes];
     let mut buffers = cfex_member::DetailBuffers {
@@ -1076,52 +1255,62 @@ fn walk_whole(
         naval_hits: &mut Vec::new(),
         lengths: [0; 3],
         required: [0; 3],
-        planes: &mut plane_rows,
+        planes: if growing {
+            crate::walk::Buffer::Growing(&mut plane_rows)
+        } else {
+            crate::walk::Buffer::Fixed(&mut plane_rows)
+        },
         planes_len: 0,
         planes_required: 0,
-        plane_air_hits: &mut [],
-        plane_naval_hits: &mut [],
+        plane_air_hits: crate::walk::Buffer::Fixed(&mut []),
+        plane_naval_hits: crate::walk::Buffer::Fixed(&mut []),
         plane_hit_lengths: [0; 2],
         plane_hit_required: [0; 2],
-        plane_kills: &mut [],
+        plane_kills: crate::walk::Buffer::Fixed(&mut []),
         plane_kills_len: 0,
         plane_kills_required: 0,
         weapon_sources: &mut Vec::new(),
         weapon_terms: &mut Vec::new(),
         weapon_lengths: [0; 2],
         weapon_required: [0; 2],
-        commander_inputs: &mut [],
+        commander_inputs: crate::walk::Buffer::Fixed(&mut []),
         commander_inputs_len: 0,
         commander_inputs_required: 0,
         commander_timed_traits: &mut Vec::new(),
         commander_timed_traits_len: 0,
-        side_units: &mut [],
+        side_units: crate::walk::Buffer::Fixed(&mut []),
         side_units_len: 0,
         side_units_required: 0,
         summary_countries: &mut Vec::new(),
         summary_countries_len: 0,
-        custom_sea: &mut [0; 64],
+        custom_sea: crate::walk::Buffer::Fixed(&mut [0; 64]),
         custom_sea_len: 0,
         custom_sea_required: 0,
-        damage_sources: &mut [(0, 0); 64],
+        damage_sources: crate::walk::Buffer::Fixed(&mut [(0, 0); 64]),
         damage_sources_len: 0,
         damage_sources_required: 0,
-        wing_types: &mut [0; 512],
+        wing_types: crate::walk::Buffer::Fixed(&mut [0; 512]),
         wing_types_len: 0,
         wing_types_required: 0,
-        plane_wings: &mut [0; 1024],
+        plane_wings: crate::walk::Buffer::Fixed(&mut [0; 1024]),
         plane_wings_len: 0,
         plane_wings_required: 0,
     };
-    let capture = capture_details(
+    let capture = walk_details_timed(
         &DetailMemory(world.memory()),
         IMAGE,
         GS,
-        &mut rows,
+        if growing {
+            crate::walk::Buffer::Growing(&mut rows)
+        } else {
+            crate::walk::Buffer::Fixed(&mut rows)
+        },
         &mut ships,
         &mut Vec::new(),
         &mut buffers,
-    );
+        |_| 0,
+    )
+    .capture;
     let (len, required) = (buffers.planes_len, buffers.planes_required);
     ships.truncate(capture.participants.len());
     (capture, rows[0].clone(), ships, len, required)
@@ -1554,5 +1743,30 @@ fn healthy_read_accounting_partitions_naval_combat_without_changing_its_read_tra
             trace.iter().map(|(_, len)| *len as u64).sum::<u64>()
         );
         eprintln!("naval combat corrupt_member={corrupt_member}: {by_table:?}");
+    }
+}
+
+#[test]
+fn cold_worker_reads_country_and_mod_sized_plane_populations_on_the_original_hour() {
+    const PLANE: usize = 0xa900;
+    const ARRAY: usize = 0x80000;
+    for count in [1500, 5000, 16_385] {
+        let mut world = detail_world();
+        world.0.resize(ARRAY + count * 8 - GS, 0);
+        world.u64(PLANE, (IMAGE + crate::cfex_air::VTABLE_RVA) as u64);
+        world.u64(PLANE + 8, GROUP_A as u64);
+        world.array(GROUP_A + 0x58, ARRAY, count as u32, count as u32);
+        for index in 0..count {
+            world.u64(ARRAY + index * 8, PLANE as u64);
+        }
+        let (capture, row, _, used, required) = walk_whole_mode(&world, 0, true);
+        assert_eq!(capture.combats, Outcome::Rows { len: 1 });
+        assert_eq!(capture.participants, Outcome::Rows { len: 2 });
+        assert_eq!(row.sides[0].planes, [0, count]);
+        assert_eq!((used, required), (count, count));
+        assert!(matches!(
+            walk_whole(&world, 0).0.combats,
+            Outcome::Truncated { .. }
+        ));
     }
 }

@@ -119,6 +119,14 @@ fn delivery_source(base: usize, caller: usize) -> DeliverySource {
         _ => DeliverySource::Unsupported,
     }
 }
+fn rocket_source(kind: u32, caller: usize) -> bool {
+    // DailyProduce140F5C150 and its DELIVERY return140F5C24A are rocket
+    // observations. Equipment's DELIVERY/CREDIT still use the same guard,
+    // but must not inflate the rocket counter.
+    kind == 2
+        || kind == 1
+            && delivery_source(BASE.load(Ordering::Relaxed), caller) == DeliverySource::Rocket
+}
 unsafe extern "system-unwind" fn before(
     pointer: *mut Context,
     receiver: usize,
@@ -158,7 +166,9 @@ unsafe extern "system-unwind" fn before(
             return;
         }
         if context.generation.is_none() {
-            WORLD_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            if rocket_source(context.kind, context.caller) {
+                WORLD_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            }
             context.refused = true;
             return;
         }
@@ -257,7 +267,9 @@ unsafe extern "system-unwind" fn returned(pointer: *mut Context) -> u8 {
                 && context.pending.generation != context.generation
         {
             if !context.refused {
-                WORLD_REFUSALS.fetch_add(1, Ordering::Relaxed);
+                if rocket_source(context.kind, context.caller) {
+                    WORLD_REFUSALS.fetch_add(1, Ordering::Relaxed);
+                }
                 invalidate();
             }
             PENDING.set(NOTHING_PENDING);
@@ -500,7 +512,7 @@ mod tests {
             assert_eq!(unsafe { returned(&mut context) }, 1);
             assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
             assert_eq!(ACQUIRED_EVENTS.load(Ordering::SeqCst), 0);
-            assert_eq!(self::refusals(), refusals + 1);
+            assert_eq!(self::refusals(), refusals + usize::from(context.kind == 2));
             let mut entries = [Entry::default(); 1];
             assert_eq!(super::super::drain(&mut entries).unwrap().copied, 0);
         }
@@ -523,6 +535,37 @@ mod tests {
         for caller in [base - 1, base, base + ROCKET_DELIVERY_RETURN + 1] {
             assert_eq!(delivery_source(base, caller), DeliverySource::Unsupported);
         }
+    }
+
+    #[test]
+    fn preboundary_equipment_calls_keep_the_guard_without_counting_as_rocket_refusals() {
+        let _lock = super::super::test_lock();
+        super::super::observe_for_test(true);
+        crate::world_lifetime::observe_for_test(false);
+        let base = BASE.load(Ordering::Relaxed);
+        for (kind, caller, rocket) in [
+            (1, base + DELIVERY.callers[0], false),
+            (0, base + CREDIT.callers[0], false),
+            (1, base + ROCKET_DELIVERY_RETURN, true),
+            (2, 0, true),
+        ] {
+            let prior = refusals();
+            let mut context = Context::default();
+            unsafe { before(&mut context, 0, 0, 0, caller, kind) };
+            assert!(context.refused && !context.acquired);
+            assert_eq!(unsafe { returned(&mut context) }, 1);
+            assert_eq!(refusals(), prior + usize::from(rocket));
+            assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+            assert_eq!(ACQUIRED_EVENTS.load(Ordering::SeqCst), 0);
+        }
+        let mut entries = [Entry::default(); 1];
+        assert_eq!(
+            super::super::drain(&mut entries).err(),
+            Some("native world observation is disabled")
+        );
+        crate::world_lifetime::observe_for_test(true);
+        assert_eq!(super::super::drain(&mut entries).unwrap().copied, 0);
+        super::super::observe_for_test(false);
     }
 
     #[test]

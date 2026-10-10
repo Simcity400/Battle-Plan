@@ -959,7 +959,12 @@ fn churn(frame: &mut DecodedFrame, rng: &mut Rng, hour: i32) {
                     ordinal: 1_000 + hour as u32,
                 }),
             }
+            let faction = rows
+                .iter()
+                .find(|row| row.country == raw(0))
+                .map_or(0, |row| row.faction);
             put::<tables::FactionMembers>(frame, rows);
+            reserved_faction(frame, faction);
         }
         // We declare war on, or make peace with, a target's controller.
         8 => {

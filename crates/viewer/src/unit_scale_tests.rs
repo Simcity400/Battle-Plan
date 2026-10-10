@@ -246,6 +246,7 @@ fn unit_scale_replay_layers() {
                 behind: 0,
                 playing: true,
                 perspective: perspective.clone(),
+                show_allied_plans: false,
                 counters: Default::default(),
                 view: crate::hours::View {
                     camera,

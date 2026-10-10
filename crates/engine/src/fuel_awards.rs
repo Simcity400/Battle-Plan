@@ -318,6 +318,7 @@ pub fn air(
 pub struct Demand {
     pub entries: usize,
     pub names: usize,
+    pub name_stride: usize,
 }
 
 pub struct StoredName(msvc_string::Descriptor);
@@ -403,6 +404,7 @@ pub fn demand(
                 .ok_or("fuel census division pointer unreadable")?
                 as usize;
             if let Ok(name) = stored_name(memory, division, 0) {
+                count.name_stride = count.name_stride.max(name.byte_len());
                 count.names = count
                     .names
                     .checked_add(name.byte_len())
@@ -433,6 +435,7 @@ pub fn demand(
                     .ok_or("fuel census task-force pointer unreadable")?
                     as usize;
                 if let Ok(name) = stored_name(memory, force, 2) {
+                    count.name_stride = count.name_stride.max(name.byte_len());
                     count.names = count
                         .names
                         .checked_add(name.byte_len())

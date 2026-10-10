@@ -63,6 +63,10 @@ fn anchors() -> CounterContent {
         combat_terrain: BTreeMap::new(),
         terrain_widths: Vec::new(),
         mission_content: Err("unused in fixture".into()),
+        port_mission_defines:
+            super::super::super::counter_tooltips::task_force_port_mission::Defines::read(
+                &installed_content::defines::Defines::new().unwrap(),
+            ),
         anchors: BTreeMap::new(),
         stack_scales: BTreeMap::new(),
         default_anchors: BTreeMap::new(),

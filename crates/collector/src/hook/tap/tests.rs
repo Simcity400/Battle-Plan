@@ -20,6 +20,14 @@ fn world_invalidation_mov_spans_preserve_the_native_stack_and_operands() {
     );
 }
 
+#[test]
+fn directed_war_query_spans_copy_only_the_native_pointer_load() {
+    for site in engine::directed_war_queries::SITES {
+        assert_eq!(instruction_span(&site.sentinel), Ok(7));
+        assert_eq!(&site.sentinel[3..7], &[0xe8, 2, 0, 0]);
+    }
+}
+
 fn unwind(context: &mut CONTEXT) -> bool {
     let mut aligned = AlignedContext(*context);
     let mut base = 0;

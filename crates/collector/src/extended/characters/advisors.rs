@@ -207,6 +207,7 @@ impl Section {
             false,
         );
     }
+    #[cfg(test)]
     fn capture_section(
         &mut self,
         memory: &impl Memory,
@@ -215,6 +216,21 @@ impl Section {
         source: Source<'_>,
         count_only: bool,
     ) {
+        self.capture_section_mode(memory, context, observer, source, count_only, false)
+    }
+
+    fn capture_section_mode(
+        &mut self,
+        memory: &impl Memory,
+        context: CharactersCopyContext,
+        observer: &dyn Changes,
+        source: Source<'_>,
+        count_only: bool,
+        growing: bool,
+    ) {
+        if growing {
+            self.plan.enable_worker_growth();
+        }
         let scope = (context.base, context.game_state);
         let before = observer.quiet();
         let counted = Counted::new(memory);
@@ -319,8 +335,23 @@ impl Section {
             geometry: self.geometry,
         };
         let memory = &prefetched;
+        let characters = match &source {
+            Source::Roster { roster, .. } => roster.count() as usize,
+            Source::Census { range, .. } => range.len(),
+        };
+        if growing && reserve(&mut self.current.entries, characters).is_err() {
+            self.result = ReadResult::rows(Outcome::Unavailable {
+                reason: "collector allocation failed",
+            });
+            return;
+        }
         let mut batch = if count_only {
             Batch::new(&mut [], &mut [])
+        } else if growing {
+            Batch::storage(
+                engine::walk::Buffer::Growing(&mut self.current.rows),
+                engine::walk::Buffer::Growing(&mut self.current.bytes),
+            )
         } else {
             Batch::new(&mut self.current.rows, &mut self.current.bytes)
         };
@@ -349,6 +380,20 @@ impl Section {
                     } else {
                         observer.revision(character.pointer + ccharacter::ADVISOR_MAP_HEAD)
                     };
+                    if growing && let Some(entry) = previous {
+                        batch.rows.ensure(
+                            batch
+                                .len
+                                .checked_add(entry.rows.len())
+                                .ok_or("advisor row count overflow")?,
+                        )?;
+                        batch.bytes.ensure(
+                            batch
+                                .bytes_len
+                                .checked_add(entry.bytes.len())
+                                .ok_or("advisor byte count overflow")?,
+                        )?;
+                    }
                     let hit = reuse
                         && batch.unread == 0
                         && previous.is_some_and(|entry| {
@@ -390,13 +435,13 @@ impl Section {
                         self.counts.reused += 1;
                         self.counts.roles += rows as u64;
                     } else {
-                        batch.append(
+                        batch.append_buffer(
                             |rows, bytes| {
                                 // Role payloads cannot select another character's
                                 // controls. Their future reuse is certified by the
                                 // watched revision, never by these omitted reads.
                                 let _payload = self.plan.untracked_reads();
-                                cadvisor::walk_definitions_entry(
+                                cadvisor::walk_definitions_entry_buffer(
                                     &map,
                                     context.base,
                                     character,
@@ -762,10 +807,20 @@ impl Modifiers {
         self.update_charge();
     }
 
+    #[cfg(test)]
     fn capture<'a>(
         &mut self,
         memory: &impl Memory,
         rows: impl Iterator<Item = &'a cadvisor::Row> + Clone,
+    ) {
+        self.capture_mode(memory, rows, false)
+    }
+
+    fn capture_mode<'a>(
+        &mut self,
+        memory: &impl Memory,
+        rows: impl Iterator<Item = &'a cadvisor::Row> + Clone,
+        growing: bool,
     ) {
         self.len = 0;
         self.required_rows = 0;
@@ -787,6 +842,14 @@ impl Modifiers {
                     .ok_or("advisor byte count overflow")?;
                 let index = self.required_rows;
                 self.required_rows = index.checked_add(1).ok_or("advisor row count overflow")?;
+                if growing {
+                    engine::walk::Buffer::Growing(&mut self.spans).ensure(self.required_rows)?;
+                    engine::walk::Buffer::Growing(&mut self.bytes).ensure(
+                        self.len
+                            .checked_add(len)
+                            .ok_or("advisor byte count overflow")?,
+                    )?;
+                }
                 let mut span = ModifierSpan::default();
                 if index >= self.spans.len() || len > self.bytes.len() - self.len {
                     self.shortfall += 1;
@@ -807,12 +870,14 @@ impl Modifiers {
             }
             for (index, row) in rows.enumerate() {
                 let mut span = self.spans.get(index).copied().unwrap_or_default();
-                let destination = if index < self.spans.len() {
-                    &mut self.bytes[self.len..]
+                let destination = if growing {
+                    engine::walk::Buffer::GrowingFrom(&mut self.bytes, self.len)
+                } else if index < self.spans.len() {
+                    engine::walk::Buffer::Fixed(&mut self.bytes[self.len..])
                 } else {
-                    &mut []
+                    engine::walk::Buffer::Fixed(&mut [])
                 };
-                match cadvisor::copy_tooltip_keys(memory, row.pointer, destination) {
+                match cadvisor::copy_tooltip_keys_buffer(memory, row.pointer, destination) {
                     Ok(read) => {
                         let required = self.required_bytes.checked_add(read.required);
                         if let Some(required) = required {
@@ -856,16 +921,49 @@ pub(crate) struct Cache {
     pub(super) raw_bytes: u64,
     pub(super) counts: Counts,
 }
+static LIVE_DEFINITIONS: [[std::sync::atomic::AtomicUsize; 3]; 2] =
+    [const { [const { std::sync::atomic::AtomicUsize::new(0) }; 3] }; 2];
+pub(super) fn remember_definition_demand(demand: [cadvisor::DefinitionDemand; 2]) {
+    for (storage, demand) in LIVE_DEFINITIONS.iter().zip(demand) {
+        for (target, count) in storage
+            .iter()
+            .zip([demand.characters, demand.rows, demand.bytes])
+        {
+            target.fetch_max(count, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 impl Cache {
     pub fn new() -> Self {
-        Self::with_modifier_demand(live_modifier_demand())
+        let mut value = Self::with_modifier_demand(live_modifier_demand());
+        for (section, demand) in value.sections.iter_mut().zip(&LIVE_DEFINITIONS) {
+            use std::sync::atomic::Ordering::Relaxed;
+            for storage in [&mut section.current, &mut section.previous] {
+                let characters = demand[0]
+                    .load(Relaxed)
+                    .saturating_sub(storage.entries.len());
+                if engine::walk::Buffer::Growing(&mut storage.rows)
+                    .ensure(demand[1].load(Relaxed))
+                    .is_err()
+                    || engine::walk::Buffer::Growing(&mut storage.bytes)
+                        .ensure(demand[2].load(Relaxed))
+                        .is_err()
+                    || reserve(&mut storage.entries, characters).is_err()
+                {
+                    break;
+                }
+            }
+            section.update_charge();
+        }
+        value
     }
 
     pub(super) fn with_modifier_demand(demand: cadvisor::ModifierDemand) -> Self {
         Self {
             sections: [
-                Section::with_capacity(16384, 1 << 20, 16384),
-                Section::with_capacity(4096, 1 << 18, 8192),
+                Section::with_capacity(0, 0, 0),
+                Section::with_capacity(0, 0, 0),
             ],
             modifiers: Modifiers::with_demand(demand),
             result: ReadResult::rows(Outcome::Rows { len: 0 }),
@@ -895,6 +993,27 @@ impl Cache {
         context: CharactersCopyContext,
         observer: &dyn Changes,
         loaned: Option<census::Admitted<'_>>,
+    ) {
+        self.capture_mode(memory, context, observer, loaned, false)
+    }
+
+    pub fn capture_growing(
+        &mut self,
+        memory: &impl Memory,
+        context: CharactersCopyContext,
+        observer: &dyn Changes,
+        loaned: Option<census::Admitted<'_>>,
+    ) {
+        self.capture_mode(memory, context, observer, loaned, true)
+    }
+
+    fn capture_mode(
+        &mut self,
+        memory: &impl Memory,
+        context: CharactersCopyContext,
+        observer: &dyn Changes,
+        loaned: Option<census::Admitted<'_>>,
+        growing: bool,
     ) {
         self.counts = Counts::default();
         self.raw_bytes = 0;
@@ -934,7 +1053,14 @@ impl Cache {
             for (section, source) in self.sections.iter_mut().zip(sources) {
                 #[cfg(feature = "advisor_profile")]
                 let stamp = profile::Stamp::start();
-                section.capture_section(memory, context, observer, source, unread != 0);
+                section.capture_section_mode(
+                    memory,
+                    context,
+                    observer,
+                    source,
+                    unread != 0,
+                    growing,
+                );
                 #[cfg(feature = "advisor_profile")]
                 {
                     let elapsed = stamp.finish();
@@ -994,11 +1120,12 @@ impl Cache {
                 section.plan.invalidate();
             }
         } else {
-            self.modifiers.capture(
+            self.modifiers.capture_mode(
                 &counted,
                 self.sections.iter().flat_map(|section| {
                     section.current.rows[..section.result.outcome.len()].iter()
                 }),
+                growing,
             );
             if let Some(reason) = self.modifiers.failure {
                 self.result = ReadResult::rows(Outcome::Unavailable { reason });
@@ -1007,6 +1134,12 @@ impl Cache {
                     section.plan.invalidate();
                 }
             }
+        }
+        if growing {
+            for section in &mut self.sections {
+                section.update_charge();
+            }
+            self.modifiers.update_charge();
         }
         self.raw_bytes = self
             .sections

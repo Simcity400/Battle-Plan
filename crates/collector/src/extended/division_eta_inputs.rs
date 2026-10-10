@@ -3,7 +3,7 @@
 //! packets and geometry memo: the composed speed graph once per division, the
 //! edge constants once, and a thin route scan for the per-leg vectors.
 use super::production::Sources;
-use crate::{sampling::qpc, spooling::table, table_capture::grow_capacity};
+use crate::{sampling::qpc, spooling::table_iter, table_capture::grow_capacity};
 use engine::allocation::{copy_vec, owned_vec};
 use engine::{
     Memory, carmy,
@@ -18,12 +18,14 @@ use engine::{
 };
 use replay::{
     frame::TableView,
-    rows::{DivisionEtaInputsRow, TableId, TerrainSpeed, tables},
+    rows::{DivisionEtaInputsRow, Recorded, TableId, TerrainSpeed, tables},
 };
 use std::cell::RefCell;
 use std::sync::Arc;
 mod cadence;
+mod fresh;
 pub(crate) use cadence::Store as CadenceStore;
+pub(crate) use fresh::Work as FreshWork;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::DivisionEtaInputs];
@@ -33,26 +35,9 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 /// One range per pool worker at most.
 pub(crate) const MAX_RANGES: usize = 8;
 
-/// A snapshot pays for itself from the second lookup on the same accumulator,
-/// so the ceilings only keep one range's arena bounded. Above them the
-/// unchanged direct reader answers every lookup.
-const SNAPSHOT_LIMITS: SnapshotCapacity = SnapshotCapacity {
-    nodes: 1 << 16,
-    entries: 1 << 21,
-};
-
-fn bounded_snapshot_capacity(capacity: SnapshotCapacity) -> SnapshotCapacity {
-    SnapshotCapacity {
-        nodes: capacity.nodes.min(SNAPSHOT_LIMITS.nodes),
-        entries: capacity.entries.min(SNAPSHOT_LIMITS.entries),
-    }
-}
-
 fn grow_snapshot_capacity(capacity: &mut SnapshotCapacity, required: SnapshotCapacity) {
-    let requested = bounded_snapshot_capacity(required);
-    grow_capacity(&mut capacity.nodes, requested.nodes);
-    grow_capacity(&mut capacity.entries, requested.entries);
-    *capacity = bounded_snapshot_capacity(*capacity);
+    grow_capacity(&mut capacity.nodes, required.nodes);
+    grow_capacity(&mut capacity.entries, required.entries);
 }
 
 #[derive(Clone, Copy)]
@@ -150,6 +135,7 @@ struct ModifierMemory<'a, M> {
     definitions: &'a PassDefinitions,
     air_defense: &'a RefCell<AirDefenseMemo>,
     countries: Option<(usize, usize, engine::ccountry::AuthenticatedRoster<'a>)>,
+    reserved: Option<(usize, usize, engine::ccountry::ReservedCountryObservation)>,
 }
 
 impl<M: Memory> Memory for ModifierMemory<'_, M> {
@@ -193,6 +179,31 @@ impl<M: Memory> Memory for ModifierMemory<'_, M> {
             .filter(|(module, game, _)| (*module, *game) == (base, state))
             .map(|(_, _, roster)| roster)
             .or_else(|| self.inner.authenticated_countries(base, state))
+    }
+
+    fn authenticated_reserved_country(
+        &self,
+        base: usize,
+        state: usize,
+    ) -> Option<Result<engine::ccountry::Country, &'static str>> {
+        self.reserved
+            .filter(|(module, game, _)| (*module, *game) == (base, state))
+            .map(|(_, _, root)| root.result())
+            .or_else(|| self.inner.authenticated_reserved_country(base, state))
+    }
+
+    fn authenticated_reserved_country_observation(
+        &self,
+        base: usize,
+        state: usize,
+    ) -> Option<engine::ccountry::ReservedCountryObservation> {
+        self.reserved
+            .filter(|(module, game, _)| (*module, *game) == (base, state))
+            .map(|(_, _, root)| root)
+            .or_else(|| {
+                self.inner
+                    .authenticated_reserved_country_observation(base, state)
+            })
     }
     fn modifier_definitions(&self) -> Option<&PassDefinitions> {
         Some(self.definitions)
@@ -258,6 +269,7 @@ pub(crate) type Counters = carmy::EtaInputCounters;
 pub struct Capacities {
     rows: usize,
     terrain: usize,
+    fresh_terrain: usize,
     legs: usize,
     geometry: cprovince::GeometryCapacities,
     modifiers: SnapshotCapacity,
@@ -271,22 +283,35 @@ impl Default for Capacities {
 impl Capacities {
     fn with_ranges(ranges: usize) -> Self {
         let ranges = ranges.clamp(1, MAX_RANGES);
-        let share = |total: usize, floor: usize| (total / ranges).max(floor);
-        let whole = cprovince::GeometryCapacities::default();
         Self {
-            rows: share(8192, 512),
-            terrain: share(65_536, 4096),
-            legs: share(128 * 1024, 8192),
+            rows: 0,
+            terrain: 0,
+            fresh_terrain: 0,
+            legs: 0,
             geometry: cprovince::GeometryCapacities {
-                provinces: share(whole.provinces, 1024),
-                neighbour_entries: share(whole.neighbour_entries, 8192),
+                provinces: 0,
+                neighbour_entries: 0,
             },
             modifiers: SnapshotCapacity {
-                nodes: share(8192, 1024),
-                entries: share(262_144, 32_768),
+                nodes: 0,
+                entries: 0,
             },
             ranges,
         }
+    }
+
+    /// Live map sizing is observed before hooks and between callbacks. Every
+    /// range needs the whole province domain; its terrain operands use the
+    /// completed terrain count, not one entry for every province and unit.
+    pub(crate) fn raise_for_fresh_map(
+        &mut self,
+        provinces: usize,
+        terrain_count: usize,
+    ) -> std::io::Result<()> {
+        let terrain = engine::allocation::mul(self.rows, terrain_count)?;
+        self.geometry.provinces = self.geometry.provinces.max(provinces);
+        self.fresh_terrain = self.fresh_terrain.max(terrain);
+        Ok(())
     }
 }
 
@@ -303,6 +328,14 @@ pub struct RangeCaptured {
     /// The latest full-census demand, so a forced full read fits.
     census: cadence::Census,
     packet: carmy::EtaInputPacket,
+    fresh: carmy::FreshCounterEtaPacket,
+    fresh_hour: Option<i32>,
+    fresh_failure: Option<&'static str>,
+    fresh_terrain_demand: usize,
+    /// Completed immutable LAND terrain domain, valid only under statics' key.
+    land_terrains: Vec<cprovince::StaticProvince>,
+    land_len: Option<usize>,
+    required_provinces: usize,
     geometry: cprovince::GeometryPacket,
     /// Session-static map data, re-keyed from current roots before each capture.
     statics: cprovince::StaticGeometry,
@@ -323,17 +356,28 @@ pub struct RangeCaptured {
 
 impl RangeCaptured {
     fn with_capacities(c: &Capacities) -> Self {
+        let mut statics = cprovince::StaticGeometry::default();
+        let _ = statics.reserve_provinces(c.geometry.provinces);
         Self {
             cadence: None,
             carried: None,
             census: cadence::Census::default(),
             packet: packet(c),
+            fresh: carmy::FreshCounterEtaPacket::try_new(c.rows, c.fresh_terrain)
+                .unwrap_or_else(|_| carmy::FreshCounterEtaPacket::vacant()),
+            fresh_hour: None,
+            fresh_failure: None,
+            fresh_terrain_demand: 0,
+            land_terrains: owned_vec(engine::allocation::filled(
+                c.geometry.provinces,
+                fresh::EMPTY_PROVINCE,
+            )),
+            land_len: None,
+            required_provinces: 0,
             geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
                 .unwrap_or_default(),
-            statics: cprovince::StaticGeometry::default(),
-            modifiers: RefCell::new(
-                SnapshotArena::try_new(bounded_snapshot_capacity(c.modifiers)).unwrap_or_default(),
-            ),
+            statics,
+            modifiers: RefCell::new(SnapshotArena::try_new(c.modifiers).unwrap_or_default()),
             definitions: PassDefinitions::default(),
             air_defense: RefCell::new(AirDefenseMemo::with_capacity(c.rows)),
             required_modifiers: SnapshotCapacity::default(),
@@ -348,6 +392,7 @@ impl RangeCaptured {
         Self::with_capacities(&Capacities {
             rows: 0,
             terrain: 0,
+            fresh_terrain: 0,
             legs: 0,
             geometry: cprovince::GeometryCapacities {
                 provinces: 0,
@@ -366,15 +411,24 @@ impl RangeCaptured {
         self.captured_current = false;
         self.counters = Counters::default();
         self.failure = None;
+        self.fresh.clear();
+        self.fresh_hour = None;
+        self.fresh_failure = None;
+        self.fresh_terrain_demand = 0;
+        self.required_provinces = 0;
+        self.packet.clear_fresh_observations();
     }
 
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.carried.as_ref().map_or(0, |rows| {
             rows.capacity() * size_of::<Arc<DivisionEtaInputsRow>>()
         }) + self.packet.allocated_bytes()
+            + self.fresh.allocated_bytes()
+            + self.land_terrains.capacity() * size_of::<cprovince::StaticProvince>()
             + self.geometry.allocated_bytes()
             + self.statics.allocated_bytes()
             + self.modifiers.borrow().allocated_bytes()
+            + self.definitions.allocated_bytes()
             + self.air_defense.borrow().allocated_bytes()
     }
 
@@ -398,6 +452,13 @@ impl RangeCaptured {
         grow_capacity(&mut c.rows, self.census.rows);
         grow_capacity(&mut c.terrain, self.census.terrain.saturating_add(1));
         grow_capacity(&mut c.legs, self.census.legs);
+        let fresh = self.fresh.outcome();
+        grow_capacity(&mut c.rows, fresh.required_rows);
+        let Ok(terrain) = self.required_fresh_terrain() else {
+            return;
+        };
+        grow_capacity(&mut c.fresh_terrain, terrain);
+        grow_capacity(&mut c.geometry.provinces, self.required_provinces);
         let required = self.geometry.required_capacities();
         grow_capacity(&mut c.geometry.provinces, required.provinces);
         grow_capacity(
@@ -411,11 +472,18 @@ impl RangeCaptured {
     fn reserve(&mut self, c: &Capacities) {
         if self.geometry.grow(c.geometry).is_err()
             || self.packet.reserve(c.rows, c.terrain, c.legs).is_err()
+            || self.fresh.reserve(c.rows, c.fresh_terrain).is_err()
             || self
-                .modifiers
-                .get_mut()
-                .try_grow(bounded_snapshot_capacity(c.modifiers))
+                .statics
+                .reserve_provinces(c.geometry.provinces)
                 .is_err()
+            || engine::allocation::resize(
+                &mut self.land_terrains,
+                c.geometry.provinces,
+                fresh::EMPTY_PROVINCE,
+            )
+            .is_err()
+            || self.modifiers.get_mut().try_grow(c.modifiers).is_err()
         {
             return;
         }
@@ -429,6 +497,7 @@ impl RangeCaptured {
         context: CaptureContext,
         sources: Sources<'_, DivisionSeed>,
         countries: Option<engine::ccountry::AuthenticatedRoster<'_>>,
+        reserved: Option<engine::ccountry::ReservedCountryObservation>,
     ) -> CaptureReport {
         let started = qpc();
         self.carried = None;
@@ -456,14 +525,8 @@ impl RangeCaptured {
                     len: store.selected.len(),
                 },
             };
-            self.capture(
-                memory,
-                CaptureContext {
-                    span: (0, selected.rows.len()),
-                    ..context
-                },
-                selected,
-                countries,
+            self.capture_mode(
+                memory, context, selected, sources, countries, reserved, true,
             );
             match self.outcome() {
                 Outcome::Rows { .. } => {}
@@ -489,6 +552,8 @@ impl RangeCaptured {
             Ok(result) => result,
             Err(payload) => {
                 store.invalidate();
+                self.packet.clear_fresh_observations();
+                self.land_len = None;
                 self.cadence = Some(store);
                 std::panic::resume_unwind(payload);
             }
@@ -496,6 +561,7 @@ impl RangeCaptured {
         if let Err(reason) = result {
             store.invalidate();
             self.failure = Some(reason);
+            self.packet.clear_fresh_observations();
         }
         self.cadence = Some(store);
         CaptureReport {
@@ -506,7 +572,16 @@ impl RangeCaptured {
     /// Finish an accepted worker failure without retrying the read. A denied
     /// range denies the table, exactly as a denied single job did.
     pub(crate) fn fail_owned_capture(&mut self, reason: &'static str) -> CaptureReport {
-        self.reset();
+        // An interrupted acquisition can already have counted a short arena.
+        // Keep those demands for growth while retiring every pointer context.
+        self.packet.clear_fresh_observations();
+        self.air_defense.get_mut().reset_counts();
+        self.required_modifiers = self.modifiers.borrow().required_capacity();
+        self.captured_current = false;
+        self.counters = Counters::default();
+        self.fresh_hour = None;
+        self.fresh_failure = Some(reason);
+        self.land_len = None;
         if let Some(store) = &mut self.cadence {
             store.invalidate();
         }
@@ -514,37 +589,84 @@ impl RangeCaptured {
         CaptureReport::default()
     }
 
+    #[cfg(test)]
     fn capture(
         &mut self,
         memory: &impl Memory,
         context: CaptureContext,
         sources: Sources<'_, DivisionSeed>,
+        fresh_sources: Sources<'_, DivisionSeed>,
         countries: Option<engine::ccountry::AuthenticatedRoster<'_>>,
+        reserved: Option<engine::ccountry::ReservedCountryObservation>,
+    ) -> u64 {
+        self.capture_mode(
+            memory,
+            context,
+            sources,
+            fresh_sources,
+            countries,
+            reserved,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_mode(
+        &mut self,
+        memory: &impl Memory,
+        context: CaptureContext,
+        sources: Sources<'_, DivisionSeed>,
+        fresh_sources: Sources<'_, DivisionSeed>,
+        countries: Option<engine::ccountry::AuthenticatedRoster<'_>>,
+        reserved: Option<engine::ccountry::ReservedCountryObservation>,
+        growing: bool,
     ) -> u64 {
         self.reset();
         self.carried = None;
         let rows = &sources.rows[..sources.outcome.len().min(sources.rows.len())];
         self.captured_current = true;
         let started = qpc();
-        let span = context.span.0.min(rows.len())..context.span.1.min(rows.len());
         self.definitions.clear();
+        if growing {
+            self.air_defense.get_mut().reserve(rows.len());
+        }
         let memory = &ModifierMemory {
             inner: memory,
             arena: &self.modifiers,
             definitions: &self.definitions,
             air_defense: &self.air_defense,
             countries: countries.map(|roster| (context.base, context.game_state, roster)),
+            reserved: reserved
+                .or_else(|| {
+                    memory.authenticated_reserved_country_observation(
+                        context.base,
+                        context.game_state,
+                    )
+                })
+                .map(|root| (context.base, context.game_state, root)),
         };
         memory.arena.borrow_mut().clear();
-        let _ = self
+        if growing {
+            memory.arena.borrow_mut().enable_worker_growth();
+            self.geometry.enable_growth();
+            self.packet.enable_growth();
+            self.fresh.enable_growth();
+        }
+        if let Err(reason) = self
             .geometry
-            .begin(memory, context.base, context.game_state);
+            .begin(memory, context.base, context.game_state)
+            && growing
+        {
+            self.failure = Some(reason);
+            self.fresh_failure = Some(reason);
+            return qpc().saturating_sub(started).max(0) as u64;
+        }
         carmy::capture_eta_inputs(
             memory,
             context.base,
             context.game_state,
             rows,
-            span,
+            0..rows.len(),
             sources.outcome,
             usize::MAX,
             usize::MAX,
@@ -553,12 +675,112 @@ impl RangeCaptured {
             &mut self.statics,
             &mut self.packet,
         );
-        self.required_modifiers = memory.arena.borrow().required_capacity();
         self.counters = self.packet.counters();
-        let air_defense = self.air_defense.borrow();
-        self.counters.air_defense_requests = air_defense.requests;
-        self.counters.air_defense_hits = air_defense.hits;
+        {
+            let air_defense = self.air_defense.borrow();
+            self.counters.air_defense_requests = air_defense.requests;
+            self.counters.air_defense_hits = air_defense.hits;
+        }
+        // begin above rekeys statics exactly once. A warm complete roster
+        // belongs to that same immutable map key, never to an earlier load or
+        // to a failed root observation.
+        let provinces = self.statics.province_count();
+        if provinces.is_err() || self.statics.counters().cleared != 0 {
+            self.land_len = None;
+        }
+        let geometry_provinces = self.geometry.province_count();
+        self.required_provinces = geometry_provinces.unwrap_or(0).max(provinces.unwrap_or(0));
+        // The worker retains both begun roots; no sizing read is repeated.
+        let required_land = self.required_provinces.max(self.land_terrains.len());
+        if growing
+            && (self
+                .statics
+                .reserve_provinces(self.required_provinces)
+                .is_err()
+                || engine::allocation::resize(
+                    &mut self.land_terrains,
+                    required_land,
+                    fresh::EMPTY_PROVINCE,
+                )
+                .is_err())
+        {
+            self.failure = Some("division ETA allocation failed");
+            self.fresh_failure = self.failure;
+            return qpc().saturating_sub(started).max(0) as u64;
+        }
+        let land = if let Outcome::Unavailable { reason } = self.packet.outcome().outcome {
+            // A failed mandatory prefix cannot publish this suffix. Keep
+            // known roster/count demand, but do not retry a failed province
+            // read through cold terrain acquisition. The fresh reader counts
+            // source-header demand and stops before all graph getters too.
+            Err(reason)
+        } else {
+            let result = match (provinces, geometry_provinces) {
+                (Err(reason), _) | (_, Err(reason)) => Err(reason),
+                (Ok(statics), Ok(geometry)) if statics != geometry => {
+                    Err("fresh counter terrain province census differs")
+                }
+                (Ok(_), Ok(_)) => match self.land_len {
+                    Some(len) => Ok(len),
+                    None => carmy::capture_counter_land_terrains(
+                        memory,
+                        context.base,
+                        context.game_state,
+                        &mut self.geometry,
+                        &mut self.statics,
+                        &mut self.land_terrains,
+                    ),
+                },
+            };
+            self.land_len = result.ok();
+            result
+        };
+        let land = land.and_then(|len| {
+            self.land_terrains
+                .get(..len)
+                .ok_or("fresh counter LAND roster span invalid")
+        });
+        carmy::capture_fresh_counter_eta(
+            memory,
+            context.base,
+            context.game_state,
+            context.hour,
+            fresh_sources.rows,
+            context.span.0..context.span.1,
+            context.partition,
+            fresh_sources.outcome,
+            land,
+            &mut self.geometry,
+            &mut self.packet,
+            &mut self.fresh,
+        );
+        self.fresh_hour = Some(context.hour);
+        self.fresh_failure = self.fresh.sort_rows_by_division().err();
+        match self.required_fresh_terrain() {
+            Ok(demand) => self.fresh_terrain_demand = demand,
+            Err(_) => {
+                self.fresh_failure = self
+                    .fresh_failure
+                    .or(Some("fresh counter ETA terrain demand overflow"));
+            }
+        }
+        self.required_modifiers = memory.arena.borrow().required_capacity();
         qpc().saturating_sub(started).max(0) as u64
+    }
+
+    fn required_fresh_terrain(&self) -> std::io::Result<usize> {
+        let walk = self.fresh.outcome();
+        let demand = walk.required_terrain.max(self.fresh_terrain_demand);
+        if walk.required_rows > self.fresh.rows().len()
+            && let Some(kinds) = self.land_len
+        {
+            // Skipped row slots cannot report their normal-domain demand.
+            // Bound them by the completed terrain domain without rereading
+            // their native graphs or copying their routes.
+            Ok(demand.max(engine::allocation::mul(walk.required_rows, kinds)?))
+        } else {
+            Ok(demand)
+        }
     }
 
     fn outcome(&self) -> Outcome {
@@ -758,25 +980,12 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         // A range publishes rows only after a complete acquisition; any other
         // range state makes the outcome unavailable.
-        let count = self
-            .active()
-            .iter()
-            .try_fold(0_usize, |count, range| {
-                count.checked_add(range.carried.as_ref().map_or(0, Vec::len))
-            })
-            .unwrap_or(usize::MAX);
-        let Ok(mut rows) = engine::allocation::vec(count) else {
-            return [crate::spooling::unavailable("collector allocation failed")];
-        };
-        for range in self.active() {
-            if let Some(carried) = &range.carried {
-                rows.extend(carried.iter().map(Arc::as_ref));
-            }
-        }
-        [table::<tables::DivisionEtaInputs, _>(
+        [table_iter::<tables::DivisionEtaInputs, _>(
             self.outcomes()[0],
-            &rows,
-            |row| copy_row(row),
+            self.active()
+                .iter()
+                .flat_map(|range| range.carried.iter().flatten().map(|row| row.as_ref())),
+            copy_row,
         )]
     }
 }
@@ -805,8 +1014,98 @@ fn copy_row(row: &DivisionEtaInputsRow) -> DivisionEtaInputsRow {
     }
 }
 
+pub(crate) struct FreshProfile<'a> {
+    row: &'a carmy::FreshCounterEtaRow,
+    terrain: &'a [(i32, i64)],
+}
+
+impl FreshProfile<'_> {
+    pub(crate) fn project(&self) -> Recorded<Option<replay::rows::FreshCounterEta>> {
+        fresh::project(self.row, self.terrain, self.row.sample_hour)
+    }
+
+    // Comparison does not build or copy a terrain Vec. It deliberately mirrors
+    // the established project() refusal law for an invalid normal span.
+    pub(crate) fn matches(
+        &self,
+        previous: &Recorded<Option<replay::rows::FreshCounterEta>>,
+    ) -> bool {
+        let Recorded::Value(Some(previous)) = previous else {
+            return false;
+        };
+        if previous.sample_hour != self.row.sample_hour
+            || previous.current_speed != self.row.current_speed.ok().flatten()
+            || previous.rail != self.row.rail.ok().flatten()
+        {
+            return false;
+        }
+        let normal = self.row.normal.ok().flatten().and_then(|normal| {
+            let end = normal.terrain_start.checked_add(normal.terrain_len)?;
+            self.terrain
+                .get(normal.terrain_start..end)
+                .map(|terrain| (normal, terrain))
+        });
+        match (normal, &previous.normal) {
+            (None, None) => true,
+            (Some((normal, terrain)), Some(previous)) => {
+                previous.speed_modifier == normal.prepared.modifier
+                    && previous.speed_base == normal.prepared.base_speed
+                    && previous.speed_org == normal.prepared.organisation
+                    && previous.speed_fuel == normal.prepared.fuel
+                    && previous.fort_penalty == normal.fort_penalty
+                    && previous.snow_penalty == normal.snow_penalty
+                    && previous.river_adjustment == normal.river_adjustment
+                    && previous.river_leader == normal.river_leader
+                    && previous.terrain_speed.len() == terrain.len()
+                    && previous.terrain_speed.iter().zip(terrain).all(
+                        |(previous, &(terrain, modifier))| {
+                            previous.terrain == terrain && previous.modifier == modifier
+                        },
+                    )
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Captured {
+    pub(crate) fn fresh_profile(
+        &self,
+        division: u64,
+        expected_hour: i32,
+    ) -> Option<FreshProfile<'_>> {
+        if self.planned == 0 || division == 0 {
+            return None;
+        }
+        // Same full-handle partition rule as acquisition; no probe of failed
+        // sibling partitions or retry through a later range.
+        let partition = ((division ^ (division >> 32)) % self.planned as u64) as usize;
+        let range = self.active().get(partition)?;
+        let hour = range.fresh_hour?;
+        if hour != expected_hour {
+            return None;
+        }
+        if range.failure.is_some()
+            || range.fresh_failure.is_some()
+            || matches!(range.fresh.outcome().outcome, Outcome::Unavailable { .. })
+        {
+            return None;
+        }
+        let index = range
+            .fresh
+            .rows()
+            .binary_search_by_key(&division, |row| row.division)
+            .ok()?;
+        let row = &range.fresh.rows()[index];
+        (row.sample_hour == hour).then_some(FreshProfile {
+            row,
+            terrain: range.fresh.terrain(),
+        })
+    }
+}
+
 #[cfg(test)]
-pub(crate) use tests::allocation_failure_route_exercise;
+pub(crate) use tests::{allocation_failure_route_exercise, fresh_transfer_profile_fixture};
 
 #[cfg(test)]
 mod tests;

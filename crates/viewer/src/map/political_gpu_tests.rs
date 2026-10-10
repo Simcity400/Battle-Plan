@@ -4,6 +4,109 @@ use gradient::{LayerKind, LayerPlane};
 use std::{path::PathBuf, time::Instant};
 
 #[test]
+fn political_gpu_fallback_naval_attributes_change_shared_fill() {
+    let (width, height) = (64, 32);
+    let Some(harness) = Harness::fallback(width, height) else {
+        return;
+    };
+    let ids = (0..width * height)
+        .map(|i| {
+            if i % width == 31 {
+                0
+            } else if i % width < 31 {
+                1
+            } else {
+                2
+            }
+        })
+        .collect::<Vec<_>>();
+    let map = ProvinceMap {
+        width,
+        height,
+        ids: &ids,
+    };
+    let field = FieldDefines::TEST;
+    let keys = [0, 1, 2];
+    let base = Cache::default()
+        .warm(
+            &harness.device,
+            &harness.queue,
+            Inputs {
+                map,
+                strategic: &keys,
+                field: &field,
+            },
+        )
+        .unwrap();
+    let tables = |value| {
+        Arc::new(Regions {
+            country_of: vec![0; 3],
+            owner_of: Vec::new(),
+            state_of: Vec::new(),
+            country_colors: HashMap::new(),
+            warnings: Vec::new(),
+            strategic_attributes: [
+                (
+                    1,
+                    gradient::Attributes {
+                        control: value,
+                        contested: 128,
+                        gradient: None,
+                    },
+                ),
+                (
+                    2,
+                    gradient::Attributes {
+                        control: 128,
+                        contested: 255,
+                        gradient: Some(255),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        })
+    };
+    let mut a = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    let mut b = View::new(Arc::clone(&base), &harness.device, &harness.queue).unwrap();
+    let one = tables(255);
+    a.show(&harness.device, &harness.queue, &one).unwrap();
+    b.show(&harness.device, &harness.queue, &tables(255))
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        a.shown.as_ref().unwrap(),
+        b.shown.as_ref().unwrap()
+    ));
+    let check = |view: &View, regions: &Regions| {
+        let color = |_| field.navy_neutral;
+        let attributes = |id| regions.strategic_attributes[&id];
+        let mut layer = Layer::new(
+            LayerKind::Fixed(field.strategic_thickness),
+            &keys,
+            &color,
+            &field,
+        );
+        layer.region_opacity = 0;
+        layer.no_region_color = field.navy_neutral;
+        layer.region_attributes = Some(&attributes);
+        let cpu = gradient::build_layer(&map, &layer).unwrap();
+        let (dispatched, _, actual) = harness.view(view);
+        compare(&cpu, &actual, "naval attributes");
+        dispatched
+    };
+    assert!(check(&a, &one));
+    assert!(!check(&b, &one));
+    let two = tables(128);
+    a.show(&harness.device, &harness.queue, &two).unwrap();
+    assert!(!Arc::ptr_eq(
+        a.shown.as_ref().unwrap(),
+        b.shown.as_ref().unwrap()
+    ));
+    assert!(check(&a, &two));
+    assert!(!check(&b, &one));
+}
+
+#[test]
 fn rounded_country_endpoint_bounds_the_search() {
     let field = FieldDefines {
         country_thickness: [-1_000_000.0, 253.9999],
@@ -350,6 +453,7 @@ fn political_gpu_fallback_exactness() {
             owner_of: Vec::new(),
             state_of: Vec::new(),
             warnings: Vec::new(),
+            strategic_attributes: Default::default(),
         })
     };
     let check = |view: &View, regions: &Regions, dispatch: bool, label: &str| {
@@ -395,10 +499,11 @@ fn political_gpu_fallback_exactness() {
         let expected = textures
             + cells * (36 + 4)
             + gpu.mapping.len() as u64 * 4
-            + gpu.capacity as u64 * 16
+            + gpu.capacity as u64 * REGION_BYTES
             + gpu.alpha_buffer.size()
             + std::mem::size_of::<Params>() as u64
-            + 12;
+            + 12
+            + fill.naval.own_bytes();
         drop(fill);
         assert_eq!(state.bytes(), expected);
         assert_eq!(a.state_bytes(), Some(expected));
@@ -542,6 +647,7 @@ fn political_gpu_fallback_shared_scratch() {
             owner_of: Vec::new(),
             state_of: Vec::new(),
             warnings: Vec::new(),
+            strategic_attributes: Default::default(),
         })
     };
     let halves = (0..=columns * (height / GRID_CELL))
@@ -645,6 +751,7 @@ fn political_gpu_fallback_lockstep() {
             owner_of: Vec::new(),
             state_of: Vec::new(),
             warnings: Vec::new(),
+            strategic_attributes: Default::default(),
         })
     };
     let mut keys = (0..=columns * (height / GRID_CELL))
@@ -741,6 +848,7 @@ fn political_gpu_fallback_pool_interleavings() {
             owner_of: Vec::new(),
             state_of: Vec::new(),
             warnings: Vec::new(),
+            strategic_attributes: Default::default(),
         })
     };
     let checks = || base.race_checks.load(std::sync::atomic::Ordering::Relaxed);

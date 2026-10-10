@@ -19,9 +19,12 @@ opaque_value!(Option<NameOperands>);
 
 pub use air::*;
 pub use air_ledger::*;
+pub use carrier_air::*;
 pub use characters_intelligence::*;
+pub use directed_war::*;
 pub use economy_construction::*;
 pub use equipment_destruction::*;
+pub use fresh_eta::*;
 pub use fuel_demand::*;
 pub use game_score::*;
 pub use map_presentation::*;
@@ -29,18 +32,31 @@ pub use movement::*;
 pub use naval_weather::*;
 pub use politics_research::*;
 pub use raids_projects::*;
+pub use raw_country_observations::*;
+pub use selected_attack::*;
+pub use selected_routes::*;
+pub use template_display_name::*;
+pub use transport_convoys::*;
+pub use transport_mission_inputs::*;
+pub use unit_combat_references::*;
 pub use war_overview::*;
 
 #[path = "extended_rows/air.rs"]
 mod air;
 #[path = "extended_rows/air_ledger.rs"]
 mod air_ledger;
+#[path = "extended_rows/carrier_air.rs"]
+mod carrier_air;
 #[path = "extended_rows/characters_intelligence.rs"]
 mod characters_intelligence;
+#[path = "extended_rows/directed_war.rs"]
+mod directed_war;
 #[path = "extended_rows/economy_construction.rs"]
 mod economy_construction;
 #[path = "extended_rows/equipment_destruction.rs"]
 mod equipment_destruction;
+#[path = "extended_rows/fresh_eta.rs"]
+mod fresh_eta;
 #[path = "extended_rows/fuel_demand.rs"]
 mod fuel_demand;
 #[path = "extended_rows/game_score.rs"]
@@ -57,6 +73,32 @@ mod peace;
 mod politics_research;
 #[path = "extended_rows/raids_projects.rs"]
 mod raids_projects;
+#[path = "extended_rows/raw_country_observations.rs"]
+mod raw_country_observations;
+#[path = "extended_rows/selected_attack.rs"]
+mod selected_attack;
+#[path = "extended_rows/selected_routes.rs"]
+mod selected_routes;
+#[path = "extended_rows/template_display_name.rs"]
+mod template_display_name;
+#[path = "extended_rows/transport_convoys.rs"]
+mod transport_convoys;
+#[path = "extended_rows/transport_mission_inputs.rs"]
+mod transport_mission_inputs;
+#[path = "extended_rows/transport_spotting_context.rs"]
+mod transport_spotting_context;
+pub use transport_spotting_context::*;
+#[path = "extended_rows/transport_air.rs"]
+mod transport_air;
+pub use transport_air::*;
+#[path = "extended_rows/transport_air_normalization.rs"]
+mod transport_air_normalization;
+pub use transport_air_normalization::*;
+#[path = "extended_rows/transport_risk_ships.rs"]
+mod transport_risk_ships;
+pub use transport_risk_ships::*;
+#[path = "extended_rows/unit_combat_references.rs"]
+mod unit_combat_references;
 #[path = "extended_rows/war_overview.rs"]
 mod war_overview;
 

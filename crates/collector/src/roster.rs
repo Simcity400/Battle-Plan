@@ -1,9 +1,10 @@
-//! The callback copies bounded, exact roster bytes; the spool worker verifies IDs.
+//! The callback copies prepared, exact native roster bytes; the spool worker verifies IDs.
 
 use engine::allocation;
 use engine::{
     Memory,
-    cdlc_manager::{self, Descriptor, mounts_match},
+    capture_text::Owned,
+    cdlc_manager::{self, mounts_match},
     walk::Outcome,
 };
 use replay::identity::{Identity, Roster as IdentityRoster, Verification};
@@ -18,9 +19,6 @@ use std::{
 };
 use windows_sys::Win32::System::Performance::QueryPerformanceCounter;
 
-/// Floor for every sample buffer, and the whole size when no live count hint
-/// is available. Larger lists are sized from `cdlc_manager::observe_counts`.
-const MINIMUM_CAPACITY: usize = 64;
 const NAMES: [&str; 5] = [
     "DLC filter strings",
     "requested mods",
@@ -30,21 +28,18 @@ const NAMES: [&str; 5] = [
 ];
 
 struct Pass {
-    dlc_filter_strings: Vec<Descriptor>,
-    requested_mods: Vec<Descriptor>,
-    dlcs: Vec<cdlc_manager::Entry>,
-    mods: Vec<cdlc_manager::Entry>,
+    dlc_filter_strings: Vec<Owned>,
+    requested_mods: Vec<Owned>,
+    dlcs: Vec<cdlc_manager::Entry<Owned, Owned>>,
+    mods: Vec<cdlc_manager::Entry<Owned, Owned>>,
     observation: cdlc_manager::Observation,
-    mounts: Vec<Descriptor>,
+    mounts: Vec<Owned>,
     mount_outcome: Outcome,
 }
 
-/// Owned rows for one list: the live count plus headroom for names the manager
-/// can still add before the sample, never below the floor. An unallocatable
-/// hint terminates capture; startup never retries allocation with a smaller floor.
-fn buffer<T: Default + Clone>(hint: usize) -> Vec<T> {
-    let wanted = hint.saturating_add(hint / 4).max(MINIMUM_CAPACITY);
-    engine::allocation::owned_vec(engine::allocation::default_vec(wanted))
+/// Exact native row counts are prepared before the once-only callback.
+fn buffer<T: Default>(count: usize) -> Vec<T> {
+    allocation::owned_vec(allocation::default_vec(count))
 }
 
 impl Pass {
@@ -72,8 +67,22 @@ impl Pass {
         (self.dlc_filter_strings.capacity()
             + self.requested_mods.capacity()
             + self.mounts.capacity())
-            * size_of::<Descriptor>()
-            + (self.dlcs.capacity() + self.mods.capacity()) * size_of::<cdlc_manager::Entry>()
+            * size_of::<Owned>()
+            + (self.dlcs.capacity() + self.mods.capacity())
+                * size_of::<cdlc_manager::Entry<Owned, Owned>>()
+            + self
+                .dlc_filter_strings
+                .iter()
+                .chain(&self.requested_mods)
+                .chain(&self.mounts)
+                .map(Owned::allocated_bytes)
+                .sum::<usize>()
+            + self
+                .dlcs
+                .iter()
+                .chain(&self.mods)
+                .map(|row| row.name.allocated_bytes() + row.descriptor.allocated_bytes())
+                .sum::<usize>()
     }
 
     fn capacities(&self) -> [usize; 5] {
@@ -106,7 +115,7 @@ pub struct Roster {
 }
 
 impl Roster {
-    /// Minimum-sized roster for synthetic tests; the loader uses `with_counts`.
+    /// Empty roster for synthetic tests; the loader prepares live counts and text.
     #[cfg(test)]
     pub fn new() -> Self {
         Self::with_counts(cdlc_manager::Counts::default())
@@ -122,6 +131,25 @@ impl Roster {
             hour: None,
             ticks: 0,
         }
+    }
+
+    /// Loader only, before Shared is published. These bytes prepare storage;
+    /// sample reauthenticates and acquires current roster values on the callback.
+    pub fn prepare(&mut self, memory: &impl Memory, base: usize) {
+        allocation::advisory(|| {
+            let pass = &mut self.pass;
+            let _ = cdlc_manager::prepare(
+                memory,
+                base,
+                cdlc_manager::Buffers {
+                    dlc_filter_strings: &mut pass.dlc_filter_strings,
+                    requested_mods: &mut pass.requested_mods,
+                    dlcs: &mut pass.dlcs,
+                    mods: &mut pass.mods,
+                },
+            );
+            let _ = cdlc_manager::observe_search_path_owned(memory, base, &mut pass.mounts, true);
+        });
     }
 
     pub fn allocated_bytes(&self) -> usize {
@@ -140,7 +168,7 @@ impl Roster {
         let start = qpc();
         self.hour = hour;
         let pass = &mut self.pass;
-        pass.observation = cdlc_manager::observe(
+        pass.observation = cdlc_manager::observe_prepared(
             memory,
             base,
             cdlc_manager::Buffers {
@@ -150,7 +178,8 @@ impl Roster {
                 mods: &mut pass.mods,
             },
         );
-        pass.mount_outcome = cdlc_manager::observe_search_path(memory, base, &mut pass.mounts);
+        pass.mount_outcome =
+            cdlc_manager::observe_search_path_owned(memory, base, &mut pass.mounts, false);
         self.sampled = true;
         self.ticks = qpc() - start;
     }
@@ -313,7 +342,7 @@ fn copy_strings(rows: &[String]) -> io::Result<Vec<String>> {
 }
 
 fn observed_ids(
-    rows: &[cdlc_manager::Entry],
+    rows: &[cdlc_manager::Entry<Owned, Owned>],
     outcome: Outcome,
     normalize: fn(&[u8]) -> Result<&str, &'static str>,
     kind: &str,
@@ -490,7 +519,7 @@ impl Serialize for Bytes<'_> {
         map.end()
     }
 }
-struct Descriptors<'a>(&'a [Descriptor]);
+struct Descriptors<'a>(&'a [Owned]);
 impl Serialize for Descriptors<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
@@ -500,7 +529,7 @@ impl Serialize for Descriptors<'_> {
         seq.end()
     }
 }
-struct Entry<'a>(&'a cdlc_manager::Entry);
+struct Entry<'a>(&'a cdlc_manager::Entry<Owned, Owned>);
 impl Serialize for Entry<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(3))?;
@@ -510,7 +539,7 @@ impl Serialize for Entry<'_> {
         map.end()
     }
 }
-struct Entries<'a>(&'a [cdlc_manager::Entry]);
+struct Entries<'a>(&'a [cdlc_manager::Entry<Owned, Owned>]);
 impl Serialize for Entries<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
@@ -529,7 +558,6 @@ pub(crate) fn allocation_failure_fixture() -> impl FnOnce() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::msvc_string::Text;
     use replay::identity::{COVERAGE_POLICY_VERSION, Dlc, Mod};
     use std::collections::BTreeSet;
 
@@ -556,17 +584,18 @@ mod tests {
         }
     }
 
-    fn text<const N: usize>(bytes: &[u8]) -> Text<N> {
-        let mut text = Text {
+    fn text(bytes: &[u8]) -> Owned {
+        Owned {
+            bytes: bytes.to_vec(),
             len: bytes.len(),
-            ..Text::default()
-        };
-        text.bytes[..bytes.len()].copy_from_slice(bytes);
-        text
+        }
     }
 
     fn captured(descriptors: &[&[u8]]) -> Roster {
-        let mut roster = Roster::new();
+        let mut roster = Roster::with_counts(cdlc_manager::Counts {
+            dlcs: descriptors.len(),
+            ..Default::default()
+        });
         roster.sampled = true;
         roster.hour = Some(100);
         let ids: BTreeSet<_> = descriptors.iter().filter_map(|d| dlc_id(d).ok()).collect();
@@ -579,9 +608,7 @@ mod tests {
         {
             let pass = &mut roster.pass;
             pass.mount_outcome = Outcome::Rows { len: paths.len() };
-            for (row, path) in pass.mounts.iter_mut().zip(&paths) {
-                *row = text(path.as_bytes());
-            }
+            pass.mounts = paths.iter().map(|path| text(path.as_bytes())).collect();
             pass.observation = cdlc_manager::Observation {
                 dlc_filter_strings: Outcome::Rows { len: 0 },
                 requested_mods: Outcome::Rows { len: 0 },
@@ -714,6 +741,7 @@ mod tests {
     fn unexpected_mods_and_failed_reads_remain_explicitly_unverified() {
         let mut roster = captured(&[]);
         roster.pass.observation.mods = Outcome::Rows { len: 1 };
+        roster.pass.mods.resize_with(1, Default::default);
         roster.pass.mods[0].descriptor = text(b"mod/ugc_123.mod");
         roster.pass.mods[0].reported_active = true;
         let mut value = identity(&[]);
@@ -748,9 +776,8 @@ mod tests {
             "F:/game",
         ];
         roster.pass.mount_outcome = Outcome::Rows { len: mounts.len() };
-        for (row, path) in roster.pass.mounts.iter_mut().zip(mounts) {
-            *row = text(path.as_bytes());
-        }
+        roster.pass.mounts = mounts.iter().map(|path| text(path.as_bytes())).collect();
+        roster.pass.mods.resize_with(2, Default::default);
         roster.pass.observation.mods = Outcome::Rows { len: 2 };
         // The mod map is ordered by display name and holds descriptor files.
         for (row, descriptor) in roster
@@ -812,7 +839,10 @@ mod tests {
     #[test]
     fn extra_or_truncated_mounts_cannot_verify_or_leak_paths() {
         let mut roster = captured(&[]);
-        roster.pass.mounts[1] = text(b"C:/private/user/interface-override");
+        roster
+            .pass
+            .mounts
+            .push(text(b"C:/private/user/interface-override"));
         roster.pass.mount_outcome = Outcome::Rows { len: 2 };
         let mut value = identity(&[]);
         let reason = check(&roster, &mut value, None).unwrap_err();
@@ -886,7 +916,7 @@ mod tests {
                 heap: 0x80_0000,
             };
             let manager = Self::MANAGER;
-            let strings = 0x10000;
+            let strings = 0x500000;
             for (offset, count, data) in [
                 (cdlc_manager::DLC_FILTER_STRINGS, filters, strings),
                 (cdlc_manager::REQUESTED_MODS, 0, 0),
@@ -955,7 +985,7 @@ mod tests {
     }
 
     #[test]
-    fn live_counts_size_a_content_roster_beyond_the_floor() {
+    fn live_counts_and_lengths_prepare_the_complete_content_roster() {
         let ids: Vec<String> = (0..150).map(|index| format!("dlc{index:03}")).collect();
         let live = Live::new(&ids, 90);
         let counts = cdlc_manager::observe_counts(&live, 0);
@@ -966,7 +996,10 @@ mod tests {
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
 
         let mut roster = Roster::with_counts(counts);
-        roster.sample(&live, 0, Some(100));
+        roster.prepare(&live, 0);
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            roster.sample(&live, 0, Some(100))
+        });
         assert_eq!(
             roster.pass.outcomes(),
             [
@@ -993,29 +1026,96 @@ mod tests {
         assert_eq!(diagnostics["sample"]["dlcs"].as_array().unwrap().len(), 150);
         assert!(diagnostics["sample"]["capacities"]["DLC map"].as_u64() >= Some(150));
 
-        // Without the hint the floor still reports, and never verifies, a
-        // truncated roster.
+        // Without preparation the empty storage reports a counted shortage.
         let mut floor = Roster::new();
         floor.sample(&live, 0, Some(100));
         assert_eq!(
             floor.pass.observation.dlcs,
             Outcome::Truncated {
-                len: 64,
-                unread_rows: 86
+                len: 0,
+                unread_rows: 150
             }
         );
         let mut value = identity(&refs);
         assert!(
             check(&floor, &mut value, None)
                 .unwrap_err()
-                .contains("86 rows unread")
+                .contains("150 rows unread")
         );
-        // An unreadable manager gives no hint and keeps the floor.
+        // An unreadable manager supplies no invented fallback population.
         assert_eq!(
             Roster::with_counts(cdlc_manager::Counts::default())
                 .pass
                 .capacities(),
-            [MINIMUM_CAPACITY; 5]
+            [0; 5]
         );
+    }
+    #[test]
+    fn five_thousand_roster_entries_and_long_native_text_are_sampled_without_allocating() {
+        use engine::{dlc_content_entry as entry, dlc_content_map_node as content, msvc_map};
+        const COUNT: usize = 5_001;
+        let mut ids: Vec<String> = (0..COUNT).map(|index| format!("dlc{index:05}")).collect();
+        ids[COUNT - 1] = format!("dlc{}", "x".repeat(COUNT));
+        let mut live = Live::new(&ids, 90);
+        let mod_name = "n".repeat(COUNT);
+        let mod_descriptor = format!("mod/{}.mod", "m".repeat(COUNT));
+        let requested = format!("C:/content/{mod_descriptor}");
+        live.u64(Live::MANAGER + cdlc_manager::REQUESTED_MODS, 0x600000);
+        live.u64(
+            Live::MANAGER + cdlc_manager::REQUESTED_MODS + 8,
+            (1_usize << 32) | 1,
+        );
+        live.string(0x600000, requested.as_bytes());
+        let head = 0x20000;
+        let node = 0x21000;
+        live.u64(Live::MANAGER + cdlc_manager::MODS + msvc_map::COUNT, 1);
+        live.node(head, node, node, node, true);
+        live.node(node, head, head, head, false);
+        live.string(node + content::VALUE + entry::NAME, mod_name.as_bytes());
+        live.string(
+            node + content::VALUE + entry::DESCRIPTOR,
+            mod_descriptor.as_bytes(),
+        );
+        let counts = cdlc_manager::observe_counts(&live, 0);
+        assert_eq!(
+            (counts.dlcs, counts.mods, counts.mounts),
+            (COUNT, 1, COUNT + 1)
+        );
+        let mut roster = Roster::with_counts(counts);
+        roster.prepare(&live, 0);
+        let bytes = roster.allocated_bytes();
+        // Preparation is storage only: the callback reads a later native value.
+        live.string(
+            node + content::VALUE + entry::NAME,
+            "z".repeat(COUNT).as_bytes(),
+        );
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            roster.sample(&live, 0, Some(100))
+        });
+        assert_eq!(roster.pass.observation.dlcs, Outcome::Rows { len: COUNT });
+        assert_eq!(roster.pass.observation.mods, Outcome::Rows { len: 1 });
+        assert_eq!(roster.pass.mount_outcome, Outcome::Rows { len: COUNT + 1 });
+        assert_eq!(
+            roster.pass.dlcs[COUNT - 1].name.as_bytes(),
+            ids[COUNT - 1].to_uppercase().as_bytes()
+        );
+        assert_eq!(
+            roster.pass.dlcs[COUNT - 1].descriptor.as_bytes(),
+            format!("dlc/{0}/{0}.dlc", ids[COUNT - 1]).as_bytes()
+        );
+        assert_eq!(
+            roster.pass.mounts[0].as_bytes(),
+            format!("F:/game/dlc/{}", ids[COUNT - 1]).as_bytes()
+        );
+        assert_eq!(
+            roster.pass.mods[0].name.as_bytes(),
+            "z".repeat(COUNT).as_bytes()
+        );
+        assert_eq!(
+            roster.pass.mods[0].descriptor.as_bytes(),
+            mod_descriptor.as_bytes()
+        );
+        assert!(roster.pass.mods[0].reported_active);
+        assert_eq!(roster.allocated_bytes(), bytes);
     }
 }

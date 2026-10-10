@@ -7,12 +7,8 @@
 use crate::combat_sources::{Run, Sources, share};
 use crate::{
     Memory, carmy, ccountry, cgame_state, cpdx_array::Array, cprovince, cunit,
-    modifier_keys as keys, read,
+    modifier_keys as keys, read, walk::Buffer,
 };
-
-pub const MODIFIER_LIMIT: usize = 96;
-pub const SUPPLY_TERM_LIMIT: usize = 64;
-pub const ACCLIMATIZATION_LIMIT: usize = 64;
 
 /// Scopes:0 country;1 selected contextual leader;2 location-state;
 ///3 province weather;4 region weather;5 priority subunit;6 category;
@@ -200,15 +196,16 @@ fn append_modifiers(
     accumulator: usize,
     scope: u8,
     keys: &[u32],
-    output: &mut [ModifierTerm],
+    output: &mut Buffer<'_, ModifierTerm>,
     len: &mut usize,
 ) -> Result<(), &'static str> {
     if accumulator == 0 {
         return Ok(());
     }
-    if keys.len() > MODIFIER_LIMIT.saturating_sub(*len)
-        || keys.len() > output.len().saturating_sub(*len)
-    {
+    let required = len
+        .checked_add(keys.len())
+        .ok_or("reinforcement modifier arena overflow")?;
+    if !output.ensure(required)? {
         return Err("reinforcement modifier arena full");
     }
     let start = *len;
@@ -383,7 +380,7 @@ fn acclimatization(
     memory: &impl Memory,
     army: usize,
     row: &mut ContextRow,
-    output: &mut [AcclimatizationTerm],
+    output: &mut Buffer<'_, AcclimatizationTerm>,
 ) -> Result<(), &'static str> {
     let object = army
         .checked_add(carmy::ACCLIMATIZATION)
@@ -395,10 +392,8 @@ fn acclimatization(
     }
     let entries = array(memory, object, 8, 16)?;
     let count = entries.count as usize;
-    if count > ACCLIMATIZATION_LIMIT {
-        return Err("reinforcement acclimatization bound exceeded");
-    }
-    if count > output.len() {
+    // 140608080 visits all signed +14 entries; 140607FA0 selects from them.
+    if !output.ensure(count)? {
         return Err("reinforcement acclimatization arena full");
     }
     for (index, term) in output[..count].iter_mut().enumerate() {
@@ -577,7 +572,7 @@ fn infrastructure_shared(
     Ok(())
 }
 
-/// One template's supply entries into the pass's arena, by main's reads.
+/// 140C67F40's supply operands retain every live template +C0/+CC entry.
 fn supply_entries(
     memory: &impl Memory,
     base: usize,
@@ -586,9 +581,6 @@ fn supply_entries(
 ) -> Result<SupplyEntries, &'static str> {
     let entries = array(memory, template, 0xc0, 16)?;
     let count = entries.count as usize;
-    if count > SUPPLY_TERM_LIMIT {
-        return Err("reinforcement supply term bound exceeded");
-    }
     let start = arena.len();
     crate::allocation::reserve_push_batch(arena, count)
         .map_err(|_| "reinforcement supply allocation failed")?;
@@ -617,12 +609,12 @@ fn supply_terms(
     sources: &mut Sources,
     template: usize,
     row: &mut ContextRow,
-    output: &mut [SupplyTerm],
+    output: &mut Buffer<'_, SupplyTerm>,
 ) -> Result<(), &'static str> {
     let shared = *share(&mut sources.supply_terms, template, || {
         supply_entries(memory, base, template, &mut sources.supply_arena)
     })?;
-    if shared.count > output.len() {
+    if !output.ensure(shared.count)? {
         return Err("reinforcement supply term arena full");
     }
     let run = shared.entries?;
@@ -642,21 +634,17 @@ fn priority(
     let token = field::<u32>(memory, selected, 0x5d8)?;
     let categories = array(memory, selected, 0x508, 8).map(|categories| {
         let start = arena.len();
-        // Past the bound every division refuses before reading a category.
-        let failure = if categories.count as usize > MODIFIER_LIMIT {
-            None
-        } else {
-            crate::allocation::reserve_push_batch(arena, categories.count as usize)
-                .map_err(|_| "reinforcement category allocation failed")
-                .and_then(|()| {
-                    (0..categories.count).try_for_each(|index| {
-                        let category = pointer(memory, element(categories, index, 8)?, 0)?;
-                        arena.push(field::<u32>(memory, category, 0x60)?);
-                        Ok(())
-                    })
+        // 140C70670 walks the full +508/+514 category vector.
+        let failure = crate::allocation::reserve_push_batch(arena, categories.count as usize)
+            .map_err(|_| "reinforcement category allocation failed")
+            .and_then(|()| {
+                (0..categories.count).try_for_each(|index| {
+                    let category = pointer(memory, element(categories, index, 8)?, 0)?;
+                    arena.push(field::<u32>(memory, category, 0x60)?);
+                    Ok(())
                 })
-                .err()
-        };
+            })
+            .err();
         Categories {
             count: categories.count,
             tokens: Run {
@@ -938,7 +926,7 @@ fn transport_context(
     sources: &mut Sources,
     army: usize,
     location: usize,
-    modifiers: &mut [ModifierTerm],
+    modifiers: &mut Buffer<'_, ModifierTerm>,
     terms: &mut Vec<TransportTerm>,
     start: usize,
 ) -> Result<ContextRow, &'static str> {
@@ -1131,6 +1119,37 @@ pub fn capture_context(
     transport_terms: &mut Vec<TransportTerm>,
     transport_start: usize,
 ) -> Result<ContextRow, &'static str> {
+    capture_context_buffer(
+        memory,
+        base,
+        game,
+        sources,
+        army,
+        expected_handle,
+        Buffer::Fixed(modifiers),
+        Buffer::Fixed(supply),
+        Buffer::Fixed(acclimatization_terms),
+        transport_terms,
+        transport_start,
+    )
+}
+
+/// Worker storage follows each original movement-speed operand (140C70670),
+/// including the template, acclimatization and selected category vectors.
+#[allow(clippy::too_many_arguments)]
+pub fn capture_context_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    sources: &mut Sources,
+    army: usize,
+    expected_handle: u64,
+    mut modifiers: Buffer<'_, ModifierTerm>,
+    mut supply: Buffer<'_, SupplyTerm>,
+    mut acclimatization_terms: Buffer<'_, AcclimatizationTerm>,
+    transport_terms: &mut Vec<TransportTerm>,
+    transport_start: usize,
+) -> Result<ContextRow, &'static str> {
     // `capture_stats` authenticated this division, its handle and its stat
     // block moments ago in the same pass; those reads are not repeated.
     let verified = sources
@@ -1163,7 +1182,7 @@ pub fn capture_context(
             sources,
             army,
             location,
-            modifiers,
+            &mut modifiers,
             transport_terms,
             transport_start,
         );
@@ -1232,7 +1251,7 @@ pub fn capture_context(
         country_accumulator,
         0,
         &country_keys,
-        modifiers,
+        &mut modifiers,
         &mut row.modifier_count,
     )?;
     if let Some(leader) = leader {
@@ -1247,7 +1266,7 @@ pub fn capture_context(
                 keys::OUT_OF_SUPPLY_FACTOR,
                 keys::SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR,
             ],
-            modifiers,
+            &mut modifiers,
             &mut row.modifier_count,
         )?;
     }
@@ -1281,11 +1300,11 @@ pub fn capture_context(
                 keys::ARMY_SPEED_FACTOR_FOR_CONTROLLER,
                 keys::ENEMY_ARMY_SPEED_FACTOR,
             ],
-            modifiers,
+            &mut modifiers,
             &mut row.modifier_count,
         )?;
     }
-    acclimatization(memory, army, &mut row, acclimatization_terms)?;
+    acclimatization(memory, army, &mut row, &mut acclimatization_terms)?;
     let (province_weather, region_weather) = *share(&mut sources.weather, location, || {
         crate::cweather_manager::movement_modifiers(memory, base, game, location)
     })?;
@@ -1297,7 +1316,7 @@ pub fn capture_context(
             accumulator,
             scope,
             &[keys::ARMY_SPEED_FACTOR, keys::ARMY_ATTACK_SPEED_FACTOR],
-            modifiers,
+            &mut modifiers,
             &mut row.modifier_count,
         )?;
     }
@@ -1313,14 +1332,11 @@ pub fn capture_context(
             country_accumulator,
             5,
             &[selected.token],
-            modifiers,
+            &mut modifiers,
             &mut row.modifier_count,
         )?;
     }
     let categories = selected.categories?;
-    if categories.count as usize > MODIFIER_LIMIT.saturating_sub(row.modifier_count) {
-        return Err("reinforcement category bound exceeded");
-    }
     for index in 0..categories.count as usize {
         if index == categories.tokens.len {
             return Err(categories.failure.unwrap_or(UNREADABLE));
@@ -1334,7 +1350,7 @@ pub fn capture_context(
                 country_accumulator,
                 6,
                 &[token],
-                modifiers,
+                &mut modifiers,
                 &mut row.modifier_count,
             )?;
         }
@@ -1350,7 +1366,7 @@ pub fn capture_context(
         {
             row.scalar_values[index] = value;
         }
-        supply_terms(memory, base, sources, template, &mut row, supply)?;
+        supply_terms(memory, base, sources, template, &mut row, &mut supply)?;
         if row.flags[3] == 0 {
             let area =
                 sources.field::<u64>(memory, location, cprovince::CONTROLLER_AREA, UNREADABLE)?

@@ -37,6 +37,7 @@ fn naval_tree_stack_headroom_refusal_is_counted_in_status() {
 fn naval_empty_hour_keeps_all_tables_complete_without_tree_storage() {
     let memory = Fixture::new(0);
     let mut captured = Captured::with_capacities(&Capacities::default());
+    assert_eq!(captured.allocated_bytes(), 0);
     captured.capture(&memory, IMAGE, STATE);
     assert_eq!(captured.outcomes(), [Outcome::Rows { len: 0 }; N]);
     assert_eq!(captured.breakdown_requests.len, 0);
@@ -55,6 +56,102 @@ fn naval_empty_hour_keeps_all_tables_complete_without_tree_storage() {
             .iter()
             .all(|view| matches!(view, TableView::Complete(_)))
     );
+}
+
+#[test]
+fn cold_defaults_capture_the_first_live_shape_before_publication() {
+    let mut capacities = Capacities::default();
+    let mut captured = Captured::with_capacities(&capacities);
+    assert_eq!(captured.allocated_bytes(), 0);
+    let memory = live_shape();
+    captured.capture(&memory, IMAGE, STATE);
+    assert!(
+        captured
+            .outcomes()
+            .into_iter()
+            .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
+    );
+    assert_eq!(captured.details.outcome, Outcome::Rows { len: 3 });
+    assert_eq!(captured.ships.outcome, Outcome::Rows { len: 90 });
+    assert_eq!(captured.dense_bases.outcome, Outcome::Rows { len: 12 });
+    assert_eq!(captured.dense_wings.len, 12);
+    assert_eq!(
+        captured.breakdown_status().required,
+        [161, 40, 2008, 17_952, 4]
+    );
+    captured.grow(&mut capacities);
+    let prepared = Captured::with_capacities(&capacities);
+    assert!(prepared.details.rows.len() >= captured.details.rows.len());
+    assert!(prepared.ships.rows.len() >= captured.ships.rows.len());
+    assert!(prepared.dense_bases.rows.len() >= captured.dense_bases.rows.len());
+    assert!(prepared.dense_wings.first.len() >= captured.dense_wings.first.len());
+    assert!(prepared.breakdown_nodes.first.len() >= captured.breakdown_nodes.first.len());
+    assert!(prepared.breakdown_text.first.len() >= captured.breakdown_text.first.len());
+}
+
+#[test]
+fn cold_and_later_terrain_names_keep_mod_heap_bytes_in_publication() {
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    assert_eq!(captured.allocated_bytes(), 0);
+    for length in [257, 4097, 5000] {
+        let mut memory = Fixture::new(1);
+        let name = vec![b'x'; length];
+        let name_data = memory.allocate(length + 1);
+        memory.put(name_data, &name);
+        memory.u64(TERRAIN + 0x18, name_data as u64);
+        memory.u64(TERRAIN + 0x28, length as u64);
+        memory.u64(TERRAIN + 0x30, length as u64);
+        let empty_bucket = memory.allocate(12);
+        memory.u64(TERRAIN + 0x1b8, empty_bucket as u64);
+        let province_weather = memory.allocate(2 * 0x330);
+        memory.array(WEATHER + 0x370, province_weather, 2);
+        for country in 0..COUNTRY_COUNT {
+            let task = TASK_BASE + country * TASK_STRIDE;
+            memory.u64(task + engine::cunit::LOCATION, (BODIES + 0xb00) as u64);
+            let diplomacy = memory.allocate(0x400);
+            memory.u64(
+                diplomacy,
+                (IMAGE + engine::cdiplomacy_status::VTABLE_RVA) as u64,
+            );
+            let relations = memory.allocate(8);
+            memory.array(
+                diplomacy + engine::cdiplomacy_status::RELATIONS,
+                relations,
+                1,
+            );
+            memory.u64(
+                COUNTRY_BASE + country * COUNTRY_STRIDE + engine::ccountry::DIPLOMACY_STATUS,
+                diplomacy as u64,
+            );
+        }
+        assert!(engine::msvc_string::read_text::<256>(&memory, TERRAIN + 0x18).is_none());
+        captured.reset();
+        captured.capture(&memory, IMAGE, STATE);
+        assert_eq!(captured.details.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(
+            captured.ships.outcome,
+            Outcome::Rows {
+                len: SHIPS_PER_COMBAT
+            }
+        );
+        assert!(
+            captured.ships.rows[..SHIPS_PER_COMBAT].iter().all(|row| row
+                .weapon_context
+                .terrain_name
+                .as_bytes()
+                == name)
+        );
+        let TableView::Complete(rows::TableRows::NavalCombatShips(ships)) = &captured.tables()[1]
+        else {
+            panic!("complete terrain operands were not projected");
+        };
+        assert!(
+            ships
+                .iter()
+                .all(|row| row.weapon_context.terrain_name == name)
+        );
+        assert!(captured.allocated_bytes() >= SHIPS_PER_COMBAT * length);
+    }
 }
 
 #[test]
@@ -108,7 +205,14 @@ fn naval_live_headers_presize_broad_deep_carrier_and_escape_trees_at_attach() {
         .unwrap();
     let countries =
         std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    let mut request = captured.take_ordinary_request(&countries, IMAGE, STATE);
+    let mut request = captured.take_ordinary_request(
+        &countries,
+        IMAGE,
+        STATE,
+        0,
+        Ok(()),
+        crate::extended::NavalMissionLoan::default(),
+    );
     request.packs.naval_details.capture(&memory, IMAGE, STATE);
     captured.restore_ordinary_request(request, None);
     let status = captured.naval_details.breakdown_status();
@@ -221,7 +325,7 @@ fn naval_shared_country_roots_walk_once_across_combat_side_and_ship_uses() {
 }
 
 #[test]
-fn naval_tree_arena_shortage_withholds_only_trees_and_grows_after_capture() {
+fn naval_tree_arenas_grow_before_the_first_publication() {
     let memory = Fixture::new(1);
     for request_capacity in [0, 8] {
         let mut capacities = Capacities {
@@ -237,17 +341,9 @@ fn naval_tree_arena_shortage_withholds_only_trees_and_grows_after_capture() {
                 len: SHIPS_PER_COMBAT
             }
         );
-        assert_eq!(
-            captured.breakdown_outcome,
-            Outcome::Unavailable {
-                reason: engine::naval_ship_modifier_breakdown::REQUEST_CAPACITY,
-            }
-        );
-        assert!(matches!(
-            captured.breakdown_table(),
-            TableView::Unavailable { .. }
-        ));
-        assert_eq!(captured.breakdown_requests.first.len(), request_capacity);
+        assert!(matches!(captured.breakdown_outcome, Outcome::Rows { .. }));
+        assert!(matches!(captured.breakdown_table(), TableView::Complete(_)));
+        assert!(captured.breakdown_requests.first.len() > request_capacity);
         assert!(captured.breakdown_requests.required > 1);
         let first_demand = captured.breakdown_status().required;
         let demand = first_demand[0];
@@ -271,7 +367,6 @@ fn naval_tree_arena_shortage_withholds_only_trees_and_grows_after_capture() {
 
 #[test]
 fn naval_tree_live_demand_survives_production_loan_restore_and_growth() {
-    use engine::naval_ship_modifier_breakdown::REQUEST_CAPACITY;
     let memory = live_shape();
     let mut capacities = crate::extended::Capacities::default();
     let mut captured = crate::extended::Captured::with_capacities(&capacities);
@@ -281,7 +376,14 @@ fn naval_tree_live_demand_survives_production_loan_restore_and_growth() {
     let mut first_demand = [0; 5];
     for hour in 0..2 {
         captured.reset();
-        let mut request = captured.take_ordinary_request(&countries, IMAGE, STATE);
+        let mut request = captured.take_ordinary_request(
+            &countries,
+            IMAGE,
+            STATE,
+            hour,
+            Ok(()),
+            crate::extended::NavalMissionLoan::default(),
+        );
         request.packs.naval_details.capture(&memory, IMAGE, STATE);
         captured.restore_ordinary_request(request, None);
         let naval = &captured.naval_details;
@@ -298,22 +400,12 @@ fn naval_tree_live_demand_survives_production_loan_restore_and_growth() {
         let status = naval.breakdown_status();
         work.observe(status).unwrap();
         if hour == 0 {
-            assert_eq!(
-                status.outcome,
-                Outcome::Unavailable {
-                    reason: REQUEST_CAPACITY
-                }
-            );
-            assert_eq!(status.capacity, [0; 5]);
+            assert!(matches!(status.outcome, Outcome::Rows { .. }));
             assert_eq!(status.required, [161, 40, 2008, 17_952, 4]);
             first_demand = status.required;
-            assert!(matches!(
-                naval.breakdown_table(),
-                TableView::Unavailable { .. }
-            ));
+            assert!(matches!(naval.breakdown_table(), TableView::Complete(_)));
             eprintln!("naval live-shape first-hour demand: {:?}", first_demand);
-            // Production spool-side growth, after owned projection/status and
-            // before recycling the frame. No second refusal is permitted.
+            // Spool-side growth adopts the first worker's complete storage.
             captured.grow(&mut capacities);
             continue;
         }
@@ -340,16 +432,16 @@ fn naval_tree_live_demand_survives_production_loan_restore_and_growth() {
         assert!(trees.iter().any(|tree| tree.nodes.len() > 200));
         let json = serde_json::to_value(work.status()).unwrap();
         assert_eq!(json["hours"], 2);
-        assert_eq!(json["available_hours"], 1);
-        assert_eq!(json["refused_hours"], 1);
-        assert_eq!(json["refusals"], serde_json::json!({REQUEST_CAPACITY: 1}));
+        assert_eq!(json["available_hours"], 2);
+        assert_eq!(json["refused_hours"], 0);
+        assert_eq!(json["refusals"], serde_json::json!({}));
         eprintln!("naval live-shape complete on hour 2: {json}");
     }
 }
 
 #[test]
-fn naval_tree_later_demand_rise_grows_all_arenas_after_a_full_capture() {
-    use engine::naval_ship_modifier_breakdown::{KEYS, REQUEST_CAPACITY};
+fn naval_tree_later_demand_rise_grows_all_arenas_before_publication() {
+    use engine::naval_ship_modifier_breakdown::KEYS;
     let mut low = live_shape();
     // Keep the existing three-combat storage, but expose only the first combat.
     low.0.u32(STATE + engine::cgame_state::COMBATS + 8 + 12, 1);
@@ -379,23 +471,29 @@ fn naval_tree_later_demand_rise_grows_all_arenas_after_a_full_capture() {
         std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
     let capture_hour = |captured: &mut crate::extended::Captured, memory: &LiveShape| {
         captured.reset();
-        let mut request = captured.take_ordinary_request(&countries, IMAGE, STATE);
+        let mut request = captured.take_ordinary_request(
+            &countries,
+            IMAGE,
+            STATE,
+            0,
+            Ok(()),
+            crate::extended::NavalMissionLoan::default(),
+        );
         request.packs.naval_details.capture(memory, IMAGE, STATE);
         captured.restore_ordinary_request(request, None);
     };
-    // Establish the initial population using production zero capacities and
-    // growth, before the five-hour interval whose later refusal is counted.
+    // Establish the initial population from empty production storage, before
+    // checking the later rise and complete publication of every hour.
     capture_hour(&mut captured, &low);
-    assert_eq!(
+    assert!(matches!(
         captured.naval_details.breakdown_outcome,
-        Outcome::Unavailable {
-            reason: REQUEST_CAPACITY
-        }
-    );
+        Outcome::Rows { .. }
+    ));
     captured.grow(&mut capacities);
     let mut work = BreakdownWork::default();
     let mut rise_demand = [0; 5];
-    let mut retained_capacity = [0; 5];
+    let initial_demand = captured.naval_details.breakdown_status().required;
+    let mut retained_capacity = captured.naval_details.breakdown_status().capacity;
     for (hour, memory) in [&low, &high, &high, &low, &high].into_iter().enumerate() {
         capture_hour(&mut captured, memory);
         let naval = &captured.naval_details;
@@ -408,24 +506,16 @@ fn naval_tree_later_demand_rise_grows_all_arenas_after_a_full_capture() {
             }
         );
         if hour == 1 {
-            assert_eq!(
-                status.outcome,
-                Outcome::Unavailable {
-                    reason: REQUEST_CAPACITY
-                }
-            );
-            for (index, (required, capacity)) in
-                status.required.into_iter().zip(status.capacity).enumerate()
+            assert!(matches!(status.outcome, Outcome::Rows { .. }));
+            for (index, (required, previous)) in
+                status.required.into_iter().zip(initial_demand).enumerate()
             {
                 assert!(
-                    required > capacity,
-                    "arena {index} did not exceed earlier full-capture capacity: {required} <= {capacity}"
+                    required > previous,
+                    "arena {index} did not exceed earlier full demand: {required} <= {previous}"
                 );
             }
-            assert!(matches!(
-                naval.breakdown_table(),
-                TableView::Unavailable { .. }
-            ));
+            assert!(matches!(naval.breakdown_table(), TableView::Complete(_)));
             rise_demand = status.required;
         } else {
             assert!(
@@ -462,9 +552,9 @@ fn naval_tree_later_demand_rise_grows_all_arenas_after_a_full_capture() {
     }
     let status = serde_json::to_value(work.status()).unwrap();
     assert_eq!(status["hours"], 5);
-    assert_eq!(status["available_hours"], 4);
-    assert_eq!(status["refused_hours"], 1);
-    assert_eq!(status["refusals"], serde_json::json!({REQUEST_CAPACITY: 1}));
+    assert_eq!(status["available_hours"], 5);
+    assert_eq!(status["refused_hours"], 0);
+    assert_eq!(status["refusals"], serde_json::json!({}));
     eprintln!(
         "later naval tree rise demand {rise_demand:?}; retained capacity {retained_capacity:?}"
     );

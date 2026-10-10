@@ -727,6 +727,7 @@ impl Catalogue {
             );
         }
         lines.extend(self.content.layers.faction_template_diagnostics());
+        lines.extend(self.content.layers.shader_warning_lines());
         self.content.layers.read_warnings().append_to(&mut lines);
         lines
     }
@@ -825,12 +826,6 @@ pub fn texture_frame_png(
     gui_texture_frame_png(layers, path.as_bytes(), decode, frames, frame, max_edge)
 }
 
-/// Decoded texels any one image reply may allocate, checked from the file's header before it is
-/// decoded. The largest sprite texture any installed stack's `.gfx` references (23 stacks,
-/// 2 Oct 2026) is 5472x3648, 8192x4096 once `force_pow2_textures` pads it: 32 Mi texels. Twice
-/// that keeps one decode under 256 MiB of RGBA where a 16384x16384 claim would take 1 GiB.
-const MAX_TEXELS: u64 = 64 << 20;
-
 /// Native GUI texture loading: `resources::stack_texture` (the resolver, its
 /// 16 MiB `load_file` limit, the client decode state and the cube-map refusal),
 /// then RGBA8. Sprite artwork, shields and resource icons all use this path;
@@ -840,18 +835,17 @@ pub(crate) fn gui_texture(
     name: &[u8],
     decode: Decode,
 ) -> io::Result<Rgba8Image> {
-    let texture = resources::stack_texture_within(layers, name, decode, Some(MAX_TEXELS))?
-        .map_err(|why| {
-            let extra = if why.native_failure() {
-                "; the game draws no texture either"
-            } else {
-                ""
-            };
-            invalid(format!(
-                "GUI texture {} is unavailable: {why}{extra}",
-                String::from_utf8_lossy(name)
-            ))
-        })?;
+    let texture = resources::stack_texture(layers, name, decode)?.map_err(|why| {
+        let extra = if why.native_failure() {
+            "; the game draws no texture either"
+        } else {
+            ""
+        };
+        invalid(format!(
+            "GUI texture {} is unavailable: {why}{extra}",
+            String::from_utf8_lossy(name)
+        ))
+    })?;
     installed_content::image::rgba::dds_base(texture.image)
 }
 
@@ -885,9 +879,8 @@ pub(crate) fn image_frame_png(
     png_data_url(&native_frame(image, &plain, frame, max_edge)?)
 }
 
-/// A static plain sprite's authored frame, using native strip geometry.
-/// Shader-driven and animated forms need the native renderer and are refused
-/// by name.
+/// A sprite's authored frame at time zero, using native strip geometry and
+/// the content's resolved Up program, including overrides of the default effect.
 pub fn sprite_frame_png(
     layers: &ResolvedLayers,
     sprite: &installed_content::gfx::SpriteType,
@@ -895,35 +888,28 @@ pub fn sprite_frame_png(
     frame: u32,
     max_edge: u32,
 ) -> io::Result<String> {
-    use installed_content::gui::native::sprites::{DEFAULT_EFFECT, SpriteKind};
-    let SpriteKind::Plain(plain) = &sprite.facts.kind else {
-        return Err(invalid(format!(
-            "{} needs native sprite rendering",
-            sprite.facts.kind.keyword()
-        )));
+    use installed_content::gui::native::sprites::SpriteKind;
+    let (plain, animated) = match &sprite.facts.kind {
+        SpriteKind::Plain(plain) => (plain, None),
+        // 142342590 builds the same CSpriteType base; factory@1423426A0
+        // creates CFrameAnimatedSprite@1422F35D0, which draws it via 1422F37F0.
+        SpriteKind::FrameAnimated { plain, animation } => (plain, Some(animation)),
+        _ => {
+            return Err(invalid(format!(
+                "sprite {}: {} needs native sprite rendering",
+                sprite.name,
+                sprite.facts.kind.keyword()
+            )));
+        }
     };
-    if !plain.animations.is_empty()
-        || !plain.masking_texture.is_empty()
-        || plain.effect() != DEFAULT_EFFECT
-        || !matches!(plain.frame_direction, 0 | 1)
-        || plain.stretch != 1.0
-        || plain.v_scale != 1.0
-        || plain.flip_u
-    {
-        return Err(invalid(
-            "animation, masking, custom effect or nonstandard frame geometry needs native sprite rendering",
-        ));
-    }
-    if plain.frames <= 0 || frame >= plain.frames as u32 {
-        return Err(invalid("invalid icon frame"));
-    }
-    let path = sprite
-        .texture
-        .as_deref()
-        .ok_or_else(|| invalid("sprite has no texture"))?;
-    let image = read_texture(layers, path, decode)?;
-    png_data_url(&native_frame(&image, plain, frame, max_edge)?)
+    // initialize_animations@14222B5F0 supplies the default effect path;
+    // draw@14222D5A0 still binds that stack-resolved program and its samplers.
+    sprite::frame(layers, plain, animated, decode, frame, max_edge)
+        .and_then(|image| png_data_url(&image))
+        .map_err(|error| invalid(format!("sprite {}: {error}", sprite.name)))
 }
+
+mod sprite;
 
 /// One frame of a plain sprite's texture, point-sampled down to `max_edge`.
 /// frame_dimensions@14222B4B0 queries the integer extent, while
@@ -1066,6 +1052,13 @@ pub(crate) mod tests {
                 .to_string()
                 .contains("noOfFrames")
         );
+        let why = created_gui_sprite(&SpriteSet::default(), "missing")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            why.contains("missing") && why.contains("GFX_default_fallback_texture"),
+            "{why}"
+        );
     }
 
     #[test]
@@ -1192,6 +1185,9 @@ pub(crate) mod tests {
         let folder = Folder(root.clone());
         // A content folder must exist even when it holds no files.
         std::fs::create_dir_all(&root).unwrap();
+        if files.iter().any(|(path, _)| path.ends_with(".gfx")) {
+            super::texture_tests::write_sprite_program(&root);
+        }
         for (path, text) in files {
             let file = root.join(path);
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();

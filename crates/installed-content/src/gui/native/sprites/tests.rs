@@ -549,6 +549,111 @@ fn the_file_level_and_the_registry_follow_the_game() {
     assert!(sprites.refusals.is_empty(), "{:?}", sprites.refusals);
 }
 
+/// `CArrowType::vf4` keeps the raw strings, uses the shared CReader variables and scanners,
+/// and calls CColor on the lexer's current token rather than the resolved value slot.
+#[test]
+fn arrows_keep_native_fields_and_scalar_failures() {
+    let read = read_sprites(
+        b"@s = 2.75 @c = 0xff0000ff objectTypes = { arrowType = {
+          name = \"a\xfe\" size = @s size = nope endAt = .5 height = -1.5 height = nope
+          type = 010 type = nope heading = .4 scale = 3 scale = nope
+          cull_distance = 5 cull_distance = nope
+          texture = \"gfx/\x80.dds\" normal = n specular = s overlay = o effect = e
+          color = { .5 2 0 .25 } colortwo = @c
+          unknown = { name = skipped } \"size\" = 7 } }",
+    );
+    assert!(read.refusals.is_empty(), "{:?}", read.refusals);
+    let object = read.object(b"a\xfe").unwrap();
+    assert!(object.refusals.is_empty(), "{:?}", object.refusals);
+    let ObjectKind::Arrow(arrow) = &object.kind else {
+        panic!("{object:?}");
+    };
+    assert_eq!((object.scale, object.cull_distance_squared), (3.0, 625.0));
+    assert_eq!((arrow.size, arrow.end_at, arrow.heading), (2.75, 0.5, 0.4));
+    assert_eq!((arrow.height, arrow.arrow_type), (Some(-1.5), Some(8)));
+    assert_eq!(arrow.color, [0.5, 2.0 / 255.0, 0.0, 0.25]);
+    assert_eq!(arrow.color_two, [1.0; 4]);
+    assert_eq!(arrow.texture, b"gfx/\x80.dds");
+    assert_eq!(arrow.normal, b"n");
+    assert_eq!(arrow.specular, b"s");
+    assert_eq!(arrow.overlay, b"o");
+    assert_eq!(arrow.effect, b"e");
+}
+
+/// The constructor leaves height/type uninitialised; assigning a block to the scalar size
+/// reader still lets its contents run as object keys and its closing brace end the object.
+#[test]
+fn arrows_preserve_uninitialised_fields_and_native_block_walk() {
+    let defaults = read_sprites(b"objectTypes = { arrowType = { name = a } }");
+    let object = defaults.object(b"a").unwrap();
+    assert_eq!(
+        (object.scale, object.cull_distance_squared),
+        (1.0, 184_900.0)
+    );
+    assert_eq!(object.kind, ObjectKind::Arrow(ArrowDefinition::default()));
+    assert!(object.refusals.is_empty());
+    let read =
+        read_sprites(b"objectTypes = { arrowType = { name = a size = { height = 2 } type = 5 } }");
+    let ObjectKind::Arrow(arrow) = &read.object(b"a").unwrap().kind else {
+        panic!();
+    };
+    assert_eq!(arrow.size, 1.0);
+    assert_eq!(arrow.height, Some(2.0));
+    assert_eq!(arrow.arrow_type, None);
+}
+
+/// All object kinds share lookup, while sprites and case variants remain independent.
+#[test]
+fn object_registry_keeps_later_cross_kind_collisions() {
+    let files = vec![
+        (
+            "interface/a.gfx".into(),
+            read_sprites(
+                b"objectTypes = { arrowType = { name = a texture = first }
+                  arrowType = { name = A texture = upper } }
+                  spriteTypes = { spriteType = { name = a } }",
+            ),
+        ),
+        (
+            "gfx/b.gfx".into(),
+            read_sprites(
+                b"objectTypes = { arrowType = { name = a texture = second }
+                  pdxmesh = { name = a file = mesh } }",
+            ),
+        ),
+    ];
+    let objects = object_registry(&files);
+    assert_eq!(objects.len(), 2);
+    assert_eq!(objects[b"a".as_slice()].kind, ObjectKind::PdxMesh);
+    let ObjectKind::Arrow(upper) = &objects[b"A".as_slice()].kind else {
+        panic!();
+    };
+    assert_eq!(upper.texture, b"upper");
+    assert!(registry(&files).contains_key(b"a".as_slice()));
+    assert_eq!(files[1].1.object(b"a").unwrap().kind, ObjectKind::PdxMesh);
+}
+
+/// A preceding object whose position write corrupts the heap cannot leave later object
+/// registrations certified. The fourth component is still inside its allocation; the fifth
+/// writes past it and carries a named refusal to every declaration completed after it.
+#[test]
+fn object_registry_refuses_after_an_animated_position_overrun() {
+    let within =
+        read_sprites(b"objectTypes = { animatedmaptext = { name = text position = { 0 0 0 0 } } }");
+    assert!(within.refusals.is_empty());
+    assert!(within.object(b"text").unwrap().refusals.is_empty());
+    let outside = read_sprites(
+        b"objectTypes = { animatedmaptext = { name = text position = { 0 0 0 0 0 } }
+          arrowType = { name = later texture = arrow } }",
+    );
+    for name in [b"text".as_slice(), b"later".as_slice()] {
+        let object = outside.object(name).unwrap();
+        assert_eq!(object.refusals[0].path.as_bytes(), name);
+        assert!(object.refusals[0].reason.contains("+0xF0"));
+        assert_eq!(object.refusals[0].cause, Cause::Unaligned);
+    }
+}
+
 /// The global `textcolors` table is the last block read; a table the file ends inside
 /// stops on a frozen `}` and loops forever on anything else.
 #[test]

@@ -69,6 +69,7 @@ fn capacity() -> Capacities {
         variants: 4,
         icon_rows: 2,
         icon_bytes: 32,
+        name_bytes: 32,
         memo: 8,
         database: 8,
         locals: 8,
@@ -314,4 +315,208 @@ fn border_effect_template_key_scale_bench() {
             memory = counted.0;
         }
     }
+}
+
+fn displayed(inputs: [TableInput; N]) -> DivisionTemplateIconRow {
+    let [
+        _,
+        TableInput::Sampled(TableView::Complete(replay::rows::TableRows::DivisionTemplateIcons(
+            mut rows,
+        ))),
+    ] = inputs
+    else {
+        panic!("complete hourly icon fixture")
+    };
+    rows.remove(0)
+}
+fn set_name(source: &mut Fixture, literal: &[u8], key: &[u8]) {
+    for (at, text) in [
+        (0x5000 + native::NAME, literal),
+        (0x5000 + native::NAME_KEY, key),
+    ] {
+        assert!(text.len() <= 15);
+        source.bytes[at..at + 16].fill(0);
+        source.bytes[at..at + text.len()].copy_from_slice(text);
+        source.bytes[at + 16..at + 24].copy_from_slice(&(text.len() as u64).to_le_bytes());
+        source.bytes[at + 24..at + 32].copy_from_slice(&15_u64.to_le_bytes());
+    }
+}
+
+#[test]
+fn hourly_equality_and_same_day_rename_use_exact_same_frame_bytes() {
+    let mut capture = Captured::with_capacities(&capacity());
+    let mut source = fixture();
+    capture.capture(&source, 0, 0x1000, 9, true);
+    let [
+        TableView::Complete(replay::rows::TableRows::DivisionTemplates(dictionary)),
+        _,
+    ] = capture.tables()
+    else {
+        panic!("dictionary fixture")
+    };
+    assert!(matches!(
+        displayed(capture.table_inputs(None)).display_name,
+        Recorded::Value(Some(TemplateDisplayName {
+            value: TemplateNameValue::SameAsDivisionTemplates,
+            ..
+        }))
+    ));
+    capture.capture(&source, 0, 0x1000, 10, false);
+    assert!(matches!(
+        displayed(capture.table_inputs(Some(&dictionary))).display_name,
+        Recorded::Value(Some(TemplateDisplayName {
+            sample_hour: 10,
+            value: TemplateNameValue::SameAsDivisionTemplates
+        }))
+    ));
+    set_name(&mut source, b"Renamed", b"unused");
+    capture.capture(&source, 0, 0x1000, 11, false);
+    let renamed = displayed(capture.table_inputs(Some(&dictionary)));
+    assert_eq!(
+        renamed.display_name_inputs(11, None).unwrap().literal,
+        b"Renamed"
+    );
+    assert_eq!(renamed.priority_unit_name, b"infantry");
+}
+
+#[test]
+fn no_daily_baseline_and_failed_daily_capture_need_self_contained_overrides() {
+    let mut capture = Captured::with_capacities(&capacity());
+    let source = fixture();
+    capture.capture(&source, 0, 0x1000, 10, false);
+    assert!(matches!(
+        displayed(capture.table_inputs(None)).display_name,
+        Recorded::Value(Some(TemplateDisplayName {
+            value: TemplateNameValue::Changed { .. },
+            ..
+        }))
+    ));
+    let mut small = capacity();
+    small.rows = 0;
+    let mut capture = Captured::with_capacities(&small);
+    capture.capture(&source, 0, 0x1000, 9, true);
+    capture.rows.outcome = Outcome::Unavailable {
+        reason: "synthetic dictionary failure",
+    };
+    let baseline = [DivisionTemplateRow {
+        template: 0xffff_ffff_0000_0034,
+        name: vec![b'A', 0, 255],
+        ..Default::default()
+    }];
+    assert!(matches!(
+        displayed(capture.table_inputs(Some(&baseline))).display_name,
+        Recorded::Value(Some(TemplateDisplayName {
+            value: TemplateNameValue::Changed { .. },
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn name_arena_growth_keeps_the_first_heading_and_counts_exact_demand() {
+    let mut size = capacity();
+    size.name_bytes = 0;
+    let mut capture = Captured::with_capacities(&size);
+    capture.capture(&fixture(), 0, 0x1000, 9, true);
+    let row = displayed(capture.table_inputs(None));
+    assert!(matches!(row.display_name, Recorded::Value(Some(_))));
+    assert_eq!(row.priority_unit_name, b"infantry");
+    assert_eq!(row.model_unreadable, 0);
+    assert_eq!(capture.name_bytes.required, 3);
+    capture.grow(&mut size);
+    assert!(size.name_bytes >= 3);
+}
+
+fn large_content(countries: usize, per_country: usize) -> Fixture {
+    fn word(bytes: &mut [u8], at: usize, value: u64) {
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    fn array(bytes: &mut [u8], at: usize, data: usize, count: usize) {
+        word(bytes, at, data as u64);
+        word(bytes, at + 8, (count as u64) | ((count as u64) << 32));
+    }
+    let mut source = fixture();
+    let template = source.bytes[0x5000..0x5250].to_vec();
+    let slots = countries + 1;
+    let registry = 0x10000;
+    let links = registry + slots * 8;
+    let owners = (links + slots * 4).next_multiple_of(16);
+    let rosters = owners + countries * 0x200;
+    let templates = rosters + countries * per_country * 8;
+    source
+        .bytes
+        .resize(templates + countries * per_country * template.len(), 0);
+    array(
+        &mut source.bytes,
+        0x1000 + cgame_state::COUNTRIES,
+        registry,
+        slots,
+    );
+    array(
+        &mut source.bytes,
+        0x1000 + cgame_state::COUNTRY_LINKS,
+        links,
+        slots,
+    );
+    for country in 0..countries {
+        let id = country + 1;
+        let owner = owners + country * 0x200;
+        word(&mut source.bytes, registry + id * 8, owner as u64);
+        source.bytes[links + id * 4..links + id * 4 + 4]
+            .copy_from_slice(&(id as u32).to_le_bytes());
+        word(&mut source.bytes, owner, ccountry::VTABLE_RVA as u64);
+        word(&mut source.bytes, owner + ccountry::ID, id as u64);
+        let roster = rosters + country * per_country * 8;
+        array(
+            &mut source.bytes,
+            owner + ccountry::DIVISION_TEMPLATES,
+            roster,
+            per_country,
+        );
+        for ordinal in 0..per_country {
+            let index = country * per_country + ordinal;
+            let at = templates + index * template.len();
+            source.bytes[at..at + template.len()].copy_from_slice(&template);
+            word(
+                &mut source.bytes,
+                at + native::TYPE,
+                ((index as u64 + 1) << 32) | native::REFERENCE_TYPE as u64,
+            );
+            word(&mut source.bytes, roster + ordinal * 8, at as u64);
+        }
+    }
+    source
+}
+
+#[test]
+fn live_template_demand_and_same_capture_growth_keep_five_thousand_countries() {
+    let source = large_content(5_000, 4);
+    let mut capacity = Capacities::default();
+    capacity.presize(&source, 0, 0x1000).unwrap();
+    assert!(capacity.rows >= 20_000 && capacity.icon_rows >= 20_000);
+    assert!(capacity.bytes >= 20_000 * 11);
+    assert!(capacity.icon_bytes >= 20_000 * 20);
+    assert!(capacity.counts >= 20_000);
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.capture(&source, 0, 0x1000, 9, true);
+    assert_eq!(captured.outcomes(), [Outcome::Rows { len: 20_000 }; N]);
+    let grown = large_content(5_000, 5);
+    captured.capture(&grown, 0, 0x1000, 10, true);
+    assert_eq!(captured.outcomes(), [Outcome::Rows { len: 25_000 }; N]);
+    assert_eq!(captured.name_bytes.len, 25_000 * 3);
+    assert_eq!(captured.counts.len, 25_000);
+}
+
+#[test]
+fn optional_model_failure_does_not_remove_fresh_name_inputs() {
+    let mut capture = Captured::with_capacities(&capacity());
+    let mut source = fixture();
+    source.bytes[0x5000 + native::SUBUNIT_COUNTS + 8..0x5000 + native::SUBUNIT_COUNTS + 12]
+        .copy_from_slice(&1_u32.to_le_bytes());
+    source.bytes[0x5000 + native::SUBUNIT_COUNTS + 12..0x5000 + native::SUBUNIT_COUNTS + 16]
+        .copy_from_slice(&2_u32.to_le_bytes()); // length beyond capacity
+    capture.capture(&source, 0, 0x1000, 9, true);
+    let row = displayed(capture.table_inputs(None));
+    assert_eq!(row.model_unreadable, 1);
+    assert!(matches!(row.display_name, Recorded::Value(Some(_))));
 }

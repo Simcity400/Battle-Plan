@@ -26,6 +26,13 @@ pub struct Captured {
     drained: Option<Result<(Drained, usize, usize), &'static str>>,
 }
 impl Captured {
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities::default())
+    }
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        fuel_awards::lost_drain();
+        self.drained = Some(Err(reason));
+    }
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             entries: owned_vec(default_vec(capacity.entries)),
@@ -50,8 +57,11 @@ impl Captured {
         grow_vec(&mut self.entries, capacity.entries);
         grow_vec(&mut self.names, capacity.names);
     }
-    pub fn drain(&mut self) {
-        self.drained = Some(fuel_awards::drain(&mut self.entries, &mut self.names));
+    pub(crate) fn drain_growing(&mut self) {
+        self.drained = Some(fuel_awards::drain_growing(
+            &mut self.entries,
+            &mut self.names,
+        ));
     }
 }
 

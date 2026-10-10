@@ -2972,6 +2972,81 @@ fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
 }
 
 #[test]
+fn air_superiority_region_names_preserve_empty_results_and_native_key_fallbacks() {
+    let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "map/strategicregions/empty.txt",
+            "strategic_region={ id=7000 name=EMPTY }",
+        ),
+        (
+            "map/strategicregions/default.txt",
+            "strategic_region={ id=7001 }",
+        ),
+        (
+            "map/strategicregions/absent.txt",
+            "strategic_region={ id=7002 name=ABSENT }",
+        ),
+        (
+            "localisation/mod_l_english.yml",
+            "\u{feff}l_english:\n EMPTY:0 \"\"\n",
+        ),
+        ("settings.txt", "language=\"l_english\""),
+    ]);
+    let options = super::super::ContentOptions {
+        options: installed_content::ResolveOptions {
+            game_dir: folder.0.clone(),
+            user_dir: folder.0.clone(),
+            cache_dir: folder.0.join("cache"),
+        },
+        allow_unverified: true,
+    };
+    let source = Source::from_replay(
+        crate::SourceKey {
+            source_id: "air-region-names".into(),
+            revision: "1".into(),
+        },
+        "air-region-names.battleplan".into(),
+        Arc::new(recording(vec![air(0, 200_000)])),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    source.set_test_content(
+        options.options.clone(),
+        Arc::new(installed_content::content::ResolvedContent {
+            layers: installed_content::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
+            stats: Default::default(),
+        }),
+    );
+    let mut request = params(AirView::Choices, 0, 0);
+    request.regions = None;
+    let AirReply::Choices(reply) = AirSuperiority::load(
+        &source,
+        &request,
+        &LoadContext {
+            content: Some(options),
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap() else {
+        unreachable!()
+    };
+    assert_eq!(
+        reply
+            .regions
+            .iter()
+            .map(|region| (region.id, region.name.as_str()))
+            .collect::<Vec<_>>(),
+        [(7000, ""), (7001, ""), (7002, "ABSENT")]
+    );
+    assert!(
+        reply
+            .warnings
+            .iter()
+            .all(|warning| !warning.starts_with("Region "))
+    );
+}
+
+#[test]
 fn air_superiority_theatre_names_preserve_raw_bytes_and_guard_the_recording_language() {
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
         (

@@ -20,7 +20,7 @@ use crate::{
     cstrategic_air, cstrategic_region,
     memory::{RecordField, RecordLayout, RecordSources},
     read,
-    walk::Outcome,
+    walk::{Buffer, Outcome},
 };
 
 /// `GetStrategicAirRegionEntry@140C456F0`.
@@ -131,13 +131,43 @@ pub fn walk(
     held: &mut Held,
     output: &mut [Row],
 ) -> Walk {
+    walk_buffer(memory, base, game, hour, held, Buffer::Fixed(output))
+}
+
+/// Worker-only growth follows the original roster, score headers and retained
+/// nonzero pairs; no capacity failure restarts a native observation.
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    hour: i32,
+    held: &mut Held,
+    output: &mut Vec<Row>,
+) -> Walk {
+    walk_buffer(memory, base, game, hour, held, Buffer::Growing(output))
+}
+
+fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    hour: i32,
+    held: &mut Held,
+    mut output: Buffer<'_, Row>,
+) -> Walk {
     let mut walk = Walk {
         outcome: Outcome::Rows { len: 0 },
         regions: 0,
         countries: 0,
         full: true,
     };
-    let result = read_table(memory, base, game, hour, held, output, &mut walk);
+    let result =
+        read_table(memory, base, game, hour, held, &mut output, &mut walk).and_then(|result| {
+            if output.is_growing() {
+                Buffer::Growing(&mut held.rows).ensure(result.0)?;
+            }
+            Ok(result)
+        });
     walk.outcome = match result {
         Ok((len, period)) if len <= output.len() => {
             if len <= held.rows.len() && walk.countries <= held.next_countries.len() {
@@ -180,7 +210,7 @@ fn read_table(
     game: usize,
     hour: i32,
     held: &mut Held,
-    output: &mut [Row],
+    output: &mut Buffer<'_, Row>,
     walk: &mut Walk,
 ) -> Result<(usize, i32), &'static str> {
     let delay = base
@@ -198,6 +228,11 @@ fn read_table(
         .and_then(|at| Array::read(memory, at, 8))
         .ok_or("raid air region roster unreadable")?;
     walk.regions = roster.count as usize;
+    if output.is_growing() {
+        // Setup@140C49FB0 sizes +E0 from the live strategic-region roster.
+        held.grow(walk.regions, held.next_countries.len(), held.rows.len())
+            .map_err(|_| "capture buffer allocation failed")?;
+    }
     if walk.regions > held.next_regions.len() || walk.regions > held.slots.len() {
         return Err("raid air region scratch too small");
     }
@@ -223,7 +258,7 @@ fn read_table(
     let previous_rows = &held.rows[..held.row_len];
     let next = &mut held.next_countries;
     let (mut len, mut country, mut row) = (0, 0, 0);
-    let mut countries = 0;
+    let mut countries = 0usize;
     cstrategic_air::visit(memory, base, game, |root| {
         let scores = root
             .address
@@ -264,6 +299,13 @@ fn read_table(
                 &mut len,
             )?,
             None => read_all(memory, scores, &target, output, &mut len)?,
+        }
+        if output.is_growing() {
+            Buffer::Growing(&mut *next).ensure(
+                countries
+                    .checked_add(1)
+                    .ok_or("raid air country count overflow")?,
+            )?;
         }
         if let Some(next) = next.get_mut(countries) {
             *next = Country {
@@ -378,7 +420,7 @@ impl Target<'_> {
         &self,
         slot: usize,
         pair: &[u8],
-        output: &mut [Row],
+        output: &mut Buffer<'_, Row>,
         len: &mut usize,
     ) -> Result<(), &'static str> {
         let friendly = i64::from_le_bytes(pair[..8].try_into().unwrap());
@@ -400,7 +442,8 @@ impl Target<'_> {
     }
 }
 
-fn push(output: &mut [Row], len: &mut usize, row: Row) -> Result<(), &'static str> {
+fn push(output: &mut Buffer<'_, Row>, len: &mut usize, row: Row) -> Result<(), &'static str> {
+    output.ensure(len.checked_add(1).ok_or("raid air score count overflow")?)?;
     if let Some(slot) = output.get_mut(*len) {
         *slot = row;
     }
@@ -417,7 +460,7 @@ fn read_all(
     memory: &impl Memory,
     scores: Array,
     target: &Target<'_>,
-    output: &mut [Row],
+    output: &mut Buffer<'_, Row>,
     len: &mut usize,
 ) -> Result<(), &'static str> {
     let mut bytes = [0; BATCH * 16];
@@ -456,7 +499,7 @@ fn carry(
     slots: &[u32],
     held: &[Row],
     phase: i32,
-    output: &mut [Row],
+    output: &mut Buffer<'_, Row>,
     len: &mut usize,
 ) -> Result<(), &'static str> {
     let mut held = held
@@ -825,6 +868,79 @@ mod tests {
         world.put32(0x100, 4);
         assert!(world.walk(HOUR + 6, &mut held, &mut rows).full);
         assert!(!world.walk(HOUR + 7, &mut held, &mut rows).full);
+    }
+
+    #[test]
+    fn growing_scores_publish_first_and_later_mod_demand_at_5000_countries() {
+        let mut world = World::new(5_000, 17);
+        let mut held = Held::default();
+        let mut output = Vec::new();
+        let first = walk_growing(
+            &SliceMemory {
+                base: MEMORY,
+                bytes: &world.bytes,
+            },
+            BASE,
+            GAME,
+            HOUR,
+            &mut held,
+            &mut output,
+        );
+        assert_eq!(first.outcome, Outcome::Rows { len: 5_000 });
+        assert_eq!((first.countries, first.regions), (5_000, 17));
+        assert!(held.hour.is_some());
+        // HOUR+1 rewrites runtime slots 4 and 12 for the same 5,000 countries.
+        for country in 1..=5_000 {
+            world.pair(country, 4, country as i64, 9);
+            world.pair(country, 12, 8, country as i64);
+        }
+        let next = walk_growing(
+            &SliceMemory {
+                base: MEMORY,
+                bytes: &world.bytes,
+            },
+            BASE,
+            GAME,
+            HOUR + 1,
+            &mut held,
+            &mut output,
+        );
+        assert_eq!(next.outcome, Outcome::Rows { len: 15_000 });
+        assert!(!next.full);
+        assert_eq!(
+            &output[..3],
+            &[
+                Row {
+                    country: 1,
+                    region: 1_004,
+                    slot: 4,
+                    friendly: 1,
+                    enemy: 9
+                },
+                Row {
+                    country: 1,
+                    region: 1_012,
+                    slot: 12,
+                    friendly: 8,
+                    enemy: 1
+                },
+                Row {
+                    country: 1,
+                    region: 1_016,
+                    slot: 16,
+                    friendly: 0,
+                    enemy: 0
+                },
+            ]
+        );
+        assert_eq!(held.row_len, 15_000);
+        let mut fixed = [];
+        assert_eq!(
+            world.walk(HOUR, &mut Held::default(), &mut fixed).outcome,
+            Outcome::Unavailable {
+                reason: "raid air region scratch too small"
+            }
+        );
     }
 
     #[test]

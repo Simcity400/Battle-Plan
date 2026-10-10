@@ -32,11 +32,57 @@ impl<T> Deref for Padded<T> {
 pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 static LOG_SERIAL: AtomicU64 = AtomicU64::new(1);
 static LOG: AtomicUsize = AtomicUsize::new(0);
+static OFFERED: AtomicUsize = AtomicUsize::new(0);
 // Published pointers remain stable when the owning vector grows.
 #[allow(clippy::vec_box)]
 static LOGS: Mutex<Vec<Box<[Log]>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<String> = OnceLock::new();
 static COUNTERS: [AtomicU64; 11] = [const { AtomicU64::new(0) }; 11];
+const FAILURE_NAMES: [&str; 39] = [
+    "ideology identity unreadable",
+    "module address overflow",
+    "political party address overflow",
+    "political party and ideology ids differ",
+    "political party identity unreadable",
+    "political party ideology pointer unreadable or null",
+    "political party ideology vtable mismatch",
+    "political party vtable mismatch",
+    "politics ability upkeep identity address overflow",
+    "politics blockade cost define unreadable or overflowed",
+    "politics command power balance unreadable or overflowed",
+    "politics country address overflow",
+    "politics country backlink mismatch",
+    "politics country has null identity",
+    "politics country identity unreadable",
+    "politics country vtable mismatch",
+    "politics daily MIO cost output unreadable",
+    "politics daily cost modifier output unreadable or overflowed",
+    "politics daily political cost output unreadable or overflowed",
+    "politics daily relation cost output unreadable",
+    "politics event clock unreadable or overflowed",
+    "politics fallback ruling party pointer unreadable or overflowed",
+    "politics ideology address overflow",
+    "politics literal extent overflow",
+    "politics module overflow",
+    "politics owner pointer unreadable or null",
+    "politics political power balance unreadable, absent or overflowed",
+    "politics ruling party pointer unreadable or overflowed",
+    "politics sealed staging successor absent",
+    "politics staging absent",
+    "politics staging publisher count exhausted",
+    "politics status owner mismatch",
+    "politics status pointer overflow",
+    "politics status vtable mismatch",
+    "string header invalid",
+    "string header unreadable",
+    "string heap pointer invalid",
+    "string length overflow",
+    "string terminator unreadable or invalid",
+];
+static FAILURES: [AtomicU64; FAILURE_NAMES.len()] =
+    [const { AtomicU64::new(0) }; FAILURE_NAMES.len()];
+static UNLISTED_FAILURE: OnceLock<&'static str> = OnceLock::new();
+static UNLISTED_FAILURES: AtomicU64 = AtomicU64::new(0);
 static REQUIRED_KEYS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +328,12 @@ struct Log {
     registered: AtomicUsize,
     entries: usize,
     key_stride: usize,
+    // Power writes at 140B98130/140707F90 are interval facts. A closed
+    // generation has no publishers; stale callback pointers follow
+    // next. Cursor/consumed stay local, with a stable native sequence offset.
+    publishers: AtomicUsize,
+    next: AtomicUsize,
+    base_cursor: AtomicU64,
     cursor: Padded<AtomicU64>,
     consumed: AtomicU64,
     consumed_epoch: AtomicU64,
@@ -322,10 +374,52 @@ impl Log {
             registered: AtomicUsize::new(0),
             entries,
             key_stride: keys,
+            publishers: AtomicUsize::new(0),
+            next: AtomicUsize::new(0),
+            base_cursor: AtomicU64::new(0),
             cursor: Padded(AtomicU64::new(0)),
             consumed: AtomicU64::new(0),
             consumed_epoch: AtomicU64::new(EPOCH.load(Ordering::Acquire)),
         })
+    }
+    fn frontier(&self) -> u64 {
+        self.base_cursor.load(Ordering::Acquire) + self.cursor.load(Ordering::Acquire)
+    }
+    fn consumed_frontier(&self) -> u64 {
+        self.base_cursor.load(Ordering::Acquire) + self.consumed.load(Ordering::Acquire)
+    }
+}
+struct Publishing<'a>(&'a Log);
+impl Drop for Publishing<'_> {
+    fn drop(&mut self) {
+        self.0.publishers.fetch_sub(1, Ordering::Release);
+    }
+}
+fn publishing(mut log: &Log) -> Option<Publishing<'_>> {
+    loop {
+        match log
+            .publishers
+            .fetch_update(Ordering::Acquire, Ordering::Relaxed, |count| {
+                count.checked_add(1).filter(|&count| count != usize::MAX)
+            }) {
+            Ok(_) => return Some(Publishing(log)),
+            Err(usize::MAX) => {
+                let next = log.next.load(Ordering::Acquire) as *const Log;
+                if next.is_null() {
+                    failed("politics sealed staging successor absent");
+                    return None;
+                }
+                // Closure follows all old publications. Helpers and the
+                // boundary store the same immutable offset, never a cursor.
+                let next = unsafe { &*next };
+                next.base_cursor.store(log.frontier(), Ordering::Release);
+                log = next;
+            }
+            Err(_) => {
+                failed("politics staging publisher count exhausted");
+                return None;
+            }
+        }
     }
 }
 static REQUIRED_LANES: AtomicUsize = AtomicUsize::new(1);
@@ -408,7 +502,13 @@ pub fn restore_epoch(previous: u64) -> Result<(), &'static str> {
 pub fn invalidate() {
     EPOCH.fetch_add(1, Ordering::SeqCst);
 }
-fn failed() {
+fn failed(reason: &'static str) {
+    if let Some(index) = FAILURE_NAMES.iter().position(|name| *name == reason) {
+        FAILURES[index].fetch_add(1, Ordering::Relaxed);
+    } else {
+        let _ = UNLISTED_FAILURE.set(reason);
+        UNLISTED_FAILURES.fetch_add(1, Ordering::Relaxed);
+    }
     COUNTERS[3].fetch_add(1, Ordering::Relaxed);
     invalidate();
 }
@@ -445,9 +545,13 @@ fn log() -> Option<&'static Log> {
         Some(unsafe { &*pointer })
     }
 }
-/// Off-thread only. Replacing staging declares a new epoch; old allocations
-/// remain alive until observers and capture workers have quiesced on detach.
+/// Off-thread only. Larger staging is offered to an hourly handoff; old
+/// generations remain alive until callbacks and capture workers quiesce.
 pub fn resize(entries: usize, keys: usize) {
+    engine::allocation::advisory(|| resize_storage(entries, keys));
+}
+
+fn resize_storage(entries: usize, keys: usize) {
     if resize_checked(entries, keys).is_err() {
         // Checked helpers stop admission and write the preopened terminal witness.
         // Keep all previously published storage alive until observer quiescence.
@@ -456,51 +560,82 @@ pub fn resize(entries: usize, keys: usize) {
     }
 }
 fn resize_checked(entries: usize, keys: usize) -> io::Result<()> {
-    // Match lane rounding so small roster changes do not retire identical rings.
-    let entries = entries
-        .max(log().map_or(0, |log| log.entries))
-        .max(1)
-        .checked_next_power_of_two()
-        .ok_or_else(allocation::oom)?;
-    let keys = keys
-        .max(REQUIRED_KEYS.load(Ordering::Relaxed))
-        .max(log().map_or(0, |log| log.key_stride));
-    if log().is_some_and(|log| {
-        log.entries >= entries
-            && log.key_stride >= keys
-            && log.lanes.len() >= thread_slots()
-            && log
-                .lanes
-                .iter()
-                .all(|lane| lane.slots.len() >= lane.required_entries.load(Ordering::Relaxed))
-    }) {
-        return Ok(());
-    }
-    let required = if let Some(log) = log() {
-        allocation::map_slice(&log.lanes, |lane| {
-            lane.required_entries
-                .load(Ordering::Relaxed)
-                .max(lane.slots.len())
-        })?
-    } else {
-        Vec::new()
-    };
-    let fresh = Log::with_lane_requirements(entries, keys, thread_slots(), &required)?;
-    let fresh = allocation::boxed_slice(allocation::collect_vec([fresh])?)?;
-    let pointer = fresh.as_ptr() as usize;
     let mut logs = LOGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let offered = OFFERED.load(Ordering::Acquire) as *const Log;
+    let offered = (!offered.is_null()).then(|| unsafe { &*offered });
+    // The boundary clears an offer only after publishing it as current.
+    let current = log();
+    let sources = [current, offered];
+    // Match lane rounding so small roster changes do not retire identical rings.
+    let entries = entries
+        .max(
+            sources
+                .into_iter()
+                .flatten()
+                .map(|log| log.entries)
+                .max()
+                .unwrap_or(0),
+        )
+        .max(1)
+        .checked_next_power_of_two()
+        .ok_or_else(allocation::oom)?;
+    let keys = keys.max(REQUIRED_KEYS.load(Ordering::Relaxed)).max(
+        sources
+            .into_iter()
+            .flatten()
+            .map(|log| log.key_stride)
+            .max()
+            .unwrap_or(0),
+    );
+    let lanes = thread_slots().max(
+        sources
+            .into_iter()
+            .flatten()
+            .map(|log| log.lanes.len())
+            .max()
+            .unwrap_or(0),
+    );
+    let required = |n: usize| {
+        sources
+            .into_iter()
+            .flatten()
+            .filter_map(|log| log.lanes.get(n))
+            .map(|lane| {
+                lane.required_entries
+                    .load(Ordering::Relaxed)
+                    .max(lane.slots.len())
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    if sources.into_iter().flatten().any(|log| {
+        log.entries >= entries
+            && log.key_stride >= keys
+            && log.lanes.len() >= lanes
+            && log
+                .lanes
+                .iter()
+                .enumerate()
+                .all(|(n, lane)| lane.slots.len() >= required(n))
+    }) {
+        return Ok(());
+    }
+    let required = allocation::collect_vec((0..lanes).map(required))?;
+    let fresh = Log::with_lane_requirements(entries, keys, lanes, &required)?;
+    let fresh = allocation::boxed_slice(allocation::collect_vec([fresh])?)?;
+    let pointer = fresh.as_ptr() as usize;
     allocation::reserve_push_batch(&mut logs, 1)?;
     if allocation::capture_stopped() {
         return Err(allocation::oom());
     }
-    invalidate();
-    fresh[0]
-        .consumed_epoch
-        .store(EPOCH.load(Ordering::Acquire), Ordering::Relaxed);
     logs.push(fresh);
-    LOG.store(pointer, Ordering::Release);
+    if current.is_none() {
+        LOG.store(pointer, Ordering::Release);
+    } else {
+        OFFERED.store(pointer, Ordering::Release);
+    }
     Ok(())
 }
 
@@ -523,6 +658,7 @@ pub unsafe fn release() {
         return; // Retain every published log; never panic or free live storage.
     }
     LOG.store(0, Ordering::Release);
+    OFFERED.store(0, Ordering::Release);
     LOGS.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clear();
@@ -670,7 +806,7 @@ fn append_record_using(
         return;
     }
     let Some(log) = log() else {
-        failed();
+        failed("politics staging absent");
         return;
     };
     let Some(hour) = DAILY_HOUR.get().or_else(|| {
@@ -680,7 +816,7 @@ fn append_record_using(
             event_hour()
         }
     }) else {
-        failed();
+        failed("politics event clock unreadable or overflowed");
         return;
     };
     record.hour = hour;
@@ -689,6 +825,10 @@ fn append_record_using(
 }
 #[inline(always)]
 fn append_raw(log: &Log, record: Record, keys: [native::Literal; 3], memory: &impl Memory) {
+    let Some(publishing) = publishing(log) else {
+        return;
+    };
+    let log = publishing.0;
     let Some(lane) = cached_lane(log) else {
         return;
     };
@@ -739,7 +879,7 @@ fn append_raw_to_lane(
     for key in keys.iter_mut().filter(|key| key.len != 0) {
         let length = key.len;
         let Some(end) = used.checked_add(length) else {
-            failed();
+            failed("politics literal extent overflow");
             return;
         };
         if end > log.key_stride || end > u32::MAX as usize {
@@ -767,7 +907,8 @@ fn append_raw_to_lane(
         };
         used = end;
     }
-    record.sequence = log.cursor.fetch_add(1, Ordering::Relaxed) + 1;
+    record.sequence =
+        log.base_cursor.load(Ordering::Acquire) + log.cursor.fetch_add(1, Ordering::Relaxed) + 1;
     record.keys = keys.map(|key| [key.address as u32, key.len as u32]);
     unsafe {
         *lane.slots[index].get() = record;
@@ -788,18 +929,73 @@ pub struct Handoff {
     cursor: u64,
     lanes: usize,
 }
-/// Game thread: exchange the interval's upper ring index, without copying
+/// Exchange the interval's upper ring index, without copying
 /// events, scanning countries, resolving identities or touching replay rows.
+#[cfg(test)]
 pub fn handoff(cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
+    handoff_buffer(engine::walk::Buffer::Fixed(cursors))
+}
+pub(crate) fn handoff_growing(cursors: &mut Vec<LaneCursor>) -> Result<Handoff, &'static str> {
+    handoff_buffer(engine::walk::Buffer::Growing(cursors))
+}
+fn handoff_buffer(
+    mut cursors: engine::walk::Buffer<'_, LaneCursor>,
+) -> Result<Handoff, &'static str> {
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::Acquire) {
         return Err("politics hooks unavailable");
     }
     let log = log().ok_or("politics staging unavailable")?;
-    handoff_from(log, cursors)
+    // A publisher lease closes the seal/publication race, independently of
+    // native calls beginning after ACTIVE's quiet observation. Their emitters
+    // follow the prepared successor instead of waiting or losing records.
+    if ACTIVE.load(Ordering::SeqCst) != 0 {
+        return handoff_from_buffer(log, cursors);
+    }
+    if !cursors.ensure(log.lanes.len())? {
+        return handoff_from_buffer(log, cursors);
+    }
+    let offered = OFFERED.load(Ordering::Acquire) as *const Log;
+    if offered.is_null() {
+        return handoff_from_buffer(log, cursors);
+    }
+    let offered = unsafe { &*offered };
+    if !cursors.ensure(offered.lanes.len())? {
+        return handoff_from_buffer(log, cursors);
+    }
+    if !close_for_handoff(log, offered) {
+        return handoff_from_buffer(log, cursors);
+    }
+    offered.base_cursor.store(log.frontier(), Ordering::Release);
+    let sealed = handoff_from_buffer(log, cursors);
+    LOG.store(offered as *const Log as usize, Ordering::Release);
+    let _ = OFFERED.compare_exchange(
+        offered as *const Log as usize,
+        0,
+        Ordering::AcqRel,
+        Ordering::Relaxed,
+    );
+    sealed
 }
+fn close_for_handoff(log: &Log, offered: &Log) -> bool {
+    offered
+        .consumed_epoch
+        .store(EPOCH.load(Ordering::Acquire), Ordering::Relaxed);
+    log.next
+        .store(offered as *const Log as usize, Ordering::Release);
+    log.publishers
+        .compare_exchange(0, usize::MAX, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+}
+#[cfg(test)]
 fn handoff_from(log: &Log, cursors: &mut [LaneCursor]) -> Result<Handoff, &'static str> {
+    handoff_from_buffer(log, engine::walk::Buffer::Fixed(cursors))
+}
+fn handoff_from_buffer(
+    log: &Log,
+    mut cursors: engine::walk::Buffer<'_, LaneCursor>,
+) -> Result<Handoff, &'static str> {
     let count = log.registered.load(Ordering::Acquire).min(log.lanes.len());
-    if cursors.len() < count {
+    if !cursors.ensure(count)? {
         short_handoff();
         return Err("politics thread handoff staging short");
     }
@@ -810,15 +1006,14 @@ fn handoff_from(log: &Log, cursors: &mut [LaneCursor]) -> Result<Handoff, &'stat
     Ok(Handoff {
         log: log as *const Log as usize,
         epoch: EPOCH.load(Ordering::Acquire),
-        cursor: log.cursor.load(Ordering::Acquire),
+        cursor: log.frontier(),
         lanes: count,
     })
 }
 impl Handoff {
     pub fn pending(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
-        self.cursor
-            .wrapping_sub(log.consumed.load(Ordering::Acquire)) as usize
+        self.cursor.wrapping_sub(log.consumed_frontier()) as usize
     }
     pub fn key_capacity(self) -> usize {
         let log = unsafe { &*(self.log as *const Log) };
@@ -865,7 +1060,7 @@ fn drain_from(log: &Log, output: &mut [Event], bytes: &mut [u8]) -> Result<Drain
     drain_until(
         log,
         EPOCH.load(Ordering::Acquire),
-        log.cursor.load(Ordering::Acquire),
+        log.frontier(),
         &cursors,
         output,
         bytes,
@@ -879,7 +1074,7 @@ fn drain_until(
     output: &mut [Event],
     bytes: &mut [u8],
 ) -> Result<Drained, &'static str> {
-    let first = log.consumed.load(Ordering::Acquire);
+    let first = log.consumed_frontier();
     if log.consumed_epoch.swap(epoch, Ordering::AcqRel) != epoch
         || epoch != EPOCH.load(Ordering::Acquire)
     {
@@ -888,7 +1083,10 @@ fn drain_until(
             lane.consumed_rejected
                 .store(end.rejected, Ordering::Release);
         }
-        log.consumed.store(cursor, Ordering::Release);
+        log.consumed.store(
+            cursor - log.base_cursor.load(Ordering::Acquire),
+            Ordering::Release,
+        );
         return Err("politics observation restarted");
     }
     let pending = cursor.wrapping_sub(first) as usize;
@@ -957,7 +1155,10 @@ fn drain_until(
                 .store(end.rejected, Ordering::Release);
         }
     }
-    log.consumed.store(first + copied as u64, Ordering::Release);
+    log.consumed.store(
+        first + copied as u64 - log.base_cursor.load(Ordering::Acquire),
+        Ordering::Release,
+    );
     if epoch != EPOCH.load(Ordering::Acquire) {
         return Err("politics observation epoch changed during handoff");
     }
@@ -1026,31 +1227,51 @@ thread_local! {
     static DAILY: Cell<Option<native::Owner>> = const { Cell::new(None) };
     static CONTEXT: Cell<Context> = const { Cell::new(Context { identity: Identity { action: PowerAction::None, keys: [native::Literal { address: 0, len: 0 }; 3], flags:0, words:[0;6], object_kind:PowerObjectKind::None, reference:0, origin_kind:PowerOriginKind::None }, government: GovernmentCause::NotIdentified }) };
 }
-fn balance(owner: native::Owner, currency: PowerCurrency) -> Option<i64> {
-    match currency {
-        PowerCurrency::Political => read::<i64>(
-            owner
-                .politics?
-                .checked_add(engine::cpolitical_status::POLITICAL_POWER)?,
-        ),
-        PowerCurrency::Command => {
-            read::<i64>(owner.pointer.checked_add(engine::ccountry::COMMAND_POWER)?)
+fn observed_owner(value: Result<native::Owner, &'static str>) -> Option<native::Owner> {
+    match value {
+        Ok(owner) => Some(owner),
+        Err(reason) => {
+            failed(reason);
+            None
         }
     }
 }
-/// Flush a parent's own commits before entering a child writer/signal. After
-/// the child, the parent's baseline resumes at the child's resulting balance.
+fn balance(owner: native::Owner, currency: PowerCurrency) -> Option<i64> {
+    observed_balance(&memory(), owner, currency)
+}
+/// 140B98130/140B98220 and the CP writers consume these exact stored balances.
 #[inline(always)]
 fn operand_balance(owner: native::Owner, currency: PowerCurrency) -> Option<i64> {
-    let address = match currency {
-        PowerCurrency::Political => owner
-            .politics?
-            .checked_add(engine::cpolitical_status::POLITICAL_POWER)?,
-        PowerCurrency::Command => owner.pointer.checked_add(engine::ccountry::COMMAND_POWER)?,
+    observed_balance(&operand_memory(), owner, currency)
+}
+fn observed_balance(
+    memory: &impl Memory,
+    owner: native::Owner,
+    currency: PowerCurrency,
+) -> Option<i64> {
+    let (address, reason) = match currency {
+        PowerCurrency::Political => (
+            owner.politics.and_then(|pointer| {
+                pointer.checked_add(engine::cpolitical_status::POLITICAL_POWER)
+            }),
+            "politics political power balance unreadable, absent or overflowed",
+        ),
+        PowerCurrency::Command => (
+            owner.pointer.checked_add(engine::ccountry::COMMAND_POWER),
+            "politics command power balance unreadable or overflowed",
+        ),
     };
-    operand(address)
+    match address.and_then(|address| engine::read(memory, address)) {
+        Some(value) => Some(value),
+        None => {
+            failed(reason);
+            None
+        }
+    }
 }
 
+/// Flush a parent's own commits before entering a child writer/signal. After
+/// the child, the parent's baseline resumes at the child's resulting balance.
 fn flush(force: bool) {
     let Some(mut pending) = PENDING.get() else {
         return;
@@ -1060,7 +1281,6 @@ fn flush(force: bool) {
     } else {
         balance(pending.owner, pending.currency)
     }) else {
-        failed();
         return;
     };
     if after != pending.before || force && !pending.emitted {
@@ -1508,8 +1728,8 @@ fn government_with_old(
 ) {
     let owner = match native::status_owner(&memory(), base(), status) {
         Ok(owner) => owner,
-        Err(_) => {
-            failed();
+        Err(reason) => {
+            failed(reason);
             return;
         }
     };
@@ -1517,7 +1737,7 @@ fn government_with_old(
         .map(|p| p as u64)
         .or_else(|| at(status, engine::cpolitical_status::RULING_PARTY).and_then(read::<u64>))
     else {
-        failed();
+        failed("politics ruling party pointer unreadable or overflowed");
         return;
     };
     if old_party as usize == new_party {
@@ -1525,9 +1745,19 @@ fn government_with_old(
     }
     let old = native::party_literal(&memory(), base(), old_party as usize);
     let new = native::party_literal(&memory(), base(), new_party);
-    let (Ok(old), Ok(new)) = (old, new) else {
-        failed();
-        return;
+    let old = match old {
+        Ok(value) => value,
+        Err(reason) => {
+            failed(reason);
+            return;
+        }
+    };
+    let new = match new {
+        Ok(value) => value,
+        Err(reason) => {
+            failed(reason);
+            return;
+        }
     };
     let context = CONTEXT.get();
     let mut identity = context.identity;
@@ -1616,7 +1846,7 @@ unsafe extern "system-unwind" fn entry_body(
                     let identity = relation_identity(a);
                     component(owner, PowerDailyCostKind::Relation, cost, identity);
                 } else {
-                    failed();
+                    failed("politics daily relation cost output unreadable");
                 }
             }
             "MioResearchDaily" if caller == 0xe4f8c9 => {
@@ -1652,7 +1882,7 @@ fn mio_component(
     kind: PowerDailyCostKind,
 ) {
     let Some(cost) = cost else {
-        failed();
+        failed("politics daily MIO cost output unreadable");
         return;
     };
     component(owner, kind, cost, mio_identity(organisation));
@@ -1778,9 +2008,9 @@ unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, calle
         ),
         _ => (
             if native_daily {
-                native::country_owner(&operand_memory(), base(), a)
+                native::command_owner(&operand_memory(), base(), a)
             } else {
-                native::country_owner(&memory(), base(), a)
+                native::command_owner(&memory(), base(), a)
             },
             PowerCurrency::Command,
             [
@@ -1794,7 +2024,13 @@ unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, calle
             ][index - 3],
         ),
     };
-    let owner = owner.ok();
+    let owner = match owner {
+        Ok(owner) => Some(owner),
+        Err(reason) => {
+            failed(reason);
+            None
+        }
+    };
     let before = owner.and_then(|owner| {
         if native_daily {
             operand_balance(owner, currency)
@@ -1911,7 +2147,6 @@ unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, calle
             emitted: false,
         }));
     } else {
-        failed();
         PENDING.set(None);
     }
     let previous_context = CONTEXT.get();
@@ -1930,12 +2165,10 @@ unsafe fn writer(original: NativeFunction, args: [usize; 5], index: usize, calle
                 .get()
                 .is_some_and(|p| p.requested.is_some() || matches!(index, 2 | 3)),
     );
-    if let Some(pending) = &mut previous {
-        if let Some(after) = balance(pending.owner, pending.currency) {
-            pending.before = after;
-        } else {
-            failed();
-        }
+    if let Some(pending) = &mut previous
+        && let Some(after) = balance(pending.owner, pending.currency)
+    {
+        pending.before = after;
     }
     PENDING.set(previous);
     result
@@ -1961,8 +2194,8 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
     match index {
         0 => {
             flush(false);
-            let owner = native::status_owner(&memory(), base(), registers.rsi);
-            if let Ok(owner) = owner
+            let owner = observed_owner(native::status_owner(&memory(), base(), registers.rsi));
+            if let Some(owner) = owner
                 && let Some(before) = balance(owner, PowerCurrency::Political)
             {
                 power(
@@ -1982,23 +2215,24 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                     PowerCurrency::Political,
                     (registers.rcx as i64).max(0),
                 );
-            } else {
-                failed();
             }
         }
         1 => {
             flush(false);
-            let owner = native::country_owner(&operand_memory(), base(), registers.r13);
-            if let Ok(owner) = owner
-                && let Some(before) =
-                    operand::<i64>(owner.pointer + engine::ccountry::COMMAND_POWER)
+            let owner = observed_owner(native::command_owner(
+                &operand_memory(),
+                base(),
+                registers.r13,
+            ));
+            if let Some(owner) = owner
+                && let Some(before) = operand_balance(owner, PowerCurrency::Command)
             {
                 let identity = registers
                     .r15
                     .checked_add(registers.rbx)
                     .map(upkeep_identity)
                     .unwrap_or_else(|| {
-                        failed();
+                        failed("politics ability upkeep identity address overflow");
                         Identity::default()
                     });
                 append_operands(
@@ -2017,8 +2251,6 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                     identity.keys,
                 );
                 resume_pending(owner, PowerCurrency::Command, registers.rcx as i64);
-            } else {
-                failed();
             }
         }
         2 => government(
@@ -2056,7 +2288,7 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                         );
                     }
                 } else {
-                    failed();
+                    failed("politics fallback ruling party pointer unreadable or overflowed");
                 }
             }
         }
@@ -2070,9 +2302,13 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                 return;
             }
             DAILY.set(None);
-            let owner = native::status_owner(&operand_memory(), base(), registers.r13);
+            let owner = observed_owner(native::status_owner(
+                &operand_memory(),
+                base(),
+                registers.r13,
+            ));
             let cost = registers.rbp.checked_sub(0x38).and_then(operand::<i64>);
-            if let (Ok(owner), Some(cost)) = (owner, cost) {
+            if let (Some(owner), Some(cost)) = (owner, cost) {
                 daily(owner, registers.rdi as i64, cost, registers.rax as i64);
                 if let Some(define) = base()
                     .checked_add(native::BLOCKADE_COST_DEFINE_RVA)
@@ -2085,10 +2321,10 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                         Identity::default(),
                     );
                 } else {
-                    failed();
+                    failed("politics blockade cost define unreadable or overflowed");
                 }
-            } else {
-                failed();
+            } else if owner.is_some() {
+                failed("politics daily political cost output unreadable or overflowed");
             }
         }
         7 => {
@@ -2098,7 +2334,11 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                 return;
             }
             DAILY.set(None);
-            if let Ok(owner) = native::status_owner(&operand_memory(), base(), registers.r13) {
+            if let Some(owner) = observed_owner(native::status_owner(
+                &operand_memory(),
+                base(),
+                registers.r13,
+            )) {
                 if let Some(cost) = registers.rbp.checked_sub(0x38).and_then(operand::<i64>) {
                     DAILY.set(Some(owner));
                     component(
@@ -2108,10 +2348,8 @@ unsafe extern "system-unwind" fn tap(registers: &Registers, index: usize) {
                         Identity::default(),
                     );
                 } else {
-                    failed();
+                    failed("politics daily cost modifier output unreadable or overflowed");
                 }
-            } else {
-                failed();
             }
         }
         8 | 9 => flush(
@@ -2130,8 +2368,11 @@ pub fn status() -> impl serde::Serialize {
     crate::status::status!({
         "unhooked": UNHOOKED.get(), "enabled": ENABLED.load(Ordering::Acquire),
         "feature_enabled": cfg!(feature = "politics_capture"), "runtime_enabled": RUNTIME_ENABLED.load(Ordering::Relaxed), "release_refusals": counters[8], "unwound_observers": counters[9],
-        "epoch": EPOCH.load(Ordering::SeqCst), "events": log().map(|log| log.cursor.load(Ordering::Relaxed)),
+        "epoch": EPOCH.load(Ordering::SeqCst), "events": log().map(Log::frontier),
         "overflows": counters[1], "sentinel_failures": counters[2],
+        "native_read_reasons": crate::status::map(FAILURE_NAMES.into_iter().zip(FAILURES.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
+        "first_unlisted_native_read_reason": UNLISTED_FAILURE.get().copied(),
+        "unlisted_native_read_reasons": UNLISTED_FAILURES.load(Ordering::Relaxed),
         "failed_native_reads": counters[3], "missing_item_identities": counters[4],
         "required_entries_per_lane": log().map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.required_entries.load(Ordering::Relaxed)))),
         "staging_entries_per_lane": log().map(|log| crate::status::sequence(log.lanes.iter().map(|lane| lane.slots.len()))),
@@ -2266,12 +2507,14 @@ impl Hooks {
             ENABLED.store(false, Ordering::SeqCst);
         }
         invalidate();
-        let mut family = allocation::collect_vec(
+        let mut family =
+            crate::hook::publication_storage(self.entries.len() + self.taps.len(), enabled)
+                .map_err(|_| "politics hook family allocation failed")?;
+        family.extend(
             self.entries
                 .iter_mut()
                 .chain(self.taps.iter_mut().map(Tap::publication_hook)),
-        )
-        .map_err(|_| "politics hook family allocation failed")?;
+        );
         if !Hook::set_enabled_batch(&mut family, enabled).map_err(|reason| {
             let _ = UNHOOKED.set(reason);
             "politics hook state change failed"
@@ -2342,6 +2585,8 @@ pub(crate) fn bench_begin(base: usize, entries: usize, keys: usize) {
     BASE.store(base, Ordering::Relaxed);
     resize(entries, keys);
     ENABLED.store(true, Ordering::SeqCst);
+    let mut cursors = vec![LaneCursor::default(); thread_slots()];
+    let _ = handoff(&mut cursors);
     let log = log().unwrap();
     for lane in &log.lanes {
         lane.consumed
@@ -2583,7 +2828,7 @@ pub(crate) fn bench_midnight_parts(receivers: &[usize]) {
                 }
                 "owner_country" => {
                     for p in &owners {
-                        black_box(native::country_owner(&operand_memory(), base(), *p).unwrap());
+                        black_box(native::command_owner(&operand_memory(), base(), *p).unwrap());
                     }
                 }
                 "stack_scalar" => {
@@ -2685,7 +2930,7 @@ pub(crate) fn bench_midnight_parts(receivers: &[usize]) {
         );
     }
     println!(
-        "raw_record_bytes={} events_per_country=13 native_operand_backend=SEH_guarded; guarded_spans: status_owner=5 country_owner=4 stack=1 clock=2 relation=2 mio=2 upkeep_identity=4 literal_inline_copy=1",
+        "raw_record_bytes={} events_per_country=13 native_operand_backend=SEH_guarded; guarded_spans: status_owner=5 command_owner=1 stack=1 clock=2 relation=2 mio=2 upkeep_identity=4 literal_inline_copy=1",
         std::mem::size_of::<Record>()
     );
 }
@@ -2711,6 +2956,136 @@ pub(crate) fn fixture_identities(receiver: usize, kind: usize) -> (Identity, Ide
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_lane_handoff_grows_original_five_thousand_country_and_mod_sized_domains() {
+        let _guard = STAGING_TEST.lock().unwrap();
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        let mut cursors = Vec::new();
+        for count in [5000, 12_000] {
+            let log = Log::with_lanes(count, 1, count);
+            log.registered.store(count, Ordering::Release);
+            let epoch = EPOCH.load(Ordering::Acquire);
+            for index in 0..count {
+                append_lane(
+                    &log,
+                    index,
+                    Event {
+                        country: (index % 5000) as u32,
+                        epoch,
+                        ..Default::default()
+                    },
+                    &memory,
+                );
+            }
+            assert!(matches!(
+                handoff_from(&log, &mut []),
+                Err("politics thread handoff staging short")
+            ));
+            let handoff =
+                handoff_from_buffer(&log, engine::walk::Buffer::Growing(&mut cursors)).unwrap();
+            assert_eq!(handoff.lanes, count);
+            assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
+            let mut events = vec![Event::default(); count];
+            let drain = handoff.drain(&cursors, &mut events, &mut []).unwrap();
+            assert_eq!(drain.copied, count);
+            assert_eq!(events[count - 1].country, ((count - 1) % 5000) as u32);
+            for (index, event) in events.iter().enumerate() {
+                assert_eq!(event.sequence, index as u64 + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn worker_lane_handoff_sizes_prepared_successor_before_sealing_original_events() {
+        let _guard = STAGING_TEST.lock().unwrap();
+        clear_staging();
+        resize_checked(8, 1).unwrap();
+        let old = log().unwrap();
+        let previous = REQUIRED_LANES.load(Ordering::Relaxed);
+        REQUIRED_LANES.store(old.lanes.len() + 17, Ordering::Relaxed);
+        append_to(
+            old,
+            Event {
+                country: 5000,
+                ..Default::default()
+            },
+            &engine::memory::SliceMemory {
+                base: 0,
+                bytes: &[],
+            },
+        );
+        resize_checked(old.entries, old.key_stride).unwrap();
+        let offered = OFFERED.load(Ordering::Acquire);
+        let mut cursors = Vec::new();
+        ENABLED.store(true, Ordering::SeqCst);
+        let sealed = handoff_growing(&mut cursors).unwrap();
+        ENABLED.store(false, Ordering::SeqCst);
+        assert_eq!(sealed.log, old as *const Log as usize);
+        assert_eq!(LOG.load(Ordering::Acquire), offered);
+        assert!(cursors.len() >= log().unwrap().lanes.len());
+        let mut events = [Event::default()];
+        assert_eq!(
+            sealed.drain(&cursors, &mut events, &mut []).unwrap().copied,
+            1
+        );
+        assert_eq!(events[0].country, 5000);
+        REQUIRED_LANES.store(previous, Ordering::Relaxed);
+        clear_staging();
+    }
+
+    fn seal_staging() -> (Handoff, Vec<LaneCursor>) {
+        let mut cursors =
+            vec![LaneCursor::default(); log().unwrap().lanes.len().max(thread_slots())];
+        let enabled = ENABLED.swap(true, Ordering::SeqCst);
+        let sealed = crate::allocation_failure_tests::with_allocations_denied(|| {
+            handoff(&mut cursors).unwrap()
+        });
+        ENABLED.store(enabled, Ordering::SeqCst);
+        (sealed, cursors)
+    }
+
+    fn clear_staging() {
+        ENABLED.store(false, Ordering::SeqCst);
+        unsafe {
+            release();
+        }
+    }
+
+    #[test]
+    fn balance_faults_name_each_native_read_and_withdraw_coverage_without_allocation() {
+        let _guard = STAGING_TEST.lock().unwrap();
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        let owner = native::Owner {
+            pointer: 0x1000,
+            country: 1,
+            instance: 0,
+            politics: Some(0x2000),
+        };
+        let before = COUNTERS[3].load(Ordering::Relaxed);
+        let epoch = EPOCH.load(Ordering::SeqCst);
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            assert!(observed_balance(&memory, owner, PowerCurrency::Political).is_none());
+            assert!(observed_balance(&memory, owner, PowerCurrency::Command).is_none());
+            assert!(observed_owner(Err("politics status owner mismatch")).is_none());
+        });
+        assert_eq!(COUNTERS[3].load(Ordering::Relaxed), before + 3);
+        assert_eq!(EPOCH.load(Ordering::SeqCst), epoch + 3);
+        let value = serde_json::to_value(status()).unwrap();
+        for reason in [
+            "politics political power balance unreadable, absent or overflowed",
+            "politics command power balance unreadable or overflowed",
+            "politics status owner mismatch",
+        ] {
+            assert!(value["native_read_reasons"][reason].as_u64().unwrap() > 0);
+        }
+    }
 
     #[test]
     fn premature_release_retains_storage_and_counts_refusal() {
@@ -2742,6 +3117,7 @@ mod tests {
     #[test]
     fn failed_staging_replacement_preserves_published_log_and_retention() {
         let _guard = STAGING_TEST.lock().unwrap();
+        clear_staging();
         resize_checked(16, 1).unwrap();
         let pointer = LOG.load(Ordering::Acquire);
         assert_ne!(pointer, 0);
@@ -2754,6 +3130,7 @@ mod tests {
     #[test]
     fn resumed_history_epoch_and_staging_growth_preserve_identity_and_keys() {
         let _guard = STAGING_TEST.lock().unwrap();
+        clear_staging();
         let prior = EPOCH.load(Ordering::Acquire).max(99);
         restore_epoch(prior).unwrap();
         resize_checked(16, 257).unwrap();
@@ -2763,12 +3140,15 @@ mod tests {
         let epoch = EPOCH.load(Ordering::Acquire);
         assert!(epoch > prior);
         resize_checked(entries.checked_add(1).unwrap(), 0).unwrap();
+        assert_eq!(log().unwrap() as *const Log, first as *const Log);
+        seal_staging();
         assert!(log().unwrap().key_stride >= stride);
-        assert!(EPOCH.load(Ordering::Acquire) > epoch);
+        assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
         let pointer = LOG.load(Ordering::Acquire);
         resize_checked(entries + 2, 0).unwrap();
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
         resize_checked(1, stride + 1).unwrap();
+        seal_staging();
         assert!(log().unwrap().entries > entries);
         let epoch = EPOCH.load(Ordering::Acquire);
         assert!(restore_epoch(u64::MAX).is_err());
@@ -2818,6 +3198,7 @@ mod tests {
     #[test]
     fn lane_pressure_retries_growth_without_more_countries_or_keys() {
         let _guard = STAGING_TEST.lock().unwrap();
+        clear_staging();
         resize_checked(16, 1).unwrap();
         let before = log().unwrap();
         let capacity = before.lanes[0].slots.len();
@@ -2830,6 +3211,9 @@ mod tests {
         }
         let pointer = LOG.load(Ordering::Acquire);
         prepare();
+        assert_eq!(LOG.load(Ordering::Acquire), pointer);
+        assert_ne!(OFFERED.load(Ordering::Acquire), 0);
+        seal_staging();
         assert_ne!(LOG.load(Ordering::Acquire), pointer);
         let after = log().unwrap();
         assert!(after.lanes[0].slots.len() >= capacity * 2);
@@ -2838,6 +3222,259 @@ mod tests {
         let pointer = LOG.load(Ordering::Acquire);
         prepare();
         assert_eq!(LOG.load(Ordering::Acquire), pointer);
+    }
+
+    #[test]
+    fn staging_growth_preserves_5000_country_unsealed_and_already_sealed_records() {
+        let _guard = STAGING_TEST.lock().unwrap();
+        clear_staging();
+        resize_checked(8192, 16).unwrap();
+        let old = log().unwrap();
+        let epoch = EPOCH.load(Ordering::Acquire);
+        let mut source = [0; 32];
+        source[..9].copy_from_slice(b"mod_itemx");
+        source[16..24].copy_from_slice(&9_u64.to_le_bytes());
+        source[24..32].copy_from_slice(&15_u64.to_le_bytes());
+        let event = |country| Event {
+            country,
+            epoch,
+            hour: 10,
+            identity: Identity {
+                keys: [
+                    native::Literal {
+                        address: 0x1000,
+                        len: 9,
+                    },
+                    native::Literal::default(),
+                    native::Literal::default(),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        {
+            let memory = engine::memory::SliceMemory {
+                base: 0x1000,
+                bytes: &source,
+            };
+            for country in 1..=2500 {
+                append_to(old, event(country), &memory);
+            }
+        }
+        let (first, first_cursors) = seal_staging();
+        {
+            let memory = engine::memory::SliceMemory {
+                base: 0x1000,
+                bytes: &source,
+            };
+            for country in 2501..=5000 {
+                append_to(old, event(country), &memory);
+            }
+        }
+        resize_checked(old.entries + 1, old.key_stride + 1).unwrap();
+        let retained_log = LOG.load(Ordering::Acquire);
+        let retained_epoch = EPOCH.load(Ordering::Acquire);
+        let (second, second_cursors) = seal_staging();
+        let fresh = log().unwrap();
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            append_to(
+                fresh,
+                event(5001),
+                &engine::memory::SliceMemory {
+                    base: 0x1000,
+                    bytes: &source,
+                },
+            );
+        });
+        let (third, third_cursors) = seal_staging();
+        source.fill(0);
+        let mut output = vec![Event::default(); 2500];
+        let mut bytes = vec![0; 2500 * 9];
+        for (start, sealed, cursors) in [(1, first, first_cursors), (2501, second, second_cursors)]
+        {
+            let drained = sealed.drain(&cursors, &mut output, &mut bytes).unwrap();
+            assert_eq!(
+                (
+                    drained.first,
+                    drained.cursor,
+                    drained.copied,
+                    drained.pending
+                ),
+                ((start - 1) as u64, (start + 2499) as u64, 2500, 2500)
+            );
+            for (index, event) in output.iter().enumerate() {
+                assert_eq!(event.country, start + index as u32);
+                assert_eq!(event.sequence, (start + index as u32) as u64);
+                assert_eq!(event.epoch, epoch);
+                let key = event.identity.keys[0];
+                assert_eq!(&bytes[key.address..key.address + key.len], b"mod_itemx");
+            }
+        }
+        let drained = third
+            .drain(&third_cursors, &mut output, &mut bytes)
+            .unwrap();
+        assert_eq!(
+            (
+                drained.first,
+                drained.cursor,
+                drained.copied,
+                drained.pending
+            ),
+            (5000, 5001, 1, 1)
+        );
+        assert_eq!((output[0].country, output[0].sequence), (5001, 5001));
+        assert_eq!(retained_log, old as *const Log as usize);
+        assert_ne!(fresh as *const Log, old as *const Log);
+        assert_eq!(retained_epoch, epoch);
+        assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
+        clear_staging();
+    }
+
+    #[test]
+    fn stale_publisher_routes_during_closure_before_base_and_current_publication() {
+        let _guard = STAGING_TEST.lock().unwrap();
+        let old = Log::new(4, 1);
+        let fresh = Log::new(8, 1);
+        let memory = engine::memory::SliceMemory {
+            base: 0,
+            bytes: &[],
+        };
+        for country in [1, 2] {
+            append_to(
+                &old,
+                Event {
+                    country,
+                    ..Default::default()
+                },
+                &memory,
+            );
+        }
+        assert!(close_for_handoff(&old, &fresh));
+        assert_eq!(fresh.base_cursor.load(Ordering::Acquire), 0);
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            append_to(
+                &old,
+                Event {
+                    country: 3,
+                    ..Default::default()
+                },
+                &memory,
+            );
+        });
+        assert_eq!(fresh.base_cursor.load(Ordering::Acquire), 2);
+        assert_eq!(fresh.cursor.load(Ordering::Acquire), 1);
+        // Complete the boundary after the stale emitter has already published.
+        fresh.base_cursor.store(old.frontier(), Ordering::Release);
+        let mut output = [Event::default(); 3];
+        let drained = drain_from(&old, &mut output, &mut []).unwrap();
+        assert_eq!((drained.first, drained.cursor, drained.copied), (0, 2, 2));
+        assert_eq!((output[0].country, output[1].country), (1, 2));
+        let drained = drain_from(&fresh, &mut output, &mut []).unwrap();
+        assert_eq!((drained.first, drained.cursor, drained.copied), (2, 3, 1));
+        assert_eq!((output[0].country, output[0].sequence), (3, 3));
+    }
+
+    #[test]
+    fn publishing_overlap_defers_growth_without_losing_the_offer_or_epoch() {
+        let _guard = STAGING_TEST.lock().unwrap();
+        clear_staging();
+        resize_checked(8, 1).unwrap();
+        let old = log().unwrap();
+        let lease = publishing(old).unwrap();
+        resize_checked(old.entries + 1, old.key_stride + 1).unwrap();
+        let offered = OFFERED.load(Ordering::Acquire);
+        let epoch = EPOCH.load(Ordering::Acquire);
+        seal_staging();
+        assert_eq!(LOG.load(Ordering::Acquire), old as *const Log as usize);
+        assert_eq!(OFFERED.load(Ordering::Acquire), offered);
+        assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
+        drop(lease);
+        seal_staging();
+        assert_eq!(LOG.load(Ordering::Acquire), offered);
+        assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
+        clear_staging();
+    }
+
+    #[test]
+    fn prepared_growth_preserves_independent_entry_and_key_floors() {
+        let _guard = STAGING_TEST.lock().unwrap();
+        clear_staging();
+        resize_checked(8, 8).unwrap();
+        let old = log().unwrap();
+        resize_checked(old.entries + 1, 0).unwrap();
+        let first = unsafe { &*(OFFERED.load(Ordering::Acquire) as *const Log) };
+        resize_checked(0, old.key_stride + 1).unwrap();
+        let combined = unsafe { &*(OFFERED.load(Ordering::Acquire) as *const Log) };
+        assert!(combined.entries >= first.entries);
+        assert!(combined.key_stride > old.key_stride);
+        let offered = OFFERED.load(Ordering::Acquire);
+        prepare();
+        assert_eq!(OFFERED.load(Ordering::Acquire), offered);
+        seal_staging();
+        assert_eq!(LOG.load(Ordering::Acquire), offered);
+        clear_staging();
+    }
+
+    #[test]
+    fn larger_thread_domain_waits_for_prepared_frame_cursors() {
+        let _guard = STAGING_TEST.lock().unwrap();
+        clear_staging();
+        resize_checked(8, 1).unwrap();
+        let old = log().unwrap();
+        let previous = REQUIRED_LANES.load(Ordering::Relaxed);
+        REQUIRED_LANES.store(old.lanes.len() + 1, Ordering::Relaxed);
+        resize_checked(old.entries, old.key_stride).unwrap();
+        let offered = OFFERED.load(Ordering::Acquire);
+        let mut small = vec![LaneCursor::default(); old.lanes.len()];
+        ENABLED.store(true, Ordering::SeqCst);
+        crate::allocation_failure_tests::with_allocations_denied(|| handoff(&mut small).unwrap());
+        ENABLED.store(false, Ordering::SeqCst);
+        assert_eq!(LOG.load(Ordering::Acquire), old as *const Log as usize);
+        assert_eq!(OFFERED.load(Ordering::Acquire), offered);
+        seal_staging();
+        assert_eq!(LOG.load(Ordering::Acquire), offered);
+        REQUIRED_LANES.store(previous, Ordering::Relaxed);
+        clear_staging();
+    }
+
+    #[test]
+    fn staging_growth_keeps_real_fault_epoch_refusals() {
+        let _guard = STAGING_TEST.lock().unwrap();
+        clear_staging();
+        resize_checked(8, 1).unwrap();
+        let old = log().unwrap();
+        append_to(
+            old,
+            Event::default(),
+            &engine::memory::SliceMemory {
+                base: 0,
+                bytes: &[],
+            },
+        );
+        let (sealed, cursors) = seal_staging();
+        resize_checked(old.entries + 1, 0).unwrap();
+        invalidate();
+        let mut output = [Event::default()];
+        assert_eq!(
+            sealed.drain(&cursors, &mut output, &mut []),
+            Err("politics observation restarted")
+        );
+        seal_staging();
+        let fresh = log().unwrap();
+        append_to(
+            fresh,
+            Event::default(),
+            &engine::memory::SliceMemory {
+                base: 0,
+                bytes: &[],
+            },
+        );
+        let (sealed, cursors) = seal_staging();
+        assert_eq!(
+            sealed.drain(&cursors, &mut output, &mut []).unwrap().copied,
+            1
+        );
+        clear_staging();
     }
 
     unsafe extern "system-unwind" fn shim_fixture(

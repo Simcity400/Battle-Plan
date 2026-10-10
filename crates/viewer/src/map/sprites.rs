@@ -99,6 +99,7 @@ pub struct MapIcons {
     pub counters: CounterAssets,
     /// The raid map icon's layout, sprites and raid content.
     pub raids: super::raids::RaidAssets,
+    /// Native world-text definitions and font demand, from the recorded content stack.
     /// Flags and portraits decoded on first draw, above [`DYNAMIC_BASE`].
     pub lazy: Arc<LazyTextures>,
 }
@@ -135,7 +136,11 @@ impl MapIcons {
         // The battle-plan label font is named by `maparrows.txt`'s `arrowText`.
         let arrow_font = super::orders::arrow_text_font(layers)?;
         // The fonts and sprites of one read of the interface files, as the game reads them.
-        let registry = installed_content::gui::native::resources::Registry::load(layers)?;
+        //140180C00 reads interface, then gfx/**/*.gfx into the same graphics/font/sprite
+        //registries; a later mod font override or textcolors block affects world and GUI text.
+        let registry = installed_content::gui::native::resources::Registry::from_files(
+            installed_content::gui::native::sprites::read_object_layers(layers)?,
+        );
         let interface = Interface {
             sprites: gfx::SpriteSet::new(&registry.files),
             registry,
@@ -166,7 +171,7 @@ impl MapIcons {
             &shared,
             (layouts, windows),
             defines,
-            sprites,
+            (sprites, &interface.registry),
             (language, map_size, decode),
             &mut images,
             &lazy,
@@ -210,6 +215,7 @@ impl MapIcons {
         let mut raids = super::raids::RaidAssets::load(layers, defines, map, &interface.registry)?;
         raids.triggers = combat.tactics.trigger_names();
         raids.character_traits = combat.tactics.trait_databases();
+        raids.transport_sub_units = combat.sub_units().cloned().map_err(str::to_owned);
         counters
             .gui
             .load(layers, &raids.gui_assets(), &mut images)?;
@@ -394,6 +400,17 @@ pub const fn layer(priority: i8, icon: u32, child: u32) -> u64 {
     band_layer((priority as u8 ^ 0x80) as u64, icon, child)
 }
 
+/// `CUnitsStackMapIcon::UpdateGuiPositionAndVisibility@141901280` adds five
+/// to the signed content byte as an i32 when its window contains the active
+/// GUI object. The sum can exceed i8::MAX, so it must not wrap back below the map.
+pub const fn hovered_layer(priority: i8, hovered: bool, icon: u32, child: u32) -> u64 {
+    band_layer(
+        (priority as i32 + 128 + if hovered { 5 } else { 0 }) as u64,
+        icon,
+        child,
+    )
+}
+
 /// A key in the band above every map-icon priority, where the combat window
 /// draws over the map icons as the GUI does.
 pub const fn gui_layer(icon: u32, child: u32) -> u64 {
@@ -417,8 +434,9 @@ pub const CHILD_SLOTS: u32 = 32;
 /// Keys one priority spans: room for every `u32` icon of [`CHILD_SLOTS`] children.
 const PRIORITY_STRIDE: u64 = 1 << 40;
 const _: () = assert!((u32::MAX as u64 + 1) * CHILD_SLOTS as u64 <= PRIORITY_STRIDE);
-/// The band [`gui_layer`] keys, above the 256 map-icon priorities.
-const GUI_BAND: u64 = 256;
+/// The band [`gui_layer`] keys, above every signed-byte map-icon priority
+/// including the native five-point GUI-hover lift.
+const GUI_BAND: u64 = 261;
 
 /// ToolTip uses the final GUI pass (1402A2150 → 14228F460; 142228970).
 pub const TOOLTIP_LAYER: u64 = band_layer(GUI_BAND + 1, 0, 0);
@@ -2424,6 +2442,8 @@ mod tests {
         assert!(layer(i8::MAX, u32::MAX, CHILD_SLOTS - 1) < gui_layer(0, 0));
         assert!(gui_layer(u32::MAX, CHILD_SLOTS - 1) < TOOLTIP_LAYER);
         assert_eq!(layer_priority(layer(-56, 3, 0)), -56);
+        assert_eq!(layer_priority(hovered_layer(i8::MAX, true, 0, 0)), 132);
+        assert!(hovered_layer(i8::MAX, true, u32::MAX, CHILD_SLOTS - 1) < gui_layer(0, 0));
     }
 
     #[test]

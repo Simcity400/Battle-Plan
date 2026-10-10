@@ -1,30 +1,41 @@
 //! The viewer's one movement-timing source.
 //!
-//! Derives the remaining-time pair with [`replay::eta_derive`] from
+//! Derives stored-route timing with [`replay::eta_derive`] from
 //! `DivisionEtaInputs` and this hour's province, state and weather rows, and
 //! each moving division's first-edge progress from `DivisionMovement`. Edge
 //! distances, crossing kinds, terrain operands and the movement defines come
 //! from the matching content stack ([`MovementContent`]), never the recording.
 //!
-//! The arrival line takes `destination_remaining` ([`super::counter_eta`]).
+//! The counter arrival uses [`CounterQueries`], an on-demand native route
+//! query with exact current-hour operands and an explicit viewer route policy.
+//! The stored-route pair remains available for aggregate timing and progress.
 //! The progress is the game's movement-arrow fill target (`+0x28`), and
 //! `141632130` draws that arrow only for a unit of the player's own country
 //! that is selected (`CUnit+0xC`; for a navy also its task force's `+0x24`
-//! word), a selection the viewer has no equivalent of, so it is not drawn. No
-//! counter or figure position reads it ([`super::counter_move`] draws the
-//! settled route point).
+//! word). The viewer's selection drives the movement-arrow layer. Counter
+//! and figure positions use the settled route point in [`super::counter_move`].
 //!
 //! The derivation refuses a row it cannot rebuild exactly rather than
 //! substituting a zero: a refused division has no ETA or no progress.
 
 use super::tables::rows;
-use installed_content::movement::{MovementDefines, MovementMap};
+mod fresh_search;
+#[path = "division_eta/classes/naval.rs"]
+mod naval;
+#[path = "division_eta/classes/railway.rs"]
+mod railway;
+#[path = "division_eta/classes/task_force.rs"]
+mod task_force;
+use installed_content::movement::{
+    MovementDefines, MovementMap, NavalMovementDefines, RailMovementDefines,
+};
 use replay::{
     eta_derive::{self, Defines, ProvinceOperands},
     frame::DecodedFrame,
     rows::tables,
 };
 use std::{
+    cell::OnceCell,
     collections::{BTreeMap, VecDeque},
     io,
     sync::{Arc, Mutex},
@@ -130,6 +141,9 @@ impl Report {
 pub struct MovementContent {
     pub map: MovementMap,
     pub defines: Defines,
+    pub rail: Result<RailMovementDefines, String>,
+    pub naval: Result<NavalMovementDefines, String>,
+    pub(crate) task_force_terrain: Result<task_force::TerrainSpeedContent, String>,
 }
 
 impl MovementContent {
@@ -144,7 +158,218 @@ impl MovementContent {
                 river_crossing_two: defines.river_crossing_two,
                 river_crossing_three: defines.river_crossing_three,
             },
+            rail: defines.rail,
+            naval: defines.naval,
+            task_force_terrain: Err("fresh task force terrain content is unavailable".into()),
         }
+    }
+
+    pub(crate) fn set_task_force_terrain(
+        &mut self,
+        terrain: Result<Arc<installed_content::terrain::TerrainDefinitions>, String>,
+        regions: &BTreeMap<u32, installed_content::regions::StrategicRegion>,
+        subunits: Result<crate::table_access::TokenKeys, String>,
+    ) {
+        self.task_force_terrain =
+            terrain.map(|terrain| task_force::TerrainSpeedContent::new(terrain, regions, subunits));
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CounterUnit {
+    Division(u64),
+    TaskForce(u64),
+    Railway(u64),
+}
+
+#[derive(Debug)]
+pub(crate) struct CounterPreview {
+    // Independent signed fixed5 result; caller owns ceiling/i32 narrowing/visibility.
+    pub(crate) duration: Result<i64, String>,
+    // Actual fresh search output, source excluded; no actual-route substitute.
+    pub(crate) route: Vec<u32>,
+}
+
+impl CounterQueries<'_> {
+    pub(crate) fn preview(
+        &self,
+        unit: CounterUnit,
+        target: u32,
+        local_option: bool,
+    ) -> Result<CounterPreview, String> {
+        self.query(|inputs, moves| match unit {
+            CounterUnit::Division(handle) => inputs.derive_to(moves, handle, target, local_option),
+            CounterUnit::TaskForce(handle) => {
+                task_force::derive_to(inputs, moves, handle, target, local_option)
+            }
+            CounterUnit::Railway(handle) => {
+                railway::derive_to(inputs, moves, handle, target, local_option)
+            }
+        })
+    }
+}
+
+/// Reached counter queries in one hover or diagnostics batch. Whole-frame
+/// indexes are built lazily once; every requested route still runs native A*.
+pub(crate) struct CounterQueries<'a> {
+    content: &'a crate::document::Content,
+    frame: &'a DecodedFrame,
+    world: OnceCell<super::raids::script::World<'a>>,
+    inputs: OnceCell<fresh_search::Inputs<'a>>,
+    cells: super::raids::reach::Cells,
+    common: super::raids::reach::CommonCells<'a>,
+}
+
+impl<'a> CounterQueries<'a> {
+    pub(crate) fn new(content: &'a crate::document::Content, frame: &'a DecodedFrame) -> Self {
+        Self {
+            content,
+            frame,
+            world: OnceCell::new(),
+            inputs: OnceCell::new(),
+            cells: Default::default(),
+            common: super::raids::reach::CommonCells::new(frame),
+        }
+    }
+
+    /// Share this hover's existing World/Cells; no new graph or prospective query.
+    pub(crate) fn selected_strait(
+        &self,
+        through: u32,
+        raw_owner: u32,
+    ) -> Result<installed_content::unit_path::StraitFleet, String> {
+        let world = self.world.get_or_init(|| {
+            super::raids::script::World::read(self.frame, self.content.icons.raids.facts())
+        });
+        let moves = super::raids::reach::Moves::for_common(
+            world,
+            &self.content.icons.raids,
+            &self.cells,
+            &self.common,
+        )?;
+        moves.selected_strait(through, raw_owner)
+    }
+
+    /// The same hover's borrowed World, directed owners and text services.
+    pub(crate) fn selected_move_message(
+        &self,
+        unit: CounterUnit,
+        target: u32,
+        text: &mut String,
+    ) -> Result<bool, String> {
+        let world = self.world.get_or_init(|| {
+            super::raids::script::World::read(self.frame, self.content.icons.raids.facts())
+        });
+        let moves = super::raids::reach::Moves::for_common(
+            world,
+            &self.content.icons.raids,
+            &self.cells,
+            &self.common,
+        )?;
+        let content = super::raids::reach::CommonText {
+            frame: self.frame,
+            loc: &self.content.names.localisation,
+            recorded_language: &self.content.recorded_language,
+            state_keys: &self.content.state_name_keys,
+        };
+        match unit {
+            CounterUnit::Division(handle) => {
+                moves.common_army_message(handle, target, text, &content)
+            }
+            CounterUnit::Railway(handle) => {
+                moves.common_railway_message(handle, target, text, &content)
+            }
+            CounterUnit::TaskForce(_) => Err("selected land movement received a task force".into()),
+        }
+    }
+
+    pub(crate) fn selected_transport_message(
+        &self,
+        selected: &[super::unit_selection::Unit],
+        target: u32,
+    ) -> Result<installed_content::unit_path::selected_transport::Outputs, String> {
+        let world = self.world.get_or_init(|| {
+            super::raids::script::World::read(self.frame, self.content.icons.raids.facts())
+        });
+        let moves = super::raids::reach::Moves::for_common(
+            world,
+            &self.content.icons.raids,
+            &self.cells,
+            &self.common,
+        )?;
+        let content = super::raids::reach::CommonText {
+            frame: self.frame,
+            loc: &self.content.names.localisation,
+            recorded_language: &self.content.recorded_language,
+            state_keys: &self.content.state_name_keys,
+        };
+        moves.selected_transport_message(selected, target, &content)
+    }
+
+    /// The local route preference is a viewer policy, never a captured operand.
+    pub(super) fn remaining(
+        &self,
+        movement: &replay::rows::DivisionMovementRow,
+        ours: bool,
+        local_option: bool,
+    ) -> Result<i64, String> {
+        self.query(|inputs, moves| {
+            inputs.derive(
+                moves,
+                movement,
+                if ours {
+                    fresh_search::Endpoint::Destination
+                } else {
+                    fresh_search::Endpoint::Next
+                },
+                local_option,
+            )
+        })
+    }
+
+    pub(super) fn railway_remaining(
+        &self,
+        gun: &replay::rows::RailwayGunCounterInputRow,
+        ours: bool,
+        local_option: bool,
+    ) -> Result<i64, String> {
+        self.query(|inputs, moves| railway::derive(inputs, moves, gun, ours, local_option))
+    }
+
+    pub(crate) fn task_force_remaining(
+        &self,
+        motion: &replay::rows::TaskForceMapMotionRow,
+        ours: bool,
+        local_option: bool,
+    ) -> Result<i64, String> {
+        self.query(|inputs, moves| task_force::derive(inputs, moves, motion, ours, local_option))
+    }
+
+    fn query<T>(
+        &self,
+        derive: impl FnOnce(
+            &fresh_search::Inputs<'a>,
+            &super::raids::reach::Moves<'_, 'a>,
+        ) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let content = self
+            .content
+            .movement
+            .as_deref()
+            .ok_or("fresh counter ETA movement content is unavailable")?;
+        let inputs = self
+            .inputs
+            .get_or_init(|| fresh_search::Inputs::new(self.frame, content));
+        let world = self.world.get_or_init(|| {
+            super::raids::script::World::read(self.frame, self.content.icons.raids.facts())
+        });
+        let moves = super::raids::reach::Moves::for_counter(
+            world,
+            &self.content.icons.raids,
+            &self.cells,
+            inputs,
+        );
+        derive(inputs, &moves)
     }
 }
 

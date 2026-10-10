@@ -29,7 +29,8 @@ pub struct Packet {
 }
 
 impl Packet {
-    pub fn buffers(&self, frame: &[u8], projection: &[[f32; 4]; 4]) -> BTreeMap<u32, Vec<u8>> {
+    /// Per-actor scale and world/atlas/time; scene and projection bind once per view.
+    pub fn buffers(&self) -> BTreeMap<u32, Vec<u8>> {
         //14227EEB0 requests8 bytes;142400A40 copies only that count. The
         //CPU zeros at14227F9B7 are outside the upload; physical tail8..16 is unknown.
         let scale = [self.scale[0], self.scale[1], 0., 0.];
@@ -45,16 +46,6 @@ impl Packet {
         ];
         object[64..84].copy_from_slice(bytemuck::bytes_of(&atlas));
         BTreeMap::from([
-            (binding(0, Stage::Vertex), frame.to_vec()),
-            (binding(0, Stage::Pixel), frame.to_vec()),
-            (
-                binding(1, Stage::Vertex),
-                bytemuck::bytes_of(projection).to_vec(),
-            ),
-            (
-                binding(1, Stage::Pixel),
-                bytemuck::bytes_of(projection).to_vec(),
-            ),
             (
                 binding(2, Stage::Vertex),
                 bytemuck::bytes_of(&scale).to_vec(),

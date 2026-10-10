@@ -37,6 +37,14 @@ regions={0={region=0 temperature=-90071992547.40993
             display_mud: 255,
             temperature: replay::rows::Recorded::Value(100_000),
             raw_mud: replay::rows::Recorded::Value(7),
+            local_hour: replay::rows::Recorded::Value(0),
+            night_factor: replay::rows::Recorded::Value(100_000),
+            display: replay::rows::Recorded::Value(Some(replay::rows::WeatherDisplay {
+                width: 1,
+                height: 1,
+                edges: vec![2, 3],
+                ..Default::default()
+            })),
         }]));
     *frame.tables[TableId::WeatherRegions.index()] =
         TableView::Complete(TableRows::WeatherRegions(vec![WeatherRegionRow {
@@ -48,15 +56,22 @@ regions={0={region=0 temperature=-90071992547.40993
     compare(&frame, &saved, &mut report).unwrap();
     assert!(report.differences.is_empty());
     assert_eq!(report.scalar_checks, 2);
-    assert_eq!(report.limitations.len(), 3);
+    assert_eq!(report.limitations.len(), 5);
+    assert!(report.limitations.contains_key(
+        "the manager serializer F0D8E0 omits the stored day/night array +0x370; these simulation values require a matched native read witness"
+    ));
 
-    // Historical absence withholds only the temperature/mud comparisons.
+    // Historical absence withholds temperature/mud comparisons and identifies
+    // the missing stored clock without inventing a save counterpart.
     let original = frame.tables[TableId::WeatherProvinces.index()].clone();
     if let TableView::Complete(TableRows::WeatherProvinces(rows)) =
         &mut *frame.tables[TableId::WeatherProvinces.index()]
     {
         rows[0].temperature = replay::rows::Recorded::NotRecorded;
         rows[0].raw_mud = replay::rows::Recorded::NotRecorded;
+        rows[0].local_hour = replay::rows::Recorded::NotRecorded;
+        rows[0].night_factor = replay::rows::Recorded::NotRecorded;
+        rows[0].display = replay::rows::Recorded::NotRecorded;
     }
     let mut old = Report::default();
     compare(&frame, &saved, &mut old).unwrap();
@@ -68,6 +83,18 @@ regions={0={region=0 temperature=-90071992547.40993
     );
     assert_eq!(
         old.limitations["WeatherProvinces.raw_mud not recorded"].len(),
+        1
+    );
+    assert_eq!(
+        old.limitations["WeatherProvinces.local_hour not recorded"].len(),
+        1
+    );
+    assert_eq!(
+        old.limitations["WeatherProvinces.night_factor not recorded"].len(),
+        1
+    );
+    assert_eq!(
+        old.limitations["WeatherProvinces.display not recorded"].len(),
         1
     );
     frame.tables[TableId::WeatherProvinces.index()] = original;

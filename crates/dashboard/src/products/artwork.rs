@@ -1518,7 +1518,9 @@ mod tests {
             .unwrap();
         let frame = from_url(icon);
         assert_eq!((frame.width, frame.height), (2, 4));
-        assert_eq!(&frame.pixels[..8], [0, 20, 30, 200, 2, 20, 30, 200]);
+        // build_geometry@14222CB90 clips its fractional width at the queried
+        // integer extent instead of squeezing the complete pitch into it.
+        assert_eq!(&frame.pixels[..8], [0, 20, 30, 200, 1, 20, 30, 200]);
         assert_eq!(&frame.pixels[24..], [0; 8]);
         for (token, reason) in [
             ("bad_tech", "the game draws no texture either"),

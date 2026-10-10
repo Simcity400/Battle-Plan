@@ -5,7 +5,8 @@ use crate::{
     hook::Hook,
     sampling::qpc,
 };
-use engine::{Memory, building_damage_sites as native, cgame_state::Clock};
+type Clock = engine::cgame_state::Clock<u64>;
+use engine::{Memory, building_damage_sites as native};
 use std::{
     ops::Range,
     sync::{
@@ -147,7 +148,16 @@ pub fn boundary(clock: Option<Clock>) {
     MAX_HOUR_TICKS.fetch_max(ticks, Ordering::Relaxed);
     LEDGER.boundary(clock);
 }
+#[cfg(test)]
 pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+    drain_admitted()?;
+    LEDGER.drain(output)
+}
+pub fn drain_growing(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+    drain_admitted()?;
+    LEDGER.drain_growing(output)
+}
+fn drain_admitted() -> Result<(), &'static str> {
     #[cfg(test)]
     if !tests::owns_observation() {
         return Err("building bombing hook unavailable (see status unhooked)");
@@ -155,7 +165,7 @@ pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("building bombing hook unavailable (see status unhooked)");
     }
-    LEDGER.drain(output)
+    Ok(())
 }
 // Reviewed Win64 frame: native call is outside Rust; .seh_stackalloc covers
 // the owned snapshot. Relocation moves only MOV [RSP+20],RBX (five bytes).
@@ -217,6 +227,7 @@ unsafe extern "system" fn before(
     }
     let mut token = 0;
     if ENABLED.load(Ordering::SeqCst) && request as i64 > 0 {
+        LEDGER.attempt();
         if LEDGER.poisoned.load(Ordering::SeqCst) || crate::allocation::failed() {
             LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
         } else {

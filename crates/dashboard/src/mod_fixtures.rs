@@ -56,6 +56,7 @@ impl Stack {
             std::thread::current().id()
         ));
         let _ = std::fs::remove_dir_all(&root);
+        crate::catalogue::texture_tests::write_sprite_program(&root.join("base"));
         Self { root }
     }
 
@@ -1022,14 +1023,7 @@ fn content_check_exercises_every_product_and_names_exact_mod_fallbacks() {
             .findings
             .clone()
     };
-    assert_eq!(
-        findings(products::place_names::PlaceNames::KEY),
-        vec![Finding::new(
-            Kind::Refused,
-            "strategic region 920",
-            "native region display name is empty",
-        )]
-    );
+    assert!(findings(products::place_names::PlaceNames::KEY).is_empty());
     for key in [
         products::land_battles::LandBattles::KEY,
         products::land_battles::LandBattlesManifest::KEY,

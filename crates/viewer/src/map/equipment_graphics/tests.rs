@@ -101,6 +101,7 @@ fn country_frame(count: u32, cosmetic: &str) -> replay::frame::DecodedFrame {
             TableRows::CountryCounterInputs(
                 (0..count)
                     .map(|i| CountryCounterInputRow {
+                        forward_visibility: replay::rows::Recorded::NotRecorded,
                         country: i + 1,
                         owned_state_count: 1,
                         ..Default::default()
@@ -268,7 +269,7 @@ fn content(text: &[u8]) -> io::Result<Content> {
 fn context<'a>(country: Option<&'a str>, factions: &'a [String]) -> Context<'a> {
     Context {
         equipment: "tank_1",
-        archetype: "tank",
+        archetype: Some("tank"),
         family: None,
         subunit: Some("light_armor"),
         ideology: Some("fascism"),

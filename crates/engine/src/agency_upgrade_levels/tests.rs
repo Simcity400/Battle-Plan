@@ -186,6 +186,127 @@ impl Fixture {
 }
 
 #[test]
+fn worker_grows_first_capture_and_later_catalog_at_5000_unchanged_countries() {
+    let mut fixture = Fixture::new(5_000);
+    let mut agencies = Vec::new();
+    let mut names = Vec::new();
+    let mut rows = Vec::new();
+    let mut catalog = Catalog::new(0);
+    let first = cintelligence_agency::walk_with_upgrades_growing(
+        &fixture,
+        fixture.world.module,
+        fixture.world.game_state(),
+        &mut agencies,
+        &mut names,
+        &mut rows,
+        &mut catalog,
+    );
+    assert_eq!(first.agencies.outcome, Outcome::Rows { len: 5_000 });
+    assert_eq!(first.upgrades.outcome, Outcome::Rows { len: 15_000 });
+    assert_eq!(first.upgrades.refused_rows, 0);
+    assert_eq!(catalog.required_capacity(), 3);
+    assert!(catalog.capacity() >= 3);
+    let first_row_capacity = rows.len();
+
+    let members = fixture.world.alloc(5_002 * 8);
+    fixture.world.u64(members, fixture.definitions[0] as u64);
+    fixture
+        .world
+        .u64(members + 8, fixture.definitions[1] as u64);
+    let mut definitions = Vec::new();
+    for index in 0..5_000 {
+        let definition = fixture.world.alloc(0x270);
+        fixture.world.u64(
+            definition,
+            (fixture.world.module + DEFINITION_VTABLE_RVA) as u64,
+        );
+        fixture.world.put(definition + VALID, &[1]);
+        fixture.world.u32(definition + TOKEN, 7);
+        fixture
+            .world
+            .u64(definition + DEFINITION_BRANCH, fixture.branches[0] as u64);
+        fixture
+            .world
+            .u64(members + (index + 2) * 8, definition as u64);
+        definitions.push(definition);
+    }
+    fixture
+        .world
+        .array(fixture.branches[0] + BRANCH_UPGRADES, members, 5_002);
+    for (index, &agency) in fixture.agencies.iter().enumerate() {
+        let acquired = fixture.world.alloc(10 * ENTRY_STRIDE);
+        for ordinal in 0..10 {
+            let definition = if ordinal == 9 {
+                definitions[index]
+            } else {
+                fixture.definitions[ordinal % 3]
+            };
+            fixture
+                .world
+                .u64(acquired + ordinal * ENTRY_STRIDE, definition as u64);
+            fixture.world.put(
+                acquired + ordinal * ENTRY_STRIDE + 8,
+                &(-(ordinal as i32)).to_le_bytes(),
+            );
+        }
+        fixture.world.array(agency + ACQUIRED, acquired, 10);
+    }
+    assert!(first_row_capacity < 50_000);
+    assert_eq!(
+        native_demand(&fixture, fixture.world.module, fixture.world.game_state()),
+        Ok(Demand {
+            rows: 50_000,
+            catalog: 5_003
+        })
+    );
+    let fixed = fixture.capture(&mut rows[..15_000], &mut Catalog::new(3));
+    assert_eq!(
+        fixed.upgrades.outcome,
+        Outcome::Truncated {
+            len: 15_000,
+            unread_rows: 35_000
+        }
+    );
+    assert_eq!(
+        fixed.upgrades.refusal_counts[CATALOG_CAPACITY as usize],
+        50_000
+    );
+    let later = cintelligence_agency::walk_with_upgrades_growing(
+        &fixture,
+        fixture.world.module,
+        fixture.world.game_state(),
+        &mut agencies,
+        &mut names,
+        &mut rows,
+        &mut catalog,
+    );
+    assert_eq!(later.agencies.outcome, Outcome::Rows { len: 5_000 });
+    assert_eq!(later.upgrades.outcome, Outcome::Rows { len: 50_000 });
+    assert_eq!(later.upgrades.refused_rows, 0);
+    assert_eq!(later.upgrades.omitted_rows, 0);
+    assert_eq!(catalog.required_capacity(), 5_003);
+    assert!(catalog.capacity() >= 5_003);
+    for (index, country_rows) in rows[..50_000].chunks_exact(10).enumerate() {
+        assert!(
+            country_rows
+                .iter()
+                .all(|row| row.country as usize == index + 1)
+        );
+        assert_eq!(country_rows[9].ordinal, 9);
+        assert_eq!(country_rows[9].level, -9);
+        assert_eq!(
+            country_rows[9].definition_pointer,
+            definitions[index] as u64
+        );
+        assert!(
+            country_rows
+                .iter()
+                .all(|row| row.identity_status == AUTHENTICATED)
+        );
+    }
+}
+
+#[test]
 fn agency_upgrade_levels_every_country_5000_preserves_branch_duplicates_raw_levels_and_order() {
     let fixture = Fixture::new(5_000);
     let demand = native_demand(&fixture, fixture.world.module, fixture.world.game_state()).unwrap();

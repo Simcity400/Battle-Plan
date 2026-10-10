@@ -12,6 +12,247 @@ impl CombatResources for Fixture {
 }
 
 #[test]
+fn retained_null_tactic_keeps_the_previous_drawable_and_initial_authored_image() {
+    use super::super::{presentation::land_tactics, tactics::Content};
+    use replay::rows::LandCombatSideDetails;
+    let windows = windows(
+        b"guiTypes={containerWindowType={name=view size={width=100 height=100}
+        iconType={name=attacker_tactic spriteType=GFX_even}
+        iconType={name=defender_tactic spriteType=GFX_even}
+        iconType={name=attacker_countered_tactic_overlay spriteType=GFX_even}
+        iconType={name=defender_countered_tactic_overlay spriteType=GFX_even}}}",
+    );
+    let root = windows.gui_type(b"view").unwrap();
+    let mut resources = fixture();
+    resources.sprites.insert(
+        "combat_tactic:fixture",
+        resources.sprites["GFX_odd"].clone(),
+    );
+    let content = Content::from_database(installed_content::combat_tactics::parse(
+        b"fixture={picture=fixture}",
+        &installed_content::key_names::KeyNames::default(),
+    ));
+    let null = LandCombatSideDetails {
+        tactic_kind: 1,
+        ..Default::default()
+    };
+    let real = LandCombatSideDetails {
+        tactic_kind: 2,
+        tactic_id: 1,
+        tactic_token: b"fixture".to_vec(),
+        ..Default::default()
+    };
+    for first in [null.clone(), real] {
+        let mut retained = Retained::new("view", root, [800, 600], &resources).unwrap();
+        let expected = if first.tactic_kind == 1 {
+            b"GFX_even".as_slice()
+        } else {
+            b"combat_tactic:fixture".as_slice()
+        };
+        for (generation, side) in [first, null.clone()].into_iter().enumerate() {
+            let mut bindings = Bindings::default();
+            land_tactics(
+                &mut bindings,
+                &|name| resources.sprite(name.as_bytes()).is_some(),
+                &content,
+                false,
+                &[side, null.clone()],
+            );
+            let mut refused = BTreeMap::new();
+            let prepared = retained
+                .prepare(
+                    root,
+                    &bindings.values,
+                    Vec::new(),
+                    &windows,
+                    &resources,
+                    Tick {
+                        time: generation as f32,
+                        dt: 1.0,
+                    },
+                    generation as u64,
+                    false,
+                    false,
+                    true,
+                    &mut refused,
+                )
+                .unwrap();
+            assert!(refused.is_empty(), "{refused:?}");
+            let part = prepared
+                .layout
+                .parts
+                .iter()
+                .find(|part| part.path == "view.attacker_tactic")
+                .unwrap();
+            let native_gui::PartKind::Sprite { sprite, .. } = &part.kind else {
+                panic!("tactic sprite");
+            };
+            assert_eq!(sprite, expected);
+        }
+    }
+}
+
+#[test]
+fn result_controls_include_both_close_buttons_outside_panels_and_text_scrollbars() {
+    let resources = fixture_with(installed_content::gui::native::read(br#"guiTypes={
+        scrollbarType={name=details_bar size={x=10 y=60} minValue=0 maxValue=1 stepSize=1
+            rightButton=up leftButton=down track=track slider=slider
+            guiButtonType={name=up spriteType=GFX_even}
+            guiButtonType={name=down spriteType=GFX_even}
+            guiButtonType={name=track spriteType=GFX_bar3x17}
+            guiButtonType={name=slider spriteType=GFX_bar3x17}}
+        containerWindowType={name=navalcombatresultswindow size={width=300 height=160} clipping=no
+            buttonType={name=close_button position={x=5 y=5} quadTextureSprite=GFX_even}
+            buttonType={name=dismiss_button position={x=80 y=5} quadTextureSprite=GFX_even}
+            buttonType={name=open_details position={x=140 y=5} quadTextureSprite=GFX_even}
+            containerWindowType={name=attacker_details position={x=-100 y=0} size={width=90 height=100}
+                instantTextBoxType={name=text font=Main_14 maxWidth=50 maxHeight=20 scrollbarType=details_bar}}
+            containerWindowType={name=defender_details position={x=310 y=0} size={width=90 height=100}}
+        }}"#));
+    let root = resources.gui_type(b"navalcombatresultswindow").unwrap();
+    let text = root.path_named("attacker_details/text").unwrap();
+    let mut instance = Instance::construct(root, [800, 600], &resources).unwrap();
+    instance.gui_show(root, root).unwrap();
+    instance
+        .set_text(root, text, "aaaa\nbbbb\ncccc\ndddd", &resources)
+        .unwrap();
+    let layout = instance
+        .layout_with_regions(root, &resources, None, true)
+        .unwrap()
+        .unwrap();
+    let mut drawn = Drawn {
+        rect: [100., 100., 300., 160.],
+        ..Default::default()
+    };
+    controls(root, &layout.regions, [100, 100], &mut drawn, false);
+    assert!(drawn.closes([106., 106.]));
+    assert!(drawn.closes([181., 106.]));
+    assert!(drawn.result_details_button.is_some());
+    assert!(
+        drawn.contains([11., 110.]),
+        "the outside detail panel consumes map input"
+    );
+    let target = drawn.list_at([1., 101.]).unwrap();
+    assert_eq!(target.path, "attacker_details/text");
+    assert!(target.vertical);
+    let directions: Vec<_> = drawn
+        .scroll_buttons
+        .iter()
+        .map(|(_, target, direction)| (target.path.as_str(), *direction))
+        .collect();
+    assert_eq!(
+        directions,
+        [("attacker_details/text", -1), ("attacker_details/text", 1)]
+    );
+}
+
+#[test]
+fn retained_result_mixed_templates_keep_nested_air_loss_counts_and_tint() {
+    use super::super::Widget;
+    let windows = windows(
+        br#"guiTypes={
+        containerWindowType={name=ship size={width=30 height=20}
+            iconType={name=fleet spriteType=GFX_even}}
+        containerWindowType={name=air size={width=30 height=20}
+            iconType={name=plane spriteType=GFX_even}}
+        containerWindowType={name=air_count size={width=30 height=20}
+            instantTextBoxType={name=number font=Main_14 maxWidth=30 maxHeight=20}}
+        containerWindowType={name=air_loss size={width=60 height=20} clipping=no
+            iconType={name=equipment spriteType=GFX_even}
+            gridBoxType={name=lost_air_grid position={x=30 y=0} size={width=30 height=20}
+                slotsize={width=30 height=20} max_slots_horizontal=1}}
+        containerWindowType={name=view size={width=100 height=100}
+            gridBoxType={name=survivors size={width=60 height=20}
+                slotsize={width=30 height=20} max_slots_horizontal=2 add_horizontal=yes}
+            gridBoxType={name=losses position={x=0 y=30} size={width=60 height=20}
+                slotsize={width=60 height=20} max_slots_horizontal=1}}
+    }"#,
+    );
+    let resources = fixture();
+    let root = windows.gui_type(b"view").unwrap();
+    let color = [0.1, 0.2, 0.3, 0.4];
+    let values = Values::from([
+        (
+            "survivors".into(),
+            Widget {
+                entry_template: Some("ship".into()),
+                entry_templates: BTreeMap::from([(1, "air".into())]),
+                entries: vec![Values::new(), Values::new()],
+                ..Default::default()
+            },
+        ),
+        (
+            "losses".into(),
+            Widget {
+                entry_template: Some("air_loss".into()),
+                entries: vec![Values::from([
+                    (
+                        "equipment".into(),
+                        Widget {
+                            color: Some(color),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        "lost_air_grid".into(),
+                        Widget {
+                            entry_template: Some("air_count".into()),
+                            entries: vec![Values::from([(
+                                "number".into(),
+                                Widget {
+                                    text: Some("7".into()),
+                                    ..Default::default()
+                                },
+                            )])],
+                            ..Default::default()
+                        },
+                    ),
+                ])],
+                ..Default::default()
+            },
+        ),
+    ]);
+    let mut retained = Retained::new("view", root, [800, 600], &resources).unwrap();
+    let mut refused = BTreeMap::new();
+    let prepared = retained
+        .prepare(
+            root,
+            &values,
+            Vec::new(),
+            &windows,
+            &resources,
+            Tick { time: 0.0, dt: 0.0 },
+            1,
+            true,
+            true,
+            true,
+            &mut refused,
+        )
+        .unwrap();
+    assert!(refused.is_empty(), "{refused:?}");
+    let parts: Vec<_> = prepared.items.iter().flatten().collect();
+    assert!(parts.iter().any(|part| part.path == "ship.fleet"));
+    assert!(parts.iter().any(|part| part.path == "air.plane"));
+    assert_eq!(
+        parts
+            .iter()
+            .find(|part| part.path == "air_loss.equipment")
+            .unwrap()
+            .color,
+        color
+    );
+    let number = parts
+        .iter()
+        .find(|part| part.path == "air_count.number")
+        .unwrap();
+    let native_gui::PartKind::Text { glyphs, .. } = &number.kind else {
+        panic!("nested loss count");
+    };
+    assert_eq!(glyphs.len(), 1);
+    assert_eq!(retained.entries["survivors/1"].name, "air");
+}
+
+#[test]
 fn tactics_entry_provider_fills_child_hits_and_preserves_explicit_hovers() {
     use super::super::tooltips::set_hover;
     let windows = windows(

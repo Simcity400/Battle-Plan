@@ -9,7 +9,7 @@ use crate::{
     cstate, dlc_feature_state,
     memory::{RecordField, RecordLayout, RecordSources, read_slice},
     modifier_accumulator, read,
-    walk::Outcome,
+    walk::{Buffer, Outcome},
 };
 
 /// `GetUnitIntelLevel@1416068C0` scales a foreign unit's byte by the viewer's
@@ -50,10 +50,31 @@ pub fn countries(
     game_state: usize,
     output: &mut [CountryRow],
 ) -> (Outcome, usize) {
+    countries_buffer(memory, base, game_state, Buffer::Fixed(output))
+}
+
+/// Worker-owned storage grows from the original native headers.
+pub fn countries_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<CountryRow>,
+) -> (Outcome, usize) {
+    countries_buffer(memory, base, game_state, Buffer::Growing(output))
+}
+
+pub fn countries_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: Buffer<'_, CountryRow>,
+) -> (Outcome, usize) {
     let mut slots = 0;
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         slots = countries.count() as usize;
+        // GetUnitIntelLevel@1416068C0 visits one modifier per live country.
+        output.ensure(slots)?;
         let (mut len, mut unread) = (0, 0);
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
@@ -127,12 +148,33 @@ pub fn states(
     game_state: usize,
     output: &mut [StateRow],
 ) -> Outcome {
+    states_buffer(memory, base, game_state, Buffer::Fixed(output))
+}
+
+/// Worker-owned storage grows from the original native headers.
+pub fn states_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<StateRow>,
+) -> Outcome {
+    states_buffer(memory, base, game_state, Buffer::Growing(output))
+}
+
+pub fn states_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: Buffer<'_, StateRow>,
+) -> Outcome {
     let result = (|| {
         let array = game_state
             .checked_add(cgame_state::STATES)
             .and_then(|address| Array::read(memory, address, 8))
             .filter(|array| array.count > 1)
             .ok_or("state array unreadable or empty")?;
+        // Fog rebuild@141606390 visits the native state registry.
+        output.ensure(array.count as usize)?;
         let vtable = base
             .checked_add(cstate::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;

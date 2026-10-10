@@ -327,7 +327,7 @@ fn resolved_operative_names_size_from_live_demand_at_five_thousand_countries() {
         // Appended byte shortfalls retain all old rows and count both reasons.
         capacity.bytes = 1;
         let mut captured = Captured::with_capacities(&capacity);
-        captured.capture(&world, BASE, STATE, 0, false);
+        captured.capture_fixed(&world, BASE, STATE, 0, false);
         assert_eq!(captured.outcomes()[1], Outcome::Rows { len: countries });
         let [_, TableView::Complete(TableRows::CharacterOperatives(rows))] = captured.tables()
         else {
@@ -403,6 +403,10 @@ fn check(countries: usize) {
         (rows(&tables[0]), rows(&tables[1])),
         (3 * countries, countries)
     );
+    let mut cold = Captured::vacant();
+    cold.capture(&world, BASE, STATE, 0, false);
+    assert_eq!(cold.outcomes(), captured.outcomes());
+    assert_eq!(cold.tables(), tables);
     let mut records = hired_advisors::Capacities::default();
     records.raise_for_character_records(active, retired);
     let mut hired = hired_advisors::Captured::with_capacities(&records);
@@ -411,10 +415,10 @@ fn check(countries: usize) {
     assert_eq!(hired.outcomes()[3], Outcome::Rows { len: countries });
     assert_eq!(rows(&hired.tables()[3]), countries);
 
-    // The default capacities truncate the larger tables and grow to them.
+    // Explicit fixed storage reports the whole shortage, then grows to it.
     let mut capacity = Capacities::default();
     let mut captured = Captured::with_capacities(&capacity);
-    captured.capture(&world, BASE, STATE, 0, false);
+    captured.capture_fixed(&world, BASE, STATE, 0, false);
     assert!(
         matches!(captured.outcomes()[1], Outcome::Truncated { len, unread_rows } if len + unread_rows as usize == countries)
     );
@@ -430,7 +434,7 @@ fn check(countries: usize) {
     let mut capacity = hired_advisors::Capacities::default();
     let mut hired = hired_advisors::Captured::with_capacities(&capacity);
     hired.capture(&world, BASE, STATE, 0, false);
-    assert!(matches!(hired.outcomes()[3], Outcome::Truncated { .. }));
+    assert_eq!(hired.outcomes()[3], Outcome::Rows { len: countries });
     hired.grow(&mut capacity);
     let mut hired = hired_advisors::Captured::with_capacities(&capacity);
     hired.capture(&world, BASE, STATE, 0, false);
@@ -455,9 +459,10 @@ fn demand_observation_keeps_invalid_roster_errors_named() {
 #[test]
 fn five_thousand_countries_are_read_whole_from_their_live_demand() {
     check(5_000);
-    // At 5,000 countries the role traits outgrow their default too.
+    // The first worker pass grows even the cold role-trait storage.
     let world = Populated::new(5_000);
     let mut captured = Captured::with_capacities(&Capacities::default());
     captured.capture(&world, BASE, STATE, 0, false);
-    assert!(matches!(captured.outcomes()[0], Outcome::Truncated { .. }));
+    assert_eq!(captured.outcomes()[0], Outcome::Rows { len: 15_000 });
+    assert_eq!(rows(&captured.tables()[0]), 15_000);
 }

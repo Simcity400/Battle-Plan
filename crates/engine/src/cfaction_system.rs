@@ -79,8 +79,10 @@ pub(crate) fn faction(
 }
 
 /// Reads native member order, preserving each country's current raw reference.
-/// A complete result checks both membership directions against every canonical
-/// country. Empty factions and a valid empty system are retained. A full buffer
+/// A complete result checks both membership directions against every positive
+/// canonical country. A reached raw-zero member is authenticated separately;
+/// its absence does not certify a null reserved faction. Empty factions and a
+/// valid empty system are retained. A full buffer
 /// counts omitted members and checks their pointers without allocating; its
 /// truncated prefix cannot assert the reverse census is complete.
 pub fn walk_members(
@@ -89,10 +91,33 @@ pub fn walk_members(
     game_state: usize,
     output: &mut [MemberRow],
 ) -> Outcome {
+    walk_members_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+}
+
+pub fn walk_members_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<MemberRow>,
+) -> Outcome {
+    walk_members_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+    )
+}
+
+fn walk_members_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: crate::walk::Buffer<'_, MemberRow>,
+) -> Outcome {
     let result = (|| {
         let roster = roster(memory, base, game_state)?;
         let countries = ccountry::Reader::new(memory, base, game_state)?;
-        let mut len = 0;
+        let mut len = 0_usize;
         let mut unread_rows = 0_u32;
         for index in 0..roster.count {
             let (address, id) = faction(memory, base, roster, index)?;
@@ -100,6 +125,11 @@ pub fn walk_members(
                 .checked_add(cfaction::MEMBERS)
                 .and_then(|p| Array::read(memory, p, 8))
                 .ok_or("faction members unreadable or invalid")?;
+            // CFaction::AddMember@140D75210 extends +0x58 from this live count.
+            output.ensure(
+                len.checked_add(members.count as usize)
+                    .ok_or("faction member count overflow")?,
+            )?;
             for ordinal in 0..members.count {
                 let member = members
                     .element(ordinal, 8)
@@ -117,7 +147,11 @@ pub fn walk_members(
                     .checked_add(ccountry::ID)
                     .and_then(|p| read::<u32>(memory, p))
                     .ok_or("faction member country id unreadable")?;
-                let country = countries.resolve(country_id)?;
+                let country = if country_id == 0 {
+                    ccountry::read_reserved_root(memory, base, game_state)?
+                } else {
+                    countries.resolve(country_id)?
+                };
                 if country.pointer != member {
                     return Err("faction member differs from canonical country object");
                 }
@@ -195,6 +229,71 @@ fn country_faction(
 mod tests {
     use super::*;
     use crate::{memory::SliceMemory, msvc_string};
+
+    #[test]
+    fn faction_rows_members_and_literals_grow_for_five_thousand_countries() {
+        use crate::ccountry::synthetic::World;
+        let mut rows = Vec::new();
+        let mut text = Vec::new();
+        let mut members = Vec::new();
+        for factions in [256_u32, 512] {
+            let mut world = World::new(0, 5_000, 0x1100);
+            let system = world.alloc(0x100);
+            let roster = world.alloc(factions as usize * 8);
+            let member_roster = world.alloc(5_000 * 8);
+            world.u64(
+                world.game_state() + cgame_state::FACTION_SYSTEM,
+                system as u64,
+            );
+            world.u64(system, VTABLE_RVA as u64);
+            world.array(system + FACTIONS, roster, factions);
+            let mut first = 0;
+            for index in 0..factions {
+                let faction = world.alloc(0xa80);
+                let literal = world.alloc(32);
+                if index == 0 {
+                    first = faction;
+                    world.array(faction + cfaction::MEMBERS, member_roster, 5_000);
+                }
+                world.u64(roster + index as usize * 8, faction as u64);
+                world.u64(faction, cfaction::VTABLE_RVA as u64);
+                world.u64(
+                    faction + cfaction::REFERENCE,
+                    ((index as u64 + 1) << 32) | cfaction::REFERENCE_TYPE as u64,
+                );
+                world.put(literal, &[b'x'; 31]);
+                world.u64(faction + cfaction::NAME, literal as u64);
+                world.u64(faction + cfaction::NAME + msvc_string::LENGTH, 31);
+                world.u64(faction + cfaction::NAME + msvc_string::CAPACITY, 31);
+                world.u64(faction + cfaction::COLOR, cfaction::COLOR_VTABLE_RVA as u64);
+            }
+            for slot in 1..=5_000 {
+                let country = world.object(slot);
+                let diplomacy = world.alloc(0x300);
+                world.u64(member_roster + (slot as usize - 1) * 8, country as u64);
+                world.u64(country + ccountry::DIPLOMACY_STATUS, diplomacy as u64);
+                world.u64(diplomacy, cdiplomacy_status::VTABLE_RVA as u64);
+                world.u64(diplomacy + cdiplomacy_status::COUNTRY, country as u64);
+                world.u64(diplomacy + cdiplomacy_status::FACTION, first as u64);
+            }
+            let memory = world.memory();
+            let names =
+                cfaction::walk_growing(&memory, 0, world.game_state(), &mut rows, &mut text);
+            assert_eq!(
+                names.outcome,
+                Outcome::Rows {
+                    len: factions as usize
+                }
+            );
+            assert_eq!(names.bytes_len, factions as usize * 31);
+            assert_eq!(
+                walk_members_growing(&memory, 0, world.game_state(), &mut members),
+                Outcome::Rows { len: 5_000 }
+            );
+            assert_eq!(members[4_999].country, 5_000);
+            assert_eq!(members[4_999].ordinal, 4_999);
+        }
+    }
 
     const GS: usize = 0x1000;
     const COUNTRIES: usize = 0x2000;
@@ -336,6 +435,68 @@ mod tests {
 
     fn members(bytes: &[u8], output: &mut [MemberRow]) -> Outcome {
         walk_members(&SliceMemory { base: 0, bytes }, 0, GS, output)
+    }
+
+    #[test]
+    fn reserved_member_uses_actual_root_without_broadening_positive_resolution() {
+        const C0: usize = 0xd000;
+        const D0: usize = 0xf000;
+        let mut bytes = fixture();
+        bytes.resize(0x11000, 0);
+        put64(&mut bytes, COUNTRIES, C0 as u64);
+        put64(&mut bytes, C0, ccountry::VTABLE_RVA as u64);
+        put64(&mut bytes, C0 + ccountry::DIPLOMACY_STATUS, D0 as u64);
+        put64(&mut bytes, D0, cdiplomacy_status::VTABLE_RVA as u64);
+        put64(&mut bytes, D0 + cdiplomacy_status::COUNTRY, C0 as u64);
+        put64(&mut bytes, D0 + cdiplomacy_status::FACTION, FIRST as u64);
+        put32(&mut bytes, FIRST + cfaction::MEMBER_COUNT, 3);
+        put64(&mut bytes, MEMBER_POINTERS + 16, C0 as u64);
+        let mut rows = [MemberRow::default(); 3];
+        assert_eq!(members(&bytes, &mut rows), Outcome::Rows { len: 3 });
+        assert_eq!(
+            rows[2],
+            MemberRow {
+                country: 0,
+                faction: FIRST_ID,
+                ordinal: 2
+            }
+        );
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert!(
+            ccountry::Reader::new(&memory, 0, GS)
+                .unwrap()
+                .resolve(0)
+                .is_err()
+        );
+        for (address, value, reason) in [
+            (COUNTRIES, C2 as u64, "reserved country id is not zero"),
+            (
+                D0 + cdiplomacy_status::FACTION,
+                0,
+                "country faction differs from membership roster",
+            ),
+            (
+                D0 + cdiplomacy_status::COUNTRY,
+                C1 as u64,
+                "country diplomacy owner differs from country",
+            ),
+        ] {
+            let mut bad = bytes.clone();
+            put64(&mut bad, address, value);
+            assert_eq!(members(&bad, &mut rows), Outcome::Unavailable { reason });
+        }
+        put32(&mut bytes, FIRST + cfaction::MEMBER_COUNT, 4);
+        put32(&mut bytes, FIRST + cfaction::MEMBER_CAPACITY, 4);
+        put64(&mut bytes, MEMBER_POINTERS + 24, C0 as u64);
+        assert_eq!(
+            members(&bytes, &mut [MemberRow::default(); 4]),
+            Outcome::Unavailable {
+                reason: "country has duplicate faction membership",
+            }
+        );
     }
 
     fn names(bytes: &[u8], output: &mut [cfaction::Row], arena: &mut [u8]) -> cfaction::NameWalk {

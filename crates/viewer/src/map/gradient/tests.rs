@@ -1,5 +1,30 @@
 use super::*;
 
+#[test]
+fn naval_coastal_attributes_wrap_before_unsigned_neighbor_division() {
+    let mut ids = vec![1; 16];
+    ids[5] = 0;
+    let map = ProvinceMap {
+        width: 4,
+        height: 4,
+        ids: &ids,
+    };
+    let attributes = |_| Attributes {
+        control: 255,
+        contested: 128,
+        gradient: Some(255),
+    };
+    let mut layer = Layer::new(LayerKind::Fixed(5.0), &[0, 1], &colors, &FieldDefines::TEST);
+    layer.region_attributes = Some(&attributes);
+    let regions = Regions::build(&map, &layer).unwrap();
+    let grid = BoundaryGrid::build(&map, &regions);
+    let (color, fx) = sample(&map, 17, &regions, &grid, 1, 1);
+    assert_eq!(color, [10, 20, 30, 255]);
+    //255*8 wraps to248;128*8 wraps to0, before division by8.
+    assert_eq!(fx, [31, 17, 0, 0]);
+    assert_eq!(sample(&map, 17, &regions, &grid, 2, 2).1, [255, 17, 0, 128]);
+}
+
 /// Two regions split down the middle of a 64 x 32 map, both reaching the top and bottom edges.
 fn split_map(ids: &mut Vec<u32>, width: u32, height: u32, seam: u32) {
     ids.clear();

@@ -23,7 +23,8 @@
 //! - a record gather logs the field it stopped at as a failed span even when
 //!   its row pointer is null (address 0) or non-canonical; the replay's
 //!   `copy_records` stops at the same field before any lookup;
-//! - pool overflow aborts the copy and grows staging capacity on recycle.
+//! - allocating worker roles grow before each original request; fixed pool
+//!   overflow aborts the copy and grows staging capacity on recycle.
 //!   The caller may use the typed fallback only before a prepared source
 //!   observation; afterward, that capture fails without repeating live reads.
 
@@ -90,7 +91,7 @@ pub(crate) fn note_growth<const N: usize>(family: &'static str, log: &RawLog<N>)
     }
     let failed = log.spans.iter().find(|span| !span.ok);
     let mut faults = Vec::new();
-    if engine::allocation::reserve_exact(&mut faults, N).is_err() {
+    if faults.try_reserve_exact(N).is_err() {
         return;
     }
     faults.extend_from_slice(&log.fault);
@@ -121,7 +122,7 @@ pub(crate) fn publish_growth(family: &'static str, value: Growth) {
         match diagnostics.binary_search_by_key(&family, |row| row.0) {
             Ok(index) => diagnostics[index].1 = value,
             Err(index) => {
-                if engine::allocation::reserve(&mut diagnostics, 1).is_err() {
+                if diagnostics.try_reserve(1).is_err() {
                     return;
                 }
                 diagnostics.insert(index, (family, value));
@@ -146,14 +147,6 @@ impl serde::Serialize for GrowthDiagnostics {
         }
         map.end()
     }
-}
-
-/// Increase capacity even when an oversized first request left the vector
-/// empty. `reserve_exact(capacity)` alone is a no-op after `clear()`.
-pub(crate) fn double_capacity<T>(rows: &mut Vec<T>) {
-    let target = rows.capacity().max(1).saturating_mul(2);
-    let additional = target.saturating_sub(rows.len());
-    let _ = engine::allocation::reserve_exact(rows, additional);
 }
 
 /// x86-64 canonical range check, identical to `engine::memory`'s gate.
@@ -265,9 +258,8 @@ impl RawBytes {
 
     /// Worker-only growth. The logical prefix and existing bytes survive.
     fn grow_to(&mut self, capacity: usize) {
-        let additional = capacity.saturating_sub(self.storage.len());
         if capacity > self.storage.capacity()
-            && engine::allocation::reserve_exact(&mut self.storage, additional).is_ok()
+            && crate::allocation::reserve_raw(&mut self.storage, capacity, "raw bytes").is_ok()
         {
             self.storage.resize(self.storage.capacity(), 0);
         }
@@ -359,8 +351,8 @@ impl<T: AsRef<[u8]> + ?Sized> PartialEq<T> for RawBytes {
 impl Eq for RawBytes {}
 
 /// One refresh of raw payload for a family of at most 32 tables. Flat pools
-/// keep every span fixed-size so `clear` recycles capacities and the steady
-/// state allocates on neither thread; growth happens on the decode side only.
+/// keep every span fixed-size so `clear` recycles capacities. Allocating worker
+/// roles may grow before a read; fixed callback logs grow on decode recycling.
 #[derive(Debug)]
 pub struct RawLog<const N: usize> {
     pub spans: Vec<Span>,
@@ -369,7 +361,9 @@ pub struct RawLog<const N: usize> {
     pub raw_bytes: [u64; N],
     pub overflowed: bool,
     span_exhausted: bool,
+    required_spans: usize,
     required_bytes: usize,
+    worker_growth: bool,
     /// Set when the log holds bulk spans wider than the replay's requests
     /// (contiguous table copies). The decode side then serves sub-ranges
     /// from the enclosing span instead of exact matches only.
@@ -405,7 +399,9 @@ impl<const N: usize> RawLog<N> {
             raw_bytes: [0; N],
             overflowed: false,
             span_exhausted: false,
+            required_spans: 0,
             required_bytes: 0,
+            worker_growth: false,
             has_bulk: false,
             index: RefCell::new(None),
             plan: CapturePlan::default(),
@@ -441,7 +437,9 @@ impl<const N: usize> RawLog<N> {
         self.raw_bytes = [0; N];
         self.overflowed = false;
         self.span_exhausted = false;
+        self.required_spans = 0;
         self.required_bytes = 0;
+        self.worker_growth = false;
         self.has_bulk = false;
         self.plan.active = false;
         self.plan.sealed = false;
@@ -458,7 +456,11 @@ impl<const N: usize> RawLog<N> {
         control_byte_capacity: usize,
     ) {
         let mut requests = Vec::new();
-        if engine::allocation::reserve_exact(&mut requests, read_capacity).is_err() {
+        if engine::allocation::advisory(|| {
+            engine::allocation::reserve_exact(&mut requests, read_capacity)
+        })
+        .is_err()
+        {
             return;
         }
         self.plan.requests = requests;
@@ -651,24 +653,48 @@ impl<const N: usize> RawLog<N> {
             && !self.fault.iter().any(|fault| *fault)
     }
 
+    /// Off-thread live presizing. Retain the current prefix and verdicts;
+    /// acquisition uses only the storage prepared here.
+    pub(crate) fn presize(&mut self, spans: usize, bytes: usize) {
+        engine::allocation::advisory(|| self.presize_storage(spans, bytes));
+    }
+
+    fn presize_storage(&mut self, spans: usize, bytes: usize) {
+        let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
+        if spans > self.spans.capacity() {
+            let additional = spans.saturating_sub(self.spans.len());
+            let _ = engine::allocation::reserve_exact(&mut self.spans, additional);
+        }
+        if !crate::allocation::failed() {
+            self.bytes.grow_to(bytes);
+        }
+        self.update_capacity_charge();
+    }
+
     /// Grow only exhausted storage off-thread. Span-heavy censuses must not
     /// repeatedly double a mostly empty byte arena (and vice versa).
     pub fn grow(&mut self) {
+        engine::allocation::advisory(|| self.grow_storage());
+    }
+
+    fn grow_storage(&mut self) {
         let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
         if crate::allocation::failed() {
             return;
         }
-        if self.span_exhausted {
-            double_capacity(&mut self.spans);
+        let required_spans = self.required_spans.max(if self.span_exhausted {
+            self.spans.len().saturating_add(1)
+        } else {
+            0
+        });
+        if required_spans > self.spans.capacity() {
+            let _ = crate::allocation::reserve_raw(&mut self.spans, required_spans, "raw spans");
             if crate::allocation::failed() {
                 return;
             }
         }
         if self.required_bytes > self.bytes.capacity() {
-            let target = self
-                .required_bytes
-                .max(self.bytes.capacity().saturating_mul(2));
-            self.bytes.grow_to(target);
+            self.bytes.grow_to(self.required_bytes);
         }
         self.update_capacity_charge();
     }
@@ -677,9 +703,45 @@ impl<const N: usize> RawLog<N> {
     /// retried: when they do not fit, mark overflow and the size to grow to.
     pub fn reserve(&mut self, extra: usize) {
         let end = self.bytes.len().saturating_add(extra);
-        if end > self.bytes.capacity() {
+        let _ = self.ensure_storage(0, end);
+    }
+
+    /// Allocating acquisition roles opt in after clear, before their first
+    /// source read. Growth preserves the acquired prefix and never retries it.
+    pub(crate) fn enable_worker_growth(&mut self) {
+        self.worker_growth = true;
+    }
+
+    pub(crate) fn worker_growth_enabled(&self) -> bool {
+        self.worker_growth
+    }
+
+    fn ensure_storage(&mut self, spans: usize, end: usize) -> bool {
+        let needed_spans = self.spans.len().checked_add(spans);
+        let span_short = needed_spans.is_none_or(|needed| needed > self.spans.capacity());
+        let byte_short = end > self.bytes.capacity();
+        if self.worker_growth && end <= u32::MAX as usize && (span_short || byte_short) {
+            let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
+            if span_short && let Some(needed) = needed_spans {
+                let target = needed;
+                let _ = crate::allocation::reserve_raw(&mut self.spans, target, "raw spans");
+            }
+            if byte_short && !crate::allocation::failed() {
+                self.bytes.grow_to(end);
+            }
+            self.update_capacity_charge();
+        }
+        if needed_spans.is_none_or(|needed| needed > self.spans.capacity())
+            || end > self.bytes.capacity()
+            || end > u32::MAX as usize
+        {
+            self.span_exhausted = span_short;
+            self.required_spans = self.required_spans.max(needed_spans.unwrap_or(usize::MAX));
             self.required_bytes = self.required_bytes.max(end);
             self.overflowed = true;
+            false
+        } else {
+            true
         }
     }
 
@@ -828,16 +890,7 @@ impl<const N: usize> RawLog<N> {
             self.note_fail(addr, len32, mask);
             return None;
         }
-        if self.spans.len() == self.spans.capacity()
-            || self
-                .bytes
-                .len()
-                .checked_add(len)
-                .is_none_or(|end| end > self.bytes.capacity() || end > u32::MAX as usize)
-        {
-            self.span_exhausted = self.spans.len() == self.spans.capacity();
-            self.required_bytes = self.bytes.len().saturating_add(len);
-            self.overflowed = true;
+        if !self.ensure_storage(1, self.bytes.len().saturating_add(len)) {
             return None;
         }
         let start = self.bytes.len();
@@ -891,16 +944,7 @@ impl<const N: usize> RawLog<N> {
             self.note_fail(addr, len32, mask);
             return None;
         }
-        if self.spans.len() == self.spans.capacity()
-            || self
-                .bytes
-                .len()
-                .checked_add(len)
-                .is_none_or(|end| end > self.bytes.capacity() || end > u32::MAX as usize)
-        {
-            self.span_exhausted = self.spans.len() == self.spans.capacity();
-            self.required_bytes = self.bytes.len().saturating_add(len);
-            self.overflowed = true;
+        if !self.ensure_storage(1, self.bytes.len().saturating_add(len)) {
             return None;
         }
         let Some(bytes) = observed else {
@@ -977,13 +1021,7 @@ impl<const N: usize> RawLog<N> {
             end = next;
         }
         let spans = lengths.iter().filter(|&&len| len != 0).count();
-        if spans > self.spans.capacity() - self.spans.len()
-            || end > self.bytes.capacity()
-            || end > u32::MAX as usize
-        {
-            self.span_exhausted = spans > self.spans.capacity() - self.spans.len();
-            self.required_bytes = end;
-            self.overflowed = true;
+        if !self.ensure_storage(spans, end) {
             return None;
         }
         if self.plan.active && self.plan.prefix_cursor < self.plan.prefix_len {
@@ -1144,13 +1182,7 @@ impl<const N: usize> RawLog<N> {
         let end = start.checked_add(size)?;
         // The copied prefix and one failed element.
         let spans = if BULK { 2 } else { count + 1 };
-        if self.spans.capacity() - self.spans.len() < spans
-            || end > self.bytes.capacity()
-            || end > u32::MAX as usize
-        {
-            self.span_exhausted = self.spans.capacity() - self.spans.len() < spans;
-            self.required_bytes = end;
-            self.overflowed = true;
+        if !self.ensure_storage(spans, end) {
             return None;
         }
         // The ordinary contiguous range has one arithmetic/canonical gate.
@@ -1245,13 +1277,7 @@ impl<const N: usize> RawLog<N> {
             .checked_mul(layout.stride())
             .and_then(|size| start.checked_add(size))?;
         let spans = rows.saturating_mul(fields.len()).saturating_add(1);
-        if self.spans.capacity() - self.spans.len() < spans
-            || end > self.bytes.capacity()
-            || end > u32::MAX as usize
-        {
-            self.span_exhausted = self.spans.capacity() - self.spans.len() < spans;
-            self.required_bytes = end;
-            self.overflowed = true;
+        if !self.ensure_storage(spans, end) {
             return None;
         }
         let completed = memory.copy_records(sources, layout, &mut self.bytes.storage[start..end]);
@@ -1294,9 +1320,7 @@ impl<const N: usize> RawLog<N> {
     }
 
     fn note_fail(&mut self, addr: usize, len32: u32, mask: u32) {
-        if self.spans.len() == self.spans.capacity() {
-            self.span_exhausted = true;
-            self.overflowed = true;
+        if !self.ensure_storage(1, self.bytes.len()) {
             return;
         }
         self.spans.push(Span {
@@ -1412,7 +1436,7 @@ pub(crate) fn allocation_exercise() -> bool {
     if crate::allocation::failed() {
         return false;
     }
-    crate::raw_plan::allocation_exercise()
+    engine::allocation::advisory(crate::raw_plan::allocation_exercise)
 }
 
 #[cfg(test)]

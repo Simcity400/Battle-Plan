@@ -2,6 +2,54 @@ use super::*;
 use engine::memory::SliceMemory;
 
 #[test]
+fn reserved_certificate_readiness_uses_only_the_projectable_naming_prefix() {
+    use engine::csubject_relation::Name;
+    let mut capture = Captured::vacant();
+    assert!(!capture.reserved_land_certificate_ready());
+    capture.reserved.outcome = Outcome::Rows { len: 1 };
+    assert!(capture.reserved_land_certificate_ready());
+    capture.reserved.row.original_tag = Some(Name { start: 1, len: 1 });
+    capture.reserved.row.faction = None;
+    assert!(
+        capture.reserved_land_certificate_ready(),
+        "optional operands deny the prefix"
+    );
+    for field in 0..6 {
+        let mut row = capture.reserved.row;
+        let malformed = Name {
+            start: usize::MAX,
+            len: 1,
+        };
+        match field {
+            0 => row.tag = malformed,
+            1 => row.name_tag = malformed,
+            2 => row.cosmetic_tag = malformed,
+            3 => row.leader_ideology = malformed,
+            4 => row.group = Some(malformed),
+            _ => row.autonomy = Some(malformed),
+        }
+        let original = std::mem::replace(&mut capture.reserved.row, row);
+        assert!(!capture.reserved_land_certificate_ready());
+        assert!(matches!(
+            capture.reserved_table_attack(None, None),
+            TableView::Unavailable { .. }
+        ));
+        capture.reserved.row = original;
+    }
+    capture.reserved.row.built = 8;
+    assert!(!capture.reserved_land_certificate_ready());
+    capture.reserved.row.built = 7;
+    capture.naming.len = 1;
+    assert!(!capture.reserved_land_certificate_ready());
+    capture.naming.len = 0;
+    capture.reserved.outcome = Outcome::Truncated {
+        len: 0,
+        unread_rows: 1,
+    };
+    assert!(!capture.reserved_land_certificate_ready());
+}
+
+#[test]
 fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance() {
     use engine::csubject_relation::Name;
     let mut capacity = Capacities {
@@ -86,6 +134,20 @@ fn reserved_naming_keeps_exact_bytes_and_does_not_withhold_existing_appearance()
         assert_eq!(rows[0].group, Some(Vec::new()));
         assert_eq!(rows[0].built, 5);
     }
+    for faction in [Some(0), Some((u64::from(u32::MAX) << 32) | 88), None] {
+        capture.reserved.row.faction = faction;
+        let [
+            TableView::Complete(replay::rows::TableRows::CountryAppearance(positive)),
+            TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+        ] = capture.tables()
+        else {
+            panic!("independent faction refusal preserves both naming and positive appearance");
+        };
+        assert_eq!(positive[0].country, 7);
+        assert_eq!(rows[0].faction, replay::rows::Recorded::Value(faction));
+        assert_eq!(rows[0].tag, [0xff, 0]);
+        assert_eq!(rows[0].built, 5);
+    }
     capture.reserved.row.group = Some(Name { start: 4, len: 1 });
     assert!(matches!(
         capture.tables(),
@@ -111,6 +173,7 @@ fn unreadable_census_is_unavailable_and_raw_colors_preserve_primary_values() {
     capture.rows.rows[0].country = 17;
     capture.rows.rows[0].rgba = [0x7fc01234, 0x80000000, 0xffffffff, 0x3f800000];
     capture.rows.rows[0].ui_rgba = [0x3f000000, 0x00000001, 0x7f800000, 0xbf800000];
+    capture.rows.rows[0].cosmetic_tag.bytes.resize(3, 0);
     capture.rows.rows[0].cosmetic_tag.bytes[..3].copy_from_slice(&[65, 0, 255]);
     capture.rows.rows[0].cosmetic_tag.len = 3;
     capture.rows.rows[0].leader_character = Some(0);
@@ -231,6 +294,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
         original_tag_buckets: 3,
         original_tag_members: 4,
         country_array: 4,
+        ..Default::default()
     };
     let mut capture = Captured::with_capacities(&capacities);
     capture.reserved.outcome = Outcome::Rows { len: 1 };
@@ -373,7 +437,7 @@ fn actual_original_tag_buckets_project_order_and_refuse_independently() {
 }
 
 #[test]
-fn subject_shortage_and_payload_fault_omit_only_affected_countries() {
+fn subject_growth_keeps_all_rows_and_payload_fault_omits_only_affected_countries() {
     use engine::cpdx_array::Array;
     let bytes = [9_i32, -1, 9, 17]
         .into_iter()
@@ -407,33 +471,95 @@ fn subject_shortage_and_payload_fault_omit_only_affected_countries() {
             base: 0x1000,
             bytes: &bytes,
         });
+        let missing = 1 + u32::from(payload_fault);
         assert_eq!(
             capture.rows.outcome,
             Outcome::Truncated {
-                len: 2,
-                unread_rows: 2
+                len: 4 - missing as usize,
+                unread_rows: missing
             }
         );
         assert_eq!(capture.subjects.required, 4);
         let [
             TableView::Truncated {
                 rows: replay::rows::TableRows::CountryAppearance(rows),
-                missing: 2,
+                missing: actual_missing,
             },
             _,
         ] = capture.tables()
         else {
             panic!("unaffected countries must remain partial rows");
         };
+        assert_eq!(actual_missing, missing);
         assert_eq!(
             rows.iter().map(|row| row.country).collect::<Vec<_>>(),
-            [7, 11]
+            if payload_fault {
+                vec![7, 11]
+            } else {
+                vec![3, 7, 11]
+            }
         );
-        assert!(rows[0].subjects.require("subjects").unwrap().is_empty());
-        assert_eq!(*rows[1].subjects.require("subjects").unwrap(), [17]);
+        if !payload_fault {
+            assert_eq!(*rows[0].subjects.require("subjects").unwrap(), [9, -1, 9]);
+        }
+        assert!(
+            rows[rows.len() - 2]
+                .subjects
+                .require("subjects")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            *rows.last().unwrap().subjects.require("subjects").unwrap(),
+            [17]
+        );
         capture.grow(&mut capacity);
         assert!(capture.subjects.first.len() >= 4);
         assert_eq!(capture.subject_starts.len(), capture.rows.rows.len());
+    }
+}
+
+#[test]
+fn subject_arena_grows_first_and_later_mod_sized_5000_country_lists() {
+    use engine::cpdx_array::Array;
+    let countries = 5_000;
+    let mut capture = Captured::with_capacities(&Capacities {
+        rows: countries,
+        subjects: 1,
+        ..Default::default()
+    });
+    for count in [3, 17] {
+        capture.reset();
+        let values: Vec<i32> = (0..count).map(|index| index as i32 - 1).collect();
+        let bytes: Vec<_> = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        for (index, row) in capture.rows.rows.iter_mut().take(countries).enumerate() {
+            row.country = index as u32 + 1;
+            row.subjects = Array {
+                data: 0x1000,
+                count: count as u32,
+            };
+        }
+        capture.rows.outcome = Outcome::Rows { len: countries };
+        capture.capture_subjects(&SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        });
+        assert_eq!(capture.rows.outcome, Outcome::Rows { len: countries });
+        assert_eq!(capture.subjects.len, countries * count);
+        let [
+            TableView::Complete(replay::rows::TableRows::CountryAppearance(rows)),
+            _,
+        ] = capture.tables()
+        else {
+            panic!("complete native subjects must be published in the same sample");
+        };
+        assert_eq!(rows.len(), countries);
+        for row in rows {
+            assert_eq!(row.subjects.require("subjects").unwrap(), &values);
+        }
     }
 }
 
@@ -468,8 +594,10 @@ fn deferred_reserved_table_retains_the_already_guarded_signed_boundary() {
     captured.reserved.outcome = Outcome::Rows { len: 1 };
     for boundary in [i32::MIN, -1, 0, i32::MAX] {
         captured.reserved.row.dynamic_tag_boundary = boundary;
-        let TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)) =
-            captured.reserved_table()
+        let [
+            _,
+            TableView::Complete(replay::rows::TableRows::ReservedCountryNaming(rows)),
+        ] = captured.tables()
         else {
             panic!("reserved singleton must remain complete");
         };

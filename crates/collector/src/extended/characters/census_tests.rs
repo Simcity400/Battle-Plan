@@ -590,7 +590,7 @@ fn settle(
     roles: Roles<&census::RoleCensus>,
 ) {
     for _ in 0..16 {
-        let report = copy_characters(memory, context(active), job, roles);
+        let report = copy_characters_growing(memory, context(active), job, roles);
         let grow = job.grow_for_next();
         if grow {
             job.grow();
@@ -704,7 +704,7 @@ fn advisor_cache(world: &World, loan: Option<census::Admitted<'_>>) -> advisors:
     let demand = cadvisor::modifier_demand(world, MODULE, GAME_STATE).unwrap();
     let mut cache = advisors::Cache::with_modifier_demand(demand);
     for _ in 0..4 {
-        cache.capture(world, ctx, &Quiet, loan);
+        cache.capture_growing(world, ctx, &Quiet, loan);
         if cache.needs_growth() {
             cache.grow();
         }
@@ -735,6 +735,27 @@ impl advisors::Changes for Unwatched {
     fn verify(&self) -> bool {
         false
     }
+}
+
+#[test]
+fn worker_growth_acquires_current_ideology_for_every_authenticated_role() {
+    let world = World::new(25_000);
+    let memory = Counting::new(&world);
+    let mut job = CharactersJob::with_storage(1, 32, 1024, false);
+    job.worker_growing = true;
+    let report = copy_characters(
+        &memory,
+        context(PART_MASKS[1]),
+        &mut job,
+        Roles::Independent,
+    );
+    assert!(report.raw_ok && !report.plan_failed);
+    let captured = decode(&job);
+    assert_eq!(captured.leaders.rows.outcome, Outcome::Rows { len: 5_000 });
+    assert!(captured.leaders.rows.rows[..5_000].iter().all(|row| {
+        row.current_ideology == Some(None) && row.current_ideology_failure.is_none()
+    }));
+    characters_test_kit::assert_matches_direct(&captured, &typed(&memory, 1));
 }
 
 /// Prints guarded calls and the best of five capture times per character
@@ -839,7 +860,7 @@ fn role_capture_cost_scales_with_roles_not_roster() {
                 best_of_five(|| {
                     memory.reset();
                     let begin = std::time::Instant::now();
-                    cache.capture(&memory, ctx, observer, source);
+                    cache.capture_growing(&memory, ctx, observer, source);
                     let elapsed = begin.elapsed();
                     assert_eq!(cache.result.outcome, Outcome::Rows { len: expected });
                     cache.prepare();
@@ -1021,12 +1042,14 @@ fn census_is_refused_when_incomplete_unreadable_stale_or_still_loaned() {
     // An incomplete portrait census or role storage publishes nothing, then
     // grows off-thread to the observed roster.
     let mut short = CharactersJob::new_part(0);
+    settle(&world, PART_MASKS[0], &mut short, Roles::Gather);
     short.portrait_census = Some(Arc::new(
         ccharacter_manager::PortraitCensus::try_new(2).unwrap(),
     ));
     copy_characters(&world, context(PART_MASKS[0]), &mut short, Roles::Gather);
     assert!(short.role_census().is_none());
     let mut narrow = CharactersJob::new_part(0);
+    settle(&world, PART_MASKS[0], &mut narrow, Roles::Gather);
     narrow.role_census = Some(Arc::new(census::RoleCensus::new(2)));
     copy_characters(&world, context(PART_MASKS[0]), &mut narrow, Roles::Gather);
     assert!(narrow.portrait_census().is_some());
@@ -1068,6 +1091,7 @@ fn exhausted_census_storage_falls_back_and_grows_to_the_whole_demand() {
     let loan = owner.role_census().unwrap();
     for part in [1, 3] {
         let mut job = CharactersJob::new_part(part);
+        settle(&world, PART_MASKS[part], &mut job, Roles::Borrow(&loan));
         job.census_visited = Vec::with_capacity(3);
         let report = copy_characters(
             &world,
@@ -1100,13 +1124,13 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
     let loan = owner.role_census().unwrap();
     let demand = cadvisor::modifier_demand(&world, MODULE, GAME_STATE).unwrap();
     let mut cache = advisors::Cache::with_modifier_demand(demand);
-    cache.capture(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
+    cache.capture_growing(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
     assert_eq!(cache.counts.planned, 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
     // A quiet, unchanged census certifies both sections in one execution each.
     let counting = Counting::new(&world);
-    cache.capture(&counting, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
+    cache.capture_growing(&counting, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
     assert_eq!(cache.counts.planned, 2);
     // Definitions need only the two prepared control programs. Every advisor
     // still acquires both independent headers: numeric cache (16 bytes) and
@@ -1123,7 +1147,7 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
     );
     let owner = roster(&world);
     let loan = owner.role_census().unwrap();
-    cache.capture(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
+    cache.capture_growing(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
     assert_eq!(cache.counts.planned, 2);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
@@ -1131,16 +1155,16 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
     world.patch(World::advisor_head(43) + msvc_tree_node::COLOR, &[0]);
     let owner = roster(&world);
     let loan = owner.role_census().unwrap();
-    cache.capture(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
+    cache.capture_growing(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
     assert_eq!(cache.counts.planned, 1);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
     // Roster and census passes never certify each other's plans.
-    cache.capture(&world, ctx, &Quiet, None);
+    cache.capture_growing(&world, ctx, &Quiet, None);
     assert_eq!(cache.counts.planned, 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
-    cache.capture(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
+    cache.capture_growing(&world, ctx, &Quiet, loan.admitted(MODULE, GAME_STATE));
     assert_eq!(cache.counts.planned, 0);
     assert!(cache.counts.reused > 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
@@ -1158,7 +1182,7 @@ fn census_advisor_cache_keeps_reuse_verification_and_fresh_countries() {
         }
     }
     cache.prepare();
-    cache.capture(&world, ctx, &Verify, loan.admitted(MODULE, GAME_STATE));
+    cache.capture_growing(&world, ctx, &Verify, loan.admitted(MODULE, GAME_STATE));
     assert!(cache.counts.verified > 0);
     assert_eq!(cache.counts.mismatches, 0);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));

@@ -768,7 +768,15 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
     memory.reads.borrow_mut().clear();
     let observe = |memo: &mut InnerMemo, parent, province| {
         let mut path = [0; 3];
-        let result = route::read_edge(&memory, 0, &outer, memo, parent, province, &mut path);
+        let result = route::read_edge_buffer(
+            &memory,
+            0,
+            &outer,
+            memo,
+            parent,
+            province,
+            crate::walk::Buffer::Fixed(&mut path),
+        );
         (result, path)
     };
     let mut baseline = InnerMemo::default();
@@ -824,8 +832,16 @@ fn parent_headers_reuse_interleaved_keys_but_refresh_root_and_route_payloads() {
     assert_eq!(observe(&mut retained, 2, 3).0.unwrap().0.from, 0);
     retained.begin();
     let mut path = [0; 3];
-    let (row, need) =
-        route::read_edge(&memory, 0, &other_outer, &mut retained, 2, 3, &mut path).unwrap();
+    let (row, need) = route::read_edge_buffer(
+        &memory,
+        0,
+        &other_outer,
+        &mut retained,
+        2,
+        3,
+        crate::walk::Buffer::Fixed(&mut path),
+    )
+    .unwrap();
     assert_eq!((row.from, row.to, row.len, need), (2, 3, 2, 2));
     assert_eq!(path, [3, 2, 0]);
 }
@@ -1073,7 +1089,7 @@ fn census(n: u32) -> Vec<u8> {
     let companions = systems + n * 8;
     let objects = companions + n * supply_companion::STRIDE;
     let supply = objects + n * 0x10;
-    let access = supply + n * 0x140;
+    let access = supply + n * SIZE;
     let mut bytes = vec![0_u8; access + n - GAME];
     put(
         &mut bytes,
@@ -1121,7 +1137,7 @@ fn census(n: u32) -> Vec<u8> {
     );
     for slot in 1..n {
         let country = objects + slot * 0x10;
-        let system = supply + slot * 0x140;
+        let system = supply + slot * SIZE;
         let companion = companions + slot * supply_companion::STRIDE;
         put(
             &mut bytes,
@@ -1496,5 +1512,187 @@ fn node_capacity_never_returns_a_complete_prefix() {
             len: 0,
             unread_rows: 3
         }
+    );
+}
+
+#[test]
+fn growing_supply_rows_arenas_and_floating_deployments_cover_5000_country_headers() {
+    const COUNTRIES: usize = 5000;
+    let mut bytes = census(COUNTRIES as u32 + 1);
+    let countries = 0x3000;
+    let slots = COUNTRIES + 1;
+    let links = countries + slots * 8;
+    let systems = links + slots * 4;
+    let companions = systems + slots * 8;
+    let objects = companions + slots * supply_companion::STRIDE;
+    let supply = objects + slots * 0x10;
+    let end = GAME + bytes.len();
+    let node_list = end;
+    let deployment_list = node_list + 32 * crate::supply_node::STRIDE;
+    let province_table = deployment_list + 32 * FLOATING_HARBOR_DEPLOYMENT_STRIDE;
+    let province = province_table + 16;
+    let empty_parents = province + 0x100;
+    bytes.resize(empty_parents + 24 - GAME, 0);
+    header(
+        &mut bytes,
+        GAME + cgame_state::PROVINCES,
+        province_table,
+        2,
+        2,
+    );
+    put(
+        &mut bytes,
+        province_table + 8,
+        &(province as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        province,
+        &(crate::cprovince::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        province + crate::cprovince::ID,
+        &1_u32.to_le_bytes(),
+    );
+    put(&mut bytes, empty_parents + 12, &[255]);
+    for index in 0..32 {
+        let node = node_list + index * crate::supply_node::STRIDE;
+        put(&mut bytes, node, &(index as u32).to_le_bytes());
+        put(
+            &mut bytes,
+            node + crate::supply_node::PROVINCE,
+            &1_u32.to_le_bytes(),
+        );
+        let deployment = deployment_list + index * FLOATING_HARBOR_DEPLOYMENT_STRIDE;
+        put(
+            &mut bytes,
+            deployment + FLOATING_HARBOR_PROVINCE,
+            &(index as i32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            deployment + FLOATING_HARBOR_STATUS,
+            &[(index % 4) as u8],
+        );
+    }
+    let mut nodes = Vec::new();
+    let mut paths = Vec::new();
+    let mut trains = Vec::new();
+    let mut entries = Vec::new();
+    let mut access = Vec::new();
+    let mut runs = Vec::new();
+    let mut deployments = Vec::new();
+    for count in [1_usize, 32] {
+        for slot in 1..slots {
+            let system = supply + slot * SIZE;
+            let companion = companions + slot * supply_companion::STRIDE;
+            header(
+                &mut bytes,
+                companion + supply_companion::NODES,
+                node_list,
+                count as u32,
+                count as u32,
+            );
+            header(
+                &mut bytes,
+                system + FLOATING_HARBOR_DEPLOYMENTS,
+                deployment_list,
+                count as u32,
+                count as u32,
+            );
+            put(
+                &mut bytes,
+                companion + crate::supply_parent_map::HEADER,
+                &(empty_parents as u64).to_le_bytes(),
+            );
+        }
+        let memory = SliceMemory {
+            base: GAME,
+            bytes: &bytes,
+        };
+        let demand = crate::supply_node::storage_demand(&memory, 0, GAME).unwrap();
+        assert_eq!(demand, COUNTRIES * count);
+        let mut memo = crate::supply_node::ProvinceMemo::default();
+        memo.begin(&memory, 0, GAME);
+        let captured = crate::supply_node::walk_part_growing(
+            &memory, 0, GAME, 0, 1, &mut nodes, &mut paths, &mut memo,
+        );
+        assert_eq!(
+            captured.outcome,
+            Outcome::Rows {
+                len: COUNTRIES * count
+            }
+        );
+        assert_eq!(
+            walk_floating_harbor_deployments_growing(&memory, 0, GAME, &mut deployments),
+            Outcome::Rows {
+                len: COUNTRIES * count
+            }
+        );
+        assert!(
+            deployments[..COUNTRIES * count]
+                .chunks_exact(count)
+                .enumerate()
+                .all(|(i, rows)| rows
+                    .iter()
+                    .enumerate()
+                    .all(|(ordinal, row)| row.country == i as u32 + 1
+                        && row.ordinal == ordinal as u32))
+        );
+        let captured = walk_trains_growing(
+            &memory,
+            0,
+            GAME,
+            &mut trains,
+            &mut entries,
+            &mut access,
+            &mut runs,
+        );
+        assert_eq!(captured.outcome, Outcome::Rows { len: COUNTRIES });
+        assert!(captured.access > 0 && captured.runs > 0);
+        assert!(access.len() >= captured.access && runs.len() >= captured.runs);
+    }
+}
+
+#[test]
+fn growing_supply_parent_vertices_and_path_words_complete_the_original_first_walk() {
+    let mut bytes = train_fixture();
+    let companion = 0x6000 + supply_companion::STRIDE;
+    header(
+        &mut bytes,
+        companion + supply_companion::NODES,
+        0xa000,
+        1,
+        1,
+    );
+    put(
+        &mut bytes,
+        0xa000 + crate::supply_node::PROVINCE,
+        &3_u32.to_le_bytes(),
+    );
+    let memory = TrainMemory::new(&bytes);
+    let mut expected_rows = vec![crate::supply_node::Row::default(); 3];
+    let mut expected_paths = vec![0; 3];
+    let expected =
+        crate::supply_node::walk(&memory, 0, GAME, &mut expected_rows, &mut expected_paths);
+    assert_eq!(expected.outcome, Outcome::Rows { len: 3 });
+    let mut rows = Vec::new();
+    let mut paths = Vec::new();
+    let mut memo = crate::supply_node::ProvinceMemo::default();
+    memo.begin(&memory, 0, GAME);
+    let captured = crate::supply_node::walk_part_growing(
+        &memory, 0, GAME, 0, 1, &mut rows, &mut paths, &mut memo,
+    );
+    assert_eq!(captured.outcome, expected.outcome);
+    assert_eq!((captured.paths, captured.required_paths), (3, 3));
+    assert_eq!(&rows[..3], expected_rows.as_slice());
+    assert_eq!(&paths[..3], expected_paths.as_slice());
+    assert_eq!(
+        rows.iter()
+            .take(3)
+            .filter(|row| row.index & crate::supply_node::VERTEX != 0)
+            .count(),
+        2
     );
 }

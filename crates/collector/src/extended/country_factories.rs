@@ -13,14 +13,9 @@ pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::CountryFactories];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
-}
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { rows: 512 }
-    }
 }
 impl Capacities {
     /// One row per canonical country slot. Never lowers.
@@ -73,7 +68,8 @@ impl Captured {
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        self.rows.outcome = native::walk_factories(memory, base, game_state, &mut self.rows.rows);
+        self.rows.outcome =
+            native::walk_factories_growing(memory, base, game_state, &mut self.rows.rows);
         [qpc().saturating_sub(started).max(0) as u64]
     }
     pub fn outcomes(&self) -> [Outcome; N] {

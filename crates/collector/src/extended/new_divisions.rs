@@ -89,13 +89,13 @@ pub fn next_mark(
     Counters::unpack(stored.load(Ordering::Relaxed)).map_or(Mark::Unknown, Mark::Above)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { rows: 256 }
+impl Capacities {
+    pub(crate) fn raise_for_equipment(&mut self, rows: usize) {
+        self.rows = self.rows.max(rows);
     }
 }
 
@@ -105,6 +105,13 @@ pub struct Captured {
 }
 
 impl Captured {
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities { rows: 0 })
+    }
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        self.rows.fail(Outcome::Unavailable { reason });
+    }
+
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
@@ -143,7 +150,7 @@ impl Captured {
                 reason: "division census incomplete",
             },
             (Mark::Above(counters), Outcome::Rows { len }) => match sources.get(..len) {
-                Some(sources) => pool::walk_divisions_where(
+                Some(sources) => pool::walk_divisions_where_growing(
                     memory,
                     base,
                     sources,
@@ -179,6 +186,62 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_and_later_new_division_snapshots_grow_at_5000_countries() {
+        let mut bytes = vec![0; 0x9000 + 17 * engine::equipment_entry::STRIDE];
+        let put = |bytes: &mut [u8], address: usize, value: u64| {
+            bytes[address..address + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        let pool_at = 0x1000 + engine::carmy::EQUIPMENT_POOL;
+        put(&mut bytes, pool_at, pool::VTABLE_RVA as u64);
+        put(&mut bytes, pool_at + pool::ITEMS, 0x9000);
+        put(
+            &mut bytes,
+            0x8000,
+            engine::cequipment_variant::VTABLE_RVA as u64,
+        );
+        put(&mut bytes, 0x8008, 0x7000_0001_0000_0046);
+        for ordinal in 0..17 {
+            let at = 0x9000 + ordinal * engine::equipment_entry::STRIDE;
+            put(&mut bytes, at, 0x8000);
+            put(&mut bytes, at + 8, 1);
+        }
+        let sources: Vec<_> = (0..5_000)
+            .map(|index| pool::DivisionSource {
+                pointer: 0x1000,
+                division: ((index as u64 + 1) << 32) | 0x1269,
+                country: index as u32 + 1,
+                ..Default::default()
+            })
+            .collect();
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        captured.set_mark(Mark::Above(Counters {
+            unit: 0,
+            registry: 0,
+        }));
+        for entries in [3_u32, 17] {
+            bytes[pool_at + pool::CAPACITY..pool_at + pool::CAPACITY + 4]
+                .copy_from_slice(&entries.to_le_bytes());
+            bytes[pool_at + pool::COUNT..pool_at + pool::COUNT + 4]
+                .copy_from_slice(&entries.to_le_bytes());
+            let memory = engine::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            captured.capture(&memory, 0, &sources, Outcome::Rows { len: sources.len() });
+            assert_eq!(
+                captured.outcomes(),
+                [Outcome::Rows {
+                    len: sources.len() * entries as usize
+                }]
+            );
+            assert_eq!(
+                captured.rows.rows[sources.len() * entries as usize - 1].ordinal,
+                entries - 1
+            );
+        }
+    }
 
     #[test]
     fn each_handle_type_is_compared_with_its_own_counter() {

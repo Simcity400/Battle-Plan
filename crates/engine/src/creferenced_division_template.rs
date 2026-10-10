@@ -63,7 +63,7 @@ use crate::{
     memory::{RecordField, RecordLayout, RecordSources},
     msvc_string::{self, Descriptor},
     read, read_slice,
-    walk::Outcome,
+    walk::{Buffer, Outcome},
 };
 
 /// Contained composition +190, consumed by 140B90370 for the counter sprite.
@@ -127,6 +127,8 @@ pub struct IconRow {
     /// Raw composition count for the ability's late-join denominator. It is
     /// independent of the model fields and retains its signed native value.
     pub formation_division_count: Option<i32>,
+    /// Independently acquired GetDisplayName operands in the caller's name arena.
+    pub display_name: Option<DisplayName>,
     /// 140B91150's result: +0x1A0, else the priority getter's. Token zero is
     /// the null object, which draws no model. Its count is unused.
     pub representative: SubunitCount,
@@ -153,6 +155,8 @@ pub struct IconRow {
 /// [`walk_icons`]'s arena use and demand.
 pub struct IconWalk {
     pub outcome: Outcome,
+    pub name_bytes_len: usize,
+    pub required_name_bytes: usize,
     pub bytes_len: usize,
     pub required_bytes: usize,
     pub counts_len: usize,
@@ -170,6 +174,8 @@ pub struct Walk {
     pub outcome: Outcome,
     pub bytes_len: usize,
     pub required_bytes: usize,
+    /// GetDisplayName@140B91170 uses the fallback key only for an empty literal.
+    pub required_name_bytes: usize,
     /// Definition memo slots that would hold every definition at half load.
     pub required_memo: usize,
 }
@@ -864,10 +870,47 @@ pub fn walk(
     bytes: &mut [u8],
     memo: &mut [MemoSlot],
 ) -> Walk {
+    walk_inner(
+        memory,
+        base,
+        state,
+        Buffer::Fixed(rows),
+        Buffer::Fixed(bytes),
+        memo,
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    rows: &mut Vec<Row>,
+    bytes: &mut Vec<u8>,
+    memo: &mut [MemoSlot],
+) -> Walk {
+    walk_inner(
+        memory,
+        base,
+        state,
+        Buffer::Growing(rows),
+        Buffer::Growing(bytes),
+        memo,
+    )
+}
+
+fn walk_inner(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut rows: Buffer<'_, Row>,
+    mut bytes: Buffer<'_, u8>,
+    memo: &mut [MemoSlot],
+) -> Walk {
     let mut result = Walk {
         outcome: Outcome::Rows { len: 0 },
         bytes_len: 0,
         required_bytes: 0,
+        required_name_bytes: 0,
         required_memo: 0,
     };
     let mut memo = Memo::new(memo);
@@ -911,19 +954,27 @@ pub fn walk(
                 .checked_add(name.len)
                 .and_then(|n| n.checked_add(name_key.len))
                 .ok_or("template byte arena overflow")?;
-            if len == rows.len()
-                || name.len.saturating_add(name_key.len) > bytes.len() - result.bytes_len
-            {
+            result.required_name_bytes = result
+                .required_name_bytes
+                .checked_add(name.len)
+                .and_then(|n| n.checked_add(if name.len == 0 { name_key.len } else { 0 }))
+                .ok_or("template display name arena overflow")?;
+            let end = result
+                .bytes_len
+                .checked_add(name.len)
+                .and_then(|n| n.checked_add(name_key.len))
+                .ok_or("template byte arena overflow")?;
+            if !rows.ensure(len + 1)? || (matches!(bytes, Buffer::Fixed(_)) && end > bytes.len()) {
                 missing = missing
                     .checked_add(1)
                     .ok_or("template row count overflow")?;
                 return Ok(());
             }
             let start = result.bytes_len;
-            name.copy(memory, &mut bytes[start..])?;
+            name.copy_buffer(memory, &mut bytes, start)?;
             result.bytes_len += name.len;
             let key_start = result.bytes_len;
-            name_key.copy(memory, &mut bytes[key_start..])?;
+            name_key.copy_buffer(memory, &mut bytes, key_start)?;
             result.bytes_len += name_key.len;
             rows[len] = Row {
                 template: word(record, 8),
@@ -973,8 +1024,165 @@ pub fn walk_icons(
     variants: &mut [u64],
     slots: DefinitionSlots<'_>,
 ) -> IconWalk {
+    walk_icons_inner(
+        memory,
+        base,
+        state,
+        Buffer::Fixed(rows),
+        Buffer::Fixed(bytes),
+        Buffer::Fixed(counts),
+        Buffer::Fixed(variants),
+        slots,
+        None,
+    )
+}
+
+/// Same authenticated hourly roster, with independent exact display-name reads.
+/// A name fault or shortage refuses only the optional name, never counter/model
+/// facts. The caller grows the separate name arena off-thread from observed demand.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_icons_with_names(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    rows: &mut [IconRow],
+    bytes: &mut [u8],
+    counts: &mut [SubunitCount],
+    variants: &mut [u64],
+    slots: DefinitionSlots<'_>,
+    names: &mut [u8],
+) -> IconWalk {
+    walk_icons_inner(
+        memory,
+        base,
+        state,
+        Buffer::Fixed(rows),
+        Buffer::Fixed(bytes),
+        Buffer::Fixed(counts),
+        Buffer::Fixed(variants),
+        slots,
+        Some(Buffer::Fixed(names)),
+    )
+}
+
+/// Worker-only acquisition grows each arena from the already acquired record.
+#[allow(clippy::too_many_arguments)]
+pub fn walk_icons_with_names_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    rows: &mut Vec<IconRow>,
+    bytes: &mut Vec<u8>,
+    counts: &mut Vec<SubunitCount>,
+    variants: &mut Vec<u64>,
+    slots: DefinitionSlots<'_>,
+    names: &mut Vec<u8>,
+) -> IconWalk {
+    walk_icons_inner(
+        memory,
+        base,
+        state,
+        Buffer::Growing(rows),
+        Buffer::Growing(bytes),
+        Buffer::Growing(counts),
+        Buffer::Growing(variants),
+        slots,
+        Some(Buffer::Growing(names)),
+    )
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayName {
+    pub literal: Span,
+    /// None when the nonempty literal makes the fallback not demanded.
+    pub fallback_key: Option<Span>,
+}
+
+/// Called only after visit_templates authenticated this exact wrapper in the
+/// admitted world read. 140B91170 receives wrapper+18: its literal is wrapper+20,
+/// fallback key wrapper+40. The current icon country already carries +1D4.
+#[cfg(test)]
+fn display_name(
+    memory: &impl Memory,
+    wrapper: usize,
+    bytes: &mut [u8],
+    used: &mut usize,
+    required: &mut usize,
+) -> Result<DisplayName, &'static str> {
+    display_name_buffer(memory, wrapper, &mut Buffer::Fixed(bytes), used, required)
+}
+
+fn display_name_buffer(
+    memory: &impl Memory,
+    wrapper: usize,
+    bytes: &mut Buffer<'_, u8>,
+    used: &mut usize,
+    required: &mut usize,
+) -> Result<DisplayName, &'static str> {
+    let literal = Descriptor::read(
+        memory,
+        wrapper
+            .checked_add(NAME)
+            .ok_or("template display literal address overflow")?,
+    )?;
+    let key = if literal.len == 0 {
+        Some(Descriptor::read(
+            memory,
+            wrapper
+                .checked_add(NAME_KEY)
+                .ok_or("template display key address overflow")?,
+        )?)
+    } else {
+        None
+    };
+    let demand = literal
+        .len
+        .checked_add(key.as_ref().map_or(0, |key| key.len))
+        .ok_or("template display name arena overflow")?;
+    *required = required
+        .checked_add(demand)
+        .ok_or("template display name demand overflow")?;
+    let start = *used;
+    let end = start
+        .checked_add(demand)
+        .ok_or("template display name arena overflow")?;
+    if matches!(bytes, Buffer::Fixed(_)) && end > bytes.len() {
+        return Err("template display name arena shortage");
+    }
+    literal.copy_buffer(memory, bytes, start)?;
+    if let Some(key) = &key {
+        key.copy_buffer(memory, bytes, start + literal.len)?;
+    }
+    // Neither partial copy nor invalid descriptor publishes any span or length.
+    *used = end;
+    Ok(DisplayName {
+        literal: Span {
+            start,
+            len: literal.len,
+        },
+        fallback_key: key.map(|key| Span {
+            start: start + literal.len,
+            len: key.len,
+        }),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_icons_inner(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut rows: Buffer<'_, IconRow>,
+    mut bytes: Buffer<'_, u8>,
+    mut counts: Buffer<'_, SubunitCount>,
+    mut variants: Buffer<'_, u64>,
+    slots: DefinitionSlots<'_>,
+    mut display_bytes: Option<Buffer<'_, u8>>,
+) -> IconWalk {
     let mut result = IconWalk {
         outcome: Outcome::Rows { len: 0 },
+        name_bytes_len: 0,
+        required_name_bytes: 0,
         bytes_len: 0,
         required_bytes: 0,
         counts_len: 0,
@@ -1070,7 +1278,13 @@ pub fn walk_icons(
                 .required_bytes
                 .checked_add(name_len)
                 .ok_or("template byte arena overflow")?;
-            if len == rows.len() || name_len > bytes.len() - result.bytes_len {
+            let name_end = result
+                .bytes_len
+                .checked_add(name_len)
+                .ok_or("template byte arena overflow")?;
+            if !rows.ensure(len + 1)?
+                || (matches!(bytes, Buffer::Fixed(_)) && name_end > bytes.len())
+            {
                 missing = missing
                     .checked_add(1)
                     .ok_or("template row count overflow")?;
@@ -1096,7 +1310,7 @@ pub fn walk_icons(
                 ..IconRow::default()
             };
             if let Some(name) = &selected_name {
-                name.copy(memory, &mut bytes[result.bytes_len..])?;
+                name.copy_buffer(memory, &mut bytes, result.bytes_len)?;
                 result.bytes_len += name.len;
             }
             // The 3D model's inputs. A fault here fails only this row's model
@@ -1104,9 +1318,21 @@ pub fn walk_icons(
             // not fit, omitted whole.
             let model = (|| -> Result<bool, &'static str> {
                 let (grouped, exclusions, model_entity) = headers?;
-                if model_entity.len > bytes.len() - result.bytes_len
-                    || grouped.count as usize > counts.len() - result.counts_len
-                    || exclusions.count as usize > variants.len() - result.variants_len
+                let bytes_end = result
+                    .bytes_len
+                    .checked_add(model_entity.len)
+                    .ok_or("template byte arena overflow")?;
+                let counts_end = result
+                    .counts_len
+                    .checked_add(grouped.count as usize)
+                    .ok_or("template grouped arena overflow")?;
+                let variants_end = result
+                    .variants_len
+                    .checked_add(exclusions.count as usize)
+                    .ok_or("template variant arena overflow")?;
+                if (matches!(bytes, Buffer::Fixed(_)) && bytes_end > bytes.len())
+                    || !counts.ensure(counts_end)?
+                    || !variants.ensure(variants_end)?
                 {
                     return Ok(false);
                 }
@@ -1119,7 +1345,7 @@ pub fn walk_icons(
                     start: result.bytes_len,
                     len: model_entity.len,
                 };
-                model_entity.copy(memory, &mut bytes[result.bytes_len..])?;
+                model_entity.copy_buffer(memory, &mut bytes, result.bytes_len)?;
                 result.bytes_len += model_entity.len;
                 row.counts = Span {
                     start: result.counts_len,
@@ -1203,6 +1429,16 @@ pub fn walk_icons(
                     };
                 }
             }
+            if let Some(names) = display_bytes.as_mut() {
+                row.display_name = display_name_buffer(
+                    memory,
+                    at,
+                    names,
+                    &mut result.name_bytes_len,
+                    &mut result.required_name_bytes,
+                )
+                .ok();
+            }
             rows[len] = row;
             len += 1;
             Ok(())
@@ -1239,3 +1475,7 @@ pub(crate) fn identity(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "creferenced_division_template/display_name_tests.rs"]
+mod display_name_tests;

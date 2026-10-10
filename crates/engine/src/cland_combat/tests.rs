@@ -194,7 +194,7 @@ fn scalar_details(
             for member in 0..vector.count {
                 let handle = reader.unit(reader.element(vector, member)?)?;
                 push(
-                    arenas.participants,
+                    &mut arenas.participants,
                     &mut arenas.used.participants,
                     &mut arenas.required.participants,
                     handle,
@@ -238,7 +238,7 @@ fn scalar_details(
                 crate::land_combat_air_entry::PLANE_COUNT,
             )?;
             push(
-                arenas.air,
+                &mut arenas.air,
                 &mut arenas.used.air,
                 &mut arenas.required.air,
                 planes,
@@ -513,6 +513,117 @@ const NAVAL: usize = 0x7000;
 const PROVINCE_OBJECT: usize = 0x7800;
 
 struct Fixture(Vec<u8>);
+
+#[test]
+fn growing_map_census_starts_without_optional_pointers_and_keeps_later_demand() {
+    let mut fixture = Fixture::new();
+    let mut rows = Vec::new();
+    let mut participants = Vec::new();
+    for count in [5000, 12_000] {
+        let registry = 0x20000;
+        let units = registry + count * 8;
+        fixture.0.resize(units + count * 8 - STATE, 0);
+        fixture.array(STATE + cgame_state::COMBATS + 8, registry, count as u32);
+        fixture.array(ATTACK + cland_combatant::UNITS, units, count as u32);
+        fixture.array(DEFEND + cland_combatant::UNITS, 0, 0);
+        for index in 0..count {
+            fixture.u64(registry + index * 8, COMBAT as u64);
+            fixture.u64(units + index * 8, UNIT_A as u64);
+        }
+        let demand = core_demand(&fixture.memory(), BASE, STATE).unwrap();
+        assert_eq!(demand.rows, count);
+        assert_eq!(demand.participants, count * count);
+        // One combat with mod-sized membership exercises the participant arena
+        // separately from a mod-sized registry with empty side vectors.
+        fixture.array(STATE + cgame_state::COMBATS + 8, registry, 1);
+        let mut visited = 0;
+        let capture = walk_with_growing(
+            &fixture.memory(),
+            BASE,
+            STATE,
+            &mut rows,
+            &mut participants,
+            |_| visited += 1,
+        );
+        assert_eq!(capture.outcome, Outcome::Rows { len: 1 });
+        assert_eq!((capture.participants_len, visited), (count, 1));
+        assert!(participants[..count].iter().all(|id| *id == 1));
+        fixture.array(STATE + cgame_state::COMBATS + 8, registry, count as u32);
+        fixture.array(ATTACK + cland_combatant::UNITS, 0, 0);
+        let capture = walk_with_growing(
+            &fixture.memory(),
+            BASE,
+            STATE,
+            &mut rows,
+            &mut participants,
+            |_| {},
+        );
+        assert_eq!(capture.outcome, Outcome::Rows { len: count });
+        assert_eq!(capture.participants_len, 0);
+        assert!(
+            rows[..count]
+                .iter()
+                .all(|row| row.id == ((0xf000_0001_u64 << 32) | TYPE_WORD as u64))
+        );
+    }
+}
+
+#[test]
+fn growing_map_census_preserves_sufficient_fixed_reads_and_every_original_fault() {
+    let fixture = Fixture::new();
+    let source = fixture.memory();
+    let fixed = Observed::new(&source, &[]);
+    let mut fixed_rows = [Row::default(); 2];
+    let mut fixed_participants = [0; 8];
+    let expected = walk_with(
+        &fixed,
+        BASE,
+        STATE,
+        &mut fixed_rows,
+        &mut fixed_participants,
+        |_| {},
+    );
+    let trace = fixed.reads.borrow().clone();
+    for fault in std::iter::once(None).chain((0..trace.len()).map(Some)) {
+        let source = fixture.memory();
+        let mut fixed = Observed::new(&source, &[]);
+        fixed.fault = fault;
+        let expected = if fault.is_none() {
+            expected
+        } else {
+            walk_with(
+                &fixed,
+                BASE,
+                STATE,
+                &mut fixed_rows,
+                &mut fixed_participants,
+                |_| {},
+            )
+        };
+        let mut growing = Observed::new(&source, &[]);
+        growing.fault = fault;
+        let mut rows = Vec::new();
+        let mut participants = Vec::new();
+        let actual = walk_with_growing(&growing, BASE, STATE, &mut rows, &mut participants, |_| {});
+        assert_eq!(actual, expected, "fault {fault:?}");
+        let expected_trace = if fault.is_none() {
+            trace.clone()
+        } else {
+            fixed.reads.borrow().clone()
+        };
+        assert_eq!(*growing.reads.borrow(), expected_trace, "fault {fault:?}");
+        if fault.is_none() {
+            assert_eq!(
+                rows[..actual.outcome.len()],
+                fixed_rows[..actual.outcome.len()]
+            );
+            assert_eq!(
+                participants[..actual.participants_len],
+                fixed_participants[..actual.participants_len]
+            );
+        }
+    }
+}
 
 impl Fixture {
     fn new() -> Self {
@@ -1058,6 +1169,120 @@ fn commander_trait_lists_report_exact_demand_beyond_any_arena() {
 }
 
 #[test]
+fn worker_detail_arenas_grow_from_original_mod_sized_lists_before_publication() {
+    use crate::{cunit_leader, walk::Buffer};
+    let mut kept = Arenas::sized(DetailCounts::default());
+    for count in [5_000, 7_500] {
+        let mut fixture = commander_fixture();
+        fixture.0.resize(0x30_0000, 0);
+        fixture.array(COMMANDER + cunit_leader::TRAIT_DATA, 0x20_000, count as u32);
+        fixture.array(
+            COMMANDER + cunit_leader::TIMED_TRAIT_DATA,
+            0x40_000,
+            count as u32,
+        );
+        fixture.array(
+            COMMANDER + cunit_leader::TRAIT_EXPERIENCE_DATA,
+            0x60_000,
+            count as u32,
+        );
+        fixture.array(
+            ATTACK + cland_combatant::AIR_SUPPORT,
+            0x80_000,
+            count as u32,
+        );
+        fixture.array(ATTACK + cland_combatant::COMMITTED, 0xa0_000, count as u32);
+        for index in 0..count {
+            fixture.u64(0x20_000 + index * 8, 0xe100);
+            fixture.u64(0x40_000 + index * cunit_leader::TIMED_TRAIT_STRIDE, 0xe100);
+            fixture.u32(
+                0x40_000 + index * cunit_leader::TIMED_TRAIT_STRIDE + 8,
+                index as u32,
+            );
+            fixture.u64(0x60_000 + index * 16, 0xe100);
+            fixture.u64(0x60_000 + index * 16 + 8, index as u64);
+            fixture.u64(0x80_000 + index * 8, 0x8900);
+            fixture.u64(0xa0_000 + index * 8, UNIT_A as u64);
+        }
+        let memory = DetailMemory {
+            fixture: &fixture,
+            copies: 0.into(),
+            bytes: 0.into(),
+        };
+        let mut arenas = DetailArenas::with_buffers(
+            Buffer::Growing(&mut kept.participants),
+            Buffer::Growing(&mut kept.air),
+            Buffer::Growing(&mut kept.text),
+            Buffer::Growing(&mut kept.traits),
+            Buffer::Growing(&mut kept.timed),
+            Buffer::Growing(&mut kept.learning),
+        );
+        let row = read_details(
+            &memory,
+            BASE,
+            detail_source(),
+            &Members::none(),
+            &mut Commanders::default(),
+            &mut arenas,
+        )
+        .unwrap();
+        assert!(arenas.complete());
+        assert_eq!(arenas.used.participants, count + 2);
+        assert_eq!(arenas.used.air, count);
+        assert_eq!(arenas.used.traits, count);
+        assert_eq!(arenas.used.timed, count);
+        assert_eq!(arenas.used.learning, count);
+        assert_eq!(row.sides[0].traits_len, count);
+        assert_eq!(arenas.learning[count - 1].experience, count as i64 - 1);
+        assert_eq!(arenas.timed[count - 1].remaining_days, count as i32 - 1);
+        assert_eq!(
+            &arenas.text[arenas.traits[count - 1].token_start..][..5],
+            b"trait"
+        );
+    }
+}
+
+#[test]
+fn worker_country_sets_keep_all_5000_country_tags_on_first_and_later_growth() {
+    let mut tags = Vec::new();
+    for count in [1_500, 5_000] {
+        let mut fixture = Fixture::new();
+        fixture.0.resize(0x30_0000, 0);
+        let values: Vec<_> = (0..count as u32).collect();
+        for (index, (side, offset)) in [
+            (ATTACK, cland_combatant::COUNTRIES),
+            (ATTACK, cland_combatant::SECONDARY_COUNTRIES),
+            (DEFEND, cland_combatant::COUNTRIES),
+            (DEFEND, cland_combatant::SECONDARY_COUNTRIES),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            country_set(
+                &mut fixture,
+                side,
+                offset,
+                0x10_0000 + index * 0x4_0000,
+                &values,
+            );
+        }
+        let (row, len) = read_country_sets_buffer(
+            &fixture.memory(),
+            BASE,
+            detail_source(),
+            5_001,
+            crate::walk::Buffer::Growing(&mut tags),
+        )
+        .unwrap();
+        assert_eq!(len, count * 4);
+        assert_eq!(row.lens, [count; 4]);
+        for group in tags[..len].chunks_exact(count) {
+            assert_eq!(group, &values);
+        }
+    }
+}
+
+#[test]
 fn detail_demand_uses_capture_census_and_rejects_unreadable_payloads() {
     let mut fixture = commander_fixture();
     let memory = DetailMemory {
@@ -1193,7 +1418,7 @@ fn commander_selection_preserves_equal_skill_category_tie_and_hourly_traits() {
     )
     .unwrap();
     assert!(traits.complete());
-    let side = row.sides[0];
+    let side = &row.sides[0];
     assert_eq!(side.commander >> 32, 42);
     assert_eq!(side.commander_skill, 4);
     assert_eq!(side.commander_category, 1);
@@ -1264,7 +1489,7 @@ fn selected_commander_texts_keep_native_length_and_name_their_field() {
             &mut Commanders::default(),
             &mut view,
         )
-        .map(|row| (view.complete(), row.sides[0]));
+        .map(|row| (view.complete(), row.sides.into_iter().next().unwrap()));
         let (used, required) = (view.used.text, view.required.text);
         (details, used, required, arenas.text)
     };

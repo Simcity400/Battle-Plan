@@ -3,14 +3,190 @@
 //! assembly later consumes their already acquired timing and owned rows.
 
 use crate::{acquisition_gather, extended::state_flags, sampling};
-use engine::{Memory, cstate, walk::Outcome};
+use engine::{Memory, crailway_manager::fresh_inputs, cstate, walk::Outcome};
 
 pub(crate) struct Request {
     pub census: acquisition_gather::Request<Vec<cstate::Row>>,
     pub names: Names,
     pub visitor: state_flags::Captured,
+    pub inputs: Inputs,
 }
 
+/// Numeric supplement only; the existing visitor owns all callback pointers.
+pub(crate) struct Inputs {
+    rows: Vec<fresh_inputs::StateFractionRow>,
+    outcome: Outcome,
+    required: usize,
+}
+
+impl Default for Inputs {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            outcome: Outcome::Unavailable {
+                reason: "clock unavailable",
+            },
+            required: 0,
+        }
+    }
+}
+
+impl Inputs {
+    pub(crate) fn with_capacity(capacity: usize) -> std::io::Result<Self> {
+        Ok(Self {
+            rows: engine::allocation::default_vec(capacity)?,
+            ..Self::default()
+        })
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.outcome = Outcome::Unavailable {
+            reason: "clock unavailable",
+        };
+        self.required = 0;
+    }
+
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        self.outcome = Outcome::Unavailable { reason };
+    }
+
+    pub(crate) fn required(&self) -> usize {
+        self.required
+    }
+
+    pub(crate) fn retain_required(&mut self, required: usize) {
+        self.required = self.required.max(required);
+    }
+
+    pub(crate) fn grow(&mut self, capacity: usize) {
+        crate::table_capture::grow_vec(&mut self.rows, capacity);
+    }
+
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        self.rows.capacity() * std::mem::size_of::<fresh_inputs::StateFractionRow>()
+    }
+
+    fn acquire(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        visitor: &state_flags::Captured,
+        growing: bool,
+    ) {
+        let (sources, source, required) = visitor.completed_sources();
+        self.required = self.required.max(required);
+        if let Outcome::Unavailable { reason } = source {
+            self.fail(reason);
+            return;
+        }
+        let capacity = sources.len().max(self.rows.len());
+        if growing && engine::allocation::resize_default(&mut self.rows, capacity).is_err() {
+            self.fail("state fraction buffer allocation failed");
+            return;
+        }
+        let outcome = fresh_inputs::state_fractions(memory, base, sources, &mut self.rows);
+        self.outcome = match outcome {
+            Outcome::Unavailable { .. } => outcome,
+            _ => {
+                let len = outcome.len();
+                let omitted = self.required.saturating_sub(len);
+                match u32::try_from(omitted) {
+                    Ok(0) => Outcome::Rows { len },
+                    Ok(unread_rows) => Outcome::Truncated { len, unread_rows },
+                    Err(_) => Outcome::Unavailable {
+                        reason: "state fraction demand overflow",
+                    },
+                }
+            }
+        };
+    }
+
+    pub(crate) fn fraction(&self, state: u32) -> Option<i64> {
+        let rows = self.rows.get(..self.outcome.len())?;
+        rows.binary_search_by_key(&state, |row| row.state)
+            .ok()
+            .and_then(|index| rows[index].fraction.ok())
+    }
+
+    pub(crate) fn observe(&self, work: &mut InputWork) -> std::io::Result<()> {
+        work.observe(
+            self.outcome,
+            self.required,
+            self.rows.len(),
+            self.rows[..self.outcome.len()]
+                .iter()
+                .map(|row| row.fraction.map(|_| true)),
+        )
+    }
+}
+
+/// Spool-thread totals preserve the exact static native refusal reasons.
+#[derive(Default)]
+pub(crate) struct InputWork {
+    samples: u64,
+    captured: u64,
+    unqueried: u64,
+    refused: u64,
+    required: usize,
+    capacity: usize,
+    omissions: u64,
+    reasons: Vec<(&'static str, u64)>,
+}
+
+impl InputWork {
+    pub(crate) fn observe(
+        &mut self,
+        outcome: Outcome,
+        required: usize,
+        capacity: usize,
+        results: impl Iterator<Item = Result<bool, &'static str>>,
+    ) -> std::io::Result<()> {
+        self.samples = self.samples.saturating_add(1);
+        self.required = self.required.max(required);
+        self.capacity = self.capacity.max(capacity);
+        if let Outcome::Truncated { unread_rows, .. } = outcome {
+            self.omissions = self.omissions.saturating_add(u64::from(unread_rows));
+        }
+        if let Outcome::Unavailable { reason } = outcome {
+            self.refusal(reason)?;
+        }
+        for result in results {
+            match result {
+                Ok(true) => self.captured = self.captured.saturating_add(1),
+                Ok(false) => self.unqueried = self.unqueried.saturating_add(1),
+                Err(reason) => self.refusal(reason)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn refusal(&mut self, reason: &'static str) -> std::io::Result<()> {
+        let index = match self.reasons.binary_search_by_key(&reason, |entry| entry.0) {
+            Ok(index) => index,
+            Err(index) => {
+                engine::allocation::reserve(&mut self.reasons, 1)?;
+                self.reasons.insert(index, (reason, 0));
+                index
+            }
+        };
+        self.reasons[index].1 = self.reasons[index].1.saturating_add(1);
+        self.refused = self.refused.saturating_add(1);
+        Ok(())
+    }
+
+    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
+        crate::status::status!({
+            "samples": self.samples,
+            "captured": self.captured,
+            "unqueried": self.unqueried,
+            "refused": self.refused,
+            "required": self.required,
+            "capacity": self.capacity,
+            "omissions": self.omissions,
+            "refusals": crate::status::map(self.reasons.iter().map(|&(reason, count)| (reason, count))),
+        })
+    }
+}
 /// The frame's state display-name arena, owned by the request while it runs.
 #[derive(Default)]
 pub(crate) struct Names {
@@ -51,30 +227,51 @@ impl Report {
     }
 }
 impl Request {
+    #[cfg(test)]
     pub(crate) fn run(&mut self, memory: &impl Memory) -> Report {
+        self.run_with(memory, false)
+    }
+
+    pub(crate) fn run_growing(&mut self, memory: &impl Memory) -> Report {
+        self.run_with(memory, true)
+    }
+
+    fn run_with(&mut self, memory: &impl Memory, growing: bool) -> Report {
         let _reads = crate::read_accounting::table(replay::rows::TableId::States);
         let Self {
             census,
             names,
             visitor,
+            inputs,
         } = self;
         let (base, game_state) = (census.base, census.game_state);
         let begin = sampling::qpc();
         let report = census.run(|rows| {
-            let outcome = cstate::walk_with(memory, base, game_state, rows, |source| {
-                visitor.visit(source)
-            });
+            let outcome = if growing {
+                cstate::walk_with_growing(memory, base, game_state, rows, |source| {
+                    visitor.visit_growing(source)
+                })
+            } else {
+                cstate::walk_with(memory, base, game_state, rows, |source| {
+                    visitor.visit(source)
+                })
+            };
             visitor.finish(outcome);
             cstate::read_continents(memory, base, game_state, outcome, rows);
             let outcome =
                 cstate::read_movement_infrastructure(memory, base, game_state, outcome, rows);
-            let walk = cstate::read_names(memory, game_state, outcome, rows, &mut names.bytes);
+            let walk = if growing {
+                cstate::read_names_growing(memory, game_state, outcome, rows, &mut names.bytes)
+            } else {
+                cstate::read_names(memory, game_state, outcome, rows, &mut names.bytes)
+            };
             names.len = walk.bytes_len;
             names.required = walk.required_bytes;
+            inputs.acquire(memory, base, visitor, growing);
             walk.outcome
         });
         let ticks = sampling::qpc() - begin;
-        visitor.acquire_owned(memory, base, game_state);
+        visitor.acquire_owned(memory, base, game_state, growing);
         Report {
             census: report,
             ticks,
@@ -215,6 +412,8 @@ pub(crate) mod tests {
     }
 
     fn request(capacity: usize) -> Request {
+        let mut flags = state_flags::Capacities::default();
+        flags.raise_for_states(2);
         Request {
             census: acquisition_gather::Request {
                 base: 0,
@@ -226,7 +425,8 @@ pub(crate) mod tests {
                 len: 0,
                 required: 0,
             },
-            visitor: state_flags::Captured::with_capacities(&Default::default()),
+            visitor: state_flags::Captured::with_capacities(&flags),
+            inputs: Inputs::default(),
         }
     }
 
@@ -280,7 +480,7 @@ pub(crate) mod tests {
             &mut request.names.bytes,
         );
         // Run acquires the flags and active border trees after its census.
-        request.visitor.acquire_owned(memory, 0, STATE);
+        request.visitor.acquire_owned(memory, 0, STATE, true);
         names.outcome
     }
 
@@ -334,6 +534,36 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn growing_states_fills_the_first_census_without_repeating_its_root() {
+        let bytes = fixture();
+        assert_eq!(
+            request(0).run(&Traced::new(&bytes)).census.result,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 2
+            }
+        );
+        let memory = Traced::new(&bytes);
+        let mut request = request(0);
+        request.visitor = state_flags::Captured::default();
+        let report = request.run_growing(&memory);
+        assert_eq!(report.census.result, Outcome::Rows { len: 2 });
+        assert_eq!(request.census.payload[1].id, 3);
+        assert_eq!(request.inputs.outcome, Outcome::Rows { len: 2 });
+        // Census, continent supplement, movement and names each own their
+        // original roster observation; growth adds no second census attempt.
+        assert_eq!(
+            memory
+                .calls
+                .borrow()
+                .iter()
+                .filter(|(at, _)| *at == STATE + cgame_state::STATES)
+                .count(),
+            4
+        );
     }
 
     #[test]
@@ -406,5 +636,130 @@ pub(crate) mod tests {
             assert_eq!(completed.request.visitor.allocated_bytes(), visitor_bytes);
             assert_eq!(pool.calibration().uncollected, 0);
         }
+    }
+
+    #[test]
+    fn fraction_control_failure_preserves_existing_states_names_and_flags() {
+        let bytes = fixture();
+        let mut healthy = request(2);
+        healthy.inputs = Inputs::with_capacity(2).unwrap();
+        let observed = Traced::new(&bytes);
+        healthy.run(&observed);
+        let fault = observed
+            .calls
+            .borrow()
+            .iter()
+            .rposition(|(address, _)| *address == cbuilding_database::SINGLETON_RVA)
+            .unwrap();
+        let mut memory = Traced::new(&bytes);
+        memory.fault = Some(fault);
+        let mut captured = request(2);
+        captured.inputs = Inputs::with_capacity(2).unwrap();
+        let report = captured.run(&memory);
+        assert_eq!(report.census.result, Outcome::Rows { len: 2 });
+        assert_eq!(captured.census.payload, healthy.census.payload);
+        assert_eq!(captured.names.len, healthy.names.len);
+        assert_eq!(captured.visitor.outcomes(), [Outcome::Rows { len: 2 }]);
+        assert_eq!(captured.inputs.required(), 2);
+        assert_eq!(captured.inputs.fraction(1), None);
+        assert_eq!(captured.inputs.fraction(3), None);
+        assert_eq!(healthy.inputs.fraction(1), Some(0));
+        assert_eq!(healthy.inputs.fraction(3), Some(0));
+        let mut work = InputWork::default();
+        captured.inputs.observe(&mut work).unwrap();
+        assert_eq!(work.refused, 2);
+        assert_eq!(work.captured, 0);
+        assert_eq!(work.required, 2);
+    }
+
+    #[test]
+    fn later_old_field_failure_keeps_fraction_prefix_and_complete_core_demand() {
+        let bytes = fixture();
+        let observed = Traced::new(&bytes);
+        request(1).run(&observed);
+        let fault = observed
+            .calls
+            .borrow()
+            .iter()
+            .position(|(address, _)| *address == cbuilding_database::SINGLETON_RVA)
+            .unwrap();
+        let mut memory = Traced::new(&bytes);
+        memory.fault = Some(fault);
+        let mut captured = request(1);
+        captured.inputs = Inputs::with_capacity(1).unwrap();
+        let report = captured.run(&memory);
+        assert!(matches!(report.census.result, Outcome::Unavailable { .. }));
+        assert_eq!(captured.inputs.required(), 2);
+        assert_eq!(
+            captured.inputs.outcome,
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 1
+            }
+        );
+        assert_eq!(captured.inputs.fraction(1), Some(0));
+        assert_eq!(captured.inputs.fraction(3), None);
+        captured.inputs.fail("worker failed after census");
+        assert_eq!(captured.inputs.required(), 2);
+        assert_eq!(captured.inputs.fraction(1), None);
+        assert!(captured.visitor.completed_sources().0.is_empty());
+    }
+
+    #[test]
+    fn mandatory_state_failure_never_admits_a_visited_fraction_source() {
+        let bytes = fixture();
+        let observed = Traced::new(&bytes);
+        request(2).run(&observed);
+        let fault = observed
+            .calls
+            .borrow()
+            .iter()
+            .position(|(address, _)| *address == FIRST + cstate::MANPOWER_AVAILABLE)
+            .unwrap();
+        let mut memory = Traced::new(&bytes);
+        memory.fault = Some(fault);
+        let mut captured = request(2);
+        captured.inputs = Inputs::with_capacity(2).unwrap();
+        let report = captured.run(&memory);
+        assert!(matches!(report.census.result, Outcome::Unavailable { .. }));
+        assert!(matches!(
+            captured.inputs.outcome,
+            Outcome::Unavailable { .. }
+        ));
+        assert_eq!(captured.inputs.fraction(1), None);
+        assert!(captured.visitor.completed_sources().0.is_empty());
+    }
+
+    #[test]
+    fn worker_failure_before_supplement_keeps_visited_demand_for_core_growth() {
+        let mut frame = sampling::Captured::new();
+        frame.states = vec![cstate::Row::default(); 1];
+        frame.state_inputs = Inputs::with_capacity(1).unwrap();
+        let mut request = frame.take_states_request(0, STATE);
+        request.visitor.visit(cstate::Source {
+            pointer: FIRST,
+            id: 1,
+        });
+        request.visitor.finish(Outcome::Truncated {
+            len: 1,
+            unread_rows: 4096,
+        });
+        assert_eq!(request.inputs.required(), 0);
+        frame.restore_states_request(request, Report::default(), Some("states worker panicked"));
+        assert_eq!(frame.state_inputs.required(), 4097);
+        assert_eq!(frame.state_inputs.fraction(1), None);
+        let visitor = frame.extended.take_state_visitor();
+        assert!(visitor.completed_sources().0.is_empty());
+        frame.extended.restore_state_visitor(visitor);
+        let mut capacities = sampling::INITIAL_CAPACITIES;
+        capacities[3] = 1;
+        frame.grow(&mut capacities);
+        assert!(capacities[3] >= 4097);
+        assert_eq!(frame.states.len(), capacities[3]);
+        assert_eq!(frame.state_inputs.rows.len(), capacities[3]);
+        let mut work = InputWork::default();
+        frame.state_inputs.observe(&mut work).unwrap();
+        assert_eq!(work.reasons, [("states worker panicked", 1)]);
+        assert_eq!(work.required, 4097);
     }
 }

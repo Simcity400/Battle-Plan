@@ -124,8 +124,10 @@ struct Country {
     identity: Option<(u32, u32)>,
     continuity_start_hour: i32,
     history: ResearchHistory,
-    // Each active assignment retains its exact technology identity, even when names coincide.
+    // Active assignments retain the template index, level and researched membership.
     active: BTreeMap<u32, (u32, i32, bool)>,
+    // 140EBFEF0: latest assignment occurrence per slot, including completed entries.
+    entry_occurrences: Vec<Option<u32>>,
     samples: BTreeMap<u32, VecDeque<(i32, replay::rows::ResearchInputRow)>>,
     pending: Vec<(u32, usize, u32, i32, i32)>,
     /// Append-only retained allocations, excluding the fixed history header.
@@ -269,7 +271,12 @@ impl Country {
             r.index as usize != i
                 || r.technology_present > 1
                 || (r.technology_present != 0
-                    && (r.token.is_empty()
+                    && (r
+                        .database_index
+                        .require("technology occurrence")
+                        .ok()
+                        .is_none_or(|index| *index <= 0)
+                        || r.token.is_empty()
                         || r.token.len() > 512
                         || std::str::from_utf8(&r.token).is_err()))
         }) {
@@ -287,20 +294,24 @@ impl Country {
         }
         let mut slots = Vec::with_capacity(inputs.len());
         let mut technologies = BTreeMap::new();
-        // Inventory is already sorted by (country, handle). Only former/current
+        // 140EBFEF0: inventory is sorted by (country, template index). Only former/current
         // assignments need completion evidence; never rescan the full catalogue
         // once per country per hour.
         if let (Some(inventory), Some(owner)) = (inventory, inputs.first().map(|r| r.country)) {
-            for handle in self
+            for occurrence in self
                 .active
                 .values()
-                .map(|&(handle, _, _)| handle)
-                .chain(self.pending.iter().map(|&(_, _, handle, _, _)| handle))
+                .map(|&(occurrence, _, _)| occurrence)
+                .chain(
+                    self.pending
+                        .iter()
+                        .map(|&(_, _, occurrence, _, _)| occurrence),
+                )
             {
-                if let Ok(index) = inventory
-                    .binary_search_by_key(&(owner, handle), |t| (t.country, t.technology_handle))
-                {
-                    technologies.insert(handle, inventory[index].clone());
+                if let Ok(index) = inventory.binary_search_by_key(&(owner, occurrence), |t| {
+                    (t.country, t.database_index as u32)
+                }) {
+                    technologies.insert(occurrence, inventory[index].clone());
                 }
             }
         }
@@ -314,6 +325,7 @@ impl Country {
                 index: input.index,
                 technology_handle: input.technology_handle,
                 technology_present: input.technology_present,
+                database_index: input.database_index,
                 research_speed_raw: input.research_speed_raw,
                 banked_days_raw: input.banked_days_raw,
                 applied_days_raw: input.applied_days_raw,
@@ -362,13 +374,24 @@ impl Country {
             }
             if input.technology_present != 0 {
                 definitions.insert(
-                    input.technology_handle,
+                    *input
+                        .database_index
+                        .require("technology occurrence")
+                        .unwrap() as u32,
                     std::str::from_utf8(&input.token).unwrap().to_owned(),
                 );
                 technologies.insert(
-                    input.technology_handle,
+                    *input
+                        .database_index
+                        .require("technology occurrence")
+                        .unwrap() as u32,
                     ResearchTechnologyRow {
                         country: input.country,
+                        database_index: *input
+                            .database_index
+                            .require("technology occurrence")
+                            .unwrap(),
+                        applied_bonus_count: input.bonus_count as i32,
                         technology_handle: input.technology_handle,
                         classifier: input.classifier,
                         level: input.level,
@@ -424,6 +447,7 @@ impl Country {
                 },
             );
         }
+        let previous_assignments = self.active.clone();
         self.observe(
             identity,
             hour,
@@ -445,6 +469,15 @@ impl Country {
                 e.token.as_bytes() == input.token.as_slice()
                     && e.level == input.level
                     && e.ended_by_hour.is_none_or(|end| end == hour)
+                    // 140EBFEF0: equal names cannot attribute another instance's progress.
+                    && self
+                        .active
+                        .get(&input.index)
+                        .or_else(|| previous_assignments.get(&input.index))
+                        .is_some_and(|&(occurrence, _, _)| {
+                            input.database_index
+                                == replay::rows::Recorded::Value(occurrence as i32)
+                        })
             }) else {
                 continue;
             };
@@ -482,6 +515,7 @@ impl Country {
         let read_after = self.read_after;
         let continuous = previous.is_some_and(|p| follows(read_after, p, hour))
             && self.identity == Some(identity);
+        self.entry_occurrences.resize(slots.len(), None);
         if !continuous {
             self.continuity_start_hour = hour;
             for slot in &mut self.history.slots {
@@ -493,19 +527,25 @@ impl Country {
             }
             self.active.clear();
             self.pending.clear();
+            self.entry_occurrences.fill(None);
         }
         self.pending
-            .retain(|&(index, entry_index, handle, level, ended)| {
+            .retain(|&(index, entry_index, occurrence, level, ended)| {
                 if hour.saturating_sub(ended) > replay::cadence::STAGGER_PERIOD
                     || slots.iter().any(|s| {
                         s.technology_present != 0
-                            && s.technology_handle == handle
-                            && technologies.get(&handle).is_some_and(|t| t.level == level)
+                            && s.database_index
+                                .require("technology occurrence")
+                                .ok()
+                                .is_some_and(|index| *index as u32 == occurrence)
+                            && technologies
+                                .get(&occurrence)
+                                .is_some_and(|t| t.level == level)
                     })
                 {
                     return false;
                 }
-                if technologies.get(&handle).is_some_and(|t| {
+                if technologies.get(&occurrence).is_some_and(|t| {
                     t.level > level
                         || (level == 0 && t.researched != 0)
                         || t.classifier == engine::ctechnology::CLASSIFIER_COMPLETED
@@ -528,12 +568,15 @@ impl Country {
         cover(&mut self.history.coverage, hour, read_after);
         for slot in &mut self.history.slots {
             let current = slots.iter().find(|s| s.index == slot.index);
-            if let Some(&(handle, level, researched)) = self.active.get(&slot.index) {
-                let technology = technologies.get(&handle);
+            if let Some(&(occurrence, level, researched)) = self.active.get(&slot.index) {
+                let technology = technologies.get(&occurrence);
                 let transferred = slots.iter().any(|s| {
                     s.index != slot.index
                         && s.technology_present != 0
-                        && s.technology_handle == handle
+                        && s.database_index
+                            .require("technology occurrence")
+                            .ok()
+                            .is_some_and(|index| *index as u32 == occurrence)
                 });
                 let completed = technology.is_some_and(|t| {
                     t.level > level
@@ -541,8 +584,13 @@ impl Country {
                         || (!transferred
                             && t.classifier == engine::ctechnology::CLASSIFIER_COMPLETED)
                 });
-                let same = current
-                    .is_some_and(|s| s.technology_present != 0 && s.technology_handle == handle);
+                let same = current.is_some_and(|s| {
+                    s.technology_present != 0
+                        && s.database_index
+                            .require("technology occurrence")
+                            .ok()
+                            .is_some_and(|index| *index as u32 == occurrence)
+                });
                 let entry = slot.entries.last_mut().unwrap();
                 if completed || !same {
                     entry.ended_by_hour = Some(hour);
@@ -557,7 +605,7 @@ impl Country {
                         self.pending.push((
                             slot.index,
                             slot.entries.len() - 1,
-                            handle,
+                            occurrence,
                             level,
                             hour,
                         ));
@@ -589,7 +637,8 @@ impl Country {
             if row.technology_present == 0 || self.active.contains_key(&row.index) {
                 continue;
             }
-            let technology = technologies[&row.technology_handle];
+            let occurrence = *row.database_index.require("technology occurrence").unwrap() as u32;
+            let technology = technologies[&occurrence];
             // A completed assignment can remain linked for an observation. Do not
             // invent a new assignment until its recorded state becomes active again.
             if technology.classifier == engine::ctechnology::CLASSIFIER_COMPLETED
@@ -599,7 +648,7 @@ impl Country {
                 continue;
             }
             slot.entries.push(ResearchEntry {
-                token: definitions[&row.technology_handle].clone(),
+                token: definitions[&occurrence].clone(),
                 technology_handle: row.technology_handle,
                 continuity_start_hour: self.continuity_start_hour,
                 level: technology.level,
@@ -610,13 +659,10 @@ impl Country {
                 outcome_observed_hour: None,
                 outcome: ResearchOutcome::Active,
             });
+            self.entry_occurrences[row.index as usize] = Some(occurrence);
             self.active.insert(
                 row.index,
-                (
-                    row.technology_handle,
-                    technology.level,
-                    technology.researched != 0,
-                ),
+                (occurrence, technology.level, technology.researched != 0),
             );
         }
         for row in slots {
@@ -626,9 +672,14 @@ impl Country {
                 .iter_mut()
                 .find(|slot| slot.index == row.index)
                 .unwrap();
-            let technology =
-                (row.technology_present != 0).then(|| technologies[&row.technology_handle]);
-            let token = technology.map(|_| definitions[&row.technology_handle].clone());
+            let technology = (row.technology_present != 0).then(|| {
+                technologies
+                    [&(*row.database_index.require("technology occurrence").unwrap() as u32)]
+            });
+            let token = technology.map(|_| {
+                definitions[&(*row.database_index.require("technology occurrence").unwrap() as u32)]
+                    .clone()
+            });
             let state = ResearchSlotState {
                 first_hour: hour,
                 last_hour: hour,
@@ -636,7 +687,15 @@ impl Country {
                 entry_first_observed_hour: slot
                     .entries
                     .last()
-                    .filter(|entry| Some(&entry.token) == token.as_ref())
+                    .filter(|entry| {
+                        Some(&entry.token) == token.as_ref()
+                            && self.entry_occurrences[row.index as usize].is_some_and(
+                                |occurrence| {
+                                    row.database_index
+                                        == replay::rows::Recorded::Value(occurrence as i32)
+                                },
+                            )
+                    })
                     .map(|entry| entry.first_observed_hour),
                 token,
                 speed_multiplier_raw: row.research_speed_raw.to_string(),
@@ -678,6 +737,7 @@ fn same_assignment(a: &replay::rows::ResearchInputRow, b: &replay::rows::Researc
     a.country == b.country
         && a.technology_present == b.technology_present
         && a.technology_handle == b.technology_handle
+        && a.database_index == b.database_index
         && a.level == b.level
         && a.token == b.token
 }
@@ -731,6 +791,7 @@ fn check_budget(countries: &BTreeMap<String, Country>) -> io::Result<()> {
         .values()
         .map(|c| {
             128 + c.retained_bytes
+                + c.entry_occurrences.capacity() * size_of::<Option<u32>>()
                 + c.samples
                     .values()
                     .map(|s| {

@@ -1,6 +1,779 @@
 use super::*;
 use crate::memory::SliceMemory;
 
+// Carrier seam fixtures are source-only until the parent compiles/runs them.
+
+struct CarrierMemory<'a> {
+    bytes: &'a [u8],
+    fault: Option<usize>,
+    globals: std::collections::BTreeMap<usize, u8>,
+    reads: std::cell::RefCell<Vec<usize>>,
+}
+
+impl Memory for CarrierMemory<'_> {
+    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push(address);
+        if self.fault.is_some_and(|fault| {
+            address <= fault
+                && address
+                    .checked_add(destination.len())
+                    .is_some_and(|end| fault < end)
+        }) {
+            return false;
+        }
+        if (0..destination.len()).all(|index| self.globals.contains_key(&(address + index))) {
+            for (index, byte) in destination.iter_mut().enumerate() {
+                *byte = self.globals[&(address + index)];
+            }
+            return true;
+        }
+        // The selected ship root is authentically null in this synthetic
+        // world: the nonzero host reference is known stale, hence empty text.
+        if address
+            == IMAGE
+                + crate::creference_registry::LOW_ROOTS_RVA
+                + crate::cship::HANDLE_TYPE as usize * 8
+            && destination.len() == 8
+        {
+            destination.fill(0);
+            return true;
+        }
+        SliceMemory {
+            base: GAME,
+            bytes: self.bytes,
+        }
+        .copy(address, destination)
+    }
+}
+
+struct CarrierWalkFixture {
+    main: RegistrationWalk,
+    rows: Vec<RegistrationRow>,
+    wings: Vec<u64>,
+    bases: Vec<CarrierBase>,
+    registrations: Vec<CarrierRegistration>,
+    pools: Vec<CarrierPool>,
+    demand: CarrierDemand,
+    lengths: CarrierLengths,
+    optional_reads: Vec<usize>,
+}
+
+const CARRIER_PRIMARY_A: usize = 0x9000;
+const CARRIER_PRIMARY_B: usize = 0xa000;
+const CARRIER_OWNER_A: usize = 0x11000;
+const CARRIER_OWNER_B: usize = 0x12000;
+const CARRIER_CLONE: usize = 0x14000;
+const CARRIER_GLOBAL: usize = 0x15000;
+const CARRIER_NULL: usize = 0x16000;
+const CARRIER_DATABASE: usize = 0x17000;
+const CARRIER_DEFINITIONS: usize = 0x18000;
+const CARRIER_COSTS: usize = 0x19000;
+const CARRIER_HANDLE: u64 = (9_u64 << 32) | TYPE as u64;
+
+fn carrier_globals() -> std::collections::BTreeMap<usize, u8> {
+    let mut bytes = std::collections::BTreeMap::new();
+    for (pointer, value) in [
+        (
+            IMAGE + crate::csub_unit_definition::DATABASE_RVA,
+            CARRIER_DATABASE as u64,
+        ),
+        (
+            IMAGE + crate::csub_unit_definition::NULL_OBJECT_RVA,
+            CARRIER_NULL as u64,
+        ),
+        (
+            IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA,
+            CARRIER_COSTS as u64,
+        ),
+        (IMAGE + crate::air_fuel_defines::AIR_WEIGHT_RVA, 100000),
+    ] {
+        bytes.extend(
+            value
+                .to_le_bytes()
+                .into_iter()
+                .enumerate()
+                .map(|(index, byte)| (pointer + index, byte)),
+        );
+    }
+    // The native define stores a full PDX header. Its nineteenth cost is
+    // deliberately larger than all first eighteen; maximum must exclude it.
+    for (pointer, value) in [
+        (
+            IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA + 8,
+            19_u32,
+        ),
+        (
+            IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA + 12,
+            19_u32,
+        ),
+    ] {
+        bytes.extend(
+            value
+                .to_le_bytes()
+                .into_iter()
+                .enumerate()
+                .map(|(index, byte)| (pointer + index, byte)),
+        );
+    }
+    bytes
+}
+
+fn carrier_definition(bytes: &mut [u8], pointer: usize, real: bool, token: u32) {
+    let definition = if real {
+        crate::csub_unit_definition::VTABLE_RVA
+    } else {
+        crate::csub_unit_definition::NULL_VTABLE_RVA
+    };
+    qword(bytes, pointer, (IMAGE + definition) as u64);
+    dword(bytes, pointer + crate::csub_unit_definition::TOKEN, token);
+    bytes[pointer + crate::csub_unit_definition::IS_REAL - GAME] = u8::from(real);
+}
+
+fn host_registration_fixture() -> Vec<u8> {
+    let mut bytes = registration_fixture();
+    bytes.resize(0x20000, 0);
+    let header: [u8; 16] = bytes
+        [STATE_BASE + COUNTRY_CONTAINERS - GAME..STATE_BASE + COUNTRY_CONTAINERS - GAME + 16]
+        .try_into()
+        .unwrap();
+    bytes[HOST_BASE + COUNTRY_CONTAINERS - GAME..HOST_BASE + COUNTRY_CONTAINERS - GAME + 16]
+        .copy_from_slice(&header);
+    bytes[STATE_BASE + COUNTRY_CONTAINERS - GAME..STATE_BASE + COUNTRY_CONTAINERS - GAME + 16]
+        .fill(0);
+    const DENSE: usize = 0x2b00;
+    array(&mut bytes, HOST_BASE + REGISTERED_CONTAINERS, DENSE, 2, 2);
+    qword(&mut bytes, DENSE, CONTAINER_A as u64);
+    qword(&mut bytes, DENSE + 8, CONTAINER_B as u64);
+    qword(
+        &mut bytes,
+        CONTAINER_A + ccountry_air_container::FUEL_DEMAND_RAW,
+        (-7_i64) as u64,
+    );
+    qword(
+        &mut bytes,
+        CONTAINER_A + ccountry_air_container::FUEL_ALLOCATED_RAW,
+        11,
+    );
+    qword(
+        &mut bytes,
+        CONTAINER_B + ccountry_air_container::FUEL_DEMAND_RAW,
+        23,
+    );
+    qword(
+        &mut bytes,
+        CONTAINER_B + ccountry_air_container::FUEL_ALLOCATED_RAW,
+        29,
+    );
+    // Source helper's real country-local clone and independently authenticated
+    // global entry, followed by the exact native null singleton in empty pool B.
+    array(
+        &mut bytes,
+        CARRIER_DATABASE + crate::csub_unit_definition::DATABASE_VECTOR,
+        CARRIER_DEFINITIONS,
+        2,
+        2,
+    );
+    qword(&mut bytes, CARRIER_DEFINITIONS, CARRIER_NULL as u64);
+    qword(&mut bytes, CARRIER_DEFINITIONS + 8, CARRIER_GLOBAL as u64);
+    carrier_definition(&mut bytes, CARRIER_CLONE, true, 987);
+    carrier_definition(&mut bytes, CARRIER_GLOBAL, true, 987);
+    carrier_definition(
+        &mut bytes,
+        CARRIER_NULL,
+        false,
+        crate::csub_unit_definition::NULL_TOKEN,
+    );
+    dword(
+        &mut bytes,
+        CARRIER_CLONE + crate::csub_unit_definition::DATABASE_INDEX,
+        1,
+    );
+    dword(&mut bytes, CARRIER_CLONE + 0x60, i32::MIN as u32);
+    dword(&mut bytes, CARRIER_NULL + 0x60, (-17_i32) as u32);
+    for (pool, owner, country, definition) in [
+        (POOL_A, CARRIER_OWNER_A, 0_u32, CARRIER_CLONE),
+        (POOL_B, CARRIER_OWNER_B, 2, CARRIER_NULL),
+    ] {
+        qword(
+            &mut bytes,
+            pool + cair_wing_pool::AIR_BASE_REFERENCE,
+            CARRIER_HANDLE,
+        );
+        qword(&mut bytes, pool + cair_wing_pool::OWNER, owner as u64);
+        qword(
+            &mut bytes,
+            pool + cair_wing_pool::DEFINITION,
+            definition as u64,
+        );
+        qword(
+            &mut bytes,
+            owner,
+            (IMAGE + crate::cstrategic_air::VTABLE_RVA) as u64,
+        );
+        dword(&mut bytes, owner + crate::cstrategic_air::COUNTRY, country);
+    }
+    // First pool retains A, A, B as three authentic primary occurrences;
+    // second pool is empty. The new addresses do not overlap wing records.
+    array(
+        &mut bytes,
+        POOL_A + cair_wing_pool::WINGS,
+        WING_TABLE_A,
+        3,
+        3,
+    );
+    for (index, pointer) in [CARRIER_PRIMARY_A, CARRIER_PRIMARY_A, CARRIER_PRIMARY_B]
+        .into_iter()
+        .enumerate()
+    {
+        qword(&mut bytes, WING_TABLE_A + index * 8, pointer as u64);
+    }
+    for (pointer, id, planes, mission_planes) in [
+        (CARRIER_PRIMARY_A, 11_u64, 3_u32, 2_u32),
+        (CARRIER_PRIMARY_B, 12, 1, 1),
+    ] {
+        wing(
+            &mut bytes,
+            pointer,
+            (id << 32) | cair_wing::TYPE as u64,
+            POOL_A,
+        );
+        qword(
+            &mut bytes,
+            pointer + cair_wing::MISSION,
+            (IMAGE + crate::air_mission::VTABLE_RVA) as u64,
+        );
+        dword(
+            &mut bytes,
+            pointer + cair_wing::MISSION + crate::air_mission::CURRENT_TYPE,
+            2,
+        );
+        dword(&mut bytes, pointer + 0x170, mission_planes);
+        dword(&mut bytes, pointer + cair_wing::PLANE_COUNT, planes);
+        qword(&mut bytes, pointer + cair_wing::BASE_FUEL, 100000);
+        qword(&mut bytes, pointer + cair_wing::ACE_REFERENCE, 0);
+        dword(&mut bytes, pointer + cair_wing::COUNTRY_OVERRIDE, 5);
+        bytes[pointer + cair_wing::MISSION + crate::air_mission::CONTEXT_MODE - GAME] = 2;
+        qword(
+            &mut bytes,
+            pointer + cair_wing::MISSION + crate::air_mission::REGION,
+            0,
+        );
+    }
+    // No matching modifier entry is present, so the passive getter returns
+    // native zero without reading modifier metadata or fabricating a value.
+    for country in [COUNTRY_A, COUNTRY_B] {
+        array(
+            &mut bytes,
+            country + ccountry::MODIFIER_ACCUMULATOR,
+            0,
+            0,
+            0,
+        );
+    }
+    for index in 0..19 {
+        qword(
+            &mut bytes,
+            CARRIER_COSTS + index * 8,
+            if index == 1 {
+                200000
+            } else if index == 18 {
+                9000000
+            } else {
+                100000
+            },
+        );
+    }
+    bytes
+}
+
+fn carrier_walk_fixture(
+    bytes: &[u8],
+    fault: Option<usize>,
+    indexed_len: usize,
+    main_row_capacity: usize,
+) -> CarrierWalkFixture {
+    carrier_walk_fixture_with_transport(bytes, fault, indexed_len, main_row_capacity, Ok(()))
+}
+
+fn carrier_walk_fixture_with_transport(
+    bytes: &[u8],
+    fault: Option<usize>,
+    indexed_len: usize,
+    main_row_capacity: usize,
+    transport: Result<(), &'static str>,
+) -> CarrierWalkFixture {
+    carrier_walk_fixture_with_storage(
+        bytes,
+        fault,
+        indexed_len,
+        main_row_capacity,
+        transport,
+        CarrierDemand {
+            country_terms: 3,
+            aces: 8,
+            forecasts: 8,
+            ..Default::default()
+        },
+    )
+}
+
+fn carrier_walk_fixture_with_storage(
+    bytes: &[u8],
+    fault: Option<usize>,
+    indexed_len: usize,
+    main_row_capacity: usize,
+    transport: Result<(), &'static str>,
+    storage: CarrierDemand,
+) -> CarrierWalkFixture {
+    let memory = SliceMemory { base: GAME, bytes };
+    let optional = CarrierMemory {
+        bytes,
+        fault,
+        globals: carrier_globals(),
+        reads: std::cell::RefCell::default(),
+    };
+    let countries = ccountry::Reader::new(&optional, IMAGE, GAME).unwrap();
+    let mut source = [Row::default(); 4];
+    let source_walk = walk(&memory, IMAGE, GAME, &mut source);
+    let source_len = match source_walk {
+        Outcome::Rows { len } => len,
+        _ => 0,
+    };
+    let mut rows = vec![RegistrationRow::default(); main_row_capacity];
+    let mut wings = vec![0; 8];
+    let mut resolved = [None; 10];
+    let mut bases = vec![CarrierBase::default(); 4];
+    let mut registrations = vec![CarrierRegistration::default(); 4];
+    let mut pools = vec![CarrierPool::default(); 4];
+    let mut dense = [CountryOccurrence::default(); 8];
+    let mut names = [0; 16];
+    let mut indexed = vec![None; indexed_len];
+    let mut optional_resolved = [None; 10];
+    let mut country_terms = vec![CarrierCountryTerms::default(); storage.country_terms];
+    let mut aces = vec![CarrierAceSlot::default(); storage.aces];
+    let mut forecasts = vec![CarrierForecastSlot::default(); storage.forecasts];
+    let (main, demand, lengths) = {
+        let mut carrier = CarrierCapture::new(
+            &optional,
+            IMAGE,
+            GAME,
+            &countries,
+            CarrierBuffers {
+                bases: &mut bases,
+                registrations: &mut registrations,
+                pools: &mut pools,
+                countries: &mut dense,
+                names: &mut names,
+                indexed: &mut indexed,
+                resolved: &mut optional_resolved,
+                country_terms: &mut country_terms,
+                aces: &mut aces,
+                forecasts: &mut forecasts,
+            },
+        )
+        .with_transport_planes(transport);
+        let main = walk_registrations_with_carrier(
+            &memory,
+            IMAGE,
+            GAME,
+            RegistrationBuffers {
+                registrations: &mut rows,
+                wings: &mut wings,
+                resolved: &mut resolved,
+            },
+            &source[..source_len],
+            &mut carrier,
+        );
+        (main, carrier.demand(), carrier.lengths())
+    };
+    let optional_reads = optional.reads.borrow().clone();
+    CarrierWalkFixture {
+        main,
+        rows,
+        wings,
+        bases,
+        registrations,
+        pools,
+        demand,
+        lengths,
+        optional_reads,
+    }
+}
+
+#[test]
+fn carrier_optional_fault_preserves_main_membership_and_independent_container_scalar() {
+    let bytes = host_registration_fixture();
+    let original = registered(&bytes, 4, 8);
+    let observed = carrier_walk_fixture(
+        &bytes,
+        Some(CONTAINER_A + ccountry_air_container::FUEL_DEMAND_RAW),
+        4,
+        4,
+    );
+    assert_eq!(
+        (observed.main, &observed.rows, &observed.wings),
+        (original.0, &original.1, &original.2)
+    );
+    assert!(observed.registrations[0].fuel.demand.is_err());
+    assert_eq!(observed.registrations[0].fuel.allocated, Ok(11));
+    assert_eq!(observed.registrations[1].country, 9);
+    assert_eq!(observed.registrations[1].fuel.demand, Ok(23));
+    assert_eq!(observed.bases[0].countries, Ok((0, 2)));
+    assert_eq!(observed.bases[0].host_name, Ok(Some((0, 0))));
+    // Both pool metadata records and the actual per-wing callback path are
+    // admitted, independently of the container demand scalar failure.
+    assert_eq!(observed.registrations[0].pools, Ok((0, 1)));
+    assert_eq!(observed.registrations[1].pools, Ok((1, 1)));
+    assert_eq!(observed.rows[1].wings_len, 0);
+    assert_eq!(observed.lengths.pools, 2);
+    assert_eq!(
+        observed.pools[0],
+        CarrierPool {
+            type_index: i32::MIN,
+            subunit_index: 1,
+            wings_start: 0,
+            wings_len: 3,
+            planes_raw: Some(7),
+            fuel: CarrierPoolFuel {
+                current: Some(1000000),
+                maximum: Some(1400000),
+                ..CarrierPoolFuel::default()
+            }
+        }
+    );
+    assert_eq!(
+        observed.pools[1],
+        CarrierPool {
+            type_index: -17,
+            subunit_index: 0,
+            wings_start: 0,
+            wings_len: 0,
+            planes_raw: Some(0),
+            fuel: CarrierPoolFuel {
+                current: Some(0),
+                maximum: Some(0),
+                ..CarrierPoolFuel::default()
+            }
+        }
+    );
+    assert_eq!(
+        observed.rows[1].wings_start, 3,
+        "pool suffix start stays registration-relative"
+    );
+    assert_eq!(
+        (
+            observed.demand.pools,
+            observed.demand.aces,
+            observed.demand.forecasts
+        ),
+        (2, 6, 6)
+    );
+}
+
+#[test]
+fn original_carrier_plane_sum_wraps_repeats_and_keeps_empty_pool_zero() {
+    let mut bytes = host_registration_fixture();
+    dword(
+        &mut bytes,
+        CARRIER_PRIMARY_A + cair_wing::PLANE_COUNT,
+        i32::MAX as u32,
+    );
+    let observed = carrier_walk_fixture(&bytes, None, 4, 4);
+    assert_eq!(
+        observed.pools[0].planes_raw,
+        Some(-1),
+        "MAX + MAX + 1 wraps as signed i32"
+    );
+    assert_eq!(observed.pools[1].planes_raw, Some(0));
+    assert_eq!(
+        observed.wings[..3],
+        [
+            (11_u64 << 32) | cair_wing::TYPE as u64,
+            (11_u64 << 32) | cair_wing::TYPE as u64,
+            (12_u64 << 32) | cair_wing::TYPE as u64,
+        ]
+    );
+}
+
+#[test]
+fn failed_original_carrier_plane_leaf_preserves_membership_and_current_fuel() {
+    let bytes = host_registration_fixture();
+    let original = registered(&bytes, 4, 8);
+    let observed = carrier_walk_fixture(
+        &bytes,
+        Some(CARRIER_PRIMARY_A + cair_wing::PLANE_COUNT),
+        4,
+        4,
+    );
+    assert_eq!(
+        (observed.main, &observed.rows, &observed.wings),
+        (original.0, &original.1, &original.2)
+    );
+    assert_eq!(observed.pools[0].planes_raw, None);
+    assert_eq!(observed.pools[0].fuel.current, Some(1000000));
+    assert_eq!(observed.pools[0].fuel.maximum, None);
+    assert_eq!(observed.pools[1].planes_raw, Some(0));
+    assert_eq!(
+        observed
+            .optional_reads
+            .iter()
+            .filter(|address| **address == CARRIER_PRIMARY_A + cair_wing::PLANE_COUNT)
+            .count(),
+        2,
+        "each original occurrence attempts once; transport adds no retry"
+    );
+}
+
+#[test]
+fn denied_transport_carrier_demand_keeps_legacy_fuel_and_never_reads_unreached_planes() {
+    let bytes = host_registration_fixture();
+    // This ORIGINAL cost-header refusal prevents both legacy fuel branches
+    // from reaching +7C. An admitted transport suffix would add those leaves.
+    let fault = Some(IMAGE + crate::air_fuel_defines::MISSION_COSTS_RVA);
+    let denied = carrier_walk_fixture_with_transport(
+        &bytes,
+        fault,
+        4,
+        4,
+        Err("transport callback fixture denied"),
+    );
+    let admitted = carrier_walk_fixture_with_transport(&bytes, fault, 4, 4, Ok(()));
+    assert_eq!(
+        (denied.main, &denied.rows, &denied.wings),
+        (admitted.main, &admitted.rows, &admitted.wings)
+    );
+    for index in 0..2 {
+        assert_eq!(denied.pools[index].fuel, admitted.pools[index].fuel);
+        assert_eq!(denied.pools[index].planes_raw, None);
+    }
+    assert_eq!(admitted.pools[0].planes_raw, Some(7));
+    assert_eq!(admitted.pools[1].planes_raw, Some(0));
+    for pointer in [CARRIER_PRIMARY_A, CARRIER_PRIMARY_B] {
+        assert!(
+            !denied
+                .optional_reads
+                .contains(&(pointer + cair_wing::PLANE_COUNT)),
+            "denied transport cannot add an originally unreached leaf"
+        );
+        assert!(
+            admitted
+                .optional_reads
+                .contains(&(pointer + cair_wing::PLANE_COUNT))
+        );
+    }
+}
+
+#[test]
+fn carrier_short_certificate_arena_refuses_dense_proof_without_erasing_name_or_scalars() {
+    let bytes = host_registration_fixture();
+    // An unreadable dense payload must not be visited by the sizing path.
+    let observed = carrier_walk_fixture(&bytes, Some(0x2b00), 0, 4);
+    assert_eq!(observed.main.outcome, Outcome::Rows { len: 2 });
+    assert!(observed.bases[0].countries.is_err());
+    assert_eq!(observed.bases[0].host_name, Ok(Some((0, 0))));
+    assert_eq!(observed.registrations[0].fuel.demand, Ok(-7));
+    assert_eq!(observed.demand.indexed, 4);
+    assert_eq!(observed.demand.country_terms, 3);
+    assert_eq!(
+        observed.demand.countries, 2,
+        "first-pass header-only demand survives short certificates"
+    );
+    assert_eq!(observed.demand.failure, None);
+    assert!(
+        observed
+            .optional_reads
+            .contains(&(HOST_BASE + REGISTERED_CONTAINERS))
+    );
+    assert!(
+        !observed
+            .optional_reads
+            .iter()
+            .any(|address| (0x2b00..0x2b10).contains(address))
+    );
+}
+
+#[test]
+fn carrier_name_survives_original_indexed_header_failure() {
+    let mut bytes = host_registration_fixture();
+    dword(&mut bytes, HOST_BASE + COUNTRY_CONTAINERS_COUNT, 5);
+    let original = registered(&bytes, 4, 8);
+    let observed = carrier_walk_fixture(&bytes, None, 4, 4);
+    assert_eq!(observed.main, original.0);
+    assert!(matches!(observed.main.outcome, Outcome::Unavailable { .. }));
+    assert_eq!(observed.bases[0].host_name, Ok(Some((0, 0))));
+    assert!(observed.bases[0].countries.is_err());
+    assert_eq!(observed.lengths.registrations, 0);
+    assert!(
+        !observed
+            .optional_reads
+            .contains(&(HOST_BASE + REGISTERED_CONTAINERS)),
+        "an original registration fault never reaches the dense sizing header"
+    );
+}
+
+#[test]
+fn carrier_short_certificate_dense_header_fault_keeps_primary_reason_and_unknown_demand() {
+    let bytes = host_registration_fixture();
+    let observed = carrier_walk_fixture(&bytes, Some(HOST_BASE + REGISTERED_CONTAINERS), 0, 4);
+    assert_eq!(observed.main.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(
+        observed.bases[0].countries,
+        Err("carrier indexed registrations incomplete")
+    );
+    assert_eq!(
+        observed.demand.failure,
+        Some("carrier inventory field unreadable or address overflow")
+    );
+    assert_eq!(observed.bases[0].host_name, Ok(Some((0, 0))));
+    assert_eq!(observed.registrations[0].fuel.demand, Ok(-7));
+    assert_eq!(observed.registrations[0].fuel.allocated, Ok(11));
+    assert_eq!(observed.lengths.countries, 0);
+    assert!(
+        !observed
+            .optional_reads
+            .iter()
+            .any(|address| (0x2b00..0x2b10).contains(address))
+    );
+}
+
+#[test]
+fn carrier_original_truncation_retains_complete_dense_order_but_no_dependent_pool_span() {
+    let bytes = host_registration_fixture();
+    let full = carrier_walk_fixture(&bytes, None, 4, 4);
+    assert_eq!(full.registrations[0].pools, Ok((0, 1)));
+    assert_eq!(full.pools[0].fuel.current, Some(1000000));
+    assert_eq!(full.pools[0].fuel.maximum, Some(1400000));
+    assert_eq!(full.lengths.pools, 2);
+    let original = registered(&bytes, 0, 8);
+    let observed = carrier_walk_fixture(&bytes, None, 4, 0);
+    assert_eq!(observed.main, original.0);
+    assert_eq!(
+        observed.main.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 2
+        }
+    );
+    assert_eq!(observed.bases[0].countries, Ok((0, 2)));
+    assert_eq!(
+        observed.registrations[0].pools,
+        Err("carrier registration membership not admitted")
+    );
+    assert_eq!(observed.registrations[0].fuel.demand, Ok(-7));
+    assert_eq!(
+        (observed.demand.registrations, observed.lengths.pools),
+        (2, 0)
+    );
+}
+
+#[test]
+fn carrier_single_and_repeated_wing_callbacks_preserve_numeric_fuel_and_partial_queries() {
+    let mut bytes = host_registration_fixture();
+    dword(&mut bytes, POOL_A + cair_wing_pool::WINGS_COUNT, 1);
+    let single = carrier_walk_fixture(&bytes, None, 4, 4);
+    assert_eq!(
+        single.pools[0].fuel,
+        CarrierPoolFuel {
+            current: Some(400000),
+            maximum: Some(600000),
+            ..CarrierPoolFuel::default()
+        }
+    );
+    assert_eq!(single.pools[0].wings_len, 1);
+    dword(&mut bytes, POOL_A + cair_wing_pool::WINGS_COUNT, 3);
+    let partial = carrier_walk_fixture(
+        &bytes,
+        Some(CARRIER_PRIMARY_A + cair_wing::MISSION + crate::air_mission::REGION),
+        4,
+        4,
+    );
+    assert_eq!(partial.main.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(partial.registrations[0].pools, Ok((0, 1)));
+    assert_eq!(partial.pools[0].fuel.current, None);
+    assert!(partial.pools[0].fuel.current_failure.is_some());
+    assert_eq!(partial.pools[0].fuel.maximum, Some(1400000));
+    assert_eq!(partial.pools[0].fuel.maximum_failure, None);
+    assert_eq!(partial.pools[1].fuel.current, Some(0));
+}
+
+#[test]
+fn attach_carrier_hint_preserves_first_pass_fuel_with_each_transport_admission() {
+    let bytes = host_registration_fixture();
+    let memory = SliceMemory {
+        base: GAME,
+        bytes: &bytes,
+    };
+    let hint = carrier_demand(&memory, IMAGE, GAME).unwrap();
+    assert_eq!(hint.country_terms, 3);
+    assert_eq!((hint.aces, hint.forecasts), (6, 6));
+    assert_eq!((hint.registrations, hint.pools), (2, 2));
+    for admission in [Ok(()), Err("transport admission refused")] {
+        let cold = carrier_walk_fixture_with_storage(
+            &bytes,
+            None,
+            4,
+            4,
+            admission,
+            CarrierDemand::default(),
+        );
+        assert_eq!(cold.pools[0].fuel.maximum, None);
+        let first = carrier_walk_fixture_with_storage(
+            &bytes,
+            None,
+            hint.indexed,
+            hint.registrations,
+            admission,
+            hint,
+        );
+        assert_eq!(first.main.outcome, Outcome::Rows { len: 2 });
+        assert_eq!(first.registrations[0].pools, Ok((0, 1)));
+        assert_eq!(first.pools[0].wings_len, 3);
+        assert_eq!(
+            (first.pools[0].fuel.current, first.pools[0].fuel.maximum),
+            (Some(1000000), Some(1400000))
+        );
+        assert_eq!(first.pools[0].planes_raw, admission.ok().map(|()| 7));
+        let fault = carrier_walk_fixture_with_storage(
+            &bytes,
+            Some(CARRIER_PRIMARY_A + cair_wing::PLANE_COUNT),
+            hint.indexed,
+            hint.registrations,
+            admission,
+            hint,
+        );
+        assert_eq!(fault.pools[0].fuel.current, Some(1000000));
+        assert_eq!(fault.pools[0].fuel.maximum, None);
+    }
+}
+
+#[test]
+fn carrier_host_name_hint_uses_its_own_fresh_resolver_and_refuses_state_sources() {
+    let bytes = host_registration_fixture();
+    let memory = CarrierMemory {
+        bytes: &bytes,
+        fault: None,
+        globals: carrier_globals(),
+        reads: std::cell::RefCell::default(),
+    };
+    let source = Row {
+        id: CARRIER_HANDLE,
+        host: (123_u64 << 32) | crate::cship::HANDLE_TYPE as u64,
+        ..Row::default()
+    };
+    assert_eq!(carrier_host_name_demand(&memory, IMAGE, &source), Ok(0));
+    assert!(
+        carrier_host_name_demand(
+            &memory,
+            IMAGE,
+            &Row {
+                state: Some(1),
+                ..source
+            }
+        )
+        .is_err()
+    );
+}
+
 const IMAGE: usize = 0x140000000;
 const GAME: usize = 0x1000;
 const MANAGER: usize = 0x2000;
@@ -202,7 +975,7 @@ const WING_TABLE_B: usize = 0x27c0;
 const WING_A: usize = 0x3a00;
 const WING_B: usize = 0x3b00;
 
-fn wing(bytes: &mut [u8], at: usize, handle: u64) {
+fn wing(bytes: &mut [u8], at: usize, handle: u64, pool: usize) {
     qword(bytes, at, (IMAGE + cair_wing::VTABLE_RVA) as u64);
     qword(
         bytes,
@@ -210,6 +983,7 @@ fn wing(bytes: &mut [u8], at: usize, handle: u64) {
         (IMAGE + cair_wing::SECONDARY_VTABLE_RVA) as u64,
     );
     qword(bytes, at + cair_wing::REFERENCE_TYPE, handle);
+    qword(bytes, at + cair_wing::POOL, pool as u64);
 }
 
 /// The state base carries two containers: reserved slot zero, which the
@@ -294,8 +1068,9 @@ fn registration_fixture() -> Vec<u8> {
         &mut bytes,
         WING_A,
         (11_u64 << 32) | u64::from(cair_wing::TYPE),
+        POOL_A,
     );
-    wing(&mut bytes, WING_B, u64::MAX);
+    wing(&mut bytes, WING_B, u64::MAX, POOL_A);
     bytes
 }
 
@@ -416,7 +1191,7 @@ fn registration_scratch_reuse_preserves_shorter_bases_and_fault_prefixes() {
     ] {
         qword(&mut bytes, at, value as u64);
     }
-    wing(&mut bytes, WING, u64::MAX);
+    wing(&mut bytes, WING, u64::MAX, POOL);
     let (walk, rows, wings) = registered(&bytes, 4, 8);
     assert_eq!(walk.outcome, Outcome::Rows { len: 3 });
     assert_eq!((walk.wings_len, walk.required_wings), (4, 4));
@@ -466,7 +1241,7 @@ fn registration_scratch_reuse_preserves_shorter_bases_and_fault_prefixes() {
         Some(POOL),
         Some(POOL + cair_wing_pool::WINGS),
         Some(SHORT_WINGS),
-        Some(WING + WING_RECORD_BYTES - 1),
+        Some(WING + cair_wing::POOL + 7),
     ] {
         let run = |reset_each_base| {
             let memory = Traced {
@@ -480,7 +1255,9 @@ fn registration_scratch_reuse_preserves_shorter_bases_and_fault_prefixes() {
             };
             let countries = ccountry::Reader::new(&memory, IMAGE, GAME).unwrap();
             let mut cells = [None; 16];
-            let mut resolved = Resolver { cells: &mut cells };
+            let mut resolved = Resolver {
+                cells: crate::walk::Buffer::Fixed(&mut cells),
+            };
             let mut state = RegistrationState::default();
             state.scratch.container_bytes.fill(0xa5);
             state.scratch.pool_pointers.fill(usize::MAX);
@@ -502,13 +1279,16 @@ fn registration_scratch_reuse_preserves_shorter_bases_and_fault_prefixes() {
                     if reset_each_base {
                         state.scratch = RegistrationScratch::default();
                     }
-                    reader.registration(
-                        (id << 32) | u64::from(TYPE),
-                        pointer,
+                    reader.registration::<Traced<'_>>(
+                        RegistrationBase {
+                            pointer,
+                            handle: (id << 32) | u64::from(TYPE),
+                        },
                         &countries,
                         &mut resolved,
                         &mut buffers,
                         &mut state,
+                        &mut None,
                     )
                 });
             (
@@ -561,6 +1341,86 @@ fn registration_capacity_releases_staged_wings_and_reports_full_demand() {
 }
 
 #[test]
+fn registration_wings_admit_only_two_complete_fields_and_keep_the_fault_prefix() {
+    use std::cell::RefCell;
+
+    struct Observed<'a> {
+        bytes: &'a [u8],
+        fault: usize,
+        reads: RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Observed<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, output.len()));
+            if (address..address + output.len()).contains(&self.fault) {
+                output.fill(0xa5);
+                return false;
+            }
+            SliceMemory {
+                base: GAME,
+                bytes: self.bytes,
+            }
+            .copy(address, output)
+        }
+    }
+
+    let bytes = registration_fixture();
+    let fields = [
+        (WING_A, 32),
+        (WING_A + cair_wing::POOL, 8),
+        (WING_B, 32),
+        (WING_B + cair_wing::POOL, 8),
+    ];
+    for (field_index, &(address, size)) in fields.iter().enumerate() {
+        for byte in 0..size {
+            let memory = Observed {
+                bytes: &bytes,
+                fault: address + byte,
+                reads: Default::default(),
+            };
+            let mut rows = [RegistrationRow::default(); 4];
+            let mut wings = [u64::MAX; 8];
+            let mut resolved = [None; 16];
+            let walked = walk_registrations(
+                &memory,
+                IMAGE,
+                GAME,
+                RegistrationBuffers {
+                    registrations: &mut rows,
+                    wings: &mut wings,
+                    resolved: &mut resolved,
+                },
+            );
+            assert_eq!(
+                walked.outcome,
+                Outcome::Unavailable {
+                    reason: "air pool wing identity unreadable"
+                }
+            );
+            assert_eq!(walked.wings_len, field_index / 2);
+            assert_eq!(walked.required_wings, 2);
+            assert_eq!(rows, [RegistrationRow::default(); 4]);
+            let observed: Vec<_> = memory
+                .reads
+                .borrow()
+                .iter()
+                .copied()
+                .filter(|read| fields.contains(read))
+                .collect();
+            assert_eq!(
+                observed,
+                fields[..=field_index],
+                "fault {:#x}",
+                address + byte
+            );
+            if walked.wings_len != 0 {
+                assert_eq!(wings[0], (11_u64 << 32) | u64::from(cair_wing::TYPE));
+            }
+        }
+    }
+}
+
+#[test]
 fn registration_faults_never_become_absence() {
     for (address, value, reason) in [
         (
@@ -583,6 +1443,16 @@ fn registration_faults_never_become_absence() {
             WING_A + cair_wing::SECONDARY,
             0x1234,
             "air pool wing vtable mismatch",
+        ),
+        (
+            WING_A + cair_wing::POOL,
+            POOL_B as u64,
+            "registered air wing backlink differs from containing pool",
+        ),
+        (
+            WING_B + cair_wing::POOL,
+            0,
+            "registered air wing backlink differs from containing pool",
         ),
         (
             CONTAINER_B + ccountry_air_container::COUNTRY,
@@ -846,4 +1716,96 @@ fn five_thousand_country_registrations_match_with_any_resolver_length() {
     };
     let (_, _, uncached) = run(0);
     assert!(resolves(&rounds) < resolves(&uncached));
+}
+
+#[test]
+fn growing_air_bases_follow_mod_stateless_rosters_before_first_publication() {
+    let mut bytes = fixture();
+    let prototype = bytes[HOST_BASE - GAME..HOST_BASE - GAME + SIZE].to_vec();
+    let data = 0x10000;
+    let objects = 0x40000;
+    let mut rows = Vec::new();
+    for count in [5_000_u32, 12_000] {
+        bytes.resize(objects - GAME + count as usize * SIZE, 0);
+        array(
+            &mut bytes,
+            MANAGER + cstrategic_air_manager::STATELESS_AIR_BASES,
+            data,
+            count,
+            count,
+        );
+        for index in 0..count as usize {
+            let pointer = objects + index * SIZE;
+            bytes[pointer - GAME..pointer - GAME + SIZE].copy_from_slice(&prototype);
+            qword(
+                &mut bytes,
+                pointer + HANDLE,
+                ((index as u64 + 10) << 32) | u64::from(TYPE),
+            );
+            qword(&mut bytes, data + index * 8, pointer as u64);
+        }
+        let memory = SliceMemory {
+            base: GAME,
+            bytes: &bytes,
+        };
+        let mut fixed = [Row::default(); 1];
+        assert_eq!(
+            walk(&memory, IMAGE, GAME, &mut fixed),
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: count
+            }
+        );
+        assert_eq!(
+            walk_growing(&memory, IMAGE, GAME, &mut rows),
+            Outcome::Rows {
+                len: count as usize + 1
+            }
+        );
+        assert_eq!(
+            rows[count as usize].id,
+            ((count as u64 + 9) << 32) | u64::from(TYPE)
+        );
+    }
+}
+
+#[cfg(feature = "alloc-fault-injection")]
+#[test]
+#[ignore = "run alone with alloc-fault-injection: allocation hooks are process-global"]
+fn carrier_advisory_denial_keeps_capture_active_and_original_rows_readable() {
+    use crate::allocation;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    static DENY: AtomicBool = AtomicBool::new(false);
+    static FAILURES: AtomicUsize = AtomicUsize::new(0);
+    fn before() -> bool {
+        DENY.load(Ordering::SeqCst)
+    }
+    fn failed() {
+        FAILURES.fetch_add(1, Ordering::SeqCst);
+    }
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            allocation::set_hooks(None, None);
+        }
+    }
+    let _reset = Reset;
+    let bytes = host_registration_fixture();
+    let memory = CarrierMemory {
+        bytes: &bytes,
+        fault: None,
+        globals: carrier_globals(),
+        reads: std::cell::RefCell::new(Vec::with_capacity(4_096)),
+    };
+    allocation::set_hooks(Some(before), Some(failed));
+    DENY.store(true, Ordering::SeqCst);
+    let hint = allocation::tests::with_allocations_denied(|| carrier_demand(&memory, IMAGE, GAME))
+        .unwrap();
+    assert_eq!(hint.failure, Some("carrier raw sizing allocation failed"));
+    assert_eq!(FAILURES.load(Ordering::SeqCst), 0);
+    assert!(!allocation::capture_stopped());
+    DENY.store(false, Ordering::SeqCst);
+    let rows = carrier_walk_fixture(&bytes, None, 4, 4);
+    assert_eq!(rows.main.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(FAILURES.load(Ordering::SeqCst), 0);
 }

@@ -179,7 +179,7 @@ mod tests {
         }
         let mut rows = [Row::default(); 2];
         let mut sink = Sink {
-            rows: &mut rows,
+            rows: crate::walk::Buffer::Fixed(&mut rows),
             required: 0,
             raid: 0,
             ordinal: 0,
@@ -217,7 +217,7 @@ mod tests {
         }
         let run = |bytes: &[u8], rows: &mut [Row]| {
             let mut sink = Sink {
-                rows,
+                rows: crate::walk::Buffer::Fixed(rows),
                 required: 0,
                 raid: definition_key(101),
                 ordinal: 0,
@@ -265,7 +265,7 @@ mod tests {
         bytes[0x119] = 1;
         let mut rows = [Row::default(); 1];
         let mut sink = Sink {
-            rows: &mut rows,
+            rows: crate::walk::Buffer::Fixed(&mut rows),
             required: 0,
             raid: definition_key(11),
             ordinal: 0,

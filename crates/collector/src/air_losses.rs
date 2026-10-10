@@ -4,7 +4,8 @@ use crate::{
     hook::Hook,
     sampling::qpc,
 };
-use engine::{Memory, air_loss_sites as native, cgame_state::Clock};
+type Clock = engine::cgame_state::Clock<u64>;
+use engine::{Memory, air_loss_sites as native};
 use std::{
     ops::Range,
     sync::{
@@ -136,7 +137,16 @@ pub fn boundary(clock: Option<Clock>) {
     MAX_HOUR_TICKS.fetch_max(ticks, Ordering::Relaxed);
     LEDGER.boundary(clock);
 }
+#[cfg(test)]
 pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+    drain_admitted()?;
+    LEDGER.drain(output)
+}
+pub fn drain_growing(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+    drain_admitted()?;
+    LEDGER.drain_growing(output)
+}
+fn drain_admitted() -> Result<(), &'static str> {
     #[cfg(test)]
     if !tests::owns_observation() {
         return Err("air loss hooks unavailable (see status unhooked)");
@@ -144,7 +154,7 @@ pub fn drain(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("air loss hooks unavailable (see status unhooked)");
     }
-    LEDGER.drain(output)
+    Ok(())
 }
 struct Observation {
     generation: u64,
@@ -226,6 +236,7 @@ unsafe extern "system" fn pre(
     }
     let original = ORIGINAL.load(Ordering::Acquire);
     if ENABLED.load(Ordering::SeqCst) && region != 0 && !(enemy as u8 == 1 && cause as i32 == 3) {
+        LEDGER.attempt();
         if LEDGER.poisoned.load(Ordering::SeqCst) || crate::allocation::failed() {
             LEDGER.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
         } else {

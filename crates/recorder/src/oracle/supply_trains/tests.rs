@@ -66,37 +66,249 @@ fn supply_compares_province_census_and_routes_despite_membership_exclusions() {
     );
 }
 
-#[test]
-fn floating_harbour_rows_join_supply_systems_with_dense_ordinals() {
-    let (mut frame, ..) = super::super::tests::fixture();
-    let [raw, country] = {
-        let row = &frame.complete::<tables::Countries>().unwrap()[0];
-        [row.id, row.canonical_slot]
-    };
+fn harbour_fixture(fields: &str, deployments: &[(i32, u8)]) -> (DecodedFrame, Save) {
+    let (mut frame, mut save, ..) = super::super::tests::fixture();
+    let country = frame.complete::<tables::Countries>().unwrap()[0].clone();
+    let input = format!(
+        "countries={{}} supply_system_2={{countries={{{}={{{fields}}}}}}}",
+        String::from_utf8_lossy(&country.tag)
+    );
+    let document = installed_content::parser::parse(input.as_bytes()).unwrap();
+    save.economy = save::economy::parse(&document.items).unwrap();
     *frame.tables[TableId::TrainInventory.index()] =
         TableView::Complete(TableRows::TrainInventory(vec![TrainInventoryRow {
-            country: raw,
+            country: country.id,
             ..Default::default()
         }]));
-    let set = |frame: &mut DecodedFrame, country, ordinal| {
-        *frame.tables[TableId::FloatingHarborDeployments.index()] =
-            TableView::Complete(TableRows::FloatingHarborDeployments(vec![
-                FloatingHarborDeploymentRow {
-                    country,
-                    ordinal,
-                    province: -1,
-                    status: 255,
-                },
-            ]));
-    };
-    set(&mut frame, country, 0);
+    *frame.tables[TableId::FloatingHarborDeployments.index()] =
+        TableView::Complete(TableRows::FloatingHarborDeployments(
+            deployments
+                .iter()
+                .enumerate()
+                .map(
+                    |(ordinal, &(province, status))| FloatingHarborDeploymentRow {
+                        country: country.canonical_slot,
+                        ordinal: ordinal as u32,
+                        province,
+                        status,
+                    },
+                )
+                .collect(),
+        ));
+    (frame, save)
+}
+
+#[test]
+fn floating_harbour_rows_join_supply_systems_with_dense_ordinals() {
+    let (mut frame, save) = harbour_fixture("temp_nodes={{province=-1 base=yes}}", &[(-1, 255)]);
     let mut report = Report::default();
-    floating_harbors(&frame, &mut report).unwrap();
-    assert_eq!(report.compared_tables["FloatingHarborDeployments"], 0);
-    set(&mut frame, country, 1);
-    assert!(floating_harbors(&frame, &mut Report::default()).is_err());
-    set(&mut frame, country + 1, 0);
-    assert!(floating_harbors(&frame, &mut Report::default()).is_err());
+    floating_harbors(&frame, &save, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert_eq!(report.compared_tables["FloatingHarborDeployments"], 1);
+    let TableView::Complete(TableRows::FloatingHarborDeployments(rows)) =
+        &mut *frame.tables[TableId::FloatingHarborDeployments.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].ordinal = 1;
+    assert!(floating_harbors(&frame, &save, &mut Report::default()).is_err());
+    let TableView::Complete(TableRows::FloatingHarborDeployments(rows)) =
+        &mut *frame.tables[TableId::FloatingHarborDeployments.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].ordinal = 0;
+    rows[0].country += 1;
+    assert!(floating_harbors(&frame, &save, &mut Report::default()).is_err());
+    let (mut frame, save) = harbour_fixture("", &[(1, 0)]);
+    *frame.tables[TableId::TrainInventory.index()] =
+        TableView::Complete(TableRows::TrainInventory(vec![]));
+    assert!(floating_harbors(&frame, &save, &mut Report::default()).is_err());
+}
+
+#[test]
+fn floating_harbour_compares_boolean_status_and_first_match_order_through_aliases() {
+    let (mut frame, save) = harbour_fixture(
+        "temp_nodes={{province=-1 base=no} {province=-1 base=yes} {province=-2147483648 base=yes}}",
+        &[(-1, 0), (-1, 1), (i32::MIN, 2)],
+    );
+    // The inventory's raw reference is now an alias, while deployments retain
+    // the canonical slot. CountryLinks still resolves both physical references.
+    let TableView::Complete(TableRows::Countries(countries)) =
+        &mut *frame.tables[TableId::Countries.index()]
+    else {
+        unreachable!()
+    };
+    countries[0].id = 102;
+    let mut report = Report::default();
+    floating_harbors(&frame, &save, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["FloatingHarborDeployments"], 3);
+    assert_eq!(report.limitations.len(), 1);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .next()
+            .unwrap()
+            .contains("magnitude")
+    );
+    let TableView::Complete(TableRows::FloatingHarborDeployments(rows)) =
+        &mut *frame.tables[TableId::FloatingHarborDeployments.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].status = 1;
+    rows[1].status = 0;
+    let mut reordered = Report::default();
+    floating_harbors(&frame, &save, &mut reordered).unwrap();
+    assert_eq!(reordered.differences.len(), 2);
+    assert!(
+        reordered
+            .differences
+            .iter()
+            .all(|difference| difference.contains(".base"))
+    );
+}
+
+#[test]
+fn floating_harbour_empty_missing_extra_reordered_and_changed_rows_compare() {
+    for fields in ["", "temp_nodes={}"] {
+        let (frame, save) = harbour_fixture(fields, &[]);
+        let mut report = Report::default();
+        floating_harbors(&frame, &save, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert_eq!(report.compared_tables["FloatingHarborDeployments"], 0);
+    }
+    let fields = "temp_nodes={{province=3 base=no} {province=9 base=yes}}";
+    for (deployments, field) in [
+        (vec![], ".count"),
+        (vec![(3, 0)], ".count"),
+        (vec![(3, 0), (9, 1), (9, 1)], ".count"),
+        (vec![(9, 1), (3, 0)], ".province"),
+        (vec![(4, 0), (9, 1)], ".province"),
+        (vec![(3, 1), (9, 1)], ".base"),
+    ] {
+        let (frame, save) = harbour_fixture(fields, &deployments);
+        let mut report = Report::default();
+        floating_harbors(&frame, &save, &mut report).unwrap();
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains(field))
+        );
+    }
+    let (frame, mut save) = harbour_fixture("temp_nodes={{province=3 base=no}}", &[(3, 0)]);
+    save.economy.supply.as_mut().unwrap().clear();
+    let mut report = Report::default();
+    floating_harbors(&frame, &save, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains(".count"));
+}
+
+#[test]
+fn floating_harbour_requires_save_and_complete_identity_inputs() {
+    let (mut frame, mut save) = harbour_fixture("", &[]);
+    save.economy.supply = None;
+    assert!(floating_harbors(&frame, &save, &mut Report::default()).is_err());
+    for table in [
+        TableId::Countries,
+        TableId::CountryLinks,
+        TableId::TrainInventory,
+        TableId::FloatingHarborDeployments,
+    ] {
+        let (mut frame, save) = harbour_fixture("", &[]);
+        *frame.tables[table.index()] = TableView::Unavailable {
+            reason: "test".into(),
+        };
+        assert!(floating_harbors(&frame, &save, &mut Report::default()).is_err());
+    }
+    save.economy.supply = Some(BTreeMap::from([(b"UNKNOWN".to_vec(), Default::default())]));
+    assert!(floating_harbors(&frame, &save, &mut Report::default()).is_err());
+    *frame.tables[TableId::CountryLinks.index()] =
+        TableView::Complete(TableRows::CountryLinks(vec![]));
+    assert!(floating_harbors(&frame, &save, &mut Report::default()).is_err());
+}
+
+#[test]
+fn floating_harbour_keeps_each_saved_country_separate_at_five_thousand_countries() {
+    let (mut frame, mut save) = harbour_fixture("", &[]);
+    let source = frame.complete::<tables::Countries>().unwrap()[0].clone();
+    let countries: Vec<_> = (1..=5000)
+        .map(|slot| {
+            let mut country = source.clone();
+            country.id = slot + 10_000;
+            country.canonical_slot = slot;
+            country.tag = format!("C{slot}").into_bytes();
+            country
+        })
+        .collect();
+    save.economy.supply = Some(
+        countries
+            .iter()
+            .map(|country| {
+                (
+                    country.tag.clone(),
+                    save::economy::Supply {
+                        temp_nodes: vec![save::economy::TemporaryNode {
+                            ordinal: 0,
+                            province: country.canonical_slot as i32,
+                            base: true,
+                        }],
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect(),
+    );
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        countries
+            .iter()
+            .map(|country| replay::rows::CountryLinkRow {
+                id: country.id,
+                canonical_slot: country.canonical_slot,
+            })
+            .collect(),
+    ));
+    *frame.tables[TableId::TrainInventory.index()] =
+        TableView::Complete(TableRows::TrainInventory(
+            countries
+                .iter()
+                .map(|country| TrainInventoryRow {
+                    country: country.id,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::FloatingHarborDeployments.index()] =
+        TableView::Complete(TableRows::FloatingHarborDeployments(
+            countries
+                .iter()
+                .map(|country| FloatingHarborDeploymentRow {
+                    country: country.canonical_slot,
+                    ordinal: 0,
+                    province: country.canonical_slot as i32,
+                    status: 2,
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::Countries.index()] =
+        TableView::Complete(TableRows::Countries(countries));
+    let mut report = Report::default();
+    floating_harbors(&frame, &save, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert_eq!(report.compared_tables["FloatingHarborDeployments"], 5000);
+    let TableView::Complete(TableRows::FloatingHarborDeployments(rows)) =
+        &mut *frame.tables[TableId::FloatingHarborDeployments.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].province = rows[1].province;
+    let mut changed = Report::default();
+    floating_harbors(&frame, &save, &mut changed).unwrap();
+    assert_eq!(changed.differences.len(), 1);
+    assert!(changed.differences[0].contains("C1.temp_nodes[0].province"));
 }
 
 fn owned_states(frame: &mut DecodedFrame, countries: &[replay::rows::CountryRow], count: i32) {
@@ -105,6 +317,7 @@ fn owned_states(frame: &mut DecodedFrame, countries: &[replay::rows::CountryRow]
             countries
                 .iter()
                 .map(|c| CountryCounterInputRow {
+                    forward_visibility: replay::rows::Recorded::NotRecorded,
                     country: c.id,
                     owned_state_count: count,
                     ..Default::default()

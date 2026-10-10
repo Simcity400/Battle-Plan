@@ -512,6 +512,12 @@ fn copy(
     capacities: &Capacities,
 ) -> (Captured, ProjectsJob) {
     let mut job = ProjectsJob::new();
+    job.worker_growth = false;
+    job.log = RawLog::new(1 << 20, 48 << 20);
+    job.census.reserve_exact(capacities.program_candidates);
+    job.statuses.reserve_exact(capacities.program_candidates);
+    job.pointers.reserve_exact(capacities.program_candidates);
+    job.update_capacity_charge();
     let context = ProjectsCopyContext {
         base: kit::BASE,
         game_state,
@@ -619,6 +625,107 @@ fn scaled_copy_matches_direct_walks_and_the_recorded_digests() {
         reference.breakthroughs.outcome,
     ] {
         assert!(matches!(outcome, Outcome::Truncated { .. }), "{outcome:?}");
+    }
+}
+
+#[test]
+fn live_project_demand_and_owned_decode_growth_keep_mod_sized_pools() {
+    let space = space(5_000, 12);
+    let memory = space.memory();
+    let mut capacity = Capacities::default();
+    capacity
+        .presize(&memory, kit::BASE, space.game_state)
+        .unwrap();
+    let (expected, history) = nproject_cproject::walk_with_history(
+        &memory,
+        kit::BASE,
+        space.game_state,
+        &mut [],
+        &mut [],
+    );
+    let demand = |outcome| match outcome {
+        Outcome::Rows { len } => len,
+        Outcome::Truncated { len, unread_rows } => len + unread_rows as usize,
+        other => panic!("{other:?}"),
+    };
+    let projects = demand(expected);
+    let histories = demand(history);
+    assert!(projects > Capacities::default().rows[1]);
+    assert!(capacity.rows[1] >= projects && capacity.rows[2] >= histories);
+    // Pool misses use Default, so it must grow from the very first header.
+    let mut job = ProjectsJob::default();
+    let report = copy_projects_refresh(
+        &memory,
+        ProjectsCopyContext {
+            base: kit::BASE,
+            game_state: space.game_state,
+            active: true,
+        },
+        &mut job,
+    );
+    assert!(report.raw_ok);
+    let mut tiny = capacity;
+    tiny.rows[..4].fill(0);
+    tiny.program_candidates = 0;
+    tiny.program_names = 0;
+    let mut captured = Captured::with_capacities(&tiny);
+    captured.decode_projects_payload(kit::BASE, &job, &mut [0; 4]);
+    assert_eq!(captured.projects.outcome, Outcome::Rows { len: projects });
+    assert_eq!(captured.history.outcome, Outcome::Rows { len: histories });
+    let expected = direct(&memory, space.game_state, &capacities(5000));
+    kit::assert_matches_direct(&captured, &expected);
+    assert!(
+        matches!(captured.programs.outcome, Outcome::Rows { len } if len > Capacities::default().rows[0])
+    );
+    assert!(
+        matches!(captured.breakthroughs.outcome, Outcome::Rows { len } if len > Capacities::default().rows[3])
+    );
+    assert!(captured.names.len > Capacities::default().program_names);
+    // Child populations change without any country-count change. The next
+    // original headers must grow the same owned job and frame before publish.
+    let later = self::space(5000, 14);
+    let later_memory = later.memory();
+    assert!(
+        copy_projects_refresh(
+            &later_memory,
+            ProjectsCopyContext {
+                base: kit::BASE,
+                game_state: later.game_state,
+                active: true
+            },
+            &mut job
+        )
+        .raw_ok
+    );
+    captured.decode_projects_payload(kit::BASE, &job, &mut [0; 4]);
+    kit::assert_matches_direct(
+        &captured,
+        &direct(&later_memory, later.game_state, &capacities(5000)),
+    );
+}
+
+#[test]
+fn cold_typed_project_fallback_keeps_five_thousand_countries_and_later_pool_growth() {
+    let mut capacity = Capacities::default();
+    capacity.rows[..4].fill(0);
+    capacity.program_candidates = 0;
+    capacity.program_names = 0;
+    let mut captured = Captured::with_capacities(&capacity);
+    for (countries, projects) in [(1_500, 12), (5_000, 12), (5_000, 14)] {
+        let source = space(countries, projects);
+        let memory = source.memory();
+        let expected = direct(&memory, source.game_state, &capacities(countries as usize));
+        assert!(!captured.raw_mode);
+        captured.capture(&memory, kit::BASE, source.game_state, 0, true);
+        kit::assert_matches_direct(&captured, &expected);
+        for outcome in [
+            captured.programs.outcome,
+            captured.projects.outcome,
+            captured.history.outcome,
+            captured.breakthroughs.outcome,
+        ] {
+            assert!(matches!(outcome, Outcome::Rows { .. }), "{outcome:?}");
+        }
     }
 }
 

@@ -29,7 +29,7 @@ pub const TABLES: [TableId; N] = [
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("naval combat transfers and their units", 1, &[1, 2])];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     provinces: usize,
     province_combats: usize,
@@ -39,16 +39,38 @@ pub struct Capacities {
     unit_handles: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            provinces: 256,
-            province_combats: 256,
-            combats: 128,
-            transfer_handles: 512,
-            transfers: 256,
-            unit_handles: 1024,
+impl Capacities {
+    /// Live attach/cadence floor for the original map-icon vectors@14127C6B0
+    /// and transfer/unit serialization@1415B36C0/140E14640. The temporary owned
+    /// walk keeps distinct-reference scratch complete while measuring its demand.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let mut capture = Captured::vacant();
+        capture.capture(memory, base, state);
+        let mut failure = None;
+        for (floor, outcome) in [
+            (&mut self.provinces, capture.provinces.outcome),
+            (&mut self.combats, capture.combats.outcome),
+            (&mut self.transfers, capture.transfers.outcome),
+        ] {
+            match crate::country_scale::table_demand::rows(outcome) {
+                Ok(count) => *floor = (*floor).max(count),
+                Err(reason) => {
+                    failure.get_or_insert(reason);
+                }
+            }
         }
+        self.province_combats = self.province_combats.max(capture.province_combats.required);
+        self.transfer_handles = self.transfer_handles.max(capture.transfer_handles.required);
+        // Distinct transfer rows also hold every nonzero original occurrence
+        // until compaction; the emitted unique row count alone is insufficient.
+        self.transfers = self.transfers.max(capture.transfers.rows.len());
+        self.unit_handles = self.unit_handles.max(capture.unit_handles.required);
+        failure.map_or(Ok(()), Err)
     }
 }
 
@@ -66,14 +88,7 @@ pub struct Captured {
 impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
-        Self::with_capacities(&Capacities {
-            provinces: 0,
-            province_combats: 0,
-            combats: 0,
-            transfer_handles: 0,
-            transfers: 0,
-            unit_handles: 0,
-        })
+        Self::with_capacities(&Capacities::default())
     }
 
     pub fn with_capacities(c: &Capacities) -> Self {
@@ -127,15 +142,13 @@ impl Captured {
         let begin = qpc();
         let direct = {
             let _reads = crate::read_accounting::table(TABLES[0]);
-            cprovince::walk_direct_combats(
+            cprovince::walk_direct_combats_growing(
                 memory,
                 base,
                 state,
                 &mut self.provinces.rows,
-                cprovince::DirectCombatArenas {
-                    handles: &mut self.province_combats.first,
-                    kinds: &mut self.province_kinds.first,
-                },
+                &mut self.province_combats.first,
+                &mut self.province_kinds.first,
             )
         };
         self.provinces.outcome = direct.outcome;
@@ -146,11 +159,11 @@ impl Captured {
         let middle = qpc();
         let walked = {
             let _reads = crate::read_accounting::table(TABLES[1]);
-            transfers::walk(
+            transfers::walk_growing(
                 memory,
                 base,
                 state,
-                transfers::Buffers {
+                transfers::GrowingBuffers {
                     combats: &mut self.combats.rows,
                     transfer_handles: &mut self.transfer_handles.first,
                     transfers: &mut self.transfers.rows,
@@ -243,6 +256,23 @@ mod tests {
     use super::*;
     use replay::rows::TableRows;
 
+    #[test]
+    fn cold_source_storage_waits_for_original_headers() {
+        let capacity = Capacities::default();
+        assert_eq!(
+            [
+                capacity.provinces,
+                capacity.province_combats,
+                capacity.combats,
+                capacity.transfer_handles,
+                capacity.transfers,
+                capacity.unit_handles,
+            ],
+            [0; 6]
+        );
+        assert_eq!(Captured::with_capacities(&capacity).allocated_bytes(), 0);
+        assert_eq!(Captured::vacant().allocated_bytes(), 0);
+    }
     #[test]
     fn rows_take_their_arena_ranges_and_a_range_past_the_arena_refuses() {
         let mut capture = Captured::with_capacities(&Capacities {

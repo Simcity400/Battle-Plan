@@ -1,0 +1,222 @@
+//! Current raw tie-breaking operands of the ship's already selected variant.
+//!
+//! Native140C24A90 delegates equal-strength distinct variants to140BC88A0.
+//! Its terms are mutable simulation state: command1419918B0 rebuilds the same
+//! variant and140BC4660 refreshes its retained organisation marker. Daily
+//! variant tables therefore cannot stand in for this current observation.
+//! No native pointer is returned in the captured packet and no getter is called.
+
+use super::{ModelMemo, SelectedModelVariant};
+use crate::{
+    Memory, cequipment_database, cequipment_type, cequipment_variant, cpdx_array::Array,
+    memory::Raw, read,
+};
+
+/// Comparator140BC88A0 reads module count at+C4. BD0D50 rebuilds414/418
+/// from upgrade levels and signed module priorities, respectively.
+const MODULE_COUNT: usize = 0xc4;
+const UPGRADE_LEVEL_SUM: usize = 0x414;
+const MODULE_PRIORITY_SUM: usize = 0x418;
+/// RefreshOrganisationBonuses140BC4660 stores linked organisation+148 here;
+/// Serialize140BD4770 writes its nonzero signed value under token4002.
+const ORGANISATION_MARKER: usize = 0x4b0;
+/// General definition ordinal: ctor140C82D60 stores current DB count, null
+/// ctor140C82B50 stores-1, and generated copy1409EA240 preserves this field.
+const DEFINITION_INDEX: usize = 0x418;
+/// DB ctor1409E2AE0 seeds this array with the null definition at slot0;
+/// loader1409E5170 and generated-copy1409EA240 append at their supplied index.
+const DEFINITIONS: usize = 0x68;
+/// Database ctor1409E2AE0 installs the null wrapper at1429219F0, clears
+/// ACTIVE, and publishes its sole pointer at143320C78. Type ctor140C82B50
+/// supplies token165 and ordinal-1. This is not a null variant reference.
+pub(super) const NULL_DEFINITION_VTABLE_RVA: usize = 0x0292_19f0;
+pub(super) const NULL_DEFINITION_SINGLETON_RVA: usize = 0x0332_0c78;
+pub(super) const NULL_DEFINITION_TOKEN: u32 = 0x165;
+
+/// Only the actual native singleton may widen the ordinary CType guard.
+/// An equal-header clone or unreadable global/active byte is not that source.
+/// Ordinary definitions never execute these extra null-source reads.
+pub(super) fn native_null_definition(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    header: [u8; 12],
+) -> bool {
+    let Some(expected) = base.checked_add(NULL_DEFINITION_VTABLE_RVA) else {
+        return false;
+    };
+    if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected as u64
+        || u32::from_le_bytes(header[8..].try_into().unwrap()) != NULL_DEFINITION_TOKEN
+    {
+        return false;
+    }
+    let Some(global) = base.checked_add(NULL_DEFINITION_SINGLETON_RVA) else {
+        return false;
+    };
+    read::<u64>(memory, global) == Some(pointer as u64)
+        && scalar::<u8>(memory, pointer, cequipment_type::ACTIVE) == Some(0)
+}
+
+/// Independent guarded fields; arithmetic and content classification belong
+/// to the reached consumer. None is unreadable/refused, never a numeric zero.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct HullVariantInputs {
+    pub definition_index: Option<i32>,
+    pub module_count: Option<i32>,
+    pub upgrade_level_sum: Option<i32>,
+    pub module_priority_sum: Option<i32>,
+    pub version: Option<u8>,
+    pub organisation_marker: Option<i32>,
+}
+
+/// One consecutive selected-source observation within this stopped capture.
+/// Both healthy and failed fields remain frozen while this exact key repeats;
+/// a different key begins the next observation. No allocator or global cache.
+#[derive(Default)]
+pub(super) struct Memo {
+    last: Option<(Key, Option<HullVariantInputs>)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Key {
+    base: usize,
+    pointer: usize,
+    handle: u64,
+    definition: usize,
+    token: [u8; 4],
+}
+
+impl Key {
+    fn new(base: usize, source: &SelectedModelVariant) -> Self {
+        Self {
+            base,
+            pointer: source.pointer,
+            handle: source.handle,
+            definition: source.definition,
+            token: source.token,
+        }
+    }
+}
+
+impl Memo {
+    /// A successful different/null model source breaks adjacency even when
+    /// no optional tuple is requested for that row. This performs no reads.
+    pub(super) fn retain_source(&mut self, base: usize, source: Option<&SelectedModelVariant>) {
+        let current = source.map(|source| Key::new(base, source));
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|(saved, _)| Some(*saved) != current)
+        {
+            self.last = None;
+        }
+    }
+}
+
+/// Acquire only after the original model and maximum-organisation reads have
+/// succeeded, during their same stopped/caller-owned census observation.
+/// The source is minted by read_model_with_selection, never by a daily join.
+/// A changed selected identity/token/definition refuses the whole packet.
+/// Definition/DB faults withhold only the ordinal; every raw term is independent.
+///
+/// At most14 fixed guarded spans/101 bytes per nonnull selection, without
+/// retries, allocation or a definition walk. Consecutive same-key observations
+/// retain their completed/failed packet without reading again. Reset ModelMemo
+/// at every capture; a different key replaces the last observation. The caller
+/// admits this separately from the old budget. Empty selection has no reads.
+/// A registered variant can reference the native null CType: its exact
+/// singleton yields ordinal-1 (12 spans/70 bytes), never recorded Equipment[0].
+pub fn read_hull_variant(
+    memory: &impl Memory,
+    base: usize,
+    source: &SelectedModelVariant,
+    memo: &mut ModelMemo,
+) -> Option<HullVariantInputs> {
+    let key = Key::new(base, source);
+    if let Some((_, packet)) = memo
+        .hull_variant
+        .last
+        .as_ref()
+        .filter(|(saved, _)| *saved == key)
+    {
+        return *packet;
+    }
+    let packet = acquire(memory, base, source);
+    memo.hull_variant.last = Some((key, packet));
+    packet
+}
+
+fn acquire(
+    memory: &impl Memory,
+    base: usize,
+    source: &SelectedModelVariant,
+) -> Option<HullVariantInputs> {
+    let expected = base.checked_add(cequipment_variant::VTABLE_RVA)?;
+    let identity = scalar::<[u8; 16]>(memory, source.pointer, 0)?;
+    if cequipment_variant::identity_from_header(expected, identity).ok()? != source.handle {
+        return None;
+    }
+    let token = scalar::<[u8; 4]>(memory, source.pointer, cequipment_variant::EQUIPMENT_TOKEN)?;
+    let definition = scalar::<u64>(memory, source.pointer, cequipment_variant::DEFINITION)?;
+    if token != source.token || usize::try_from(definition).ok()? != source.definition {
+        return None;
+    }
+    Some(HullVariantInputs {
+        definition_index: definition_index(memory, base, source),
+        module_count: scalar(memory, source.pointer, MODULE_COUNT),
+        upgrade_level_sum: scalar(memory, source.pointer, UPGRADE_LEVEL_SUM),
+        module_priority_sum: scalar(memory, source.pointer, MODULE_PRIORITY_SUM),
+        version: scalar(memory, source.pointer, cequipment_variant::VERSION),
+        organisation_marker: scalar(memory, source.pointer, ORGANISATION_MARKER),
+    })
+}
+
+fn definition_index(
+    memory: &impl Memory,
+    base: usize,
+    source: &SelectedModelVariant,
+) -> Option<i32> {
+    let expected = base.checked_add(cequipment_type::VTABLE_RVA)? as u64;
+    let header = scalar::<[u8; 12]>(memory, source.definition, 0)?;
+    if header[8..12] != source.token {
+        return None;
+    }
+    if u64::from_le_bytes(header[..8].try_into().unwrap()) != expected {
+        if source.handle >> 32 == 0
+            || !native_null_definition(memory, base, source.definition, header)
+        {
+            return None;
+        }
+        return scalar::<i32>(memory, source.definition, DEFINITION_INDEX)
+            .filter(|index| *index == -1);
+    }
+    let index: i32 = scalar(memory, source.definition, DEFINITION_INDEX)?;
+    // A real positive N maps to recorded Equipment[N-1]. An ordinary-vptr
+    // nonpositive index cannot claim the separately authenticated null source.
+    let slot = u32::try_from(index).ok().filter(|index| *index != 0)?;
+    let global = base.checked_add(cequipment_database::SINGLETON_RVA)?;
+    let database = usize::try_from(read::<u64>(memory, global)?).ok()?;
+    let expected = base.checked_add(cequipment_database::VTABLE_RVA)? as u64;
+    if scalar::<u64>(memory, database, 0)? != expected {
+        return None;
+    }
+    let list = scalar::<[u8; 16]>(memory, database, DEFINITIONS)
+        .and_then(|header| Array::from_header(header, 8))?;
+    let entry = list.element(slot, 8)?;
+    if read::<u64>(memory, entry)? != source.definition as u64 {
+        return None;
+    }
+    Some(index)
+}
+
+#[inline]
+fn scalar<T: Raw>(memory: &impl Memory, pointer: usize, offset: usize) -> Option<T> {
+    // read also checks the complete span, not just its first address.
+    pointer
+        .checked_add(offset)
+        .filter(|_| pointer != 0)
+        .and_then(|at| read(memory, at))
+}
+
+#[cfg(test)]
+mod tests;

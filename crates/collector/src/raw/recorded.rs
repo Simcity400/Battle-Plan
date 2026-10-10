@@ -169,7 +169,7 @@ impl RecordedIndex {
         // Allocations and the temporary old table live only on the worker.
         // The retained-capacity diagnostic excludes transient realloc overlap.
         let mut slots = Vec::new();
-        engine::allocation::reserve_exact(&mut slots, size)?;
+        crate::allocation::reserve_raw(&mut slots, size, "raw index buckets")?;
         slots.resize(size, std::cell::Cell::new(usize::MAX));
         let old = std::mem::replace(&mut self.slots, slots);
         for cursor in old {
@@ -213,15 +213,11 @@ impl RecordedIndex {
         }
         // Every following append is bounded by the span census. Reserve the
         // whole batch before changing the reusable index's logical shape.
-        let additional = spans.len().saturating_sub(self.next.len());
-        engine::allocation::reserve(&mut self.next, additional)?;
-        let additional = spans.len().saturating_sub(self.repeated.len());
-        engine::allocation::reserve(&mut self.repeated, additional)?;
-        let additional = spans.len().saturating_sub(self.shape.len());
-        engine::allocation::reserve(&mut self.shape, additional)?;
+        crate::allocation::reserve_raw(&mut self.next, spans.len(), "raw index next")?;
+        crate::allocation::reserve_raw(&mut self.repeated, spans.len(), "raw index repeated")?;
+        crate::allocation::reserve_raw(&mut self.shape, spans.len(), "raw index shape")?;
         if has_bulk {
-            let additional = spans.len().saturating_sub(self.bulk.len());
-            engine::allocation::reserve(&mut self.bulk, additional)?;
+            crate::allocation::reserve_raw(&mut self.bulk, spans.len(), "raw index bulk")?;
         }
         self.slots.fill(std::cell::Cell::new(usize::MAX));
         self.distinct = 0;
@@ -298,6 +294,23 @@ impl RecordedIndex {
 
 impl<'a> Recorded<'a> {
     pub fn build<const N: usize>(log: &'a RawLog<N>) -> Self {
+        Self::build_range(log, 0..log.spans.len()).unwrap_or_else(|_| Self {
+            index: RecordedIndex::default(),
+            recycle: &log.index,
+            spans: &[],
+            bytes: &[],
+            next_exact: std::cell::Cell::new(0),
+            last_bulk: std::cell::Cell::new(usize::MAX),
+        })
+    }
+
+    /// Borrow only this acquisition phase's observations. Masks are fault
+    /// attribution, not lookup scope; another phase cannot heal a failure.
+    pub fn build_range<const N: usize>(
+        log: &'a RawLog<N>,
+        range: std::ops::Range<usize>,
+    ) -> Result<Self, &'static str> {
+        let source_spans = log.spans.get(range).ok_or("recorded span range invalid")?;
         let _phase = crate::allocation::enter(crate::allocation::Phase::Raw);
         let started = std::time::Instant::now();
         let mut index = log
@@ -308,19 +321,15 @@ impl<'a> Recorded<'a> {
                 capacity_charge: crate::raw_memory::Charge::empty_on(log.capacity_charge.tracker()),
                 ..Default::default()
             });
-        let reused = match index.prepare(&log.spans, log.has_bulk) {
+        // Range scoping narrows eligibility; it cannot enable a capability
+        // the owning log withdrew, including when reusing a pooled index.
+        let has_bulk = log.has_bulk && source_spans.iter().any(|span| span.bulk);
+        let reused = match index.prepare(source_spans, has_bulk) {
             Ok(reused) => reused,
             Err(_) => {
                 // Owned replay reads fail closed; no partially built cursor
                 // can certify a complete frame after allocation failure.
-                return Self {
-                    index: RecordedIndex::default(),
-                    recycle: &log.index,
-                    spans: &[],
-                    bytes: &[],
-                    next_exact: std::cell::Cell::new(0),
-                    last_bulk: std::cell::Cell::new(usize::MAX),
-                };
+                return Err("recorded span index allocation failed");
             }
         };
         let ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
@@ -330,16 +339,38 @@ impl<'a> Recorded<'a> {
             (&INDEX_REBUILDS, &INDEX_REBUILD_NS, &INDEX_REBUILT_SPANS)
         };
         ticks.fetch_add(ns, Ordering::Relaxed);
-        spans.fetch_add(log.spans.len() as u64, Ordering::Relaxed);
+        spans.fetch_add(source_spans.len() as u64, Ordering::Relaxed);
         count.fetch_add(1, Ordering::Relaxed);
-        Self {
+        Ok(Self {
             index,
             recycle: &log.index,
-            spans: &log.spans,
+            spans: source_spans,
             bytes: &log.bytes,
             next_exact: std::cell::Cell::new(0),
             last_bulk: std::cell::Cell::new(usize::MAX),
+        })
+    }
+
+    /// Inspect one unique exact observation and its immediate predecessor in
+    /// this reader's admitted span range, without consuming either cursor.
+    /// The OOB child source uses its unique motorization observation to select
+    /// that root batch's flag, rather than a repeated parent-reference flag.
+    pub(crate) fn unique_observation(
+        &self,
+        address: usize,
+        len: usize,
+    ) -> Option<(&Span, Option<&Span>)> {
+        let len = u32::try_from(len).ok()?;
+        let index = self.index.cursor(self.spans, address, len)?.get();
+        if self.index.next.get(index) != Some(&usize::MAX) {
+            return None;
         }
+        Some((
+            self.spans.get(index)?,
+            index
+                .checked_sub(1)
+                .and_then(|previous| self.spans.get(previous)),
+        ))
     }
 
     #[inline(always)]

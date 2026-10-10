@@ -564,7 +564,7 @@ mod tests {
 
     fn run(bytes: &[u8], rows: &mut [Row]) -> (Result<(), &'static str>, usize) {
         let mut sink = Sink {
-            rows,
+            rows: crate::walk::Buffer::Fixed(rows),
             required: 0,
             raid: 7,
             ordinal: 0,

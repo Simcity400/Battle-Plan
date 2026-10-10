@@ -194,6 +194,23 @@ pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
     SliceMemory { base: 0, bytes }
 }
 
+pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
+    let mut bytes = fixture();
+    let record = bytes[REC0..REC0 + engine::sair_wing_combat_data::STRIDE].to_vec();
+    let data = bytes.len();
+    bytes.resize(data + count * record.len(), 0);
+    header(
+        &mut bytes,
+        R0 + engine::cair_region_combat_data::FIRST_RECORDS,
+        data,
+        count as u32,
+    );
+    for row in bytes[data..].chunks_exact_mut(record.len()) {
+        row.copy_from_slice(&record);
+    }
+    bytes
+}
+
 pub(crate) struct Split {
     pub history_outcome: Outcome,
     pub history: Vec<engine::sair_wing_combat_data::Row>,
@@ -221,6 +238,7 @@ fn collect_typed(memory: &impl Memory, history_cap: usize, damage_cap: usize) ->
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
+        transport: [0; 5],
     };
     let mut captured = Captured::with_capacities(&capacities);
     let walked = cair_region_combat_data::walk_world(
@@ -272,9 +290,10 @@ fn collect_split(
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
+        transport: [0; 5],
     };
     let mut captured = Captured::with_capacities(&capacities);
-    let mut first = AirHistoryJob::new();
+    let mut first = AirHistoryJob::fixture();
     let report = super::copy_air_history_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     let mut ticks = [0u64; 2];

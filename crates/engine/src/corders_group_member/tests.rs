@@ -325,7 +325,9 @@ fn packet_zero_and_small_capacities_preserve_original_reads_and_failures() {
             }
             let allocated = inputs.allocated_bytes();
             inputs.grow(inputs.required_capacity()).unwrap();
-            assert_eq!(inputs.allocated_bytes(), allocated);
+            // A failed original read may have demanded an arena before reaching
+            // its reserve. Preparation retains all storage and supplies that demand.
+            assert!(inputs.allocated_bytes() >= allocated);
         }
     }
 }
@@ -581,4 +583,28 @@ fn has_order_reads_each_header_once_for_presence_and_absence() {
     let memory = Trace::new(&source);
     assert_eq!(has_order(&memory, 0, MEMBER), Ok(false));
     assert_eq!(&*memory.reads.borrow(), &[(MEMBER + GROUP, 8)]);
+}
+
+#[test]
+fn prepared_membership_demand_never_recycles_spare_vec_capacity() {
+    let mut packet = MembershipPacket::new(5_001, 5_001, 5_001, 5_001);
+    crate::allocation::reserve(&mut packet.queries, 20_000).unwrap();
+    crate::allocation::reserve(&mut packet.groups, 30_000).unwrap();
+    assert!(packet.queries.capacity() > 5_001);
+    assert_eq!(packet.capacity().queries, 5_001);
+    assert_eq!(packet.capacity().groups, 5_001);
+    let expected = packet.capacity();
+    for _ in 0..20 {
+        packet.grow(expected).unwrap();
+        assert_eq!(packet.capacity(), expected);
+    }
+    let allocated = packet.allocated_bytes();
+    let requested = MembershipCapacity {
+        queries: 5_002,
+        groups: 5_002,
+        ..expected
+    };
+    packet.grow(requested).unwrap();
+    assert_eq!(packet.capacity(), expected.grown(requested));
+    assert!(packet.allocated_bytes() >= allocated);
 }

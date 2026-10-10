@@ -791,7 +791,7 @@ pub(super) fn compare_codenames(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut saved = BTreeMap::new();
-    for country in pack.countries.values() {
+    for (_, country) in report.canonical_countries(&pack.countries) {
         let Some(agency) = &country.agency else {
             continue;
         };
@@ -1312,7 +1312,7 @@ fn compare_abilities(
             (_, None) => {}
         }
     }
-    for (owner, rows) in &pack.abilities {
+    for (owner, rows) in report.canonical_countries(&pack.abilities) {
         for ordinal in 0..rows.len() {
             let ordinal =
                 u32::try_from(ordinal).map_err(|_| invalid("saved ability ordinal exceeds u32"))?;

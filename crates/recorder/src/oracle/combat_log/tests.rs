@@ -99,7 +99,7 @@ fn census_compares_all_saved_divisions_groups_and_expeditionary_owners() {
             .limitations
             .values()
             .flatten()
-            .any(|text| text.contains("absent definitions mean empty membership"))
+            .any(|text| text.contains("only the named certified omitted members qualify"))
     );
     assert!(report.limitations.keys().any(|text| {
         text.contains("CArmy::Serialize@140C80E00 omits +0xc0")
@@ -171,14 +171,289 @@ fn army_group_members_do_not_duplicate_child_army_members() {
         )
     };
     let saved = save_with(&[], &text("yes"));
-    let counts = saved_division_counts(&saved).unwrap();
-    assert_eq!(counts[b"GER".as_slice()], (1, 0));
-    assert_eq!(counts[b"SOV".as_slice()], (0, 0));
+    let counts = saved_division_counts(&saved, &BTreeSet::new()).unwrap();
+    assert_eq!(counts[b"GER".as_slice()], (1, 0, 0));
+    assert_eq!(counts[b"SOV".as_slice()], (0, 0, 0));
     let saved = save_with(&[], &text("no"));
     assert_eq!(
-        saved_division_counts(&saved).unwrap_err().to_string(),
+        saved_division_counts(&saved, &BTreeSet::new())
+            .unwrap_err()
+            .to_string(),
         "saved division belongs to multiple orders groups"
     );
+}
+
+/// One saved division has a reciprocally observed group in the omitted
+/// slot-zero theatre; the other remains independently ungrouped.
+fn omitted_group_census_fixture() -> (DecodedFrame, Save) {
+    use replay::rows::{
+        DivisionCensusRow, DivisionRow, LandTheatreRow, OrdersGroupMemberRow, OrdersGroupRow,
+        Recorded, ReservedCountryNamingRow,
+    };
+    let saved = save_with(
+        &[],
+        "units={ division={ id={id=1 type=51} logical_country=GER strength=1 organisation=1 } division={ id={id=2 type=51} logical_country=GER strength=1 organisation=1 } }",
+    );
+    let mut recorded = frame(vec![], &[]);
+    let theatre = (10_u64 << 32) | 67;
+    let group = (9_u64 << 32) | 53;
+    let mut set = |rows: TableRows| {
+        let index = rows.table().index();
+        *recorded.tables[index] = TableView::Complete(rows);
+    };
+    set(TableRows::ReservedCountryNaming(vec![
+        ReservedCountryNamingRow {
+            tag: b"ZERO".to_vec(),
+            land_theatre_count: Recorded::Value(Some(1)),
+            country_array: Recorded::Value(Some(vec![0, GER, SOV])),
+            ..Default::default()
+        },
+    ]));
+    set(TableRows::LandTheatres(vec![LandTheatreRow {
+        id: theatre,
+        owner: 0,
+        ordinal: 0,
+        volunteers_theatre: 0,
+    }]));
+    set(TableRows::OrdersGroups(vec![OrdersGroupRow {
+        handle: group,
+        theatre,
+        theatre_ordinal: Some(0),
+        ..Default::default()
+    }]));
+    set(TableRows::OrdersGroupMembers(vec![OrdersGroupMemberRow {
+        group,
+        ordinal: 0,
+        unit: (1_u64 << 32) | 51,
+    }]));
+    set(TableRows::Divisions(vec![
+        DivisionRow {
+            id: (1_u64 << 32) | 51,
+            roster_owner: GER,
+            orders_group: group,
+            ..Default::default()
+        },
+        DivisionRow {
+            id: (2_u64 << 32) | 51,
+            roster_owner: GER,
+            ..Default::default()
+        },
+    ]));
+    set(TableRows::DivisionCensus(vec![
+        DivisionCensusRow {
+            country: GER,
+            grouped: 1,
+            ungrouped: 1,
+        },
+        DivisionCensusRow {
+            country: SOV,
+            grouped: 0,
+            ungrouped: 0,
+        },
+    ]));
+    (recorded, saved)
+}
+
+#[test]
+fn omitted_group_split_qualifies_only_certified_members_and_keeps_total_and_other_members_exact() {
+    use replay::rows::{
+        DivisionCensusRow, DivisionRow, LandTheatreRow, OrdersGroupMemberRow, OrdersGroupRow,
+    };
+    let (mut recorded, saved) = omitted_group_census_fixture();
+    let countries = links();
+    let links = BTreeMap::from([(GER, &countries[0]), (SOV, &countries[1])]);
+    let mut report = Report::default();
+    division_census(&recorded, &saved, &links, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert!(report.failed_comparisons.is_empty());
+    assert!(
+        report
+            .limitations
+            .values()
+            .flatten()
+            .any(|text| text.contains("1 certified omitted-group members"))
+    );
+    let group = (11_u64 << 32) | 53;
+    let theatre = (11_u64 << 32) | 67;
+    if let TableView::Complete(TableRows::LandTheatres(rows)) =
+        &mut *recorded.tables[TableId::LandTheatres.index()]
+    {
+        rows.push(LandTheatreRow {
+            id: theatre,
+            owner: GER,
+            ordinal: 0,
+            volunteers_theatre: 0,
+        });
+    } else {
+        unreachable!();
+    }
+    if let TableView::Complete(TableRows::OrdersGroups(rows)) =
+        &mut *recorded.tables[TableId::OrdersGroups.index()]
+    {
+        rows.push(OrdersGroupRow {
+            handle: group,
+            theatre,
+            theatre_ordinal: Some(0),
+            ..Default::default()
+        });
+    } else {
+        unreachable!();
+    }
+    if let TableView::Complete(TableRows::OrdersGroupMembers(rows)) =
+        &mut *recorded.tables[TableId::OrdersGroupMembers.index()]
+    {
+        rows.push(OrdersGroupMemberRow {
+            group,
+            ordinal: 0,
+            unit: (2_u64 << 32) | 51,
+        });
+    } else {
+        unreachable!();
+    }
+    if let TableView::Complete(TableRows::Divisions(rows)) =
+        &mut *recorded.tables[TableId::Divisions.index()]
+    {
+        rows[1] = DivisionRow {
+            orders_group: group,
+            ..rows[1].clone()
+        };
+    } else {
+        unreachable!();
+    }
+    *recorded.tables[TableId::DivisionCensus.index()] =
+        TableView::Complete(TableRows::DivisionCensus(vec![
+            DivisionCensusRow {
+                country: GER,
+                grouped: 2,
+                ungrouped: 0,
+            },
+            DivisionCensusRow {
+                country: SOV,
+                grouped: 0,
+                ungrouped: 0,
+            },
+        ]));
+    let mut report = Report::default();
+    division_census(&recorded, &saved, &links, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2);
+    assert!(
+        !report
+            .differences
+            .iter()
+            .any(|text| text.contains(".total"))
+    );
+    if let TableView::Complete(TableRows::DivisionCensus(rows)) =
+        &mut *recorded.tables[TableId::DivisionCensus.index()]
+    {
+        rows[0].ungrouped = 1;
+    } else {
+        unreachable!();
+    }
+    let mut report = Report::default();
+    division_census(&recorded, &saved, &links, &mut report).unwrap();
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|text| text.contains(".total"))
+    );
+}
+
+#[test]
+fn omitted_group_qualification_refusals_preserve_total_and_strict_split_diagnostics() {
+    for missing_members in [false, true] {
+        let (mut recorded, saved) = omitted_group_census_fixture();
+        if missing_members {
+            *recorded.tables[TableId::OrdersGroupMembers.index()] = TableView::Unavailable {
+                reason: "member census refused".into(),
+            };
+        } else {
+            let TableView::Complete(TableRows::Divisions(rows)) =
+                &mut *recorded.tables[TableId::Divisions.index()]
+            else {
+                unreachable!();
+            };
+            rows[0].orders_group = 0;
+        }
+        let TableView::Complete(TableRows::DivisionCensus(rows)) =
+            &mut *recorded.tables[TableId::DivisionCensus.index()]
+        else {
+            unreachable!();
+        };
+        rows[0].grouped = 2;
+        let countries = links();
+        let links = BTreeMap::from([(GER, &countries[0]), (SOV, &countries[1])]);
+        let mut report = Report::default();
+        division_census(&recorded, &saved, &links, &mut report).unwrap();
+        assert!(
+            report
+                .failed_comparisons
+                .contains_key("DivisionCensus omitted-group qualification")
+        );
+        for field in [".total", ".grouped", ".ungrouped"] {
+            assert!(report.differences.iter().any(|text| text.contains(field)));
+        }
+    }
+}
+
+#[test]
+fn recorded_grouped_count_cannot_fall_below_the_certified_omitted_members() {
+    let (mut recorded, saved) = omitted_group_census_fixture();
+    let TableView::Complete(TableRows::DivisionCensus(rows)) =
+        &mut *recorded.tables[TableId::DivisionCensus.index()]
+    else {
+        unreachable!();
+    };
+    rows[0].grouped = 0;
+    rows[0].ungrouped = 2;
+    let countries = links();
+    let links = BTreeMap::from([(GER, &countries[0]), (SOV, &countries[1])]);
+    let mut report = Report::default();
+    division_census(&recorded, &saved, &links, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|text| text.contains("at least 1"))
+    );
+    assert!(
+        !report
+            .differences
+            .iter()
+            .any(|text| text.contains(".total"))
+    );
+}
+
+#[test]
+fn serialized_definitions_cannot_be_qualified_as_omitted_group_members() {
+    let (recorded, mut saved) = omitted_group_census_fixture();
+    theatre_groups(&mut saved, b"GER", &[9]); // Same full group identity, serialized empty.
+    let countries = links();
+    let links = BTreeMap::from([(GER, &countries[0]), (SOV, &countries[1])]);
+    let mut report = Report::default();
+    division_census(&recorded, &saved, &links, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 2);
+    assert!(
+        !report
+            .limitations
+            .values()
+            .flatten()
+            .any(|text| text.contains("certified omitted-group members"))
+    );
+    let group = &mut saved
+        .naval_history
+        .theatre_countries
+        .as_mut()
+        .unwrap()
+        .get_mut(b"GER".as_slice())
+        .unwrap()
+        .land[0]
+        .definitions[0];
+    group.members.push((1_u64 << 32) | 51);
+    let mut report = Report::default();
+    division_census(&recorded, &saved, &links, &mut report).unwrap();
+    assert!(report.differences.is_empty());
 }
 
 /// Read-only check of an external text save with the oracle's parser and
@@ -230,7 +505,7 @@ fn division_census_from_text_save() {
             duplicates.len()
         );
     }
-    for (tag, (grouped, ungrouped)) in saved_division_counts(&saved).unwrap() {
+    for (tag, (grouped, ungrouped, _)) in saved_division_counts(&saved, &BTreeSet::new()).unwrap() {
         println!(
             "{}: grouped={grouped} ungrouped={ungrouped} total={}",
             String::from_utf8_lossy(tag),

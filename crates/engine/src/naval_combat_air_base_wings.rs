@@ -131,8 +131,43 @@ pub fn walk(
     rows: &mut [Row],
     wings: &mut [u64],
 ) -> Walk {
+    walk_buffer(
+        memory,
+        module_base,
+        base_handles,
+        crate::walk::Buffer::Fixed(rows),
+        crate::walk::Buffer::Fixed(wings),
+    )
+}
+
+/// CountAirBaseAircraft@140C3E1D0 reaches every dense container/pool occurrence.
+/// Grow worker storage from those acquired headers before publishing a base.
+pub fn walk_growing(
+    memory: &impl Memory,
+    module_base: usize,
+    base_handles: &UniqueHandles,
+    rows: &mut Vec<Row>,
+    wings: &mut Vec<u64>,
+) -> Walk {
+    walk_buffer(
+        memory,
+        module_base,
+        base_handles,
+        crate::walk::Buffer::Growing(rows),
+        crate::walk::Buffer::Growing(wings),
+    )
+}
+
+fn walk_buffer(
+    memory: &impl Memory,
+    module_base: usize,
+    base_handles: &UniqueHandles,
+    mut rows: crate::walk::Buffer<'_, Row>,
+    mut wings: crate::walk::Buffer<'_, u64>,
+) -> Walk {
     let mut state = State::default();
     let result = (|| {
+        rows.ensure(base_handles.len())?;
         for &handle in base_handles.as_slice() {
             if handle == 0 || handle as u32 != cair_base::TYPE {
                 return Err("naval combat air base handle invalid");
@@ -146,7 +181,7 @@ pub fn walk(
                 module_base,
                 handle,
                 pointer,
-                wings,
+                &mut wings,
                 fits,
                 &mut state,
             )?;
@@ -196,7 +231,7 @@ fn read_base(
     module_base: usize,
     handle: u64,
     pointer: usize,
-    wings: &mut [u64],
+    wings: &mut crate::walk::Buffer<'_, u64>,
     store: bool,
     state: &mut State,
 ) -> Result<(), &'static str> {
@@ -224,6 +259,14 @@ fn read_base(
             }
             vtable(memory, module_base, pool, cair_wing_pool::VTABLE_RVA)?;
             let members = array(memory, pool, cair_wing_pool::WINGS)?;
+            if store {
+                wings.ensure(
+                    state
+                        .wings_len
+                        .checked_add(members.count as usize)
+                        .ok_or("dense air base wing length overflow")?,
+                )?;
+            }
             for wing_index in 0..members.count {
                 let wing = member_pointer(memory, members, wing_index)?;
                 if wing == 0 {
@@ -489,5 +532,33 @@ mod tests {
                 reason: "naval combat air base unresolved",
             }
         );
+    }
+    #[test]
+    fn cold_and_later_dense_wing_growth_keeps_every_mod_sized_occurrence() {
+        const DATA: usize = 0x10_0000;
+        let mut fixture = Fixture::new();
+        let bases = handles(&[BASE_ID, EMPTY_ID]);
+        let (mut rows, mut wings) = (Vec::new(), Vec::new());
+        for count in [1500usize, 5000, 8193] {
+            fixture.vector(BASE + cair_base::REGISTERED_CONTAINERS, DATA, count as u32);
+            for index in 0..count {
+                fixture.word(DATA + index * 8, CONTAINER as u64);
+            }
+            let fixed = walk(&fixture, 0, &bases, &mut [Row::default(); 2], &mut []);
+            assert!(matches!(fixed.outcome, Outcome::Truncated { .. }));
+            let captured = walk_growing(&fixture, 0, &bases, &mut rows, &mut wings);
+            assert_eq!(captured.outcome, Outcome::Rows { len: 2 });
+            assert_eq!(
+                (captured.wings_len, captured.required_wings),
+                (2 * count, 2 * count)
+            );
+            assert_eq!(rows[0].wings_len, 2 * count);
+            assert_eq!(rows[1].wings_len, 0);
+            assert!(
+                wings[..2 * count]
+                    .chunks_exact(2)
+                    .all(|pair| pair == [WING_A_ID, WING_B_ID])
+            );
+        }
     }
 }

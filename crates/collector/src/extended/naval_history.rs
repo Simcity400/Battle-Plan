@@ -2,15 +2,15 @@
 //!
 //! Source-fed split (copy/decode): hourly LandTheatres headers, daily
 //! LandTheatreGroups/LandTheatreMembers/AirTheatres/AirTheatreGroups/
-//! AirTheatreMembers details, and the order-of-battle block (OrdersGroups,
+//! AirTheatreMembers details, and the hourly order-of-battle block (OrdersGroups,
 //! OrdersGroupMembers, ArmyGroupMembers) move to the single FIFO decode
 //! worker in their own source-fed payload. The four
 //! non-source-fed theatres move with the five source-fed tables because
 //! they share the `ctheatre::walk` and OOB walks; splitting would duplicate
 //! those walks with separate censuses. Each stages its own root refs from
-//! its own copies with no cross-family decoded roots; zero-engine-change
-//! replay of the existing walks against `Recorded` spans. Choice per table:
-//! zero-engine-change (Wars/Divisions precedent). Rail, convoys and battle
+//! its own copies with no cross-family decoded roots. The optional actual
+//! Country0 header batch reuses complete OOB roster proof or freshly observed
+//! empty regular/army headers before its count certificate commits. Rail, convoys and battle
 //! results use their typed callback paths; supremacy and sunk ships retain
 //! independent raw payloads.
 
@@ -19,7 +19,7 @@ use crate::{
     read_accounting,
     sampling::qpc,
     spooling::{table, unavailable},
-    table_capture::{Arena, CaptureRows, bounded},
+    table_capture::{Arena, CaptureRows, bounded, grow_capacity, grow_vec},
 };
 use engine::allocation::{collect_vec, copy_vec, default_vec, owned_vec, resize_default};
 use engine::{
@@ -64,7 +64,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("army order of battle", 14, &[14, 15, 16]),
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],
     pub theatre_names: usize,
@@ -72,9 +72,13 @@ pub struct Capacities {
     pub orders_sources: usize,
     pub wing_sources: usize,
     pub roster_scratch: usize,
+    pub rail_levels: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
+
+impl Capacities {
+    /// Explicit storage for fixed synthetic read/fault fixtures.
+    #[cfg(test)]
+    fn fixture() -> Self {
         Self {
             rows: [
                 4096, 1024, 16384, 32768, 512, 1024, 4096, 512, 2048, 8192, 512, 8192, 4096, 2048,
@@ -85,6 +89,165 @@ impl Default for Capacities {
             orders_sources: 4096,
             wing_sources: 8192,
             roster_scratch: 4096,
+            rail_levels: 0,
+        }
+    }
+
+    /// Live attach/cadence hints; successful siblings retain their floors.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        use crate::country_scale::table_demand::rows;
+        use engine::walk::Buffer;
+        let mut failure = None;
+        let mut accept = |slot: usize, outcome: Outcome| match rows(outcome) {
+            Ok(required) => self.rows[slot] = self.rows[slot].max(required),
+            Err(reason) => {
+                failure.get_or_insert(reason);
+            }
+        };
+        accept(
+            0,
+            cnaval_region_dominance::walk(memory, base, state, &mut []),
+        );
+        accept(1, csunk_convoy_info::walk(memory, base, state, &mut []));
+        let (
+            mut land,
+            mut land_groups,
+            mut land_members,
+            mut air,
+            mut air_groups,
+            mut air_members,
+            mut names,
+        ) = (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let theatres = ctheatre::walk_buffers(
+            memory,
+            base,
+            state,
+            true,
+            ctheatre::Storage {
+                land: Buffer::Growing(&mut land),
+                land_groups: Buffer::Growing(&mut land_groups),
+                land_members: Buffer::Growing(&mut land_members),
+                air: Buffer::Growing(&mut air),
+                air_groups: Buffer::Growing(&mut air_groups),
+                air_members: Buffer::Growing(&mut air_members),
+                names: Buffer::Growing(&mut names),
+            },
+        );
+        for (slot, outcome) in [
+            theatres.land,
+            theatres.land_groups,
+            theatres.land_members,
+            theatres.air,
+            theatres.air_groups,
+            theatres.air_members,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            accept(slot + 4, outcome);
+        }
+        self.theatre_names = self.theatre_names.max(theatres.names_required);
+        let (mut cooldowns, mut edges, mut buildings, mut level_values) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut levels = crailway_manager::selected_inputs::GrowingLevels {
+            values: &mut level_values,
+            len: 0,
+            required: 0,
+        };
+        let railway = crailway_manager::walk_with_selection_growing(
+            memory,
+            base,
+            state,
+            &mut cooldowns,
+            &mut edges,
+            &mut buildings,
+            &mut levels,
+        );
+        accept(2, railway.rows.provinces);
+        accept(3, railway.rows.edges);
+        self.rail_levels = self.rail_levels.max(levels.required);
+        let (mut results, mut slots, mut members, mut countries) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let results_walk = cnaval_combat_results::walk_growing(
+            memory,
+            base,
+            state,
+            &mut results,
+            &mut slots,
+            &mut members,
+            &mut countries,
+        );
+        accept(10, results_walk.records);
+        accept(11, results_walk.members);
+        accept(12, results_walk.countries);
+        let mut roots = Vec::new();
+        let root_outcome = corders_group::walk_roots_growing(memory, base, &mut roots);
+        if let Outcome::Rows { len } = root_outcome {
+            self.orders_sources = self.orders_sources.max(len);
+            self.roster_scratch = self.roster_scratch.max(len);
+            let (mut groups, mut members, mut children, mut scratch, mut group_names) =
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            let oob = corders_group::walk_order_of_battle_buffers(
+                memory,
+                base,
+                &roots[..len],
+                &mut corders_group::OrderOfBattleStorage {
+                    groups: Buffer::Growing(&mut groups),
+                    members: Buffer::Growing(&mut members),
+                    children: Buffer::Growing(&mut children),
+                    roster_scratch: Buffer::Growing(&mut scratch),
+                },
+            );
+            accept(14, oob.groups);
+            accept(15, oob.members);
+            accept(16, oob.children);
+            let (mut used, mut required) = (0, 0);
+            for root in &roots[..len] {
+                if let Err(reason) = corders_group::copy_name_buffer(
+                    memory,
+                    root.pointer(),
+                    Buffer::Growing(&mut group_names),
+                    &mut used,
+                    &mut required,
+                ) {
+                    failure.get_or_insert(reason);
+                }
+            }
+            self.theatre_names = self.theatre_names.max(required);
+        } else if let Outcome::Unavailable { reason } = root_outcome {
+            failure.get_or_insert(reason);
+        }
+        match csunk_ship_info::storage_demand(memory, base, state) {
+            Ok((rows, text)) => {
+                self.rows[13] = self.rows[13].max(rows);
+                self.sunk_names = self.sunk_names.max(text);
+            }
+            Err(reason) => {
+                failure.get_or_insert(reason);
+            }
+        }
+        match rows(cair_wing::walk(memory, base, state, &mut [])) {
+            Ok(required) => self.wing_sources = self.wing_sources.max(required),
+            Err(reason) => {
+                failure.get_or_insert(reason);
+            }
+        }
+        match failure {
+            Some(reason) => Err(reason),
+            None => Ok(()),
         }
     }
 }
@@ -93,8 +256,19 @@ pub struct Captured {
     supremacy: CaptureRows<cnaval_region_dominance::Row>,
     convoys: CaptureRows<csunk_convoy_info::Row>,
     cooldowns: CaptureRows<cprovince_railway_info::Row>,
+    rail_buildings: CaptureRows<crailway_manager::fresh_inputs::RailwayBuildingRow>,
+    rail_buildings_required: usize,
+    rail_levels: Arena<i32>,
+    rail_hour: Option<i32>,
     edges: CaptureRows<rail_neighbor::Row>,
     land: CaptureRows<ctheatre::Row>,
+    reserved_land_count: Option<u32>,
+    reserved_land_required_rows: usize,
+    reserved_land_first_failure: Option<&'static str>,
+    reserved_land_native_count: Option<u32>,
+    reserved_land_typed_capacity_short: bool,
+    reserved_land_raw_capacity_short: bool,
+    reserved_land_raw_demand: Option<(usize, usize)>,
     land_groups: CaptureRows<ctheater_group::Row>,
     land_members: CaptureRows<ctheater_group::MemberRow>,
     air: CaptureRows<cair_theatre::Row>,
@@ -144,6 +318,75 @@ const SKIPPED: Outcome = Outcome::Unavailable {
     reason: replay::cadence::SKIPPED_REASON,
 };
 
+fn reserved_raw_demand(count: Option<u32>) -> Option<(usize, usize)> {
+    let count = count? as usize;
+    Some((
+        count.checked_mul(32)?.checked_add(16)?,
+        count.checked_mul(4)?.checked_add(1)?,
+    ))
+}
+
+#[derive(Clone, Copy, serde::Serialize)]
+struct ReservedLandObservations {
+    conversions: u64,
+    empty: u64,
+    nonempty: u64,
+    refused: u64,
+    typed_capacity_refused: u64,
+    raw_capacity_refused: u64,
+    last_certificate: Option<u32>,
+    last_native_count: Option<u32>,
+    last_raw_demand: Option<(usize, usize)>,
+    max_required_rows: usize,
+    last_first_reason: Option<&'static str>,
+}
+
+static RESERVED_LAND_OBSERVATIONS: std::sync::Mutex<ReservedLandObservations> =
+    std::sync::Mutex::new(ReservedLandObservations {
+        conversions: 0,
+        empty: 0,
+        nonempty: 0,
+        refused: 0,
+        typed_capacity_refused: 0,
+        raw_capacity_refused: 0,
+        last_certificate: None,
+        last_native_count: None,
+        last_raw_demand: None,
+        max_required_rows: 0,
+        last_first_reason: None,
+    });
+
+pub(crate) fn reserved_land_data() -> impl serde::Serialize {
+    RESERVED_LAND_OBSERVATIONS.lock().ok().map(|data| *data)
+}
+
+// Called only by off-thread table conversion: no callback allocation/lock.
+fn observe_reserved_land(captured: &Captured) {
+    if let Ok(mut data) = RESERVED_LAND_OBSERVATIONS.lock() {
+        data.conversions = data.conversions.saturating_add(1);
+        match captured.reserved_land_count {
+            Some(0) => data.empty = data.empty.saturating_add(1),
+            Some(_) => data.nonempty = data.nonempty.saturating_add(1),
+            None => data.refused = data.refused.saturating_add(1),
+        }
+        data.typed_capacity_refused = data
+            .typed_capacity_refused
+            .saturating_add(u64::from(captured.reserved_land_typed_capacity_short));
+        data.raw_capacity_refused = data
+            .raw_capacity_refused
+            .saturating_add(u64::from(captured.reserved_land_raw_capacity_short));
+        data.last_certificate = captured.reserved_land_count;
+        data.last_native_count = captured.reserved_land_native_count;
+        data.last_raw_demand = captured.reserved_land_raw_demand;
+        data.max_required_rows = data.max_required_rows.max(
+            captured
+                .reserved_land_native_count
+                .map_or(0, |count| count as usize),
+        );
+        data.last_first_reason = captured.reserved_land_first_failure;
+    }
+}
+
 fn failed(active: bool, reason: &'static str) -> Outcome {
     if active {
         Outcome::Unavailable { reason }
@@ -157,11 +400,19 @@ impl Captured {
     /// gates and are installed normally after this terminal result.
     pub(crate) fn fail_late_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         self.prepare_hour(hour, force_full);
+        self.reserved_land_count = None;
+        self.reserved_land_required_rows = 0;
+        self.reserved_land_first_failure = Some(reason);
+        self.reserved_land_native_count = None;
+        self.reserved_land_typed_capacity_short = false;
+        self.reserved_land_raw_capacity_short = false;
+        self.reserved_land_raw_demand = None;
         if !self.supremacy_raw_mode {
             self.supremacy.fail(failed(self.active[0], reason));
         }
         self.convoys.fail(failed(self.active[1], reason));
         self.cooldowns.fail(failed(self.active[2], reason));
+        self.rail_buildings.fail(failed(self.active[2], reason));
         self.edges.fail(failed(self.active[3], reason));
         if !self.raw_mode {
             self.land.fail(failed(self.active[4], reason));
@@ -191,6 +442,7 @@ impl Captured {
             orders_sources: 0,
             wing_sources: 0,
             roster_scratch: 0,
+            rail_levels: 0,
         })
     }
 
@@ -199,8 +451,19 @@ impl Captured {
             supremacy: CaptureRows::new(capacity.rows[0]),
             convoys: CaptureRows::new(capacity.rows[1]),
             cooldowns: CaptureRows::new(capacity.rows[2]),
+            rail_buildings: CaptureRows::new(capacity.rows[2]),
+            rail_buildings_required: 0,
+            rail_levels: Arena::new(capacity.rail_levels),
+            rail_hour: None,
             edges: CaptureRows::new(capacity.rows[3]),
             land: CaptureRows::new(capacity.rows[4]),
+            reserved_land_count: None,
+            reserved_land_required_rows: 0,
+            reserved_land_first_failure: None,
+            reserved_land_native_count: None,
+            reserved_land_typed_capacity_short: false,
+            reserved_land_raw_capacity_short: false,
+            reserved_land_raw_demand: None,
             land_groups: CaptureRows::new(capacity.rows[5]),
             land_members: CaptureRows::new(capacity.rows[6]),
             air: CaptureRows::new(capacity.rows[7]),
@@ -274,8 +537,19 @@ impl Captured {
         self.supremacy.reset();
         self.convoys.reset();
         self.cooldowns.reset();
+        self.rail_buildings.reset();
+        self.rail_buildings_required = 0;
+        self.rail_levels.reset();
+        self.rail_hour = None;
         self.edges.reset();
         self.land.reset();
+        self.reserved_land_count = None;
+        self.reserved_land_required_rows = 0;
+        self.reserved_land_first_failure = None;
+        self.reserved_land_native_count = None;
+        self.reserved_land_typed_capacity_short = false;
+        self.reserved_land_raw_capacity_short = false;
+        self.reserved_land_raw_demand = None;
         self.land_groups.reset();
         self.land_members.reset();
         self.air.reset();
@@ -293,6 +567,8 @@ impl Captured {
         self.supremacy.allocated_bytes()
             + self.convoys.allocated_bytes()
             + self.cooldowns.allocated_bytes()
+            + self.rail_buildings.allocated_bytes()
+            + self.rail_levels.allocated_bytes()
             + self.edges.allocated_bytes()
             + self.land.allocated_bytes()
             + self.land_groups.allocated_bytes()
@@ -319,8 +595,25 @@ impl Captured {
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.supremacy.grow(&mut capacity.rows[0]);
         self.convoys.grow(&mut capacity.rows[1]);
+        grow_capacity(&mut capacity.rows[2], self.rail_buildings_required);
         self.cooldowns.grow(&mut capacity.rows[2]);
+        self.rail_buildings.grow(&mut capacity.rows[2]);
+        grow_vec(&mut self.cooldowns.rows, capacity.rows[2]);
+        self.rail_levels.grow(&mut capacity.rail_levels);
         self.edges.grow(&mut capacity.rows[3]);
+        let positive_demand = match self.land.outcome {
+            Outcome::Rows { len } => len,
+            Outcome::Truncated { len, unread_rows } => len.saturating_add(unread_rows as usize),
+            Outcome::Unavailable { .. } => 0,
+        };
+        let reserved_demand = if self.reserved_land_count.is_some() {
+            0 // The committed Rows length already includes this suffix.
+        } else {
+            self.reserved_land_required_rows
+        };
+        if let Some(required) = positive_demand.checked_add(reserved_demand) {
+            grow_capacity(&mut capacity.rows[4], required);
+        }
         self.land.grow(&mut capacity.rows[4]);
         self.land_groups.grow(&mut capacity.rows[5]);
         self.land_members.grow(&mut capacity.rows[6]);
@@ -347,6 +640,78 @@ impl Captured {
         self.wing_sources.grow(&mut capacity.wing_sources);
     }
 
+    pub(crate) fn observe_railway_inputs(
+        &self,
+        work: &mut crate::acquisition_states::InputWork,
+    ) -> std::io::Result<()> {
+        work.observe(
+            self.rail_buildings.outcome,
+            self.rail_buildings_required,
+            self.rail_buildings.rows.len(),
+            self.rail_buildings.rows[..self.rail_buildings.outcome.len()]
+                .iter()
+                .map(|row| row.building.map(|building| building.is_some())),
+        )?;
+        let captured = &self.rail_buildings.rows[..self.rail_buildings.outcome.len()];
+        for field in 0..3 {
+            work.observe(
+                self.rail_buildings.outcome,
+                self.rail_buildings_required,
+                self.rail_buildings.rows.len(),
+                captured.iter().filter_map(|row| {
+                    row.selection.map(|selected| match field {
+                        0 => selected.levels.map(|_| true),
+                        1 => selected.pair_count.map(|_| true),
+                        _ => selected.building_level.map(|value| value.is_some()),
+                    })
+                }),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn railway_building(&self, province: u32) -> Option<rows::RailwayBuildingState> {
+        let captured = self
+            .rail_buildings
+            .rows
+            .get(..self.rail_buildings.outcome.len())?;
+        let index = captured
+            .binary_search_by_key(&province, |row| row.province)
+            .ok()?;
+        let state = captured[index].building.ok()??;
+        Some(rows::RailwayBuildingState {
+            building: state.building.map(|health| rows::RailwayBuildingHealth {
+                level: health.level,
+                healthy: health.healthy,
+                partial: health.partial,
+            }),
+        })
+    }
+
+    fn railway_selection(&self, province: u32) -> Option<rows::RailwaySelectionInputs> {
+        self.rail_hour?;
+        let captured = self
+            .rail_buildings
+            .rows
+            .get(..self.rail_buildings.outcome.len())?;
+        let index = captured
+            .binary_search_by_key(&province, |row| row.province)
+            .ok()?;
+        let selected = captured[index].selection?;
+        let levels = selected.levels.ok().and_then(|span| {
+            span.first
+                .checked_add(span.len)
+                .filter(|&end| end <= self.rail_levels.len)
+                .and_then(|end| self.rail_levels.first.get(span.first..end))
+                .map(|values| owned_vec(copy_vec(values)))
+        });
+        Some(rows::RailwaySelectionInputs {
+            levels,
+            pair_count: selected.pair_count.ok(),
+            building_level: selected.building_level.ok().flatten(),
+        })
+    }
+
     /// Already included in the pack's returned times, in
     /// [theatre membership, wings, order of battle] order. The shared adapter
     /// subtracts these from the enclosing map acquisition times.
@@ -361,10 +726,34 @@ impl Captured {
         roots: &[corders_group::Root],
         source: Outcome,
     ) {
+        self.set_order_sources_inner(memory, base, roots, source, false);
+    }
+
+    fn set_order_sources_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        roots: &[corders_group::Root],
+        source: Outcome,
+    ) {
+        self.set_order_sources_inner(memory, base, roots, source, true);
+    }
+
+    fn set_order_sources_inner(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        roots: &[corders_group::Root],
+        source: Outcome,
+        growing: bool,
+    ) {
+        if growing {
+            grow_vec(&mut self.orders_sources.rows, source.len());
+        }
         if !self.theatres_active() {
             self.orders_sources.outcome = SKIPPED;
             self.orders_finished = true;
-            self.set_order_of_battle(memory, base, roots, source);
+            self.set_order_of_battle(memory, base, roots, source, growing);
             return;
         }
         let reads = read_accounting::table(TableId::LandTheatreMembers);
@@ -397,7 +786,7 @@ impl Captured {
         self.orders_finished = true;
         self.source_ticks[0] = self.source_ticks[0].saturating_add(elapsed(begin));
         drop(reads);
-        self.set_order_of_battle(memory, base, roots, source);
+        self.set_order_of_battle(memory, base, roots, source, growing);
     }
 
     /// All three tables use the same authenticated registry census.
@@ -407,6 +796,7 @@ impl Captured {
         base: usize,
         roots: &[corders_group::Root],
         source: Outcome,
+        growing: bool,
     ) {
         let _reads = read_accounting::table(TableId::OrdersGroups);
         let begin = qpc();
@@ -418,22 +808,22 @@ impl Captured {
                     &mut self.group_members.rows,
                     &mut self.group_children.rows,
                 );
-                let capacity = [groups.len(), members.len(), children.len()];
-                let walk = corders_group::walk_order_of_battle(
+                let mut storage = corders_group::OrderOfBattleStorage {
+                    groups: storage_buffer(groups, growing),
+                    members: storage_buffer(members, growing),
+                    children: storage_buffer(children, growing),
+                    roster_scratch: storage_buffer(&mut self.roster_scratch.first, growing),
+                };
+                let walk = corders_group::walk_order_of_battle_buffers(
                     memory,
                     base,
                     &roots[..len],
-                    &mut corders_group::OrderOfBattle {
-                        groups,
-                        members,
-                        children,
-                        roster_scratch: &mut self.roster_scratch.first,
-                    },
+                    &mut storage,
                 );
                 [
-                    bounded(walk.groups, capacity[0]),
-                    bounded(walk.members, capacity[1]),
-                    bounded(walk.children, capacity[2]),
+                    bounded(walk.groups, storage.groups.len()),
+                    bounded(walk.members, storage.members.len()),
+                    bounded(walk.children, storage.children.len()),
                 ]
             }
             Outcome::Unavailable { reason } => [Outcome::Unavailable { reason }; 3],
@@ -450,10 +840,10 @@ impl Captured {
         };
         self.group_names.reset();
         for row in &mut self.groups.rows[..outcomes[0].len()] {
-            if let Ok((start, len)) = corders_group::copy_name(
+            if let Ok((start, len)) = corders_group::copy_name_buffer(
                 memory,
                 row.pointer,
-                &mut self.group_names.first,
+                storage_buffer(&mut self.group_names.first, growing),
                 &mut self.group_names.len,
                 &mut self.group_names.required,
             ) {
@@ -523,7 +913,30 @@ impl Captured {
         self.wings_finished = true;
         self.source_ticks[1] = self.source_ticks[1].saturating_add(elapsed(begin));
     }
-    /// Typed theatre fallback consumes the map-admitted membership prefix.
+    /// Typed fallback takes the joined original membership payload. Larger
+    /// storage swaps into the frame, parking its old buffer without allocation.
+    pub(crate) fn install_owned_wings(&mut self, job: &mut NavalJob) {
+        let begin = qpc();
+        self.wing_sources.reset();
+        if !job.theatres_active {
+            self.wing_sources.outcome = SKIPPED;
+        } else {
+            let outcome = job.wing_outcome.unwrap_or(Outcome::Unavailable {
+                reason: "registered missions lack the complete wing census",
+            });
+            let len = outcome.len();
+            if len > self.wing_sources.rows.len() {
+                std::mem::swap(&mut self.wing_sources.rows, &mut job.wing_sources);
+            } else {
+                self.wing_sources.rows[..len].copy_from_slice(&job.wing_sources[..len]);
+            }
+            self.wing_sources.outcome = outcome;
+        }
+        self.wings_finished = true;
+        self.add_wing_source_ticks(elapsed(begin));
+    }
+
+    #[cfg(test)]
     pub(crate) fn install_map_wings(&mut self, job: &super::air::AirWingJob) {
         if !job.theatres_active {
             self.wing_sources.outcome = SKIPPED;
@@ -559,6 +972,7 @@ impl Captured {
     ) -> [u64; N] {
         self.prepare_hour(current_hour, force_full);
         self.reset_tables();
+        self.rail_hour = Some(current_hour);
         let mut ticks = [0; N];
         // Hourly supremacy raw-copy split: on hours with a valid raw payload
         // the game thread stages bytes via `copy_supremacy_refresh` and the
@@ -580,10 +994,9 @@ impl Captured {
         }
         if self.active[1] {
             let begin = qpc();
-            capture_rows(&mut self.convoys, |rows| {
-                let _reads = read_accounting::table(TableId::SunkConvoys);
-                csunk_convoy_info::walk(memory, base, game_state, rows)
-            });
+            let _reads = read_accounting::table(TableId::SunkConvoys);
+            self.convoys.outcome =
+                csunk_convoy_info::walk_growing(memory, base, game_state, &mut self.convoys.rows);
             ticks[1] = elapsed(begin);
         } else {
             self.convoys.outcome = SKIPPED;
@@ -591,15 +1004,26 @@ impl Captured {
 
         let rail_reads = read_accounting::table(TableId::RailCooldowns);
         let begin = qpc();
-        let first = crailway_manager::walk(
+        let mut levels = crailway_manager::selected_inputs::GrowingLevels {
+            values: &mut self.rail_levels.first,
+            len: 0,
+            required: 0,
+        };
+        let first = crailway_manager::walk_with_selection_growing(
             memory,
             base,
             game_state,
             &mut self.cooldowns.rows,
             &mut self.edges.rows,
+            &mut self.rail_buildings.rows,
+            &mut levels,
         );
-        self.cooldowns.outcome = bounded(first.provinces, self.cooldowns.rows.len());
-        self.edges.outcome = bounded(first.edges, self.edges.rows.len());
+        self.rail_levels.len = levels.len;
+        self.rail_levels.required = levels.required;
+        self.cooldowns.outcome = bounded(first.rows.provinces, self.cooldowns.rows.len());
+        self.edges.outcome = bounded(first.rows.edges, self.edges.rows.len());
+        self.rail_buildings.outcome = bounded(first.buildings, self.rail_buildings.rows.len());
+        self.rail_buildings_required = first.required;
         ticks[2] = elapsed(begin);
         drop(rail_reads);
 
@@ -624,7 +1048,7 @@ impl Captured {
 
         let result_reads = read_accounting::table(TableId::NavalResults);
         let begin = qpc();
-        let first = cnaval_combat_results::walk(
+        let first = cnaval_combat_results::walk_growing(
             memory,
             base,
             game_state,
@@ -702,6 +1126,206 @@ impl Captured {
         if self.theatres_active() && !complete_source(&self.wing_sources, self.wings_finished) {
             self.air_members.outcome = source_unavailable();
         }
+        self.capture_reserved_land(
+            memory,
+            base,
+            engine::ccountry::read_reserved_root(memory, base, game_state),
+            None,
+            None,
+        );
+    }
+
+    pub(crate) fn reserved_land_count(&self) -> Option<u32> {
+        self.reserved_land_count
+    }
+
+    /// Final assembly cannot expose a zero suffix without its singleton.
+    /// Only this private successful count identifies the committed tail;
+    /// unavailable payloads and incomplete positives never have such a count.
+    pub(crate) fn withhold_reserved_land_certificate(&mut self, reason: &'static str) {
+        let Some(count) = self.reserved_land_count.take() else {
+            return;
+        };
+        if let Outcome::Rows { len } = self.land.outcome
+            && len <= self.land.rows.len()
+            && let Some(start) = len.checked_sub(count as usize)
+        {
+            self.land.rows[start..len].fill(ctheatre::Row::default());
+            self.land.outcome = Outcome::Rows { len: start };
+        }
+        self.reserved_land_first_failure.get_or_insert(reason);
+    }
+
+    fn capture_reserved_land(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        root: Result<engine::ccountry::Country, &'static str>,
+        prior_rosters: Option<(&RawLog<NAVAL_PACK_N>, usize)>,
+        staging_refusal: Option<&'static str>,
+    ) {
+        self.capture_reserved_land_inner(memory, base, root, prior_rosters, staging_refusal, false);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_reserved_land_inner(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        root: Result<engine::ccountry::Country, &'static str>,
+        prior_rosters: Option<(&RawLog<NAVAL_PACK_N>, usize)>,
+        staging_refusal: Option<&'static str>,
+        growing: bool,
+    ) {
+        self.reserved_land_count = None;
+        self.reserved_land_typed_capacity_short = false;
+        self.reserved_land_raw_capacity_short = false;
+        self.reserved_land_raw_demand = root.is_ok().then_some((16, 1));
+        let positive_len = match self.land.outcome {
+            Outcome::Rows { len } if len <= self.land.rows.len() => len,
+            _ => {
+                // Header-only demand survives, but incomplete positives can
+                // never be promoted by an optional zero batch.
+                let walk = ctheatre::walk_reserved_land_headers_buffer(
+                    memory,
+                    base,
+                    root,
+                    engine::walk::Buffer::Fixed(&mut []),
+                    |_, _| Ok(()),
+                );
+                self.reserved_land_required_rows = walk.required_rows;
+                self.reserved_land_native_count = walk.native_count;
+                self.reserved_land_first_failure = root.err().or_else(|| {
+                    if walk.native_count.is_none() {
+                        walk.len.err()
+                    } else {
+                        Some("positive land theatres incomplete")
+                    }
+                });
+                self.reserved_land_raw_demand =
+                    reserved_raw_demand(walk.native_count).or(self.reserved_land_raw_demand);
+                return;
+            }
+        };
+        let oob_finished = self.oob_finished;
+        let groups_outcome = self.groups.outcome;
+        let groups = &self.groups.rows;
+        let scratch = &self.roster_scratch.first;
+        let mut extra_headers = 0usize;
+        let walk = ctheatre::walk_reserved_land_headers_buffer(
+            memory,
+            base,
+            root,
+            if growing {
+                engine::walk::Buffer::GrowingFrom(&mut self.land.rows, positive_len)
+            } else {
+                engine::walk::Buffer::Fixed(&mut self.land.rows[positive_len..])
+            },
+            |theatre, handle| {
+                if !oob_finished {
+                    return Err("reserved land OOB census not captured");
+                }
+                let len = match groups_outcome {
+                    Outcome::Rows { len } if len <= groups.len() => len,
+                    Outcome::Unavailable { reason } => return Err(reason),
+                    _ => return Err("reserved land OOB census incomplete"),
+                };
+                let scratch = scratch
+                    .get(..len)
+                    .ok_or("reserved land OOB proof scratch incomplete")?;
+                if corders_group::captured_theatre_rosters(
+                    &groups[..len],
+                    scratch,
+                    theatre,
+                    handle,
+                )? {
+                    return Ok(());
+                }
+                for offset in [ctheatre::ORDERS_GROUP_DATA, ctheatre::ARMY_GROUP_DATA] {
+                    let address = theatre
+                        .checked_add(offset)
+                        .ok_or("reserved land group roster address overflow")?;
+                    let prior = match prior_rosters {
+                        Some((log, end)) => theatres::prior_roster_header(log, end, address)?,
+                        None => None,
+                    };
+                    let bytes = match prior {
+                        Some(bytes) => bytes,
+                        None => {
+                            extra_headers = extra_headers
+                                .checked_add(1)
+                                .ok_or("reserved land group header count overflow")?;
+                            let mut bytes = [0; 16];
+                            if !memory.copy(address, &mut bytes) {
+                                return Err("reserved land group roster header unreadable");
+                            }
+                            bytes
+                        }
+                    };
+                    let roster = Array::from_header(bytes, 8)
+                        .ok_or("reserved land group roster header invalid")?;
+                    if roster.count != 0 {
+                        return Err("reserved land nonempty group roster absent from OOB proof");
+                    }
+                }
+                Ok(())
+            },
+        );
+        self.reserved_land_required_rows = walk.required_rows;
+        self.reserved_land_first_failure = walk.len.err();
+        self.reserved_land_native_count = walk.native_count;
+        self.reserved_land_typed_capacity_short = walk.capacity_short;
+        self.reserved_land_raw_demand = reserved_raw_demand(walk.native_count)
+            .and_then(|(bytes, spans)| {
+                Some((
+                    bytes.checked_add(extra_headers.checked_mul(16)?)?,
+                    spans.checked_add(extra_headers)?,
+                ))
+            })
+            .or(self.reserved_land_raw_demand);
+        let (Ok(len), Some(count)) = (walk.len, walk.native_count) else {
+            return;
+        };
+        if len != count as usize {
+            self.reserved_land_first_failure = Some("reserved land count differs from rows");
+            return;
+        }
+        let (positive, spare) = self.land.rows.split_at_mut(positive_len);
+        let zero = &mut spare[..len];
+        // Validate in existing spare storage, restore native order before the
+        // single commit. Positives are never sorted or mutated by this check.
+        zero.sort_unstable_by_key(|row| row.id);
+        let duplicate = zero.windows(2).any(|rows| rows[0].id == rows[1].id)
+            || positive
+                .iter()
+                .any(|row| zero.binary_search_by_key(&row.id, |row| row.id).is_ok());
+        if duplicate {
+            zero.fill(ctheatre::Row::default());
+            self.reserved_land_first_failure = Some("reserved land duplicate theatre handle");
+            return;
+        }
+        zero.sort_unstable_by_key(|row| row.ordinal);
+        if zero
+            .iter()
+            .enumerate()
+            .any(|(ordinal, row)| row.owner != 0 || row.ordinal as usize != ordinal)
+        {
+            zero.fill(ctheatre::Row::default());
+            self.reserved_land_first_failure = Some("reserved land native ordinal invalid");
+            return;
+        }
+        let Some(total) = positive_len.checked_add(len) else {
+            zero.fill(ctheatre::Row::default());
+            self.reserved_land_first_failure = Some("reserved land row count overflow");
+            return;
+        };
+        if let Some(reason) = staging_refusal {
+            zero.fill(ctheatre::Row::default());
+            self.reserved_land_first_failure = Some(reason);
+            return;
+        }
+        self.land.outcome = Outcome::Rows { len: total };
+        self.reserved_land_count = Some(count);
     }
 
     fn capture_sunk(
@@ -772,6 +1396,7 @@ impl Captured {
 
     /// Off-thread only: exact native source joins, byte copies and replay rows.
     pub fn tables(&self) -> [TableView; N] {
+        observe_reserved_land(self);
         let mut outcomes = self.outcomes();
         if let Some(reason) = membership_issue(
             outcomes[6],
@@ -820,6 +1445,9 @@ impl Captured {
                 rows::RailCooldownRow {
                     province: r.province,
                     cooldown_ticks: r.cooldown_ticks,
+                    building: rows::Recorded::Value(self.railway_building(r.province)),
+                    selection: rows::Recorded::Value(self.railway_selection(r.province)),
+                    selection_hour: rows::Recorded::Value(self.rail_hour),
                 }
             }),
             table::<tables::RailEdges, _>(outcomes[3], &self.edges.rows, |r| rows::RailEdgeRow {
@@ -1037,6 +1665,14 @@ impl Captured {
     }
 }
 
+fn storage_buffer<T>(values: &mut Vec<T>, growing: bool) -> engine::walk::Buffer<'_, T> {
+    if growing {
+        engine::walk::Buffer::Growing(values)
+    } else {
+        engine::walk::Buffer::Fixed(values)
+    }
+}
+
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
@@ -1216,11 +1852,12 @@ pub(crate) const NAVAL_PACK_N: usize = 9;
 
 mod theatres;
 pub(crate) use theatres::{
-    NavalCopyContext, NavalCopyReport, NavalJob, copy_naval_refresh, decode_naval_payload,
+    NavalCopyContext, NavalCopyReport, NavalJob, OrderGroupSource, copy_naval_refresh_growing,
+    decode_naval_payload,
 };
 #[cfg(test)]
-use theatres::{
-    OOB_THEATRE_REFERENCES_PER_COUNTRY, copy_naval_oob, copy_naval_theatres, dedup_first_seen,
+pub(crate) use theatres::{
+    copy_naval_oob, copy_naval_refresh, copy_naval_theatres, dedup_first_seen,
 };
 
 /// Hourly payload slots in calibration/report order: [supremacy].
@@ -1228,7 +1865,7 @@ pub(crate) const SUPREMACY_N: usize = 1;
 
 mod supremacy;
 pub(crate) use supremacy::{
-    SupremacyCopyContext, SupremacyCopyReport, SupremacyJob, copy_supremacy_refresh,
+    SupremacyCopyContext, SupremacyCopyReport, SupremacyJob, copy_supremacy_refresh_growing,
 };
 
 /// Hourly payload slots in calibration/report order: [sunk ships]. The
@@ -1236,7 +1873,11 @@ pub(crate) use supremacy::{
 pub(crate) const SUNK_N: usize = 1;
 
 mod sunk;
-pub(crate) use sunk::{SunkCopyContext, SunkCopyReport, SunkJob, copy_sunk_refresh};
+#[cfg(test)]
+pub(crate) use sunk::copy_sunk_refresh;
+pub(crate) use sunk::{SunkCopyContext, SunkCopyReport, SunkJob, copy_sunk_refresh_growing};
+#[cfg(test)]
+pub(crate) use supremacy::copy_supremacy_refresh;
 
 #[cfg(test)]
 mod tests;
@@ -1248,6 +1889,9 @@ mod tests;
 /// superset.
 #[cfg(test)]
 pub(crate) mod naval_test_kit;
+
+#[cfg(test)]
+mod reserved_land_tests;
 
 /// Shared synthetic address space for the supremacy copy/decode harness:
 /// two region slots (one null) with dominance containers and value entries.

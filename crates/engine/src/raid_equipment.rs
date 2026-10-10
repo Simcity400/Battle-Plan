@@ -62,6 +62,42 @@ pub struct Arenas<'a> {
     pub archetype_amounts: &'a mut [i64],
 }
 
+pub struct GrowingArenas<'a> {
+    pub variants: &'a mut Vec<u64>,
+    pub amounts: &'a mut Vec<i64>,
+    pub archetype_tokens: &'a mut Vec<u32>,
+    pub archetype_amounts: &'a mut Vec<i64>,
+}
+
+pub struct ArenasBuffer<'a> {
+    pub variants: crate::walk::Buffer<'a, u64>,
+    pub amounts: crate::walk::Buffer<'a, i64>,
+    pub archetype_tokens: crate::walk::Buffer<'a, u32>,
+    pub archetype_amounts: crate::walk::Buffer<'a, i64>,
+}
+
+impl<'a> From<Arenas<'a>> for ArenasBuffer<'a> {
+    fn from(value: Arenas<'a>) -> Self {
+        Self {
+            variants: crate::walk::Buffer::Fixed(value.variants),
+            amounts: crate::walk::Buffer::Fixed(value.amounts),
+            archetype_tokens: crate::walk::Buffer::Fixed(value.archetype_tokens),
+            archetype_amounts: crate::walk::Buffer::Fixed(value.archetype_amounts),
+        }
+    }
+}
+
+impl<'a> From<GrowingArenas<'a>> for ArenasBuffer<'a> {
+    fn from(value: GrowingArenas<'a>) -> Self {
+        Self {
+            variants: crate::walk::Buffer::Growing(value.variants),
+            amounts: crate::walk::Buffer::Growing(value.amounts),
+            archetype_tokens: crate::walk::Buffer::Growing(value.archetype_tokens),
+            archetype_amounts: crate::walk::Buffer::Growing(value.archetype_amounts),
+        }
+    }
+}
+
 pub struct Walk {
     pub outcome: Outcome,
     pub items_len: usize,
@@ -93,6 +129,38 @@ pub fn walk(
     rows: &mut [Row],
     arenas: Arenas<'_>,
 ) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Fixed(rows),
+        arenas.into(),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    rows: &mut Vec<Row>,
+    arenas: GrowingArenas<'_>,
+) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(rows),
+        arenas.into(),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut rows: crate::walk::Buffer<'_, Row>,
+    arenas: ArenasBuffer<'_>,
+) -> Walk {
     let mut walk = Walk {
         outcome: Outcome::Rows { len: 0 },
         items_len: 0,
@@ -100,18 +168,16 @@ pub fn walk(
         archetypes_len: 0,
         required_archetypes: 0,
     };
-    let Arenas {
-        variants,
-        amounts,
-        archetype_tokens,
-        archetype_amounts,
+    let ArenasBuffer {
+        mut variants,
+        mut amounts,
+        mut archetype_tokens,
+        mut archetype_amounts,
     } = arenas;
-    let capacity = variants.len().min(amounts.len());
-    let archetype_capacity = archetype_tokens.len().min(archetype_amounts.len());
     let archetype_vtable = base
         .checked_add(cequipment_type::VTABLE_RVA)
         .map(|address| address as u64);
-    let (mut len, mut unread) = (0, 0_u32);
+    let (mut len, mut unread) = (0_usize, 0_u32);
     let result = raid_speed_inputs::each_raid(memory, base, game_state, |hour, raid| {
         if !recorded(&raid, hour) {
             return Ok(());
@@ -147,6 +213,16 @@ pub fn walk(
         walk.required_archetypes += archetype_count;
         let start = walk.items_len;
         let archetype_start = walk.archetypes_len;
+        variants.ensure(walk.required_items)?;
+        amounts.ensure(walk.required_items)?;
+        archetype_tokens.ensure(walk.required_archetypes)?;
+        archetype_amounts.ensure(walk.required_archetypes)?;
+        rows.ensure(
+            len.checked_add(1)
+                .ok_or("raid equipment row count overflow")?,
+        )?;
+        let capacity = variants.len().min(amounts.len());
+        let archetype_capacity = archetype_tokens.len().min(archetype_amounts.len());
         let fits = capacity - start >= count
             && archetype_capacity - archetype_start >= archetype_count
             && len < rows.len();

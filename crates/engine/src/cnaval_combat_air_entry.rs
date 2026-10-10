@@ -1,5 +1,6 @@
 //! CNavalCombatAirEntry retained result snapshot.140CD2A60 constructs0x88 bytes
 //! and copies CFEXAir variant/counts/country/name plus three transferred hit lists.
+use crate::capture_text::Value;
 use crate::{
     Memory,
     cnaval_combat_ship_entry::{HitBuffers, capture_hits},
@@ -10,7 +11,7 @@ use crate::{
 pub const VTABLE_RVA: usize = 0x0294_74a0;
 pub const SIZE: usize = 0x88;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DetailsRow {
     pub variant: u64,
     ///141DF1400 uses these exact variant+2A0/+2A8 operands in its summary.
@@ -19,9 +20,14 @@ pub struct DetailsRow {
     pub current_planes: i32,
     pub lost_planes: i32,
     pub country: u32,
-    pub name: crate::msvc_string::Text<256>,
+    pub name: crate::capture_text::Owned,
     pub naval_hits: [usize; 2],
     pub air_hits: [[usize; 2]; 2],
+}
+impl DetailsRow {
+    pub fn allocated_bytes(&self) -> usize {
+        self.name.allocated_bytes()
+    }
 }
 
 pub fn capture_details(
@@ -61,13 +67,20 @@ pub fn capture_details(
         current_planes: field(memory, pointer, 0x14)?,
         lost_planes: field(memory, pointer, 0x18)?,
         country: field(memory, pointer, 0x1c)?,
-        name: crate::msvc_string::read_text(
+        name: crate::capture_text::Owned::read(
             memory,
             pointer
                 .checked_add(0x20)
                 .ok_or("naval result air name overflow")?,
+            false,
         )
-        .ok_or("naval result air name invalid or exceeds capacity")?,
+        .map_err(|reason| {
+            if reason == "string allocation failed" {
+                reason
+            } else {
+                "naval result air name invalid or unreadable"
+            }
+        })?,
         naval_hits,
         air_hits,
     })

@@ -26,13 +26,36 @@ pub struct Row {
 /// Reads the flag of every province a country's program names, in country and program order;
 /// a province two programs name appears twice. Nothing is allocated.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+) -> Outcome {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
     let result = (|| {
         let graphics = province_graphics(memory, base)?;
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let program_vtable = base
             .checked_add(nproject_cprogram::VTABLE_RVA)
             .ok_or("module address overflow")? as u64;
-        let (mut len, mut unread) = (0, 0_u32);
+        let (mut len, mut unread) = (0_usize, 0_u32);
         for slot in 1..countries.count() {
             let Some(country) = countries.at(slot)? else {
                 continue;
@@ -75,6 +98,8 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [
                 if flag == 0 {
                     continue;
                 }
+                // Program writers@140E62AD0 can flag every reached occurrence.
+                output.ensure(len.checked_add(1).ok_or("facility flag count overflow")?)?;
                 if len == output.len() {
                     unread = unread
                         .checked_add(1)
@@ -306,5 +331,51 @@ mod tests {
             run_with(&bytes, 0, 4).0,
             Outcome::Unavailable { .. }
         ));
+    }
+
+    #[test]
+    fn growing_facility_flag_rows_preserve_mod_sized_program_occurrences() {
+        let mut output = Vec::new();
+        for count in [5000_usize, 12000] {
+            let mut bytes = fixture();
+            let list = 0x10000;
+            bytes.resize(list + count * 8, 0);
+            array(
+                &mut bytes,
+                STATUS + nproject_cprogram_status::PROGRAMS,
+                list,
+                count as u32,
+            );
+            for index in 0..count {
+                put(
+                    &mut bytes,
+                    list + index * 8,
+                    &(PROGRAM[0] as u64).to_le_bytes(),
+                );
+            }
+            let memory = Image {
+                bytes: SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                idler: IDLER as u64,
+            };
+            assert_eq!(
+                walk(&memory, 0, GAME, &mut []),
+                Outcome::Truncated {
+                    len: 0,
+                    unread_rows: count as u32
+                }
+            );
+            assert_eq!(
+                walk_growing(&memory, 0, GAME, &mut output),
+                Outcome::Rows { len: count }
+            );
+            assert!(output[..count].iter().all(|row| *row
+                == Row {
+                    province: 2,
+                    flag: 1
+                }));
+        }
     }
 }

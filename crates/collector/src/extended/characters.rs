@@ -52,24 +52,23 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("unit leader traits and experience", 4, &[4, 5]),
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],
     pub bytes: [usize; N],
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            // First full capture contained 13,095 characters, 2,019 leader
-            // roles, 1,271 unit leaders and 19,555 trait-experience entries.
-            rows: [16_384, 4096, 4096, 2048, 4096, 32_768],
-            bytes: [524_288, 0, 262_144, 131_072, 131_072, 524_288],
-        }
-    }
-}
-
 impl Capacities {
+    /// Off-thread live unit/trait demand, independent of country count.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        demand::presize(self, memory, base, state)
+    }
+
     /// Characters keeps one row per roster occurrence and both names and the
     /// template file of each (`ccharacter::demand`), so the live roster sizes
     /// the first full hour rather than a vanilla count.
@@ -79,6 +78,9 @@ impl Capacities {
         raise(&mut self.bytes[0], rows(demand.bytes, 1));
     }
 }
+
+mod demand;
+pub(crate) use demand::status as demand_status;
 
 pub(super) struct Buffer<R> {
     pub(super) rows: CaptureRows<R>,
@@ -148,6 +150,7 @@ pub struct Captured {
     /// merges successful parts before publication. Preserved across reset
     /// and cleared per part after decode.
     pub(crate) raw_active: [bool; 6],
+    fallback_jobs: [Option<Box<CharactersJob>>; PARTS],
 }
 
 /// Disjoint table owners. Part zero supplies the current portrait census;
@@ -312,7 +315,16 @@ impl Captured {
             trait_experience: Buffer::new(capacities, 5),
             raw_active: [false; 6],
             active: [false; 6],
+            fallback_jobs: std::array::from_fn(|_| None),
         }
+    }
+
+    /// Allocation-free placeholder while the final-input worker owns storage.
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            rows: [0; N],
+            bytes: [0; N],
+        })
     }
 
     pub fn reset(&mut self) {
@@ -334,27 +346,29 @@ impl Captured {
     }
 
     pub fn grow(&mut self, capacities: &mut Capacities) {
+        for (index, row_len, byte_len) in [
+            (4, self.traits.rows.outcome.len(), self.traits.bytes.len),
+            (
+                5,
+                self.trait_experience.rows.outcome.len(),
+                self.trait_experience.bytes.len,
+            ),
+        ] {
+            capacities.rows[index] = capacities.rows[index].max(row_len);
+            capacities.bytes[index] = capacities.bytes[index].max(byte_len);
+        }
         self.characters.grow(capacities, 0);
         self.leaders.grow(capacities, 1);
-        capacities.rows[2] = capacities.rows[2].max(self.advisors.rows.rows.capacity());
-        capacities.bytes[2] = capacities.bytes[2].max(self.advisors.bytes.first.capacity());
+        capacities.rows[2] = capacities.rows[2].max(self.advisors.rows.outcome.len());
+        capacities.bytes[2] = capacities.bytes[2].max(self.advisors.bytes.len);
         self.advisors.grow(capacities, 2);
         self.units.grow(capacities, 3);
         self.traits.grow(capacities, 4);
         self.trait_experience.grow(capacities, 5);
     }
 
-    /// The scheduled persistent tables share one current roster.
-    pub fn capture(
-        &mut self,
-        memory: &impl Memory,
-        base: usize,
-        game_state: usize,
-        hour: i32,
-        force_full: bool,
-    ) -> [u64; N] {
+    fn begin_capture(&mut self, hour: i32, force_full: bool) -> [bool; N] {
         self.reset();
-        let mut ticks = [0; N];
         let active = TABLES.map(|table| replay::cadence::should_walk(table, hour, force_full));
         let family_active = if self.raw_active.iter().any(|&active| active) {
             self.active
@@ -379,8 +393,21 @@ impl Captured {
             traits = 4,
             trait_experience = 5
         );
-        let typed_active: [bool; 6] =
-            std::array::from_fn(|index| family_active[index] && !self.raw_active[index]);
+        std::array::from_fn(|index| family_active[index] && !self.raw_active[index])
+    }
+
+    /// The scheduled persistent tables share one current roster.
+    #[cfg(test)]
+    pub fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        let typed_active = self.begin_capture(hour, force_full);
+        let mut ticks = [0; N];
         for mask in PART_MASKS {
             let typed_active = std::array::from_fn(|index| typed_active[index] && mask[index]);
             if typed_active.iter().any(|&active| active) {
@@ -398,6 +425,51 @@ impl Captured {
                 self.install_family(typed_active, result);
                 ticks[slot] = elapsed(begin);
             }
+        }
+        ticks
+    }
+
+    /// Worker fallback uses the same original-observation acquisition and
+    /// owned decode as the role jobs. Only tables without a raw owner run.
+    pub(crate) fn capture_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        let typed_active = self.begin_capture(hour, force_full);
+        let mut ticks = [0; N];
+        for (part, mask) in PART_MASKS.into_iter().enumerate() {
+            let active = std::array::from_fn(|index| typed_active[index] && mask[index]);
+            if !active.iter().any(|&active| active) {
+                continue;
+            }
+            let mut job = self.fallback_jobs[part]
+                .take()
+                .unwrap_or_else(|| Box::new(CharactersJob::new_part(part)));
+            let (trait_rows, trait_bytes) = self.trait_capture_capacities();
+            let context = CharactersCopyContext {
+                base,
+                game_state,
+                force_full,
+                active,
+                trait_rows,
+                trait_bytes,
+            };
+            let _reads = read_accounting::table(TABLES[anchor(active)]);
+            let begin = qpc();
+            let report = copy_characters_growing(memory, context, &mut job, Roles::Independent);
+            if report.raw_ok {
+                self.decode_characters_payload(base, &job, &mut [0; N]);
+                self.remember_templates(&mut job);
+            } else {
+                self.fail_character_tables(active, "character worker acquisition incomplete");
+            }
+            ticks[anchor(active)] = elapsed(begin);
+            job.prepare_read_plans();
+            self.fallback_jobs[part] = Some(job);
         }
         ticks
     }
@@ -788,8 +860,8 @@ impl From<active_ability_record::TokenWalk> for ReadResult {
 /// Aggregates exact native counts across owners. After the first capacity miss
 /// later owners contribute counts only; no later row fills a hole in the prefix.
 struct Batch<'a, R> {
-    rows: &'a mut [R],
-    bytes: &'a mut [u8],
+    rows: engine::walk::Buffer<'a, R>,
+    bytes: engine::walk::Buffer<'a, u8>,
     len: usize,
     bytes_len: usize,
     required_bytes: usize,
@@ -799,6 +871,12 @@ struct Batch<'a, R> {
 
 impl<'a, R> Batch<'a, R> {
     fn new(rows: &'a mut [R], bytes: &'a mut [u8]) -> Self {
+        Self::storage(
+            engine::walk::Buffer::Fixed(rows),
+            engine::walk::Buffer::Fixed(bytes),
+        )
+    }
+    fn storage(rows: engine::walk::Buffer<'a, R>, bytes: engine::walk::Buffer<'a, u8>) -> Self {
         Self {
             rows,
             bytes,
@@ -825,6 +903,14 @@ impl<'a, R> Batch<'a, R> {
         walk: impl FnOnce(&mut [R], &mut [u8]) -> ReadResult,
         relocate: impl Fn(&mut R, usize) -> bool,
     ) {
+        self.append_buffer(|mut rows, mut bytes| walk(&mut rows, &mut bytes), relocate);
+    }
+
+    fn append_buffer(
+        &mut self,
+        walk: impl FnOnce(engine::walk::Buffer<'_, R>, engine::walk::Buffer<'_, u8>) -> ReadResult,
+        relocate: impl Fn(&mut R, usize) -> bool,
+    ) {
         if !self.active() {
             return;
         }
@@ -838,10 +924,27 @@ impl<'a, R> Batch<'a, R> {
         } else {
             self.bytes_len
         };
-        let result = walk(
-            &mut self.rows[self.len..rows_end],
-            &mut self.bytes[self.bytes_len..bytes_end],
-        );
+        let result = if self.unread == 0 {
+            walk(
+                self.rows.suffix(self.len),
+                self.bytes.suffix(self.bytes_len),
+            )
+        } else {
+            walk(
+                engine::walk::Buffer::Fixed(&mut self.rows[self.len..rows_end]),
+                engine::walk::Buffer::Fixed(&mut self.bytes[self.bytes_len..bytes_end]),
+            )
+        };
+        let rows_end = if self.unread == 0 {
+            self.rows.len()
+        } else {
+            rows_end
+        };
+        let bytes_end = if self.unread == 0 {
+            self.bytes.len()
+        } else {
+            bytes_end
+        };
         let (len, unread) = match result.outcome {
             Outcome::Rows { len } => (len, 0),
             Outcome::Truncated { len, unread_rows } if unread_rows != 0 => (len, unread_rows),
@@ -910,7 +1013,7 @@ impl Batch<'_, cadvisor::Row> {
         let captured = cadvisor::append_tooltips(
             memory,
             &mut self.rows[start..end],
-            self.bytes,
+            &mut self.bytes,
             ccharacter::NameWalk {
                 outcome: Outcome::Rows { len: end - start },
                 bytes_len: self.bytes_len,
@@ -1347,6 +1450,34 @@ fn read_unit(
     }
 }
 
+pub(crate) fn ability_demand(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+) -> Result<(usize, usize), &'static str> {
+    let countries = ccountry::Reader::new(memory, base, game_state)?;
+    let mut rows = 0_usize;
+    let mut bytes = 0_usize;
+    for slot in 1..countries.count() {
+        let Some(country) = countries.at(slot)? else {
+            continue;
+        };
+        let address = country
+            .pointer
+            .checked_add(ccountry::ACTIVE_ABILITIES)
+            .ok_or("country active ability array address overflow")?;
+        let (count, text) = active_ability_record::demand(memory, base, address)?;
+        rows = rows
+            .checked_add(count)
+            .ok_or("active ability demand overflow")?;
+        bytes = bytes
+            .checked_add(text)
+            .ok_or("active ability token demand overflow")?;
+    }
+    Ok((rows, bytes))
+}
+
+#[cfg(test)]
 pub(super) fn walk_abilities(
     memory: &impl Memory,
     base: usize,
@@ -1382,6 +1513,63 @@ pub(super) fn walk_abilities(
         output.fail(reason);
     }
     output.result()
+}
+
+pub(super) fn walk_abilities_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    rows: &mut Vec<active_ability_record::Row>,
+    bytes: &mut Vec<u8>,
+) -> ReadResult {
+    let mut rows = engine::walk::Buffer::Growing(rows);
+    let mut bytes = engine::walk::Buffer::Growing(bytes);
+    let mut len = 0_usize;
+    let mut bytes_len = 0_usize;
+    let result = (|| {
+        let countries = ccountry::Reader::new(memory, base, game_state)?;
+        for slot in 1..countries.count() {
+            let Some(country) = countries.at(slot)? else {
+                continue;
+            };
+            let address = country
+                .pointer
+                .checked_add(ccountry::ACTIVE_ABILITIES)
+                .ok_or("country active ability array address overflow")?;
+            let walk = active_ability_record::walk_buffer(
+                memory,
+                base,
+                country.id,
+                address,
+                rows.suffix(len),
+                bytes.suffix(bytes_len),
+            );
+            match walk.outcome {
+                Outcome::Rows { len: count } => {
+                    for row in &mut rows[len..len + count] {
+                        if !relocate(&mut row.token_start, bytes_len) {
+                            return Err("active ability token offset overflow");
+                        }
+                    }
+                    len += count;
+                    bytes_len += walk.bytes_len;
+                }
+                Outcome::Unavailable { reason } => return Err(reason),
+                Outcome::Truncated { .. } => {
+                    return Err("growing active ability capture truncated");
+                }
+            }
+        }
+        Ok(())
+    })();
+    ReadResult {
+        outcome: match result {
+            Ok(()) => Outcome::Rows { len },
+            Err(reason) => Outcome::Unavailable { reason },
+        },
+        bytes_len,
+        required_bytes: bytes_len,
+    }
 }
 
 pub(super) fn view<S: TableSchema, R>(
@@ -1608,6 +1796,25 @@ pub(crate) fn copy_characters_refresh(
     copy_characters(memory, ctx, job, Roles::Independent)
 }
 
+/// Production acquisition is worker-only. Grow staging before each next
+/// native observation; the fixed path remains available to fault fixtures.
+pub(crate) fn copy_characters_growing(
+    memory: &impl Memory,
+    ctx: CharactersCopyContext,
+    job: &mut CharactersJob,
+    roles: Roles<&census::RoleCensus>,
+) -> CharactersCopyReport {
+    job.worker_growing = true;
+    let report = copy_characters(memory, ctx, job, roles);
+    job.update_census_charge();
+    job.appended_charge.set(crate::raw_memory::Capacity {
+        auxiliary_vectors: crate::raw_memory::vector_bytes(&job.appended_roles),
+        ..Default::default()
+    });
+    job.worker_growing = false;
+    report
+}
+
 /// Raw acquisition of the current scheduled family with exclusively owned jobs.
 /// Copies one current payload and returns its acquisition costs.
 /// On staging overflow the caller takes the existing
@@ -1618,6 +1825,7 @@ pub(crate) fn copy_characters(
     job: &mut CharactersJob,
     roles: Roles<&census::RoleCensus>,
 ) -> CharactersCopyReport {
+    job.capture_growing = job.worker_growing;
     if !ctx.active.iter().any(|&active| active) {
         job.clear();
         return CharactersCopyReport {
@@ -1636,7 +1844,11 @@ pub(crate) fn copy_characters(
         job.active = ctx.active;
         job.game_state = ctx.game_state;
         let cache = job.advisor_cache.as_mut().unwrap();
-        cache.capture(memory, ctx, &crate::advisor_changes::Observer, loaned);
+        if job.worker_growing {
+            cache.capture_growing(memory, ctx, &crate::advisor_changes::Observer, loaned);
+        } else {
+            cache.capture(memory, ctx, &crate::advisor_changes::Observer, loaned);
+        }
         crate::advisor_changes::record(cache.counts);
     } else if job.advisor_dynamic.is_some() {
         // The feature-gated section reader keeps its independent roster walk.
@@ -1708,6 +1920,11 @@ impl Captured {
     }
 
     /// Failure is local to the tables owned by this acquisition job.
+    pub(crate) fn fail_final_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        let active = self.begin_capture(hour, force_full);
+        self.fail_character_tables(active, reason);
+    }
+
     pub(crate) fn fail_character_tables(&mut self, active: [bool; 6], reason: &'static str) {
         macro_rules! fail {
             ($($field:ident = $index:literal),+ $(,)?) => {$(
@@ -1808,7 +2025,9 @@ impl Captured {
         job: &CharactersJob,
         decode_ticks: &mut [u64; 6],
     ) {
-        self.active = std::array::from_fn(|index| self.active[index] || job.active[index]);
+        self.active = std::array::from_fn(|index| {
+            self.active[index] || self.raw_active[index] || job.active[index]
+        });
         self.fail_character_tables(
             self.active.map(|value| !value),
             replay::cadence::SKIPPED_REASON,
@@ -1890,8 +2109,80 @@ impl Captured {
         } else {
             None
         };
+        let trait_failures = if job.traits.growing {
+            let demand = job.traits.demand();
+            fn reserve<R: Default>(
+                rows: &mut Vec<R>,
+                bytes: &mut Vec<u8>,
+                demand: Result<(usize, usize), &'static str>,
+            ) -> Result<(), &'static str> {
+                let (row_count, byte_count) = demand?;
+                engine::walk::Buffer::Growing(rows).ensure(row_count)?;
+                engine::walk::Buffer::Growing(bytes).ensure(byte_count)?;
+                Ok(())
+            }
+            [
+                reserve(
+                    &mut self.traits.rows.rows,
+                    &mut self.traits.bytes.first,
+                    demand[0],
+                )
+                .err(),
+                reserve(
+                    &mut self.trait_experience.rows.rows,
+                    &mut self.trait_experience.bytes.first,
+                    demand[1],
+                )
+                .err(),
+            ]
+        } else {
+            [None; 2]
+        };
+        // The worker counted each acquired roster/name/template occurrence;
+        // decode reserves those original observations before the fixed Batch.
+        fn reserve_payload<R: Default>(
+            buffer: &mut Buffer<R>,
+            demand: AdvisorDemand,
+        ) -> Result<(), &'static str> {
+            if demand.overflowed {
+                return Err("character capture demand overflow");
+            }
+            engine::walk::Buffer::Growing(&mut buffer.rows.rows).ensure(demand.rows)?;
+            engine::walk::Buffer::Growing(&mut buffer.bytes.first).ensure(demand.bytes)?;
+            Ok(())
+        }
+        let payload_failures = if job.capture_growing {
+            [
+                reserve_payload(&mut self.characters, job.character_demand).err(),
+                reserve_payload(&mut self.units, job.unit_demand).err(),
+            ]
+        } else {
+            [None; 2]
+        };
+        let leader_failure = if job.active[1] && job.capture_growing {
+            engine::walk::Buffer::Growing(&mut self.leaders.rows.rows)
+                .ensure(job.leader_rows)
+                .err()
+        } else {
+            None
+        };
         let recorded = crate::raw::Recorded::build(&job.log);
         let mut family = self.family().select(job.active);
+        if let Some(reason) = payload_failures[0] {
+            family.characters.fail(reason);
+        }
+        if let Some(reason) = payload_failures[1] {
+            family.units.fail(reason);
+        }
+        if let Some(reason) = leader_failure {
+            family.leaders.fail(reason);
+        }
+        if let Some(reason) = trait_failures[0] {
+            family.traits.fail(reason);
+        }
+        if let Some(reason) = trait_failures[1] {
+            family.experience.fail(reason);
+        }
         if let Some(reason) = advisor_failure {
             family.advisors.fail(reason);
         }

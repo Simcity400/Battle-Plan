@@ -74,6 +74,24 @@ fn row(
 }
 
 pub fn walk(memory: &impl Memory, base: usize, game: usize, output: &mut [Row]) -> Outcome {
+    walk_buffer(memory, base, game, crate::walk::Buffer::Fixed(output))
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    output: &mut Vec<Row>,
+) -> Outcome {
+    walk_buffer(memory, base, game, crate::walk::Buffer::Growing(output))
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    mut output: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game)?;
         let mut len = 0usize;
@@ -85,6 +103,10 @@ pub fn walk(memory: &impl Memory, base: usize, game: usize, output: &mut [Row]) 
             found = true;
             let status = status::from_country(memory, base, country, &countries)?;
             let programs = status::programs(memory, status)?;
+            output.ensure(
+                len.checked_add(programs.count as usize)
+                    .ok_or("raid facility row count overflow")?,
+            )?;
             for ordinal in 0..programs.count {
                 if let Some(out) = output.get_mut(len) {
                     let pointer = programs
@@ -192,6 +214,31 @@ mod tests {
             );
         }
         (bytes, start)
+    }
+
+    #[test]
+    fn first_and_later_native_rosters_grow_without_omitting_occurrences() {
+        let mut rows = Vec::new();
+        for countries in [1500, 5000] {
+            let (bytes, _) = fixture(countries);
+            let memory = SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            assert_eq!(
+                walk(&memory, 0, 0x1000, &mut []),
+                Outcome::Truncated {
+                    len: 0,
+                    unread_rows: countries as u32 * 2
+                }
+            );
+            assert_eq!(
+                walk_growing(&memory, 0, 0x1000, &mut rows),
+                Outcome::Rows { len: countries * 2 }
+            );
+            assert_eq!(rows[countries * 2 - 1].country, countries as u32);
+            assert_eq!(rows[countries * 2 - 1].ordinal, 1);
+        }
     }
 
     #[test]

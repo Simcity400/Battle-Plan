@@ -3,6 +3,47 @@ use crate::products::country_stability::{BreakdownLine, line_name};
 use std::sync::Arc;
 
 #[test]
+fn idea_case_aliases_use_authored_name_description_and_picture_keys() {
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/mod.lua",
+            "NDefines = { NCharacter = { OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU = { \"mod_seat\" } } }",
+        ),
+        (
+            "common/ideas/mod.txt",
+            "ideas = { country = { mod_Spirit = { } } }",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            "\u{feff}l_english:\n mod_Spirit:0 \"Authored name\"\n mod_Spirit_desc:0 \"Authored description\"\n",
+        ),
+    ]);
+    let content = PoliticsContent::load(Arc::new(catalogue)).unwrap();
+    let country = IdeaCountry {
+        tag: "MOD",
+        slot: 0,
+        look: Some(CountryLook {
+            name_tag: "",
+            original_or_own_tag: Ok("MOD"),
+            cosmetic_tag: "",
+            civil_war: Ok(false),
+        }),
+    };
+    let (artwork, _) = content.idea_artwork("MOD_SPIRIT", None, country);
+    assert_eq!(artwork.name.as_deref(), Some("Authored name"));
+    assert_eq!(artwork.description.as_deref(), Some("Authored description"));
+    assert_eq!(
+        content.idea_name_offline("MOD_SPIRIT").unwrap(),
+        IdeaName::Key("mod_Spirit".into())
+    );
+    assert_eq!(
+        content.idea("MOD_SPIRIT").unwrap().unwrap().sprite(),
+        "GFX_idea_mod_Spirit"
+    );
+    assert!(!content.defines("MOD_SPIRIT"));
+}
+
+#[test]
 fn unknown_gui_decode_reaches_idea_and_portrait_problems() {
     let (mut catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
         (
@@ -523,6 +564,7 @@ fn a_dynamic_country_in_civil_war_skips_its_keys() {
             can_occupy_non_war: 0,
             enemies_read: 1,
             enemies: vec![100],
+            ordered: Default::default(),
         }],
         vec![war(1)],
     );

@@ -1,6 +1,56 @@
 use super::*;
 
 #[test]
+fn missing_trait_sprite_retries_native_gui_fallback_with_registered_spelling() {
+    use crate::catalogue::texture_tests::{from_url, png_bytes, texture_catalogue};
+    let image = installed_content::image::Rgba8Image {
+        width: 2,
+        height: 2,
+        pixels: [12, 34, 56, 255].repeat(4),
+    };
+    let (catalogue, _folders) = texture_catalogue(
+        &[
+            ("common/defines/test.lua", "NDefines={NCharacter={OFFICER_CORP_ADVISOR_ENTRIES_IN_MENU={}}}"),
+            (
+                "common/unit_leader/test.txt",
+                "leader_traits={Mod_Trait={} Canonical_Trait={} Broken_Trait={}}",
+            ),
+            (
+                "interface/art.gfx",
+                "spriteTypes={spriteType={name=GFX_default_fallback_texture textureFile=gfx/fallback.png}
+                    spriteType={name=GFX_trait_Canonical_Trait textureFile=gfx/canonical.png}
+                    spriteType={name=GFX_trait_Broken_Trait textureFile=gfx/missing.png}}",
+            ),
+        ],
+        &[("gfx/fallback.png", png_bytes(&image)), ("gfx/canonical.png", png_bytes(&installed_content::image::Rgba8Image { width: 1, height: 1, pixels: vec![23,45,67,255] }))],
+    );
+    let catalogue = Arc::new(catalogue);
+    let content = Content {
+        politics: Arc::new(politics_content::PoliticsContent::load(catalogue.clone()).unwrap()),
+        leaders: installed_content::unit_leader::Leaders::load(&catalogue.content.layers, &|_| None)
+            .unwrap(),
+        catalogue,
+    };
+    let info = trait_info("mod_trait", Some(&content));
+    assert!(info.missing.is_none(), "{:?}", info.missing);
+    assert_eq!(from_url(info.icon.as_ref().unwrap()), image);
+    let canonical = trait_info("canonical_trait", Some(&content));
+    assert_eq!(
+        from_url(canonical.icon.as_ref().unwrap()).pixels,
+        [23, 45, 67, 255]
+    );
+    let broken = trait_info("Broken_Trait", Some(&content));
+    assert!(broken.icon.is_none());
+    assert!(broken.missing.unwrap().contains("missing.png"));
+    assert!(
+        trait_info("unregistered", Some(&content))
+            .missing
+            .unwrap()
+            .contains("not registered")
+    );
+}
+
+#[test]
 fn leader_outcomes_join_native_handles_and_keep_pending_battles_unknown() {
     use replay::{
         frame::TableView,

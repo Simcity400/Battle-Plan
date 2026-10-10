@@ -16,6 +16,7 @@ fn input(handle: u32, progress: i64) -> ResearchInputRow {
         country: 11,
         index: 0,
         technology_handle: handle,
+        database_index: replay::rows::Recorded::Value(handle as i32),
         technology_present: 1,
         token: format!("tech_{handle}").into_bytes(),
         classifier: 5,
@@ -176,6 +177,7 @@ fn resuming_in_the_same_slot_cannot_complete_the_cancelled_assignment() {
     let mut country = Country::default();
     observe(&mut country, 0, &input(1, 0));
     let inventory = [ResearchTechnologyRow {
+        database_index: 1,
         country: 11,
         technology_handle: 1,
         classifier: 5,
@@ -364,6 +366,7 @@ fn delayed_inventory_completion_keeps_the_assignment_end_and_observation_separat
     observe(&mut country, 0, &input(1, 0));
     observe(&mut country, 1, &input(2, 0));
     let inventory = [ResearchTechnologyRow {
+        database_index: 1,
         country: 11,
         technology_handle: 1,
         level: 1,
@@ -435,6 +438,7 @@ fn research_frame(
             .iter()
             .enumerate()
             .map(|(index, handle)| ResearchSlotRow {
+                database_index: replay::rows::Recorded::Value((handle.unwrap_or(0)) as i32),
                 country: 11,
                 index: index as u32,
                 technology_handle: handle.unwrap_or(0),
@@ -449,6 +453,7 @@ fn research_frame(
                 .map(|handle| {
                     let done = completed.contains(&handle);
                     ResearchTechnologyRow {
+                        database_index: (handle) as i32,
                         country: 11,
                         technology_handle: handle,
                         level: i32::from(done),
@@ -467,6 +472,7 @@ fn research_frame(
         TableView::Complete(TableRows::TechnologyDefinitions(
             (1..=4)
                 .map(|technology_handle| TechnologyDefinitionRow {
+                    database_index: (technology_handle) as i32,
                     technology_handle,
                     id: format!("tech_{technology_handle}").into_bytes(),
                     ..Default::default()
@@ -879,4 +885,98 @@ fn research_repeat_levels_and_removed_slots_preserve_distinct_assignments() {
     assert_eq!(slots[0].entries[1].level, 2);
     assert_eq!(slots[1].entries[0].outcome, crate::ResearchOutcome::Unknown);
     assert_eq!(slots[1].availability[0].last_hour, 101);
+}
+
+#[test]
+fn repeated_handle_assignments_do_not_complete_transfer_or_share_progress() {
+    let mut country = Country::default();
+    let first = input(7, 100_000);
+    observe(&mut country, 0, &first);
+    country.read_after = Some(0);
+    observe(&mut country, 24, &input(7, 200_000));
+    let mut later = input(7, 9_000_000);
+    later.database_index = replay::rows::Recorded::Value(8);
+    let former = ResearchTechnologyRow {
+        country: 11,
+        database_index: 7,
+        technology_handle: 7,
+        classifier: 0,
+        progress_raw: 200_000,
+        ..Default::default()
+    };
+    country.read_after = Some(24);
+    country.observe_inputs((7, 7), 48, &[&later], Some(&[former]), Some(&[]), None);
+    let slot = &country.history.slots[0];
+    assert_eq!(slot.entries.len(), 2);
+    assert_eq!(slot.entries[0].outcome, ResearchOutcome::Switched);
+    assert_eq!(slot.entries[1].outcome, ResearchOutcome::Active);
+    assert_eq!(country.samples[&0].len(), 1);
+    assert_eq!(slot.progress.last().unwrap().entry_first_observed_hour, 48);
+    let unrelated = ResearchTechnologyRow {
+        country: 11,
+        database_index: 8,
+        technology_handle: 7,
+        level: 1,
+        classifier: 4,
+        ..Default::default()
+    };
+    let mut idle = later.clone();
+    idle.technology_present = 0;
+    country.read_after = Some(48);
+    country.observe_inputs((7, 7), 72, &[&idle], Some(&[unrelated]), Some(&[]), None);
+    assert_eq!(
+        country.history.slots[0].entries[0].outcome,
+        ResearchOutcome::Switched
+    );
+    assert_eq!(
+        country.history.slots[0].entries[1].outcome,
+        ResearchOutcome::Completed
+    );
+}
+
+#[test]
+fn historical_inputs_without_occurrence_do_not_select_an_equal_handle() {
+    let mut country = Country::default();
+    let mut row = input(7, 0);
+    row.database_index = replay::rows::Recorded::NotRecorded;
+    observe(&mut country, 0, &row);
+    assert!(country.history.coverage.is_empty());
+}
+
+#[test]
+fn completed_same_name_occurrence_cannot_supply_former_assignment_progress() {
+    let mut country = Country::default();
+    observe(&mut country, 0, &input(7, 100_000));
+    let mut completed = input(7, 9_000_000);
+    completed.database_index = replay::rows::Recorded::Value(8);
+    completed.classifier = engine::ctechnology::CLASSIFIER_COMPLETED;
+    let former = ResearchTechnologyRow {
+        country: 11,
+        database_index: 7,
+        technology_handle: 7,
+        progress_raw: 100_000,
+        ..Default::default()
+    };
+    country.observe_inputs((7, 7), 1, &[&completed], Some(&[former]), Some(&[]), None);
+    let slot = &country.history.slots[0];
+    assert_eq!(slot.entries.len(), 1);
+    assert_eq!(slot.entries[0].outcome, ResearchOutcome::Switched);
+    assert_eq!(slot.progress.len(), 1);
+    assert_eq!(slot.progress[0].progress_raw, "100000");
+    assert_eq!(slot.states.last().unwrap().entry_first_observed_hour, None);
+
+    let mut country = Country::default();
+    observe(&mut country, 0, &input(7, 100_000));
+    completed.database_index = replay::rows::Recorded::Value(7);
+    completed.level = 1;
+    observe(&mut country, 1, &completed);
+    observe(&mut country, 2, &completed);
+    assert_eq!(
+        country.history.slots[0]
+            .states
+            .last()
+            .unwrap()
+            .entry_first_observed_hour,
+        Some(0)
+    );
 }

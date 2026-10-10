@@ -22,6 +22,14 @@ pub struct StateControl {
     pub controller_explicit: bool,
 }
 
+/// What the current native state writer emits, without reconstructing load-time
+/// ownership. The nonpositive arm omits both owner and controller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StateControlEmission {
+    Positive(StateControl),
+    NonPositiveOwner { id: u32 },
+}
+
 impl Save {
     /// CState writer 1409d4040 omits controllers equal to a positive owner by
     /// raw id or canonical link slot; post-load 1409cdf80 restores owner.
@@ -34,6 +42,37 @@ impl Save {
         membership: &PartialMapMembership,
     ) -> io::Result<Vec<StateControl>> {
         self.state_control_for(&state_inventory(membership))
+    }
+
+    /// CState::Serialize@1409D4040 writes owner (0x283E), and only then
+    /// controller (0x283F), when signed +0xC8 > 0. Absence certifies only
+    /// the nonpositive class; it supplies no controller or exact raw owner.
+    /// The strict positive-only control reader remains separate.
+    pub fn state_control_emissions(
+        &self,
+        membership: &PartialMapMembership,
+    ) -> io::Result<Vec<StateControlEmission>> {
+        let state_ids = state_inventory(membership);
+        self.validate_state_inventory(&state_ids)?;
+        state_ids
+            .into_iter()
+            .map(|id| {
+                let state = self
+                    .states
+                    .get(&id)
+                    .ok_or_else(|| invalid(format!("save lacks state {id}")))?;
+                if state.owner.is_some() {
+                    self.positive_state_control(id)
+                        .map(StateControlEmission::Positive)
+                } else if state.controller.is_some() {
+                    Err(invalid(format!(
+                        "save state {id} has controller without a positive owner"
+                    )))
+                } else {
+                    Ok(StateControlEmission::NonPositiveOwner { id })
+                }
+            })
+            .collect()
     }
 
     fn validate_state_inventory(&self, state_ids: &BTreeSet<u32>) -> io::Result<()> {
@@ -49,37 +88,39 @@ impl Save {
         self.validate_state_inventory(state_ids)?;
         state_ids
             .iter()
-            .map(|&id| {
-                let state = self
-                    .states
-                    .get(&id)
-                    .ok_or_else(|| invalid(format!("save lacks state {id}")))?;
-                let owner = state
-                    .owner
-                    .as_ref()
-                    .ok_or_else(|| invalid(format!("save state {id} lacks its owner")))?;
-                let controller = state.controller.as_ref().unwrap_or(owner);
-                for tag in [owner, controller] {
-                    if !self.countries.contains_key(tag) {
-                        return Err(invalid(format!(
-                            "state {id} references unknown saved country {}",
-                            String::from_utf8_lossy(tag)
-                        )));
-                    }
-                }
-                Ok(StateControl {
-                    id,
-                    owner: owner.clone(),
-                    controller: controller.clone(),
-                    controller_explicit: state.controller.is_some(),
-                })
-            })
+            .map(|&id| self.positive_state_control(id))
             .collect()
     }
 
-    /// CProvince writer 140e6ca90 omits a controller equivalent to its state's
-    /// owner; post-load 1409cdf80 fills omitted/nonpositive controls from that
-    /// owner. A missing state or state-owner field cannot be filled this way.
+    fn positive_state_control(&self, id: u32) -> io::Result<StateControl> {
+        let state = self
+            .states
+            .get(&id)
+            .ok_or_else(|| invalid(format!("save lacks state {id}")))?;
+        let owner = state
+            .owner
+            .as_ref()
+            .ok_or_else(|| invalid(format!("save state {id} lacks its owner")))?;
+        let controller = state.controller.as_ref().unwrap_or(owner);
+        for tag in [owner, controller] {
+            if !self.countries.contains_key(tag) {
+                return Err(invalid(format!(
+                    "state {id} references unknown saved country {}",
+                    String::from_utf8_lossy(tag)
+                )));
+            }
+        }
+        Ok(StateControl {
+            id,
+            owner: owner.clone(),
+            controller: controller.clone(),
+            controller_explicit: state.controller.is_some(),
+        })
+    }
+
+    /// CProvince writer 140E6CA90 emits only signed-positive controllers that
+    /// differ from the state's owner. CState writer 1409D4040 omits nonpositive
+    /// owners: their provinces retain no positive owner or omitted controller.
     /// Unknown provinces retain explicit saved controllers; their state/owner
     /// and omitted controllers remain unknown. Other rows use native omissions.
     pub fn province_control(
@@ -105,10 +146,19 @@ impl Save {
                 ProvinceMembership::Known(state) => (*state, true),
                 ProvinceMembership::Unknown(_) => (None, false),
             };
-            let owner = state_id.map(|state_id| {
-                self.states.get(&state_id).ok_or_else(|| invalid(format!("save lacks state {state_id}, required by province {id}")))?
-                    .owner.clone().ok_or_else(|| invalid(format!("save state {state_id} lacks its owner; refusing to infer province {id}")))
-            }).transpose()?;
+            let owner = state_id
+                .map(|state_id| {
+                    self.states
+                        .get(&state_id)
+                        .map(|state| state.owner.clone())
+                        .ok_or_else(|| {
+                            invalid(format!(
+                                "save lacks state {state_id}, required by province {id}"
+                            ))
+                        })
+                })
+                .transpose()?
+                .flatten();
             let override_row = self.provinces.get(&id);
             if override_row.is_some_and(|row| row.owner.is_some()) {
                 return Err(invalid(format!(
@@ -146,3 +196,7 @@ fn state_inventory(membership: &PartialMapMembership) -> BTreeSet<u32> {
         .copied()
         .collect()
 }
+
+#[cfg(test)]
+#[path = "control/nonpositive_tests.rs"]
+mod nonpositive_tests;

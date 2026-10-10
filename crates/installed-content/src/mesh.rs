@@ -55,8 +55,8 @@ pub use container::{Node, Value, parse};
 pub use descriptors::{
     AnimationDefinition, Attachment, DEFAULT_STATE, Descriptors, EntityDefinition, EntityEvent,
     EntityGameData, EntityState, InheritedEntity, Locator, MeshDefinition, MeshSetting,
-    ResolvedEntity, ResolvedMesh, Roster, TextureIndex, balanced_blocks, lexical_names,
-    parse_descriptors,
+    NavalHitMissEffect, ResolvedEntity, ResolvedMesh, Roster, TextureIndex, balanced_blocks,
+    lexical_names, parse_descriptors,
 };
 
 /// The four magic bytes every PDX binary asset starts with (section 1.1).

@@ -3,7 +3,10 @@ use crate::modifier_definition;
 use std::collections::BTreeMap;
 
 #[derive(Default)]
-struct Image(BTreeMap<usize, u8>);
+struct Image(
+    BTreeMap<usize, u8>,
+    Option<Result<ccountry::Country, &'static str>>,
+);
 
 impl Memory for Image {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
@@ -14,6 +17,14 @@ impl Memory for Image {
             *byte = *value;
         }
         true
+    }
+
+    fn authenticated_reserved_country(
+        &self,
+        base: usize,
+        state: usize,
+    ) -> Option<Result<ccountry::Country, &'static str>> {
+        ((base, state) == (0, GS)).then_some(self.1).flatten()
     }
 }
 
@@ -135,7 +146,9 @@ fn fixture() -> Image {
 }
 
 fn run(memory: &Image, order: usize) -> Result<Option<Row>, &'static str> {
-    let countries = ccountry::Reader::new(memory, 0, GS)?;
+    let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(16, 16).unwrap();
+    country_memo.reset(0, GS);
+    let countries = country_memo.view(memory, 0, GS);
     let provinces = provinces(memory, GS)?;
     read(
         memory,
@@ -317,7 +330,12 @@ fn the_walk_records_invasions_counts_overflow_and_needs_the_census() {
     let mut slots = [0_u32; 2];
     let source = Outcome::Rows { len: 2 };
     let walked = |memory: &Image, gs, rows: &mut [Row], slots: &mut [u32], source| {
-        walk(memory, 0, gs, &visits, source, &memo, rows, slots)
+        let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(16, 16).unwrap();
+        country_memo.reset(0, gs);
+        let countries = country_memo.view(memory, 0, gs);
+        walk(
+            memory, 0, gs, &visits, source, &memo, &countries, rows, slots,
+        )
     };
     assert_eq!(
         walked(&memory, GS, &mut rows, &mut slots, source),
@@ -376,14 +394,60 @@ fn the_walk_records_invasions_counts_overflow_and_needs_the_census() {
 }
 
 #[test]
+fn invasion_rows_and_owner_relations_grow_before_first_and_later_publication() {
+    let mut rows = Vec::new();
+    let mut slots = Vec::new();
+    for count in [5_000, 7_500] {
+        let mut memory = route_fixture();
+        let original: Vec<_> = memory
+            .0
+            .range(ORDER..ORDER + 0x400)
+            .map(|(&at, &byte)| (at - ORDER, byte))
+            .collect();
+        let visits: Vec<_> = (0..count)
+            .map(|index| {
+                let pointer = 0x200_0000 + index * 0x400;
+                for &(offset, byte) in &original {
+                    memory.0.insert(pointer + offset, byte);
+                }
+                memory.u32(pointer + corder_instance::ID, index as u32 + 1);
+                visit(pointer)
+            })
+            .collect();
+        let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(16, 16).unwrap();
+        country_memo.reset(0, GS);
+        let countries = country_memo.view(&memory, 0, GS);
+        let report = walk_growing(
+            &memory,
+            0,
+            GS,
+            &visits,
+            Outcome::Rows { len: count },
+            &DefinitionMemo::default(),
+            &countries,
+            &mut rows,
+            &mut slots,
+        );
+        assert_eq!(report.outcome, Outcome::Rows { len: count });
+        assert_eq!((report.slots, report.required_slots), (1, 1));
+        assert_eq!(slots[0], 2);
+        assert_eq!(rows[count - 1].instance, count as u32);
+        assert!(rows[..count].iter().all(|row| row.co_belligerent_len == 1));
+    }
+}
+
+#[test]
 fn the_route_unit_falls_back_to_the_group_then_the_request_countrys_roster() {
     let mut memory = route_fixture();
-    let countries = ccountry::Reader::new(&memory, 0, GS).unwrap();
+    let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(16, 16).unwrap();
+    country_memo.reset(0, GS);
+    let countries = country_memo.view(&memory, 0, GS);
     assert_eq!(route_unit(&memory, &countries, ORDER, GROUP), Ok(UNIT));
     memory.array(ORDER + corder_instance::ASSIGNED_MEMBER_DATA, 0x7500, 0);
     memory.array(GROUP + corders_group::MEMBER_DATA, 0x6600, 1);
     memory.u64(0x6600, MEMBER as u64);
-    let countries = ccountry::Reader::new(&memory, 0, GS).unwrap();
+    country_memo.reset(0, GS);
+    let countries = country_memo.view(&memory, 0, GS);
     assert_eq!(
         route_unit(&memory, &countries, ORDER, GROUP),
         Ok(MEMBER - cunit::SCHEDULED_MEMBER)
@@ -395,14 +459,125 @@ fn the_route_unit_falls_back_to_the_group_then_the_request_countrys_roster() {
     memory.u32(0x6a00 + ctheatre::OWNER, 2);
     memory.array(COUNTRY + ccountry::DIVISIONS, 0x6b00, 2);
     memory.u64(0x6b00, 0x5500);
-    let countries = ccountry::Reader::new(&memory, 0, GS).unwrap();
+    country_memo.reset(0, GS);
+    let countries = country_memo.view(&memory, 0, GS);
     assert_eq!(route_unit(&memory, &countries, ORDER, GROUP), Ok(0x5500));
     // A positive volunteers theatre country takes precedence over the owner.
     memory.u32(0x6a00 + ctheatre::VOLUNTEERS_THEATRE, 2);
     memory.u32(0x6a00 + ctheatre::OWNER, 99);
-    let countries = ccountry::Reader::new(&memory, 0, GS).unwrap();
+    country_memo.reset(0, GS);
+    let countries = country_memo.view(&memory, 0, GS);
     assert_eq!(route_unit(&memory, &countries, ORDER, GROUP), Ok(0x5500));
     memory.array(COUNTRY + ccountry::DIVISIONS, 0x6b00, 0);
-    let countries = ccountry::Reader::new(&memory, 0, GS).unwrap();
+    country_memo.reset(0, GS);
+    let countries = country_memo.view(&memory, 0, GS);
     assert_eq!(route_unit(&memory, &countries, ORDER, GROUP), Ok(0));
+}
+
+fn reserved(memory: &mut Image) {
+    memory.1 = Some(Ok(ccountry::Country {
+        pointer: COUNTRY,
+        canonical_slot: 0,
+        id: 0,
+    }));
+    memory.u32(COUNTRY + ccountry::ID, 0);
+    memory.u32(GROUP + corders_group::COUNTRY, 0);
+    memory.u64(MATRIX, RELATION as u64);
+}
+
+#[test]
+fn raw_zero_preparation_and_logical_route_owner_need_no_positive_context() {
+    let mut memory = route_fixture();
+    reserved(&mut memory);
+    memory.u32(STATE + cstate::CONTROLLER, 0);
+    memory.u32(UNIT + cunit::LOGICAL_OWNER, 0);
+    memory.u32(RELATION + crelation_status::TARGET_COUNTRY, 0);
+    memory.u32(0x4f00, 0);
+    // Neither positive header can be acquired. All reached country raw IDs
+    // and directed candidates are zero, so only the supplied reserved result
+    // is needed; existing province/relation/route operands remain binding.
+    for header in [cgame_state::COUNTRIES, cgame_state::COUNTRY_LINKS] {
+        for byte in 0..16 {
+            memory.0.remove(&(GS + header + byte));
+        }
+    }
+    let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(0, 0).unwrap();
+    country_memo.reset(0, GS);
+    let countries = country_memo.view(&memory, 0, GS);
+    let mut rows = [Row::default(); 1];
+    let walked = walk(
+        &memory,
+        0,
+        GS,
+        &[visit(ORDER)],
+        Outcome::Rows { len: 1 },
+        &DefinitionMemo::default(),
+        &countries,
+        &mut rows,
+        &mut [],
+    );
+    assert_eq!(walked.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(rows[0].country_term, -10_000);
+    assert_eq!(rows[0].relation_term, None);
+    assert_eq!(rows[0].relation_bonus, Some(40_000));
+    assert_eq!(rows[0].unit_owner, 0);
+    assert_eq!(rows[0].co_belligerent_len, 0);
+    assert_eq!(country_memo.link_required(), 0);
+}
+
+#[test]
+fn native_country_id_zero_preserves_positive_alias_zero_relation_gate() {
+    let mut memory = fixture();
+    reserved(&mut memory);
+    // Target raw3 is signed positive, unlike the resolved native id0, while
+    // its native link selects slot0. same_country must NOT suppress this term.
+    memory.u32(LINKS + 3 * 4, 0);
+    let row = run(&memory, ORDER).unwrap().unwrap();
+    assert_eq!(row.target, 3);
+    assert_eq!(row.relation_term, Some(30_000));
+    assert_eq!(row.relation_bonus, Some(40_000));
+}
+
+#[test]
+fn preparation_group_readable_alias_zero_uses_the_same_reserved_source() {
+    let mut memory = fixture();
+    reserved(&mut memory);
+    memory.u32(GROUP + corders_group::COUNTRY, 2);
+    memory.u32(LINKS + 2 * 4, 0);
+    memory.u32(STATE + cstate::CONTROLLER, 0);
+    let row = run(&memory, ORDER).unwrap().unwrap();
+    assert_eq!(row.country_term, -10_000);
+    assert_eq!(row.days_term, 200_000);
+    assert_eq!(row.relation_term, None);
+    assert_eq!(row.relation_bonus, Some(40_000));
+}
+
+#[test]
+fn theatre_fallback_uses_native_zero_and_readable_alias_zero() {
+    let mut memory = fixture();
+    reserved(&mut memory);
+    memory.array(ORDER + corder_instance::ASSIGNED_MEMBER_DATA, 0x7500, 0);
+    memory.array(GROUP + corders_group::MEMBER_DATA, 0x6600, 0);
+    memory.u64(GROUP + corders_group::THEATRE, 0x6a00);
+    memory.u32(0x6a00 + ctheatre::VOLUNTEERS_THEATRE, 0);
+    memory.u32(0x6a00 + ctheatre::OWNER, 0);
+    memory.array(COUNTRY + ccountry::DIVISIONS, 0x6b00, 1);
+    memory.u64(0x6b00, UNIT as u64);
+    let mut country_memo = ccountry::NativeReferenceMemo::try_with_capacity(16, 16).unwrap();
+    country_memo.reset(0, GS);
+    assert_eq!(
+        route_unit(&memory, &country_memo.view(&memory, 0, GS), ORDER, GROUP),
+        Ok(UNIT)
+    );
+    assert_eq!(country_memo.link_required(), 0);
+    // Signed-positive volunteers selects raw2 instead of the bad owner, and
+    // its readable mapping0 consumes the same physical source.
+    memory.u32(0x6a00 + ctheatre::VOLUNTEERS_THEATRE, 2);
+    memory.u32(0x6a00 + ctheatre::OWNER, 99);
+    memory.u32(LINKS + 2 * 4, 0);
+    country_memo.reset(0, GS);
+    assert_eq!(
+        route_unit(&memory, &country_memo.view(&memory, 0, GS), ORDER, GROUP),
+        Ok(UNIT)
+    );
 }

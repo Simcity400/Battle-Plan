@@ -1,11 +1,13 @@
 //! Missing operands of 140D27BB0/1419730F0/1419734F0/140D0BCA0.
-//! See war_overview.md. The cached collector walk uses preallocated storage.
+//! See war_overview.md. Worker storage grows from original acquired headers.
 #[cfg(test)]
 #[path = "overview_tests.rs"]
 mod tests;
 use crate::{
-    Memory, ccountry, cdiplomacy_status, cpdx_array::Array, crelation, crelation_status,
-    csubject_relation, cwar_goal, read, walk::Outcome,
+    Memory, ccountry, cdiplomacy_status,
+    cpdx_array::Array,
+    crelation, crelation_status, csubject_relation, cwar_goal, read,
+    walk::{Buffer, Outcome},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -308,8 +310,8 @@ fn copy_wars(
     base: usize,
     countries: &ccountry::Reader<'_, impl Memory>,
     pending: &[Occurrence],
-    output: &mut [OwnedRow],
-    goals: &mut [cwar_goal::relation::Row],
+    output: &mut Buffer<'_, OwnedRow>,
+    goals: &mut Buffer<'_, cwar_goal::relation::Row>,
     cache: &mut DiscoveryCache,
     used: &mut [usize; 3],
     wanted: &mut [usize; 3],
@@ -361,6 +363,7 @@ fn copy_wars(
             Array::from_header(record[37..53].try_into().unwrap(), 8)
                 .ok_or("war overview array invalid or unreadable")?,
         ];
+        output.ensure(used[0].checked_add(1).ok_or("war owned demand overflow")?)?;
         if let Some(row) = output.get_mut(used[0]) {
             *row = OwnedRow {
                 owner: occurrence.owner,
@@ -380,6 +383,9 @@ fn copy_wars(
             wanted[1] = wanted[1]
                 .checked_add(list.count as usize)
                 .ok_or("war goal count overflow")?;
+            // CWarRelation serializer@140D19640 visits complete goal lists; reserve
+            // from these original headers before any goal is published.
+            goals.ensure(wanted[1])?;
             let mut first = 0;
             while first < list.count && used[1] + planned < goals.len() {
                 let count = ((list.count - first) as usize)
@@ -439,6 +445,48 @@ pub fn walk_cached(
     scores: &mut [CountryRow],
     cache: &mut DiscoveryCache,
 ) -> [Outcome; 3] {
+    walk_cached_buffer(
+        memory,
+        base,
+        state,
+        Buffer::Fixed(output),
+        Buffer::Fixed(goals),
+        Buffer::Fixed(scores),
+        cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn walk_cached_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut Vec<OwnedRow>,
+    goals: &mut Vec<cwar_goal::relation::Row>,
+    scores: &mut Vec<CountryRow>,
+    cache: &mut DiscoveryCache,
+) -> [Outcome; 3] {
+    walk_cached_buffer(
+        memory,
+        base,
+        state,
+        Buffer::Growing(output),
+        Buffer::Growing(goals),
+        Buffer::Growing(scores),
+        cache,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn walk_cached_buffer(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut output: Buffer<'_, OwnedRow>,
+    mut goals: Buffer<'_, cwar_goal::relation::Row>,
+    mut scores: Buffer<'_, CountryRow>,
+    cache: &mut DiscoveryCache,
+) -> [Outcome; 3] {
     if cache.scope != Some((base, state)) {
         cache.invalidate();
         cache.scope = Some((base, state));
@@ -449,6 +497,12 @@ pub fn walk_cached(
     let mut score_failure = None;
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, state)?;
+        if output.is_growing() {
+            cache
+                .try_grow(countries.count() as usize, cache.pointers.len())
+                .map_err(|_| "war discovery allocation failed")?;
+        }
+        scores.ensure(countries.count().saturating_sub(1) as usize)?;
         let view = (|| {
             let playing = field::<i32>(memory, state, crate::cgame_state::LOCAL_PLAYER_COUNTRY)?;
             let raw = if playing > 0 {
@@ -469,7 +523,7 @@ pub fn walk_cached(
         let view = view.ok().flatten();
         cache.reachable.fill(false);
         cache.enemies.fill(false);
-        let mut entry_start = 0;
+        let mut entry_start = 0_usize;
         let mut pending = [Occurrence::default(); 64];
         let mut pending_len = 0;
         for page in (1..countries.count()).step_by(64) {
@@ -557,6 +611,15 @@ pub fn walk_cached(
                     return Err("war overview diplomacy owner mismatch");
                 }
                 let owned = vectors[index];
+                if output.is_growing() {
+                    let required = entry_start
+                        .checked_add(owned.count as usize)
+                        .ok_or("war discovery demand overflow")?;
+                    cache
+                        .try_grow(countries.count() as usize, required)
+                        .map_err(|_| "war discovery allocation failed")?;
+                    output.ensure(required)?;
+                }
                 let mut header = OwnerHeader {
                     country: country.pointer,
                     diplomacy: root,
@@ -659,8 +722,8 @@ pub fn walk_cached(
                                 base,
                                 &countries,
                                 &pending,
-                                output,
-                                goals,
+                                &mut output,
+                                &mut goals,
                                 cache,
                                 &mut used,
                                 &mut wanted,
@@ -694,8 +757,8 @@ pub fn walk_cached(
             base,
             &countries,
             &pending[..pending_len],
-            output,
-            goals,
+            &mut output,
+            &mut goals,
             cache,
             &mut used,
             &mut wanted,

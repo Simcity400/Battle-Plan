@@ -151,16 +151,48 @@ impl PreparedBases {
         // CMapIconManagerImpl::update@140B2F270 sorts map icons by projected depth.
         layouts.sort_by(|a, b| b.3.depth.total_cmp(&a.3.depth));
         for (family, name, priority, _, drawn) in layouts {
-            batch.at_layer(layer(priority, report.base_ordinal(), 0));
+            let key = layer(priority, report.base_ordinal(), 0);
+            batch.at_layer(key);
             match native_gui::draw(&drawn.layout, drawn.origin, &resources, batch) {
-                Ok(()) => match family {
-                    Family::AirBase => report.air_bases += 1,
-                    Family::Headquarter => report.naval_headquarters += 1,
-                    Family::Facility => report.facilities += 1,
-                },
+                Ok(()) => {
+                    if let Some(root) = inputs.windows.gui_type(name.as_bytes()) {
+                        record_hit(root, &drawn.layout, drawn.origin, &resources, key, report);
+                    }
+                    match family {
+                        Family::AirBase => report.air_bases += 1,
+                        Family::Headquarter => report.naval_headquarters += 1,
+                        Family::Facility => report.facilities += 1,
+                    }
+                }
                 Err(why) => gui_windows::count_refused(&mut report.icon_gui_notes, name, &[why]),
             }
         }
+    }
+}
+
+/// The binders find bg_btn locally; its actual drawn footprint intercepts unit input.
+pub(super) fn record_hit(
+    root: &native::Element,
+    layout: &native_gui::Layout,
+    origin: [i32; 2],
+    resources: &dyn native_gui::Resources,
+    layer: u64,
+    report: &mut CounterReport,
+) {
+    let Some(button) = root.find(native::Kind::Button, "bg_btn") else {
+        return;
+    };
+    if let Some(hit) = gui_windows::hit_rectangle(
+        button,
+        layout,
+        origin,
+        resources,
+        &mut report.icon_gui_notes,
+    ) {
+        report.base_hits.push(crate::map::unit_selection::Blocker {
+            rect: hit.rect,
+            layer,
+        });
     }
 }
 
@@ -278,6 +310,58 @@ mod tests {
         assert!(
             matches!(&layout.parts[1].kind, PartKind::Sprite { geometry, .. } if geometry.rect[..2] == [14., 16.])
         );
+    }
+
+    #[test]
+    fn base_hits_use_drawn_scale_clip_and_sprite_hit_mode() {
+        let root = window(
+            r#"buttonType = { name = bg_btn quadTextureSprite = GFX_even position = { x = 2 y = 3 } scale = 2 }"#,
+        );
+        let mut resources = fixture();
+        let mut instance = Instance::construct(&root, [800, 600], &resources).unwrap();
+        instance.gui_show(&root, &root).unwrap();
+        let mut layout = instance.layout(&root, &resources, None).unwrap().unwrap();
+        layout.parts[0].clip = Some([5, 4, 30, 15]);
+        let key = layer(-3, 12, 0);
+        for mode in [
+            native_gui::Hit::Frame,
+            native_gui::Hit::Through,
+            native_gui::Hit::Alpha,
+        ] {
+            resources.sprites.get_mut("GFX_even").unwrap().hit = mode;
+            let footprint = gui_windows::hit_rectangle(
+                root.find(native::Kind::Button, "bg_btn").unwrap(),
+                &layout,
+                [100, 200],
+                &resources,
+                &mut BTreeMap::new(),
+            );
+            assert_eq!(footprint.is_some(), mode != native_gui::Hit::Through);
+            if let Some(footprint) = footprint {
+                assert_eq!(footprint.supported, mode == native_gui::Hit::Frame);
+            }
+            let mut report = CounterReport::default();
+            record_hit(&root, &layout, [100, 200], &resources, key, &mut report);
+            assert_eq!(
+                report.base_hits.len(),
+                usize::from(mode != native_gui::Hit::Through)
+            );
+            if let Some(hit) = report.base_hits.first() {
+                assert_eq!(hit.rect, [105.0, 204.0, 25.0, 11.0]);
+                assert_eq!(hit.layer, key);
+            }
+            assert_eq!(
+                report.icon_gui_notes.len(),
+                usize::from(mode == native_gui::Hit::Alpha)
+            );
+        }
+        instance
+            .hide(&root, root.find(native::Kind::Button, "bg_btn").unwrap())
+            .unwrap();
+        let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
+        let mut report = CounterReport::default();
+        record_hit(&root, &layout, [100, 200], &resources, key, &mut report);
+        assert!(report.base_hits.is_empty());
     }
 
     #[test]

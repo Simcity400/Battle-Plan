@@ -37,6 +37,22 @@ pub const TABLES: [TableId; N] = [
 // extended::read_groups includes their individually measured costs.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
+static SELECTED_RETREAT_REFUSALS: [std::sync::atomic::AtomicU64; 2] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
+static WITHDRAWAL_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MOVEMENT_PRIORITY_REFUSALS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn movement_arrow_data() -> impl serde::Serialize {
+    crate::status::status!({
+        "selected_defending_retreat_refused": SELECTED_RETREAT_REFUSALS[0].load(std::sync::atomic::Ordering::Relaxed),
+        "selected_attacking_retreat_refused": SELECTED_RETREAT_REFUSALS[1].load(std::sync::atomic::Ordering::Relaxed),
+        "withdrawal_refused": WITHDRAWAL_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
+        "movement_priority_refused": MOVEMENT_PRIORITY_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
+        "scope": "cumulative field-local movement-arrow scalar refusals; established division movement remains available",
+    })
+}
+
 // One scalar projection for the unchanged-row comparison and the owned row.
 macro_rules! status_fields {
     ($row:ident, $apply:ident, [$($args:expr),* $(,)?] $(,)?) => {
@@ -68,7 +84,7 @@ macro_rules! compare_status_fields {
 }
 
 macro_rules! project_status_fields {
-    ([$row:expr, $acclimatization:expr, $naming:expr, $supply:expr, $attrition:expr, $dig_in:expr, $name:expr], {$($field:ident: $value:expr),* $(,)?}) => {
+    ([$row:expr, $acclimatization:expr, $naming:expr, $supply:expr, $attrition:expr, $dig_in:expr, $name:expr, $attack:expr], {$($field:ident: $value:expr),* $(,)?}) => {
         DivisionStatusRow {
             $($field: $value,)*
             acclimatization: $acclimatization,
@@ -82,6 +98,7 @@ macro_rules! project_status_fields {
             attrition_inputs: Recorded::Value($attrition),
             dig_in_factor: Recorded::Value($dig_in),
             name: Recorded::Value($name),
+            attack: Recorded::Value($attack),
         }
     };
 }
@@ -104,6 +121,7 @@ pub(crate) struct CounterWork {
     hq_refused: u64,
     pub(super) supply: super::supply_inputs::Work,
     attrition: super::attrition_inputs::Work,
+    transport: super::selected_transport_inputs::Work,
 }
 
 impl CounterWork {
@@ -129,6 +147,7 @@ impl CounterWork {
             },
             "supply": self.supply.status(),
             "attrition": self.attrition.status(),
+            "transport": self.transport.status(),
         })
     }
 }
@@ -246,25 +265,111 @@ pub struct Capacities {
     membership: MembershipCapacity,
     attrition: super::attrition_inputs::Capacities,
     supply_origins: usize,
+    combat_references: usize,
+    attack: super::attack_inputs::UnitCapacities,
+    transport: engine::selected_transport_units::Capacity,
 }
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            movement: 8192,
-            status: 8192,
-            bans: 1024,
-            paths: 128 * 1024,
+            movement: 0,
+            status: 0,
+            bans: 0,
+            paths: 0,
             name_bytes: 0,
             name_groups: 0,
             cached_name_bytes: 0,
-            geometry: cprovince::GeometryCapacities::default(),
-            membership: carmy::StatusCapacities::new(8192).membership,
+            geometry: cprovince::GeometryCapacities {
+                provinces: 0,
+                neighbour_entries: 0,
+            },
+            membership: MembershipCapacity::default(),
             attrition: super::attrition_inputs::Capacities::default(),
-            supply_origins: 8192,
+            supply_origins: 0,
+            combat_references: 0,
+            attack: Default::default(),
+            transport: Default::default(),
         }
     }
 }
 impl Capacities {
+    #[cfg(test)]
+    pub(super) fn status_fixture(status: usize) -> Self {
+        Self {
+            status,
+            membership: MembershipCapacity {
+                queries: status,
+                ..Default::default()
+            },
+            ..Self::default()
+        }
+    }
+
+    /// 140C72F00 supplies each army's +340 member; 1409B5640/1409B7290
+    /// select the +88 override or resolved template +1D0 group's key.
+    /// This off-hour hint supplies storage only, never recorded naming values.
+    pub(crate) fn presize_names(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let count =
+            crate::country_scale::table_demand::rows(carmy::walk(memory, base, state, &mut []))?;
+        let mut rows = engine::allocation::default_vec::<carmy::Row>(count)
+            .map_err(|_| "division name sizing allocation failed")?;
+        let mut groups = cname_group_member::GroupKeys::try_with_capacity(count, count)
+            .map_err(|_| "division name sizing allocation failed")?;
+        let mut names = cname_group_member::Names {
+            bytes: &mut [],
+            len: 0,
+            required: 0,
+        };
+        let mut cached = 0usize;
+        let mut failure = None;
+        let outcome = carmy::walk_with(memory, base, state, &mut rows, |army, _| {
+            let result = army
+                .checked_add(engine::carmy_combat_inputs::NAME_GROUP_MEMBER)
+                .and_then(|address| engine::read::<u64>(memory, address))
+                .and_then(|member| usize::try_from(member).ok())
+                .filter(|member| *member != 0)
+                .ok_or("division name sizing member unavailable");
+            let result = result.and_then(|member| {
+                let input =
+                    cname_group_member::inputs(memory, base, member, &mut groups, &mut names);
+                match cname_group_member::cached_name_demand(memory, base, member) {
+                    Ok(bytes) => {
+                        cached = cached
+                            .checked_add(bytes)
+                            .ok_or("division cached name demand overflow")?
+                    }
+                    Err(reason) => {
+                        failure.get_or_insert(reason);
+                    }
+                }
+                input.map(|_| ())
+            });
+            if let Err(reason) = result {
+                failure.get_or_insert(reason);
+            }
+        });
+        if !matches!(outcome, Outcome::Rows { len } if len == count) {
+            return Err("division name sizing census changed or unavailable");
+        }
+        grow_capacity(&mut self.movement, count);
+        grow_capacity(&mut self.status, count);
+        grow_capacity(&mut self.bans, count);
+        grow_capacity(&mut self.name_groups, count);
+        grow_capacity(&mut self.name_bytes, names.required);
+        grow_capacity(&mut self.cached_name_bytes, cached);
+        failure.map_or(Ok(()), Err)
+    }
+
+    pub(super) fn raise_attack_domain(&mut self, provinces: usize) {
+        self.attack.0.terrains = self.attack.0.terrains.max(provinces);
+        self.geometry.provinces = self.geometry.provinces.max(provinces);
+    }
+
     pub(crate) fn raise_for_attrition(
         &mut self,
         demand: engine::attrition_modifier_breakdown::Demand,
@@ -273,14 +378,25 @@ impl Capacities {
         grow_capacity(&mut self.status, demand.rows);
         grow_capacity(&mut self.supply_origins, demand.supply_origins);
         grow_capacity(&mut self.cached_name_bytes, demand.cached_name_text);
+        grow_capacity(&mut self.transport.rows, demand.rows);
+        grow_capacity(&mut self.transport.members, demand.transport_members);
     }
 }
 fn status_packet(c: &Capacities) -> carmy::StatusPacket {
-    let mut packet =
-        carmy::StatusPacket::new(c.status).unwrap_or_else(|_| carmy::StatusPacket::vacant());
-    packet.raise_supply_origins(c.supply_origins);
-    let _ = packet.grow(c.status, c.membership);
-    packet
+    carmy::StatusPacket::with_capacities(carmy::StatusCapacities {
+        units: c.status,
+        supply_origins: c.supply_origins,
+        manpower: 0,
+        acclimatization: 0,
+        acclimatization_categories: 0,
+        thresholds: 0,
+        modifiers: engine::modifier_accumulator::SnapshotCapacity {
+            nodes: c.status,
+            entries: 0,
+        },
+        membership: c.membership,
+    })
+    .unwrap_or_else(|_| carmy::StatusPacket::vacant())
 }
 
 pub struct Captured {
@@ -297,10 +413,18 @@ pub struct Captured {
     cached_names: Arena<u8>,
     name_groups: cname_group_member::GroupKeys,
     movement_packet: carmy::MovementPacket,
+    /// Sparse execution output from the same held pass, installed only after
+    /// both Presentation and Late have joined. Never reads native memory.
+    order_transport: engine::order_execution::UnitPacket,
     geometry: cprovince::GeometryPacket,
+    geometry_hour: Option<i32>,
+    geometry_result: Result<(), &'static str>,
     status_packet: carmy::StatusPacket,
     attrition: super::attrition_inputs::Captured,
     attrition_ticks: u64,
+    pub(super) attack: super::attack_inputs::Units,
+    attack_capacity: super::attack_inputs::UnitCapacities,
+    transport: engine::selected_transport_units::Packet,
     membership: MembershipCapacity,
     source_capacity: usize,
     source_required: usize,
@@ -342,10 +466,18 @@ impl Captured {
             cached_names: Arena::new(0),
             name_groups: cname_group_member::GroupKeys::default(),
             movement_packet: carmy::MovementPacket::vacant(),
+            order_transport: engine::order_execution::UnitPacket::vacant(),
             geometry: cprovince::GeometryPacket::vacant(),
+            geometry_hour: None,
+            geometry_result: Err("presentation geometry not attempted"),
             status_packet: carmy::StatusPacket::vacant(),
             attrition: super::attrition_inputs::Captured::new(Default::default()),
             attrition_ticks: 0,
+            attack: super::attack_inputs::Units::vacant(),
+            attack_capacity: super::attack_inputs::UnitCapacities(
+                engine::selected_attack::UnitCapacity::default(),
+            ),
+            transport: engine::selected_transport_units::Packet::vacant(),
             membership: MembershipCapacity::default(),
             source_capacity: 0,
             source_required: 0,
@@ -356,6 +488,11 @@ impl Captured {
     pub fn with_capacities(c: &Capacities) -> Self {
         let mut attrition = super::attrition_inputs::Captured::new(c.attrition);
         attrition.reserve_rows(c.status);
+        let mut movement_packet = carmy::MovementPacket::try_new(c.movement, c.paths)
+            .unwrap_or_else(|_| carmy::MovementPacket::vacant());
+        // The checked allocator still signals terminal failure. Keep the
+        // already-prepared legacy packet if only this optional arena fails.
+        let _ = movement_packet.reserve_combat_references(c.combat_references);
         Self {
             land: super::division_land::Captured::new(c.movement.max(c.status)),
             land_ticks: 0,
@@ -373,13 +510,20 @@ impl Captured {
             )
             .map_err(crate::allocation::io)
             .unwrap_or_default(),
-            movement_packet: carmy::MovementPacket::try_new(c.movement, c.paths)
-                .unwrap_or_else(|_| carmy::MovementPacket::vacant()),
+            movement_packet,
+            order_transport: engine::order_execution::UnitPacket::vacant(),
             geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
                 .unwrap_or_default(),
             status_packet: status_packet(c),
             attrition,
             attrition_ticks: 0,
+            geometry_hour: None,
+            geometry_result: Err("presentation geometry not attempted"),
+            attack: super::attack_inputs::Units::new(c.attack),
+            attack_capacity: c.attack,
+            transport: engine::selected_transport_units::Packet::try_new(c.transport)
+                .map_err(crate::allocation::io)
+                .unwrap_or_else(|_| engine::selected_transport_units::Packet::vacant()),
             membership: c.membership,
             source_capacity: c.movement.max(c.status),
             source_required: 0,
@@ -398,7 +542,12 @@ impl Captured {
         self.names.reset();
         self.cached_names.reset();
         self.attrition.reset();
+        self.attack.reset();
+        self.transport.clear();
+        self.geometry_hour = None;
+        self.geometry_result = Err("presentation geometry not attempted");
         self.attrition_ticks = 0;
+        self.order_transport.reset();
         // Engine acquisition resets each owned packet in its measured scope.
         self.decode_pending = false;
     }
@@ -414,9 +563,12 @@ impl Captured {
             + self.cached_names.allocated_bytes()
             + self.name_groups.allocated_bytes()
             + self.movement_packet.allocated_bytes()
+            + self.order_transport.allocated_bytes()
             + self.geometry.allocated_bytes()
             + self.status_packet.allocated_bytes()
             + self.attrition.allocated_bytes()
+            + self.attack.allocated_bytes()
+            + self.transport.allocated_bytes()
     }
 
     pub fn grow(&mut self, c: &mut Capacities) {
@@ -424,6 +576,15 @@ impl Captured {
         self.status.grow(&mut c.status);
         self.bans.grow(&mut c.bans);
         self.attrition.grow(&mut c.attrition);
+        self.attack.grow(&mut c.attack);
+        self.attack_capacity = c.attack;
+        let required = self.transport.required();
+        grow_capacity(&mut c.transport.rows, required.rows);
+        grow_capacity(&mut c.transport.members, required.members);
+        let _ = self
+            .transport
+            .reserve(c.transport)
+            .map_err(crate::allocation::io);
         grow_capacity(
             &mut c.supply_origins,
             self.status_packet.required_capacities().supply_origins,
@@ -449,6 +610,13 @@ impl Captured {
         );
         let _ = self.geometry.grow(c.geometry);
         let _ = self.movement_packet.reserve(c.movement, c.paths);
+        grow_capacity(
+            &mut c.combat_references,
+            self.movement_packet.combat_references_required(),
+        );
+        let _ = self
+            .movement_packet
+            .reserve_combat_references(c.combat_references);
         self.reserve_sources(
             self.source_capacity
                 .max(self.source_required)
@@ -469,6 +637,54 @@ impl Captured {
             .grow(self.source_capacity, self.membership);
         grow_vec(&mut self.naming.first, self.source_capacity);
         self.attrition.reserve_rows(self.source_capacity);
+        self.attack
+            .reserve_sources(self.source_capacity, &mut self.attack_capacity);
+        let capacity = engine::selected_transport_units::Capacity {
+            rows: self.source_capacity,
+            members: self.transport.required().members,
+        };
+        let _ = self
+            .transport
+            .reserve(capacity)
+            .map_err(crate::allocation::io);
+    }
+
+    /// The previous sparse output becomes the execution owner's reusable spare.
+    /// Its reset makes a failed/cancelled hour incapable of carrying old values.
+    pub(crate) fn install_order_transport(
+        &mut self,
+        execution: &mut engine::order_execution::Prepared,
+    ) {
+        self.order_transport.reset();
+        execution.swap_units(&mut self.order_transport);
+    }
+
+    pub(crate) fn order_transport_storage(&self) -> (usize, Outcome) {
+        (
+            self.order_transport.allocated_bytes(),
+            self.order_transport.outcome(),
+        )
+    }
+
+    fn order_transport(&self, division: u64) -> Option<replay::rows::DivisionOrderTransportInputs> {
+        let rows = self.order_transport.rows();
+        if !matches!(self.order_transport.outcome(), Outcome::Rows { len } if len == rows.len()) {
+            return None;
+        }
+        let inputs = rows
+            .binary_search_by_key(&division, |row| row.division)
+            .ok()
+            .and_then(|index| rows[index].inputs)?;
+        Some(replay::rows::DivisionOrderTransportInputs {
+            naval_weight: inputs.naval_weight,
+            paradrop_eligible: inputs.paradrop_eligible,
+            paradrop_modifiers: inputs.paradrop_modifiers.map(|modifiers| {
+                replay::rows::ParadropTransportModifiers {
+                    country_term: modifiers.country_term,
+                    commander_term: modifiers.commander_term,
+                }
+            }),
+        })
     }
 
     /// Reuse the hourly template icon walk's census; no extra native walk.
@@ -493,6 +709,7 @@ impl Captured {
     }
 
     pub(crate) fn observe_counter_inputs(&self, work: &mut CounterWork) -> std::io::Result<()> {
+        work.transport.observe(&self.transport)?;
         for row in &self.status.rows[..self.status.outcome.len()] {
             work.supply.observe(row.supply, row.supply_failure);
             if row.invalid_orders != 0 {
@@ -517,11 +734,9 @@ impl Captured {
         self.names.reset();
         self.name_groups.reset();
         self.naming.required = seeds.len();
-        let mut names = cname_group_member::Names {
-            bytes: &mut self.names.first,
-            len: 0,
-            required: 0,
-        };
+        if !grow_vec(&mut self.naming.first, seeds.len()) {
+            return;
+        }
         for (seed, row) in seeds.iter().zip(&mut self.naming.first) {
             *row = NamingRead {
                 division: seed.division,
@@ -535,18 +750,20 @@ impl Captured {
                     if pointer == 0 {
                         Err("division name member pointer null")
                     } else {
-                        cname_group_member::inputs(
+                        cname_group_member::inputs_growing(
                             memory,
                             base,
                             pointer,
                             &mut self.name_groups,
-                            &mut names,
+                            &mut self.names.first,
+                            &mut self.names.len,
+                            &mut self.names.required,
                         )
                     }
                 });
             match result {
                 Ok(cname_group_member::Naming::Row(inputs)) => {
-                    names.len += inputs.custom.1;
+                    self.names.len += inputs.custom.1;
                     // The reader already applies 1409B5640: a programmatic
                     // +0x88 override is shown when the resolved group is null.
                     row.inputs = Some(inputs);
@@ -558,26 +775,27 @@ impl Captured {
             }
             self.naming.len += 1;
         }
-        self.names.len = names.len;
-        self.names.required = names.required;
         // Every established generator input finishes before the optional
         // GetName cache. Its separate bytes arena keeps refusals independent.
-        let mut names = cname_group_member::Names {
-            bytes: &mut self.cached_names.first,
-            len: 0,
-            required: 0,
-        };
+        self.cached_names.reset();
         for (seed, row) in seeds.iter().zip(&mut self.naming.first[..self.naming.len]) {
             let result = seed
                 .name_member
                 .ok_or("division cached name member pointer unreadable")
                 .and_then(|pointer| {
-                    cname_group_member::cached_name(memory, base, pointer, &mut names)
+                    cname_group_member::cached_name_growing(
+                        memory,
+                        base,
+                        pointer,
+                        &mut self.cached_names.first,
+                        &mut self.cached_names.len,
+                        &mut self.cached_names.required,
+                    )
                 });
             match result {
                 Ok(Some(span)) => {
                     row.cached_name = Some(span);
-                    names.len += span.1;
+                    self.cached_names.len += span.1;
                 }
                 Ok(None) => {
                     row.cached_failure = Some("division cached name bytes do not fit arena")
@@ -585,8 +803,6 @@ impl Captured {
                 Err(reason) => row.cached_failure = Some(reason),
             }
         }
-        self.cached_names.len = names.len;
-        self.cached_names.required = names.required;
     }
 
     /// Acquire on the reserved worker using the immutable source lease.
@@ -599,7 +815,13 @@ impl Captured {
         store: Option<&mut SliceFingerprints>,
     ) -> CaptureReport {
         let (rows, outcome) = (sources.rows, sources.outcome);
-        let ticks = self.capture(memory, context.base, context.game_state, sources);
+        let ticks = self.capture_at(
+            memory,
+            context.base,
+            context.game_state,
+            sources,
+            Some(context.hour),
+        );
         let bans = self.capture_bans(memory, context, Sources { rows, outcome }, store);
         CaptureReport {
             ticks: [
@@ -642,6 +864,12 @@ impl Captured {
         let start = qpc();
         self.bans_selection
             .reset(context.hour, context.force_full || store.is_none());
+        if !grow_vec(&mut self.bans.rows, sources.outcome.len()) {
+            self.bans.fail(Outcome::Unavailable {
+                reason: "retreat ban row allocation failed",
+            });
+            return 0;
+        }
         let reader = ccountry::Reader::new(memory, context.base, context.game_state);
         if let Some(store) = store {
             let scan = qpc();
@@ -704,17 +932,31 @@ impl Captured {
         self.names.len = 0;
         self.cached_names.len = 0;
         self.attrition.fail(reason);
+        self.attack.fail(reason);
         self.land.fail(reason);
+        self.transport.fail(reason);
         self.decode_pending = false;
         CaptureReport::default()
     }
 
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
         sources: Sources<'_, DivisionSeed>,
+    ) -> [u64; 2] {
+        self.capture_at(memory, base, state, sources, None)
+    }
+
+    fn capture_at(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        sources: Sources<'_, DivisionSeed>,
+        hour: Option<i32>,
     ) -> [u64; 2] {
         self.reset();
         let outcome = if sources.outcome.len() <= sources.rows.len() {
@@ -725,12 +967,27 @@ impl Captured {
             }
         };
         let rows = &sources.rows[..outcome.len()];
+        // Only the test fixture omits the worker's sample hour and uses fixed storage.
+        if hour.is_some() {
+            self.movement_packet.enable_growth();
+            self.status_packet.enable_growth();
+            self.geometry.enable_growth();
+            self.transport.enable_growth();
+            if !grow_vec(&mut self.movement.rows, rows.len())
+                || !grow_vec(&mut self.status.rows, rows.len())
+            {
+                self.fail_owned_capture("presentation row allocation failed");
+                return [0; 2];
+            }
+        }
         self.source_required = self.source_required.max(rows.len());
         self.land_ticks = self.land.capture(memory, base, rows, outcome);
         let movement_reads = crate::read_accounting::table(TableId::DivisionMovement);
         let start = qpc();
-        let _ = self.geometry.begin(memory, base, state);
-        let movement = carmy::capture_movement_inputs(
+        self.geometry_hour = hour;
+        self.geometry_result = Err("presentation geometry acquisition interrupted");
+        self.geometry_result = self.geometry.begin(memory, base, state);
+        let movement = carmy::capture_movement_inputs_with_combat_references(
             memory,
             base,
             state,
@@ -740,8 +997,28 @@ impl Captured {
             self.paths.first.len(),
             &mut self.geometry,
             &mut self.movement_packet,
+            hour,
         );
+        for reason in self.movement_packet.combat_reference_failures() {
+            super::unit_combat_references::observe_failure(reason);
+        }
+        super::unit_combat_references::demand(
+            false,
+            self.movement_packet.combat_references_required(),
+            self.movement_packet.combat_references_capacity(),
+        );
+        for row in self.movement_packet.units_for_selected() {
+            for (index, value) in row.selected_retreat.iter().enumerate() {
+                if row.combat_count as i32 > 0 && value.is_none() {
+                    SELECTED_RETREAT_REFUSALS[index]
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
         self.movement.outcome = movement.outcome;
+        let (withdrawal, priority) = self.movement_packet.movement_style_refusals();
+        WITHDRAWAL_REFUSALS.fetch_add(withdrawal as u64, std::sync::atomic::Ordering::Relaxed);
+        MOVEMENT_PRIORITY_REFUSALS.fetch_add(priority as u64, std::sync::atomic::Ordering::Relaxed);
         self.paths.len = movement.paths_len;
         self.paths.required = movement.required_paths;
         let movement_ticks = qpc().saturating_sub(start).max(0) as u64;
@@ -752,6 +1029,16 @@ impl Captured {
             self.status_packet
                 .capture(memory, base, state, rows, outcome, self.status.rows.len());
         self.capture_naming(memory, base, &rows[..self.status.outcome.len()]);
+        if let Some(hour) = hour {
+            self.attack
+                .capture(memory, base, hour, rows, outcome, &mut self.geometry);
+            self.transport
+                .capture(memory, base, hour, rows, outcome, &self.attack.packet);
+        } else {
+            self.attack.fail("selected attack sample hour unavailable");
+            self.transport
+                .fail("selected transport sample hour unavailable");
+        }
         let status_ticks = qpc().saturating_sub(start).max(0) as u64;
         drop(_status_reads);
         let _attrition_reads = crate::read_accounting::table(TableId::AttritionModifierBreakdowns);
@@ -763,10 +1050,74 @@ impl Captured {
             rows,
             self.status.outcome,
             &self.status_packet,
+            Some(&self.attack.packet),
         );
         self.attrition_ticks = qpc().saturating_sub(start).max(0) as u64;
         self.decode_pending = true;
         [movement_ticks, status_ticks]
+    }
+
+    /// Every restore path stamps the actual request epoch. A stopped or
+    /// panicked request never lends stale geometry to independent groups.
+    pub(super) fn stamp_attack_epoch(&mut self, hour: i32, failed: bool) {
+        self.attack.stamp_hour(hour);
+        if failed {
+            self.geometry_hour = Some(hour);
+            self.geometry_result =
+                Err("presentation acquisition failed; current geometry unavailable");
+            self.attack.packet.refuse_domain_at(
+                hour,
+                "presentation acquisition failed; current geometry unavailable",
+            );
+        }
+    }
+
+    pub(super) fn fail_attack_epoch(&mut self, hour: i32, reason: &'static str) {
+        self.attack.stamp_hour(hour);
+        self.geometry_hour = Some(hour);
+        self.geometry_result = Err(reason);
+        self.attack.packet.refuse_domain_at(hour, reason);
+        self.attack.fail(reason);
+    }
+
+    pub(super) fn capture_group_attack(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        hour: i32,
+        groups: &mut super::group_counters::Captured,
+    ) {
+        self.attack.stamp_hour(hour);
+        let current = if self.geometry_hour == Some(hour) {
+            self.geometry_result
+        } else {
+            Err("current presentation geometry not supplied")
+        };
+        groups.capture_attack(
+            memory,
+            base,
+            hour,
+            &mut self.attack,
+            &mut self.geometry,
+            current,
+        );
+    }
+
+    /// Called only after original transport/native borrowers have joined.
+    pub(super) fn retire_attack_native(&mut self) {
+        self.attack.packet.finish_native();
+        self.geometry.retire_attack_terrain();
+    }
+
+    fn unit_transport(&self, division: u64) -> Option<replay::rows::UnitTransportInputs> {
+        if !matches!(self.transport.outcome(), Outcome::Rows { .. }) {
+            return None;
+        }
+        let rows = self.transport.rows();
+        rows.binary_search_by_key(&division, |row| row.unit)
+            .ok()
+            .and_then(|index| rows.get(index))
+            .map(super::selected_transport_inputs::project)
     }
 
     /// Pure decode-worker projection from the current owned packets.
@@ -775,11 +1126,25 @@ impl Captured {
             return [0; 2];
         }
         let started = qpc();
-        let movement = carmy::project_movement(
-            &self.movement_packet,
-            &mut self.movement.rows,
+        // Projection is still worker-owned. Its destination follows the full
+        // original route demand, including a failed payload's retained prefix.
+        let movement = if grow_vec(
             &mut self.paths.first,
-        );
+            self.movement_packet.outcome().required_paths,
+        ) {
+            carmy::project_movement(
+                &self.movement_packet,
+                &mut self.movement.rows,
+                &mut self.paths.first,
+            )
+        } else {
+            carmy::MovementWalk {
+                outcome: Outcome::Unavailable {
+                    reason: "division movement projection allocation failed",
+                },
+                ..self.movement_packet.outcome()
+            }
+        };
         self.movement.outcome = movement.outcome;
         self.paths.len = movement.paths_len;
         self.paths.required = self.paths.required.max(movement.required_paths);
@@ -828,6 +1193,31 @@ impl Captured {
         qpc().saturating_sub(start).max(0) as u64
     }
 
+    pub(crate) fn guard_selected_retreat(&mut self, layout: Option<&crate::fixed_layout::Layout>) {
+        let admitted = layout.is_some_and(|layout| {
+            layout.as_ref().is_ok_and(|report| {
+                let family = replay::fixed_layout::RETREAT_BANS;
+                report.failure(family.keys, family.tokens).is_none()
+            })
+        });
+        if admitted {
+            return;
+        }
+        for (index, count) in self
+            .movement_packet
+            .refuse_selected_retreat()
+            .into_iter()
+            .enumerate()
+        {
+            SELECTED_RETREAT_REFUSALS[index].fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+        }
+        for row in &mut self.movement.rows {
+            if row.selected_commander == Some(true) {
+                row.selected_retreat = [None; 2];
+            }
+        }
+    }
+
     pub fn outcomes(&self) -> [Outcome; N] {
         [
             self.movement.outcome,
@@ -841,6 +1231,7 @@ impl Captured {
     pub(crate) fn table_inputs(
         &self,
         mut projection: Option<&mut Projection<'_>>,
+        eta: Option<(&super::division_eta_inputs::Captured, i32)>,
     ) -> [TableInput; N] {
         if self.decode_pending {
             return std::array::from_fn(|_| {
@@ -918,6 +1309,7 @@ impl Captured {
                     return false;
                 };
                 status_fields!(r, compare_status_fields, [previous])
+                    && self.attack.matches(r.division, &previous.attack)
                     && Recorded::Value(r.country_ordinal) == previous.country_ordinal
                     && Recorded::Value(r.invalid_orders_reason) == previous.invalid_orders_reason
                     && super::supply_inputs::matches(
@@ -990,6 +1382,7 @@ impl Captured {
                         self.attrition
                             .dig_in_factor(r.division, self.status_index(r.division)),
                         cached_name(r).map(|name| owned_vec(copy_vec(name))),
+                        self.attack.division(r.division),
                     ],
                 )
             },
@@ -1026,7 +1419,19 @@ impl Captured {
                 &self.movement.rows,
                 |r| u128::from(r.division),
                 |r, previous| {
-                    r.division == previous.division
+                    selected_unit(self.movement_packet.combat_references_hour(), r)
+                        == previous.selected
+                        && r.division == previous.division
+                        && super::unit_combat_references::matches(
+                            self.movement_packet.combat_references_hour(),
+                            self.movement_packet.combat_references(r),
+                            r.combat_count,
+                            &previous.combat_references,
+                        )
+                        && match eta.and_then(|(eta, hour)| eta.fresh_profile(r.division, hour)) {
+                            Some(profile) => profile.matches(&previous.fresh),
+                            None => previous.fresh == Recorded::Value(None),
+                        }
                         && r.source == previous.source
                         && r.target == previous.target
                         && r.numerator == previous.numerator
@@ -1034,6 +1439,11 @@ impl Captured {
                         && r.strategic_redeployment == previous.strategic_redeployment
                         && replay::rows::Recorded::Value(r.strategic_action)
                             == previous.strategic_action
+                        && Recorded::Value(r.withdrawal) == previous.withdrawal
+                        && Recorded::Value(r.movement_priority) == previous.movement_priority
+                        && Recorded::Value(self.order_transport(r.division))
+                            == previous.order_transport
+                        && Recorded::Value(self.unit_transport(r.division)) == previous.transport
                         && r.naval_transfer == previous.naval_transfer
                         && r.combat_count == previous.combat_count
                         && r.path_total == previous.path_total
@@ -1046,13 +1456,26 @@ impl Captured {
                             == previous.alternate_path.as_slice()
                 },
                 |r| DivisionMovementRow {
+                    selected: selected_unit(self.movement_packet.combat_references_hour(), r),
+                    combat_references: Recorded::Value(super::unit_combat_references::project(
+                        self.movement_packet.combat_references_hour(),
+                        self.movement_packet.combat_references(r),
+                        r.combat_count,
+                    )),
                     division: r.division,
+                    fresh: eta
+                        .and_then(|(eta, hour)| eta.fresh_profile(r.division, hour))
+                        .map_or(Recorded::Value(None), |profile| profile.project()),
                     source: r.source,
                     target: r.target,
                     numerator: r.numerator,
                     retreat: r.retreat,
                     strategic_redeployment: r.strategic_redeployment,
                     strategic_action: replay::rows::Recorded::Value(r.strategic_action),
+                    withdrawal: Recorded::Value(r.withdrawal),
+                    movement_priority: Recorded::Value(r.movement_priority),
+                    order_transport: Recorded::Value(self.order_transport(r.division)),
+                    transport: Recorded::Value(self.unit_transport(r.division)),
                     naval_transfer: r.naval_transfer,
                     combat_count: r.combat_count,
                     path_total: r.path_total,
@@ -1079,7 +1502,7 @@ impl Captured {
     }
     #[cfg(test)]
     pub(super) fn tables(&self) -> [replay::frame::TableView; N] {
-        self.table_inputs(None).map(|input| match input {
+        self.table_inputs(None, None).map(|input| match input {
             TableInput::Sampled(view) => view,
             _ => unreachable!("projection without a baseline always samples"),
         })
@@ -1237,7 +1660,7 @@ mod tests {
             })
             .collect();
         carmy::capture_division_seeds(&memory, &mut seeds);
-        let mut capacity = Capacities {
+        let capacity = Capacities {
             movement: 0,
             status: seeds.len(),
             bans: 0,
@@ -1252,19 +1675,25 @@ mod tests {
             rows: &seeds,
             outcome: Outcome::Rows { len: seeds.len() },
         };
-        captured.capture(&memory, world.base, world.state, sources());
+        captured.capture_owned(
+            &memory,
+            CaptureContext {
+                base: world.base,
+                game_state: world.state,
+                hour: 0,
+                force_full: true,
+            },
+            sources(),
+            None,
+        );
         assert_eq!(captured.cached_names.required, 3);
         assert!(captured.naming.first[0].inputs.is_none());
         assert_eq!(
             captured.naming.first[0].failure,
             Some("reference header invalid")
         );
-        assert_eq!(
-            captured.naming.first[0].cached_failure,
-            Some("division cached name bytes do not fit arena")
-        );
-        captured.grow(&mut capacity);
-        captured.capture(&memory, world.base, world.state, sources());
+        assert_eq!(captured.naming.first[0].cached_failure, None);
+        assert_eq!(captured.cached_names.len, 3);
         // Deferred projection uses only the captured bytes, even if live memory changes.
         members[0][0x60] = b'R';
         captured.decode_inputs();
@@ -1294,7 +1723,18 @@ mod tests {
                 false,
             )
             .unwrap();
-        captured.capture(&memory, world.base, world.state, sources());
+        // Hold the sample hour constant so only the retained cache changes.
+        captured.capture_owned(
+            &memory,
+            CaptureContext {
+                base: world.base,
+                game_state: world.state,
+                hour: 0,
+                force_full: true,
+            },
+            sources(),
+            None,
+        );
         captured.decode_inputs();
         let mut scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
@@ -1304,7 +1744,7 @@ mod tests {
             _,
             _,
             _,
-        ] = captured.table_inputs(Some(&mut projection))
+        ] = captured.table_inputs(Some(&mut projection), None)
         else {
             panic!("a changed retained cache defeats baseline reuse");
         };
@@ -1350,20 +1790,26 @@ mod tests {
         let mut capture = Captured::with_capacities(&capacity);
         capture.capture_naming(&memory, world.base, &seeds);
         assert_eq!(capture.names.required, 5, "shared group demand counts once");
+        assert_eq!(&capture.names.first[..capture.names.len], b"GROUP");
         assert!(
             capture.naming.first[..seeds.len()]
                 .iter()
-                .all(|r| r.inputs.is_none())
+                .all(|r| r.inputs.is_some_and(|inputs| inputs.group == (0, 5)))
         );
         capture.grow(&mut capacity);
-        capture.capture(
+        capture.capture_owned(
             &memory,
-            world.base,
-            world.state,
+            CaptureContext {
+                base: world.base,
+                game_state: world.state,
+                hour: 0,
+                force_full: true,
+            },
             Sources {
                 rows: &seeds,
                 outcome: Outcome::Rows { len: seeds.len() },
             },
+            None,
         );
         assert_eq!(&capture.names.first[..capture.names.len], b"GROUP");
         assert!(
@@ -1407,7 +1853,7 @@ mod tests {
     }
 
     #[test]
-    fn short_naming_row_arena_keeps_every_status_row_and_counts_missing_names() {
+    fn short_naming_row_arena_grows_before_every_status_name_is_published() {
         let mut world = scale_fixture::build(scale_fixture::Shape {
             countries: 2,
             divisions: 6,
@@ -1438,14 +1884,19 @@ mod tests {
             ..Capacities::default()
         });
         capture.naming.first.truncate(1);
-        capture.capture(
+        capture.capture_owned(
             &memory,
-            world.base,
-            world.state,
+            CaptureContext {
+                base: world.base,
+                game_state: world.state,
+                hour: 0,
+                force_full: true,
+            },
             Sources {
                 rows: &seeds,
                 outcome: Outcome::Rows { len: seeds.len() },
             },
+            None,
         );
         capture.decode_inputs();
         let TableView::Complete(TableRows::DivisionStatus(rows)) = capture.tables()[1].clone()
@@ -1460,21 +1911,16 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
-        assert!(
-            rows[1..]
-                .iter()
-                .all(|row| row.naming == Recorded::Value(None))
-        );
+        assert!(rows.iter().all(|row| {
+            row.naming
+                .require("DivisionStatus.naming")
+                .unwrap()
+                .is_some()
+        }));
         let mut work = NamingWork::default();
         capture.observe_naming(&mut work).unwrap();
-        assert_eq!(work.captured, 1);
-        assert_eq!(
-            work.refusals,
-            [
-                ("division cached name row capacity exceeded", 5),
-                ("division naming row capacity exceeded", 5)
-            ]
-        );
+        assert_eq!(work.captured, seeds.len() as u64);
+        assert!(work.refusals.is_empty());
     }
 
     #[test]
@@ -1654,7 +2100,117 @@ mod tests {
     }
 
     #[test]
-    fn division_naming_live_demand_grows_and_refusals_preserve_5000_status_rows() {
+    fn attach_naming_hint_sizes_five_thousand_country_native_strings() {
+        let mut world = scale_fixture::build(scale_fixture::Shape {
+            countries: 5_000,
+            divisions: 5_000,
+            wings: 1,
+            planes: 1,
+            ships: 0,
+        });
+        let mut members = division_name_members(&mut world);
+        for value in &mut members {
+            let name = member(world.base, b"FifteenLetters!", 1);
+            value.copy_from_slice(&name);
+            value[cname_group_member::CACHED_NAME..cname_group_member::CACHED_NAME + 15]
+                .copy_from_slice(b"NativeCachedOne");
+            value[cname_group_member::CACHED_NAME + 16..cname_group_member::CACHED_NAME + 24]
+                .copy_from_slice(&15u64.to_le_bytes());
+        }
+        let mut capacity = Capacities {
+            status: 0,
+            ..Default::default()
+        };
+        capacity
+            .presize_names(&world.live(), world.base, world.state)
+            .unwrap();
+        assert!(capacity.status >= 5_000);
+        assert!(capacity.name_bytes >= 5_000 * 15);
+        assert!(capacity.cached_name_bytes >= 5_000 * 15);
+        let mut capture = Captured::with_capacities(&capacity);
+        let seeds: Vec<_> = members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| DivisionSeed {
+                division: index as u64 + 1,
+                name_member: Some(member.as_ptr() as usize),
+                ..Default::default()
+            })
+            .collect();
+        capture.capture_naming(&world.live(), world.base, &seeds);
+        assert!(
+            capture.naming.first[..5_000]
+                .iter()
+                .all(|row| row.inputs.is_some() && row.cached_failure.is_none())
+        );
+        assert_eq!(
+            (capture.names.len, capture.cached_names.len),
+            (5_000 * 15, 5_000 * 15)
+        );
+    }
+
+    #[test]
+    fn naming_heap_growth_preserves_the_first_member_and_cached_payload() {
+        let mut bytes = member(0, b"", 1).to_vec();
+        let source = 0x1000 + bytes.len();
+        for offset in [
+            cname_group_member::OVERRIDE_NAME,
+            cname_group_member::CACHED_NAME,
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&(source as u64).to_le_bytes());
+            bytes[offset + 16..offset + 24].copy_from_slice(&300u64.to_le_bytes());
+            bytes[offset + 24..offset + 32].copy_from_slice(&300u64.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[b'X'; 300]);
+        bytes.push(0);
+        struct Once<'a> {
+            bytes: &'a [u8],
+            members: std::cell::Cell<usize>,
+        }
+        impl Memory for Once<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if (address, output.len()) == (0x1000, cname_group_member::INPUT_SPAN) {
+                    self.members.set(self.members.get() + 1);
+                    if self.members.get() != 1 {
+                        return false;
+                    }
+                }
+                engine::memory::SliceMemory {
+                    base: 0x1000,
+                    bytes: self.bytes,
+                }
+                .copy(address, output)
+            }
+        }
+        let memory = Once {
+            bytes: &bytes,
+            members: std::cell::Cell::new(0),
+        };
+        let mut capture = Captured::with_capacities(&Capacities {
+            status: 1,
+            ..Default::default()
+        });
+        capture.capture_naming(
+            &memory,
+            0,
+            &[DivisionSeed {
+                division: 1,
+                name_member: Some(0x1000),
+                ..Default::default()
+            }],
+        );
+        assert_eq!(memory.members.get(), 1);
+        assert_eq!(capture.naming.first[0].failure, None);
+        assert_eq!(capture.naming.first[0].cached_failure, None);
+        assert_eq!(&capture.names.first[..capture.names.len], &[b'X'; 300]);
+        assert_eq!(
+            &capture.cached_names.first[..capture.cached_names.len],
+            &[b'X'; 300]
+        );
+    }
+
+    #[test]
+    fn division_naming_first_capture_grows_and_refusals_preserve_5000_status_rows() {
         const COUNTRIES: usize = 5_000;
         let mut bytes = Vec::new();
         let mut seeds = Vec::new();
@@ -1686,10 +2242,8 @@ mod tests {
         assert_eq!(captured.naming.len, COUNTRIES);
         let mut work = NamingWork::default();
         captured.observe_naming(&mut work).unwrap();
-        assert_eq!(
-            work.refusals,
-            [("division naming bytes do not fit arena", COUNTRIES as u64)]
-        );
+        assert!(work.refusals.is_empty());
+        assert_eq!(work.captured, COUNTRIES as u64);
         captured.grow(&mut capacity);
         captured.capture_naming(&memory, 0, &seeds);
         assert!(
@@ -1811,7 +2365,7 @@ mod tests {
         let mut scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
         assert!(matches!(
-            captured.table_inputs(Some(&mut projection))[1],
+            captured.table_inputs(Some(&mut projection), None)[1],
             TableInput::ComparedEqual(_)
         ));
         for changed in [
@@ -1842,7 +2396,7 @@ mod tests {
                 _,
                 _,
                 _,
-            ] = captured.table_inputs(Some(&mut projection))
+            ] = captured.table_inputs(Some(&mut projection), None)
             else {
                 panic!("every naming operand must defeat reuse");
             };
@@ -1852,7 +2406,7 @@ mod tests {
         captured.status.rows[0].naming = Some(naming);
         captured.names.first[0] ^= 1;
         assert!(matches!(
-            captured.table_inputs(Some(&mut projection))[1],
+            captured.table_inputs(Some(&mut projection), None)[1],
             TableInput::ComparedChanges { .. }
         ));
         captured.status.rows[0].naming = Some(cname_group_member::Inputs {
@@ -1909,14 +2463,14 @@ mod tests {
         let mut scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
         assert!(matches!(
-            captured.table_inputs(Some(&mut projection))[1],
+            captured.table_inputs(Some(&mut projection), None)[1],
             TableInput::ComparedEqual(_)
         ));
         for reason in [None, Some(0), Some(i32::MAX)] {
             captured.status.rows[0].invalid_orders_reason = reason;
             let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
             assert!(!matches!(
-                captured.table_inputs(Some(&mut projection))[1],
+                captured.table_inputs(Some(&mut projection), None)[1],
                 TableInput::ComparedEqual(_)
             ));
             let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
@@ -1993,6 +2547,7 @@ mod tests {
             };
             let mut capture = Captured::with_capacities(&capacity);
             capture.reserve_sources(shape.divisions);
+            capture.status_packet.enable_growth();
             // Both timers run the same production status callback. Only the
             // second includes the actual hourly naming reader and arena writes.
             for form in ["generated_shared_group", "inline_player_renames"] {
@@ -2135,6 +2690,9 @@ mod tests {
                     neighbour_entries: 0,
                 },
                 membership: carmy::StatusCapacities::new(1).membership,
+                combat_references: 0,
+                attack: Default::default(),
+                transport: Default::default(),
             });
             capture.reserve_sources(1);
             capture.capture_owned(
@@ -2203,6 +2761,9 @@ mod tests {
                 neighbour_entries: 0,
             },
             membership: carmy::StatusCapacities::new(0).membership,
+            combat_references: 0,
+            attack: Default::default(),
+            transport: Default::default(),
         };
         let mut capture = Captured::with_capacities(&capacity);
         capture.reserve_sources(1);
@@ -2235,7 +2796,7 @@ mod tests {
         );
         assert!(
             capture
-                .table_inputs(None)
+                .table_inputs(None, None)
                 .iter()
                 .all(|input| matches!(input, TableInput::Sampled(TableView::Unavailable { .. })))
         );
@@ -2254,8 +2815,61 @@ mod tests {
     }
 
     #[test]
-    fn division_presentation_conversion_keeps_capped_counts_and_scalar_bits() {
+    fn cold_and_later_route_projection_grows_owned_destination_before_publication() {
         let mut capture = Captured::with_capacities(&Capacities::default());
+        for count in [5_000_usize, 12_000] {
+            let (mut seed, mut bytes) = presentation_fixture();
+            bytes.resize(0x1000 + count * 4, 0);
+            let mut route = [0; 16];
+            route[..8].copy_from_slice(&0x2000_u64.to_le_bytes());
+            route[8..12].copy_from_slice(&(count as u32).to_le_bytes());
+            route[12..].copy_from_slice(&(count as u32).to_le_bytes());
+            seed.ordinary_route = Some(route);
+            for (index, word) in bytes[0x1000..].chunks_exact_mut(4).enumerate() {
+                word.copy_from_slice(&(index as u32 + 1).to_le_bytes());
+            }
+            capture.capture_owned(
+                &engine::memory::SliceMemory {
+                    base: 0x1000,
+                    bytes: &bytes,
+                },
+                CaptureContext {
+                    base: 0,
+                    game_state: 0x1000,
+                    hour: count as i32,
+                    force_full: true,
+                },
+                Sources {
+                    rows: &[seed],
+                    outcome: Outcome::Rows { len: 1 },
+                },
+                None,
+            );
+            assert_eq!(capture.movement.outcome, Outcome::Rows { len: 1 });
+            bytes.fill(0xff);
+            capture.decode_inputs();
+            assert_eq!(capture.movement.outcome, Outcome::Rows { len: 1 });
+            assert_eq!(capture.paths.len, count);
+            assert_eq!(
+                capture.paths.first[..count],
+                (1..=count as u32).collect::<Vec<_>>()
+            );
+            let tables = capture.tables();
+            let TableView::Complete(TableRows::DivisionMovement(rows)) = &tables[0] else {
+                panic!("the same owned first/later route must be complete");
+            };
+            assert_eq!(rows[0].path.len(), count);
+        }
+    }
+
+    #[test]
+    fn division_presentation_conversion_keeps_capped_counts_and_scalar_bits() {
+        let mut capture = Captured::with_capacities(&Capacities {
+            movement: 1,
+            status: 1,
+            paths: 4,
+            ..Default::default()
+        });
         capture.paths.first[..4].copy_from_slice(&[7, 3, 7, u32::MAX]);
         capture.paths.len = 4;
         capture.movement.rows[0] = carmy::MovementRow {
@@ -2276,6 +2890,8 @@ mod tests {
             alternate_start: 3,
             alternate_len: 1,
             alternate_total: 1,
+            withdrawal: Some(0xfe),
+            movement_priority: Some(i32::MIN),
             ..Default::default()
         };
         capture.movement.outcome = Outcome::Rows { len: 1 };
@@ -2304,6 +2920,8 @@ mod tests {
             (m[0].division, m[0].numerator, m[0].combat_province),
             (u64::MAX, i64::MIN, u32::MAX)
         );
+        assert_eq!(m[0].withdrawal, Recorded::Value(Some(0xfe)));
+        assert_eq!(m[0].movement_priority, Recorded::Value(Some(i32::MIN)));
         assert_eq!(
             (&m[0].path[..], m[0].path_total, &m[0].alternate_path[..]),
             (&[7, 3, 7][..], 300, &[u32::MAX][..])
@@ -2340,7 +2958,7 @@ mod tests {
         let mut scratch = crate::projection::ProjectionScratch::default();
         let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
         // The fixture has no country census, so the bans table is unavailable.
-        let [movement, status, bans, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, bans, _, _] = capture.table_inputs(Some(&mut projection), None);
         assert!(
             [movement, status]
                 .iter()
@@ -2364,7 +2982,7 @@ mod tests {
                 country_modifier: i64::MAX,
                 ..Default::default()
             });
-        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("current modifier-only change must publish movement");
         };
@@ -2373,7 +2991,7 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         capture.movement.rows[0].strategic_action =
             carmy::StrategicAction::Withheld(carmy::StrategicActionFailure::CountryModifier);
-        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("a refused query must publish the movement row");
         };
@@ -2388,7 +3006,7 @@ mod tests {
         // A path-only mutation and an independently changing status must both
         // defeat reuse, without changing their keys or arena spans.
         capture.paths.first[3] ^= 1;
-        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection), None);
         let TableInput::ComparedChanges { indices, rows, .. } = movement else {
             panic!("changed movement must replace its freshly compared row");
         };
@@ -2397,7 +3015,7 @@ mod tests {
         assert!(matches!(status, TableInput::ComparedEqual(_)));
         capture.paths.first[3] ^= 1;
         capture.status.rows[0].has_order = 1;
-        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection), None);
         assert!(matches!(movement, TableInput::ComparedEqual(_)));
         let TableInput::ComparedChanges { indices, rows, .. } = status else {
             panic!("changed status must replace its freshly compared row");
@@ -2406,7 +3024,7 @@ mod tests {
         assert_eq!(TableView::Complete(rows), capture.tables()[1]);
         capture.status.rows[0].has_order = 0;
         capture.movement.rows[0].alternate_start = usize::MAX;
-        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection));
+        let [movement, status, _, _, _] = capture.table_inputs(Some(&mut projection), None);
         assert!(matches!(
             movement,
             TableInput::Sampled(TableView::Unavailable { .. })
@@ -2458,4 +3076,365 @@ mod tests {
         capture.reset();
         assert_eq!(capture.decode_inputs(), [0; 2]);
     }
+
+    #[test]
+    fn unavailable_current_transport_replaces_the_previous_suffix_on_stationary_rows() {
+        let mut capture = Captured::with_capacities(&Capacities {
+            movement: 1,
+            status: 0,
+            bans: 0,
+            paths: 0,
+            ..Capacities::default()
+        });
+        capture.movement.rows[0] = carmy::MovementRow {
+            division: u64::MAX,
+            source: 7,
+            target: 7,
+            numerator: i64::MIN,
+            ..Default::default()
+        };
+        capture.movement.outcome = Outcome::Rows { len: 1 };
+        let TableView::Complete(TableRows::DivisionMovement(mut rows)) =
+            capture.tables()[0].clone()
+        else {
+            panic!("stationary movement row remains available");
+        };
+        rows[0].order_transport =
+            Recorded::Value(Some(replay::rows::DivisionOrderTransportInputs {
+                naval_weight: Some(i64::MAX),
+                paradrop_eligible: Some(9),
+                paradrop_modifiers: Some(replay::rows::ParadropTransportModifiers {
+                    country_term: i64::MIN,
+                    commander_term: None,
+                }),
+            }));
+        rows[0].transport = Recorded::Value(Some(replay::rows::UnitTransportInputs {
+            sample_hour: 0,
+            weight: Some(i64::MIN),
+            transfer: Some(replay::rows::UnitTransferInputs::Absent),
+            coastal_template: Some(false),
+        }));
+        let mut baseline = std::array::from_fn(|_| unavailable("outside movement fixture"));
+        baseline[TableId::DivisionMovement.index()] =
+            TableView::Complete(TableRows::DivisionMovement(rows));
+        let mut encoder = replay::frame::FrameEncoder::new();
+        encoder
+            .encode(
+                replay::frame::DecodedFrame {
+                    branch: 1,
+                    hour: 0,
+                    tables: baseline.map(Into::into),
+                    metrics: replay::frame::Metrics::default(),
+                },
+                false,
+            )
+            .unwrap();
+        let mut scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 1, false, &mut scratch);
+        let [movement, _, _, _, _] = capture.table_inputs(Some(&mut projection), None);
+        let TableInput::ComparedChanges { indices, rows, .. } = movement else {
+            panic!("an unavailable current suffix cannot reuse the prior row");
+        };
+        assert_eq!(indices, [0]);
+        let TableRows::DivisionMovement(rows) = rows else {
+            unreachable!();
+        };
+        assert_eq!(rows[0].order_transport, Recorded::Value(None));
+        assert_eq!(rows[0].transport, Recorded::Value(None));
+        assert_eq!(
+            (
+                rows[0].division,
+                rows[0].source,
+                rows[0].target,
+                rows[0].numerator
+            ),
+            (u64::MAX, 7, 7, i64::MIN)
+        );
+    }
+
+    #[test]
+    fn movement_fresh_join_changes_only_the_current_profile_and_expires_at_frame_hour() {
+        use replay::rows::RowCodec;
+        let mut capture = Captured::with_capacities(&Capacities {
+            movement: 1,
+            status: 0,
+            bans: 0,
+            paths: 0,
+            ..Capacities::default()
+        });
+        capture.movement.rows[0] = carmy::MovementRow {
+            division: 7,
+            source: 17,
+            target: 17,
+            numerator: i64::MIN,
+            ..Default::default()
+        };
+        capture.movement.outcome = Outcome::Rows { len: 1 };
+        let old = super::super::division_eta_inputs::fresh_transfer_profile_fixture(11, true);
+        let current = super::super::division_eta_inputs::fresh_transfer_profile_fixture(12, true);
+        let [
+            TableInput::Sampled(TableView::Complete(TableRows::DivisionMovement(previous))),
+            _,
+            _,
+            _,
+            _,
+        ] = capture.table_inputs(None, Some((&old, 11)))
+        else {
+            panic!("stationary movement prefix unavailable");
+        };
+        let mut baseline = std::array::from_fn(|_| unavailable("outside fresh movement fixture"));
+        baseline[TableId::DivisionMovement.index()] =
+            TableView::Complete(TableRows::DivisionMovement(previous.clone()));
+        let mut encoder = replay::frame::FrameEncoder::new();
+        encoder
+            .encode(
+                replay::frame::DecodedFrame {
+                    branch: 1,
+                    hour: 11,
+                    tables: baseline.map(Into::into),
+                    metrics: replay::frame::Metrics::default(),
+                },
+                false,
+            )
+            .unwrap();
+        let mut scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 12, false, &mut scratch);
+        let [movement, _, _, _, _] =
+            capture.table_inputs(Some(&mut projection), Some((&current, 12)));
+        let TableInput::ComparedChanges {
+            indices,
+            rows: TableRows::DivisionMovement(rows),
+            ..
+        } = movement
+        else {
+            panic!("fresh sample hour change was lost in prefix equality");
+        };
+        assert_eq!(indices, [0]);
+        assert_eq!(rows.len(), 1);
+        let delta = rows[0].delta(Some(&previous[0])).unwrap().unwrap();
+        assert_eq!(delta.mask, 1 << 18);
+        assert_eq!(
+            (
+                rows[0].division,
+                rows[0].source,
+                rows[0].target,
+                rows[0].numerator
+            ),
+            (7, 17, 17, i64::MIN)
+        );
+        let Recorded::Value(Some(profile)) = &rows[0].fresh else {
+            panic!("idle profile missing");
+        };
+        assert_eq!(profile.sample_hour, 12);
+        assert_eq!(profile.current_speed, None);
+
+        let [
+            TableInput::Sampled(TableView::Complete(TableRows::DivisionMovement(expired))),
+            _,
+            _,
+            _,
+            _,
+        ] = capture.table_inputs(None, Some((&current, 13)))
+        else {
+            panic!("expired profile erased the genuine movement prefix");
+        };
+        assert_eq!(expired[0].fresh, Recorded::Value(None));
+        assert_eq!(
+            expired[0],
+            DivisionMovementRow {
+                fresh: Recorded::Value(None),
+                ..rows[0].clone()
+            }
+        );
+        let mut failed = current;
+        failed.fail_missing();
+        let [
+            TableInput::Sampled(TableView::Complete(TableRows::DivisionMovement(refused))),
+            _,
+            _,
+            _,
+            _,
+        ] = capture.table_inputs(None, Some((&failed, 12)))
+        else {
+            panic!("failed range erased the genuine movement prefix");
+        };
+        assert_eq!(refused, expired);
+    }
+
+    #[test]
+    fn unavailable_profile_cannot_reuse_a_previous_movement_suffix() {
+        let mut capture = Captured::with_capacities(&Capacities {
+            movement: 1,
+            status: 0,
+            bans: 0,
+            paths: 0,
+            ..Capacities::default()
+        });
+        capture.movement.rows[0] = carmy::MovementRow {
+            division: 7,
+            source: 17,
+            target: 17,
+            ..Default::default()
+        };
+        capture.movement.outcome = Outcome::Rows { len: 1 };
+        let current = super::super::division_eta_inputs::fresh_transfer_profile_fixture(12, true);
+        let [
+            TableInput::Sampled(TableView::Complete(TableRows::DivisionMovement(rows))),
+            _,
+            _,
+            _,
+            _,
+        ] = capture.table_inputs(None, Some((&current, 12)))
+        else {
+            panic!("idle profile unavailable");
+        };
+        let mut baseline = std::array::from_fn(|_| unavailable("outside fresh movement fixture"));
+        baseline[TableId::DivisionMovement.index()] =
+            TableView::Complete(TableRows::DivisionMovement(rows));
+        let mut encoder = replay::frame::FrameEncoder::new();
+        encoder
+            .encode(
+                replay::frame::DecodedFrame {
+                    branch: 1,
+                    hour: 12,
+                    tables: baseline.map(Into::into),
+                    metrics: replay::frame::Metrics::default(),
+                },
+                false,
+            )
+            .unwrap();
+        let mut scratch = crate::projection::ProjectionScratch::default();
+        let mut projection = Projection::new(&encoder, 1, 13, false, &mut scratch);
+        let [movement, _, _, _, _] =
+            capture.table_inputs(Some(&mut projection), Some((&current, 13)));
+        let TableInput::ComparedChanges {
+            indices,
+            rows: TableRows::DivisionMovement(rows),
+            ..
+        } = movement
+        else {
+            panic!("historical profile cannot be compared equal in a later frame");
+        };
+        assert_eq!(indices, [0]);
+        assert_eq!(rows[0].fresh, Recorded::Value(None));
+    }
+}
+
+#[cfg(test)]
+mod combat_reference_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn configured_reference_capacity_is_prepared_before_packet_publication() {
+        let zero = Captured::with_capacities(&Capacities {
+            movement: 1,
+            status: 0,
+            bans: 0,
+            paths: 0,
+            combat_references: 0,
+            ..Capacities::default()
+        });
+        assert_eq!(zero.movement_packet.combat_references_capacity(), 0);
+        let prepared = Captured::with_capacities(&Capacities {
+            movement: 1,
+            status: 0,
+            bans: 0,
+            paths: 0,
+            combat_references: 73,
+            ..Capacities::default()
+        });
+        assert!(prepared.movement_packet.combat_references_capacity() >= 73);
+        assert!(prepared.allocated_bytes() > zero.allocated_bytes());
+        assert_eq!(prepared.movement_packet.combat_references_hour(), None);
+    }
+
+    #[test]
+    fn optional_reference_allocation_failure_retains_prepared_legacy_packet() {
+        // This target exceeds the allocation layout for the reference element.
+        // It deterministically fails before allocating, without fault injection.
+        // The checked allocator's terminal signal remains authoritative; this
+        // fixture proves retained buffer ownership, not continued recording.
+        let legacy = carmy::MovementPacket::try_new(1, 2).unwrap();
+        let capture = Captured::with_capacities(&Capacities {
+            movement: 1,
+            status: 0,
+            bans: 0,
+            paths: 2,
+            combat_references: usize::MAX,
+            ..Capacities::default()
+        });
+        assert_eq!(capture.movement_packet.combat_references_capacity(), 0);
+        assert_eq!(
+            capture.movement_packet.allocated_bytes(),
+            legacy.allocated_bytes()
+        );
+        assert!(
+            capture.movement_packet.allocated_bytes() > 0,
+            "the optional arena failure must not replace the legacy packet with vacant"
+        );
+    }
+
+    #[test]
+    fn selected_unit_projection_keeps_raw_exile_and_independent_key_refusal() {
+        let row = carmy::MovementRow {
+            selected_exiled: Some(0xfe),
+            selected_commander: Some(true),
+            selected_retreat: [None, Some(i64::MIN)],
+            ..Default::default()
+        };
+        assert_eq!(
+            selected_unit(Some(47), &row),
+            Recorded::Value(Some(replay::rows::SelectedUnitInputs {
+                sample_hour: 47,
+                exiled: Some(0xfe),
+                commander: Some(true),
+                retreat: [None, Some(i64::MIN)],
+            }))
+        );
+        assert_eq!(selected_unit(None, &row), Recorded::Value(None));
+    }
+
+    #[test]
+    fn selected_retreat_layout_refusal_preserves_native_null_commander_and_other_operands() {
+        let mut captured = Captured::with_capacities(&Capacities {
+            movement: 3,
+            ..Capacities::default()
+        });
+        for (index, commander) in [Some(true), Some(false), None].into_iter().enumerate() {
+            captured.movement.rows[index] = carmy::MovementRow {
+                division: (index + 1) as u64,
+                source: 17,
+                selected_exiled: Some(0xfe),
+                selected_commander: commander,
+                selected_retreat: if commander == Some(true) {
+                    [Some(i64::MIN), Some(i64::MAX)]
+                } else {
+                    [Some(0), Some(0)]
+                },
+                ..Default::default()
+            };
+        }
+        let previous = captured.movement.rows[..3].to_vec();
+        captured.guard_selected_retreat(None);
+        assert_eq!(
+            captured.movement.rows[0],
+            carmy::MovementRow {
+                selected_retreat: [None, None],
+                ..previous[0]
+            }
+        );
+        assert_eq!(captured.movement.rows[1..3], previous[1..3]);
+    }
+}
+
+fn selected_unit(
+    hour: Option<i32>,
+    row: &carmy::MovementRow,
+) -> Recorded<Option<replay::rows::SelectedUnitInputs>> {
+    Recorded::Value(hour.map(|sample_hour| replay::rows::SelectedUnitInputs {
+        sample_hour,
+        exiled: row.selected_exiled,
+        commander: row.selected_commander,
+        retreat: row.selected_retreat,
+    }))
 }

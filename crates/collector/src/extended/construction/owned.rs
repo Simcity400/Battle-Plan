@@ -3,9 +3,9 @@ use super::*;
 impl Captured {
     /// Decode-worker interpretation of a scheduled raw construction-rest
     /// payload. Replays the existing resource, queue, occupation, resistance
-    /// and collaboration walks against the recorded spans. Occupation capacity
-    /// comes from demand recorded during that copy; other tables retain their
-    /// existing grants. Clears `rest_raw_mode` after installing the results.
+    /// and collaboration walks against the recorded spans. Worker buffers grow
+    /// from these original headers before publication. Fixed fixtures retain
+    /// their grants and copied occupation demand. Clears `rest_raw_mode`.
     pub(crate) fn decode_construction_rest_payload(
         &mut self,
         base: usize,
@@ -15,18 +15,34 @@ impl Captured {
     ) {
         let recorded = crate::raw::Recorded::build(&job.log);
         let started = qpc();
-        self.base_resources.outcome =
-            state_resource_entry::walk(&recorded, base, game_state, &mut self.base_resources.rows);
-        decode_ticks[0] += elapsed(started);
-        let started = qpc();
-        let queue = cbuilding_production_line::walk(
+        self.base_resources.outcome = state_resource_entry::walk_buffer(
             &recorded,
             base,
             game_state,
-            cbuilding_production_line::Buffers {
-                buildings: &mut self.building_construction.rows,
-                railways: &mut self.railway_construction.rows,
-                route_provinces: &mut self.routes.first,
+            engine::walk::Buffer::for_worker(
+                &mut self.base_resources.rows,
+                job.log.worker_growth_enabled(),
+            ),
+        );
+        decode_ticks[0] += elapsed(started);
+        let started = qpc();
+        let queue = cbuilding_production_line::walk_buffer(
+            &recorded,
+            base,
+            game_state,
+            cbuilding_production_line::BuffersBuffer {
+                buildings: engine::walk::Buffer::for_worker(
+                    &mut self.building_construction.rows,
+                    job.log.worker_growth_enabled(),
+                ),
+                railways: engine::walk::Buffer::for_worker(
+                    &mut self.railway_construction.rows,
+                    job.log.worker_growth_enabled(),
+                ),
+                route_provinces: engine::walk::Buffer::for_worker(
+                    &mut self.routes.first,
+                    job.log.worker_growth_enabled(),
+                ),
             },
         );
         self.building_construction.outcome = queue.buildings;
@@ -85,21 +101,48 @@ impl Captured {
                     .resize(job.equipment_required, Default::default());
             }
         }
-        let occupation = ccountry_occupation_status::walk_with_occupied(
+        let occupation = ccountry_occupation_status::walk_with_occupied_buffer(
             &recorded,
             base,
             game_state,
-            ccountry_occupation_status::Buffers {
-                settings: &mut self.settings.rows,
-                laws: &mut self.laws.rows,
-                group_laws: &mut self.group_laws.rows,
-                garrisons: &mut self.garrisons.rows,
-                manpower: &mut self.assigned_manpower.rows,
-                reserve_manpower: &mut self.reserve_manpower.rows,
-                names: &mut self.law_bytes.first,
-                equipment: &mut self.equipment.first,
+            ccountry_occupation_status::BuffersBuffer {
+                settings: engine::walk::Buffer::for_worker(
+                    &mut self.settings.rows,
+                    job.log.worker_growth_enabled(),
+                ),
+                laws: engine::walk::Buffer::for_worker(
+                    &mut self.laws.rows,
+                    job.log.worker_growth_enabled(),
+                ),
+                group_laws: engine::walk::Buffer::for_worker(
+                    &mut self.group_laws.rows,
+                    job.log.worker_growth_enabled(),
+                ),
+                garrisons: engine::walk::Buffer::for_worker(
+                    &mut self.garrisons.rows,
+                    job.log.worker_growth_enabled(),
+                ),
+                manpower: engine::walk::Buffer::for_worker(
+                    &mut self.assigned_manpower.rows,
+                    job.log.worker_growth_enabled(),
+                ),
+                reserve_manpower: engine::walk::Buffer::for_worker(
+                    &mut self.reserve_manpower.rows,
+                    job.log.worker_growth_enabled(),
+                ),
+                names: engine::walk::Buffer::for_worker(
+                    &mut self.law_bytes.first,
+                    job.log.worker_growth_enabled(),
+                ),
+                equipment: engine::walk::Buffer::for_worker(
+                    &mut self.equipment.first,
+                    job.log.worker_growth_enabled(),
+                ),
             },
-            &mut self.occupied.first,
+            engine::walk::Buffer::for_worker(
+                &mut self.occupied.first,
+                job.log.worker_growth_enabled(),
+            ),
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
@@ -138,15 +181,25 @@ impl Captured {
         }
         decode_ticks[3] += elapsed(started);
         let started = qpc();
-        self.resistance.outcome =
-            cresistance::walk(&recorded, base, game_state, &mut self.resistance.rows);
-        decode_ticks[8] += elapsed(started);
-        let started = qpc();
-        self.collaboration.outcome = ccountry_collaboration_status::walk(
+        self.resistance.outcome = cresistance::walk_buffer(
             &recorded,
             base,
             game_state,
-            &mut self.collaboration.rows,
+            engine::walk::Buffer::for_worker(
+                &mut self.resistance.rows,
+                job.log.worker_growth_enabled(),
+            ),
+        );
+        decode_ticks[8] += elapsed(started);
+        let started = qpc();
+        self.collaboration.outcome = ccountry_collaboration_status::walk_buffer(
+            &recorded,
+            base,
+            game_state,
+            engine::walk::Buffer::for_worker(
+                &mut self.collaboration.rows,
+                job.log.worker_growth_enabled(),
+            ),
         );
         decode_ticks[9] += elapsed(started);
         self.rest_raw_mode = false;
@@ -218,13 +271,9 @@ pub(super) struct ConstructionRestCountry {
 impl ConstructionRestJob {
     pub fn new() -> Self {
         let mut job = Self {
-            // Late-campaign worst case is about 1k states with resources and
-            // resistance, construction queues with routes, occupation graphs
-            // with laws and collaboration links; both pools start above that
-            // so steady state never overflows.
-            log: RawLog::new(1 << 17, 8 << 20),
+            log: RawLog::new(0, 0),
             game_state: 0,
-            census: owned_vec(vec(crate::country_scale::census_rows(512))),
+            census: Vec::new(),
             settings_required: 0,
             group_laws_required: 0,
             law_bytes_required: 0,
@@ -252,12 +301,17 @@ impl ConstructionRestJob {
         self.log.grow_for_next()
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed hours fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
+    /// Prepare only observed shortage and live census demand off-thread.
     pub fn grow(&mut self) {
-        self.log.grow();
-        crate::raw::double_capacity(&mut self.census);
+        engine::allocation::advisory(|| {
+            self.log.grow();
+            let target = self
+                .census
+                .len()
+                .saturating_add(1)
+                .max(crate::country_scale::census_rows(0));
+            let _ = crate::allocation::reserve_raw(&mut self.census, target, "construction census");
+        });
         self.update_capacity_charge();
     }
 
@@ -425,6 +479,10 @@ fn copy_construction_roots(
     let links = Array::from_header(raw, 4)?;
     if countries.count < 2 || links.count == 0 {
         return None;
+    }
+    if log.worker_growth_enabled() {
+        engine::allocation::reserve_exact(census, countries.count.saturating_sub(1) as usize)
+            .ok()?;
     }
     let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
     for slot in 1..countries.count {
@@ -1509,13 +1567,34 @@ fn copy_collaboration_walk(
 }
 
 /// Acquire one owned payload and report its per-table costs.
+#[cfg(test)]
 pub(crate) fn copy_construction_rest_refresh(
     memory: &impl Memory,
     ctx: ConstructionRestCopyContext,
     job: &mut ConstructionRestJob,
 ) -> ConstructionRestCopyReport {
+    copy_construction_rest(memory, ctx, job, false)
+}
+
+pub(crate) fn copy_construction_rest_refresh_growing(
+    memory: &impl Memory,
+    ctx: ConstructionRestCopyContext,
+    job: &mut ConstructionRestJob,
+) -> ConstructionRestCopyReport {
+    copy_construction_rest(memory, ctx, job, true)
+}
+
+fn copy_construction_rest(
+    memory: &impl Memory,
+    ctx: ConstructionRestCopyContext,
+    job: &mut ConstructionRestJob,
+    growing: bool,
+) -> ConstructionRestCopyReport {
     let started = qpc();
     job.clear();
+    if growing {
+        job.log.enable_worker_growth();
+    }
     job.game_state = ctx.game_state;
     copy_construction_rest_pass(memory, ctx.base, ctx.game_state, job);
     let mut ticks = [0; 10];

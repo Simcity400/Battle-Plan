@@ -535,6 +535,14 @@ pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> C
     captured
 }
 
+pub(crate) fn job() -> ConstructionRestJob {
+    let mut job = ConstructionRestJob::new();
+    job.log = crate::raw::RawLog::new(1 << 17, 8 << 20);
+    job.census.reserve_exact(16);
+    job.update_capacity_charge();
+    job
+}
+
 pub(crate) fn split(
     memory: &impl engine::Memory,
     capacities: &Capacities,
@@ -544,7 +552,7 @@ pub(crate) fn split(
         base: 0,
         game_state: BASE,
     };
-    let mut first = ConstructionRestJob::new();
+    let mut first = job();
     let report =
         crate::extended::construction::copy_construction_rest_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);

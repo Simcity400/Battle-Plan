@@ -126,9 +126,38 @@ pub fn capture(
     buckets: &mut [Bucket],
     members: &mut [u32],
 ) -> Capture {
+    capture_buffer(
+        memory,
+        state,
+        crate::walk::Buffer::Fixed(buckets),
+        crate::walk::Buffer::Fixed(members),
+    )
+}
+
+pub fn capture_growing(
+    memory: &impl Memory,
+    state: usize,
+    buckets: &mut Vec<Bucket>,
+    members: &mut Vec<u32>,
+) -> Capture {
+    capture_buffer(
+        memory,
+        state,
+        crate::walk::Buffer::Growing(buckets),
+        crate::walk::Buffer::Growing(members),
+    )
+}
+
+fn capture_buffer(
+    memory: &impl Memory,
+    state: usize,
+    mut buckets: crate::walk::Buffer<'_, Bucket>,
+    mut members: crate::walk::Buffer<'_, u32>,
+) -> Capture {
     let mut demand = Demand::default();
     let len = (|| {
         let (outer_address, outer_header) = scan(memory, state, &mut demand, |ordinal, bucket| {
+            buckets.ensure(ordinal + 1)?;
             if let Some(destination) = buckets.get_mut(ordinal) {
                 *destination = bucket;
             }
@@ -137,6 +166,7 @@ pub fn capture(
         if demand.buckets > buckets.len() {
             return Err(BUCKET_CAPACITY);
         }
+        members.ensure(demand.members)?;
         if demand.members > members.len() {
             return Err(MEMBER_CAPACITY);
         }

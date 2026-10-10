@@ -2,7 +2,7 @@
 //!
 //! One walk of every country's railway-gun roster. Guns move, fight and lose
 //! strength at any hour, so the table is hourly. Rows, route cells, stored
-//! names and tooltip scratch grow from observed live demand outside acquisition,
+//! names and tooltip scratch grow from original live headers in the worker,
 //! never from a fixed content bound. Optional tooltip failures remain local.
 use crate::{
     sampling::qpc,
@@ -10,20 +10,54 @@ use crate::{
     table_capture::{Arena, CaptureRows, grow_capacity, grow_vec},
 };
 use engine::allocation::{collect_vec, copy_vec, default_vec, owned_vec};
-use engine::{Memory, cunit::FirstCombatMemo, railway_gun_counter_inputs, walk::Outcome};
+use engine::{
+    Memory,
+    cunit::FirstCombatMemo,
+    railway_gun_counter_inputs,
+    walk::{Buffer, Outcome},
+};
 use replay::{
     frame::TableView,
-    rows::{RailwayGunCounterInputRow, RailwayGunEtaOperands, Recorded, TableId, tables},
+    rows::{
+        FreshRailwayCounterEta, RailwayGunCounterInputRow, RailwayGunEtaOperands, Recorded,
+        TableId, tables,
+    },
 };
 
 static NAME_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static ETA_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WITHDRAWAL_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FRESH_REFUSALS: [std::sync::atomic::AtomicU64; 4] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+static TRANSPORT_REFUSALS: [std::sync::atomic::AtomicU64; 3] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 3];
+
+pub(crate) fn movement_arrow_data() -> impl serde::Serialize {
+    crate::status::status!({
+        "withdrawal_refused": WITHDRAWAL_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
+        "transport_refusals": crate::status::map([
+            "selected transport railway current-hour packet unavailable",
+            "selected transport railway stat weight unreadable",
+            "selected transport transfer source unreadable",
+        ].into_iter().zip(TRANSPORT_REFUSALS.iter()).map(|(reason, count)|
+            (reason, count.load(std::sync::atomic::Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
+        "scope": "cumulative field-local railway-gun movement-arrow scalar refusals; established counter inputs remain available",
+    })
+}
 
 pub(crate) fn eta_data() -> impl serde::Serialize {
     let refused = ETA_REFUSALS.load(std::sync::atomic::Ordering::Relaxed);
     crate::status::status!({
         "refused": refused,
         "refusal": "railway gun first-edge ETA acquisition failed",
+        "fresh_refusals": crate::status::map([
+            "railway gun fresh ETA callback hour or observation arena unavailable",
+            "railway gun fresh maximum-speed acquisition failed",
+            "railway gun fresh land supply-factor acquisition failed",
+            "railway gun fresh genuine orders-group acquisition failed",
+        ].into_iter().zip(FRESH_REFUSALS.iter()).map(|(reason, count)|
+            (reason, count.load(std::sync::atomic::Ordering::Relaxed))
+        ).filter(|(_, count)| *count != 0)),
     })
 }
 
@@ -47,15 +81,17 @@ pub struct Capacities {
     names: usize,
     named_bonuses: usize,
     supply_origins: usize,
+    combat_references: usize,
 }
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            rows: 64.max(crate::country_scale::railway_gun_name_demand().rows),
-            paths: 1024,
+            rows: crate::country_scale::railway_gun_name_demand().rows,
+            paths: crate::country_scale::railway_gun_name_demand().paths,
             names: crate::country_scale::railway_gun_name_demand().bytes,
             named_bonuses: crate::country_scale::railway_gun_name_demand().named_bonuses,
             supply_origins: crate::country_scale::railway_gun_name_demand().supply_origins,
+            combat_references: crate::country_scale::railway_gun_name_demand().combat_references,
         }
     }
 }
@@ -63,17 +99,22 @@ impl Default for Capacities {
 impl Capacities {
     pub(crate) fn raise_for_names(&mut self, demand: railway_gun_counter_inputs::NameDemand) {
         grow_capacity(&mut self.rows, demand.rows);
+        grow_capacity(&mut self.paths, demand.paths);
         grow_capacity(&mut self.names, demand.bytes);
         grow_capacity(&mut self.named_bonuses, demand.named_bonuses);
         grow_capacity(&mut self.supply_origins, demand.supply_origins);
+        grow_capacity(&mut self.combat_references, demand.combat_references);
     }
 }
 
 pub struct Captured {
     rows: CaptureRows<railway_gun_counter_inputs::Row>,
+    combat_references: Arena<engine::cunit::MapCombatReference>,
+    sample_hour: Option<i32>,
     paths: Arena<u32>,
     names: Arena<u8>,
     tooltip_guns: Vec<(usize, usize)>,
+    fresh_observations: Vec<railway_gun_counter_inputs::FreshEtaObservations>,
     named_bonuses: Vec<usize>,
     required_named_bonuses: usize,
     fixed_layout: Option<engine::fixed_layout::Report>,
@@ -91,15 +132,19 @@ impl Captured {
             names: 0,
             named_bonuses: 0,
             supply_origins: 0,
+            combat_references: 0,
         })
     }
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
+            combat_references: Arena::new(capacity.combat_references),
+            sample_hour: None,
             paths: Arena::new(capacity.paths),
             names: Arena::new(capacity.names),
             tooltip_guns: owned_vec(default_vec(capacity.rows)),
+            fresh_observations: owned_vec(default_vec(capacity.rows)),
             named_bonuses: owned_vec(default_vec(capacity.named_bonuses)),
             required_named_bonuses: 0,
             fixed_layout: None,
@@ -111,20 +156,26 @@ impl Captured {
     }
 
     pub fn reset(&mut self) {
+        self.combat_references.reset();
+        self.sample_hour = None;
         self.rows.reset();
         self.paths.reset();
         self.names.reset();
         self.supply_origins.reset();
         self.combats.clear();
         self.required_named_bonuses = 0;
+        self.fresh_observations.fill(Default::default());
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes()
+        self.combat_references.allocated_bytes()
+            + self.rows.allocated_bytes()
             + self.paths.allocated_bytes()
             + self.names.allocated_bytes()
             + self.combats.allocated_bytes()
             + self.tooltip_guns.capacity() * std::mem::size_of::<(usize, usize)>()
+            + self.fresh_observations.capacity()
+                * std::mem::size_of::<railway_gun_counter_inputs::FreshEtaObservations>()
             + self.named_bonuses.capacity() * std::mem::size_of::<usize>()
             + self.supply_origins.allocated_bytes()
     }
@@ -132,10 +183,12 @@ impl Captured {
     pub fn grow(&mut self, capacity: &mut Capacities) {
         capacity.raise_for_names(crate::country_scale::railway_gun_name_demand());
         self.rows.grow(&mut capacity.rows);
+        self.combat_references.grow(&mut capacity.combat_references);
         grow_capacity(&mut capacity.paths, self.paths.required);
         self.paths.grow(&mut capacity.paths);
         self.names.grow(&mut capacity.names);
         grow_vec(&mut self.tooltip_guns, capacity.rows);
+        grow_vec(&mut self.fresh_observations, capacity.rows);
         grow_capacity(&mut capacity.named_bonuses, self.required_named_bonuses);
         grow_vec(&mut self.named_bonuses, capacity.named_bonuses);
         self.supply_origins.grow(&mut capacity.supply_origins);
@@ -145,29 +198,58 @@ impl Captured {
             .map_err(crate::allocation::io);
     }
 
+    #[cfg(test)]
     pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> [u64; N] {
+        self.capture_at(memory, base, game_state, None)
+    }
+
+    pub fn capture_with_hour(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+    ) -> [u64; N] {
+        self.capture_at(memory, base, game_state, Some(hour))
+    }
+
+    fn capture_at(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: Option<i32>,
+    ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
         // Answers are valid for one capture only; clearing keeps the reserved room.
         self.combats.clear();
         let mut names = railway_gun_counter_inputs::NameArena {
-            bytes: &mut self.names.first,
+            bytes: Buffer::Growing(&mut self.names.first),
             used: 0,
             required: 0,
             failures: 0,
         };
+        self.sample_hour = hour;
+        let mut references = railway_gun_counter_inputs::CombatReferencesArena {
+            entries: Buffer::Growing(&mut self.combat_references.first),
+            used: 0,
+            required: 0,
+        };
         let mut tooltip = railway_gun_counter_inputs::TooltipScratch {
-            guns: &mut self.tooltip_guns,
+            guns: Buffer::Growing(&mut self.tooltip_guns),
+            fresh_observations: Buffer::Growing(&mut self.fresh_observations),
+            sample_hour: hour,
             named: engine::railway_gun_speed::NamedBonuses {
-                pointers: &mut self.named_bonuses,
+                pointers: Buffer::Growing(&mut self.named_bonuses),
                 required: 0,
             },
             layout: &mut self.fixed_layout,
-            supply_origins: &mut self.supply_origins.first,
+            supply_origins: Buffer::Growing(&mut self.supply_origins.first),
             supply_origins_len: 0,
             required_supply_origins: 0,
         };
-        let walk = railway_gun_counter_inputs::walk_with_tooltip_inputs(
+        let walk = railway_gun_counter_inputs::walk_with_tooltip_and_combat_references_growing(
             memory,
             base,
             game_state,
@@ -176,11 +258,52 @@ impl Captured {
             &mut self.combats,
             &mut names,
             &mut tooltip,
+            &mut references,
+        );
+        self.combat_references.len = references.used;
+        self.combat_references.required = references.required;
+        for row in &self.rows.rows[..walk.outcome.len()] {
+            if let Some(reason) = row.combat_references_failure {
+                super::unit_combat_references::observe_failure(reason);
+            }
+        }
+        super::unit_combat_references::demand(
+            true,
+            self.combat_references.required,
+            self.combat_references.first.len(),
         );
         self.required_named_bonuses = tooltip.named.required;
         self.supply_origins.len = tooltip.supply_origins_len;
         self.supply_origins.required = tooltip.required_supply_origins;
         self.rows.outcome = walk.outcome;
+        if hour.is_some() {
+            let mut refused = [0u64; 3];
+            for row in &self.rows.rows[..walk.outcome.len()] {
+                let Some(packet) = &row.transport else {
+                    refused[0] += 1;
+                    continue;
+                };
+                refused[1] += u64::from(packet.weight.is_err());
+                if let Ok(engine::selected_transport_units::Transfer::Present {
+                    status: Ok(0),
+                    source,
+                    ..
+                }) = packet.transfer
+                {
+                    refused[2] += u64::from(source.is_err());
+                }
+            }
+            for (count, value) in TRANSPORT_REFUSALS.iter().zip(refused) {
+                count.fetch_add(value, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        WITHDRAWAL_REFUSALS.fetch_add(
+            self.rows.rows[..walk.outcome.len()]
+                .iter()
+                .filter(|row| row.withdrawal.is_none())
+                .count() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         ETA_REFUSALS.fetch_add(
             self.rows.rows[..walk.outcome.len()]
                 .iter()
@@ -188,6 +311,16 @@ impl Captured {
                 .count() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
+        let mut fresh_refusals = [0_u64; 4];
+        for row in &self.rows.rows[..walk.outcome.len()] {
+            fresh_refusals[0] += u64::from(row.fresh_failure.is_some());
+            for (count, failure) in fresh_refusals[1..].iter_mut().zip(row.fresh_failures) {
+                *count += u64::from(failure.is_some());
+            }
+        }
+        for (count, refused) in FRESH_REFUSALS.iter().zip(fresh_refusals) {
+            count.fetch_add(refused, std::sync::atomic::Ordering::Relaxed);
+        }
         self.paths.len = walk.paths_len;
         self.paths.required = walk.required_paths;
         self.names.len = names.used;
@@ -198,6 +331,15 @@ impl Captured {
 
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome]
+    }
+
+    pub(crate) fn movement_sources(
+        &self,
+    ) -> super::production::Sources<'_, railway_gun_counter_inputs::Row> {
+        super::production::Sources {
+            rows: &self.rows.rows,
+            outcome: self.rows.outcome,
+        }
     }
 
     fn supply_origins(
@@ -250,6 +392,21 @@ impl Captured {
             self.rows.outcome,
             &self.rows.rows,
             |r| RailwayGunCounterInputRow {
+                transport: Recorded::Value(
+                    r.transport
+                        .as_ref()
+                        .map(super::selected_transport_inputs::project),
+                ),
+                combat_references: Recorded::Value(super::unit_combat_references::project(
+                    self.sample_hour,
+                    r.combat_references.and_then(|(start, len)| {
+                        self.combat_references
+                            .first
+                            .get(..self.combat_references.len)?
+                            .get(start..start.checked_add(len)?)
+                    }),
+                    r.combat_count,
+                )),
                 gun: r.gun,
                 roster_owner: r.roster_owner,
                 expeditionary_owner: r.expeditionary_owner,
@@ -287,6 +444,13 @@ impl Captured {
                     r.supply,
                     self.supply_origins(r),
                 )),
+                withdrawal: Recorded::Value(r.withdrawal),
+                fresh: Recorded::Value(r.fresh.map(|inputs| FreshRailwayCounterEta {
+                    sample_hour: inputs.sample_hour,
+                    maximum_speed: inputs.maximum_speed,
+                    land_supply_factor: inputs.land_supply_factor,
+                    orders_group: inputs.orders_group,
+                })),
             },
         )]
     }
@@ -334,6 +498,7 @@ mod tests {
             names: 0,
             named_bonuses: 0,
             supply_origins: 0,
+            combat_references: 0,
         });
         let memory = SliceMemory {
             base: 0,
@@ -388,6 +553,7 @@ mod tests {
             names: 0,
             named_bonuses: 0,
             supply_origins: 0,
+            combat_references: 0,
         };
         let mut capture = Captured::with_capacities(&capacity);
         capture.rows.outcome = Outcome::Truncated {
@@ -415,6 +581,7 @@ mod tests {
             names: 3,
             named_bonuses: 0,
             supply_origins: 0,
+            combat_references: 0,
         });
         capture.paths.first.copy_from_slice(&[13, 14, 15]);
         capture.paths.len = 3;
@@ -460,6 +627,7 @@ mod tests {
             names: 3,
             named_bonuses: 0,
             supply_origins: 0,
+            combat_references: 0,
         });
         capture.paths.first.copy_from_slice(&[13, 14, 15]);
         capture.paths.len = 3;
@@ -478,6 +646,56 @@ mod tests {
     }
 
     #[test]
+    fn fresh_eta_projects_independently_of_old_eta_and_refused_domains() {
+        let mut capture = Captured::with_capacities(&Capacities {
+            rows: 1,
+            paths: 3,
+            names: 0,
+            named_bonuses: 0,
+            supply_origins: 0,
+            combat_references: 0,
+        });
+        capture.paths.first.copy_from_slice(&[13, 14, 15]);
+        capture.paths.len = 3;
+        capture.rows.outcome = Outcome::Rows { len: 1 };
+        capture.rows.rows[0] = gun((7_u64 << 32) | 4713);
+        for fresh in [
+            Some(railway_gun_counter_inputs::FreshEta {
+                sample_hour: -42,
+                maximum_speed: Some(i64::MIN),
+                land_supply_factor: Some(i64::MAX),
+                orders_group: Some(0),
+            }),
+            Some(railway_gun_counter_inputs::FreshEta {
+                sample_hour: 81,
+                maximum_speed: None,
+                land_supply_factor: Some(0),
+                orders_group: None,
+            }),
+            None,
+        ] {
+            capture.rows.rows[0].fresh = fresh;
+            let [TableView::Complete(TableRows::RailwayGunCounterInputs(rows))] = capture.tables()
+            else {
+                panic!("fresh refusal cannot withhold counter prefix");
+            };
+            assert_eq!(
+                rows[0].fresh,
+                Recorded::Value(fresh.map(|input| FreshRailwayCounterEta {
+                    sample_hour: input.sample_hour,
+                    maximum_speed: input.maximum_speed,
+                    land_supply_factor: input.land_supply_factor,
+                    orders_group: input.orders_group,
+                }))
+            );
+            assert_eq!(rows[0].eta, Recorded::Value(None));
+            assert_eq!(rows[0].ordinary_path, [13, 14]);
+            assert_eq!(rows[0].current_strength, -123_456);
+        }
+        assert_eq!(capture.fresh_observations.len(), capture.rows.rows.len());
+    }
+
+    #[test]
     fn supply_origin_refusals_preserve_exact_scalars_and_other_tooltip_suffixes() {
         use engine::cunit_supply_inputs::{Failure, Inputs, Origin};
         let mut capture = Captured::with_capacities(&Capacities {
@@ -486,6 +704,7 @@ mod tests {
             names: 3,
             named_bonuses: 0,
             supply_origins: 2,
+            combat_references: 0,
         });
         capture.rows.outcome = Outcome::Rows { len: 1 };
         capture.paths.first.copy_from_slice(&[13, 14, 15]);
@@ -558,5 +777,60 @@ mod tests {
         };
         assert_eq!(rows[0].supply, Recorded::Value(None));
         assert_eq!(rows[0].name, Recorded::Value(Some(b"gun".to_vec())));
+    }
+}
+
+#[cfg(test)]
+mod combat_reference_projection_tests {
+    use super::*;
+    use replay::rows::TableRows;
+
+    #[test]
+    fn railway_owned_reference_projection_and_refusal_preserve_counter_prefix() {
+        let mut capture = Captured::with_capacities(&Capacities {
+            rows: 1,
+            paths: 0,
+            names: 0,
+            named_bonuses: 0,
+            supply_origins: 0,
+            combat_references: 2,
+        });
+        capture.rows.outcome = Outcome::Rows { len: 1 };
+        capture.rows.rows[0] = railway_gun_counter_inputs::Row {
+            gun: u64::MAX,
+            current_strength: i64::MIN,
+            combat_count: 2,
+            combat_references: Some((0, 2)),
+            ..Default::default()
+        };
+        capture.combat_references.first[..2].fill(engine::cunit::MapCombatReference {
+            combat: 0x8000_0001_0000_1b5a,
+            kind: 2,
+        });
+        capture.combat_references.len = 2;
+        capture.sample_hour = Some(31);
+        let [TableView::Complete(TableRows::RailwayGunCounterInputs(before))] = capture.tables()
+        else {
+            panic!("counter prefix unavailable");
+        };
+        let Recorded::Value(Some(references)) = &before[0].combat_references else {
+            panic!("complete owned suffix unavailable");
+        };
+        assert_eq!((references.sample_hour, references.entries.len()), (31, 2));
+        assert_eq!(references.entries[0], references.entries[1]);
+        capture.combat_references.len = 1;
+        let [TableView::Complete(TableRows::RailwayGunCounterInputs(refused))] = capture.tables()
+        else {
+            panic!("reference refusal erased the established prefix");
+        };
+        assert_eq!(refused[0].combat_references, Recorded::Value(None));
+        let mut expected = before[0].clone();
+        expected.combat_references = Recorded::Value(None);
+        assert_eq!(refused[0], expected);
+        capture.reset();
+        assert_eq!(
+            (capture.sample_hour, capture.combat_references.len),
+            (None, 0)
+        );
     }
 }

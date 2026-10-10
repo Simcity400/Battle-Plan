@@ -40,6 +40,7 @@ fn frame(hour: i32, amount: i64, produced: i64, level: i16, railway: bool) -> De
                 BuildingConstructionRow {
                     id: 1,
                     cost: 1_000_000,
+                    amount: 3 - i32::from(level),
                     produced,
                     building_type: 9,
                     target_state: 7,
@@ -135,12 +136,211 @@ fn checked(frames: &[DecodedFrame]) -> Report {
         check.observe(f, &mut report).unwrap();
     }
     check.finish(&mut report);
+    // The current encoder requires every current field; historical suffix
+    // absence is exercised on decoded rows and by replay's prefix fixtures.
+    if frames.iter().any(|frame| {
+        super::complete::<tables::ConstructionLineOutput>(frame)
+            .unwrap()
+            .iter()
+            .any(|row| matches!(row.count_reset, replay::rows::Recorded::NotRecorded))
+    }) {
+        return report;
+    }
     let replay = replay_of(frames.to_vec());
     let mut encoded = Report::default();
     compare_output(&replay, frames.last().unwrap(), &mut encoded).unwrap();
     assert_eq!(encoded.differences, report.differences);
     report
 }
+#[test]
+fn construction_output_does_not_charge_a_lines_spending_for_external_building_growth() {
+    let mut frames = [frame(100, 0, 100, 1, false), frame(124, 350, 450, 2, false)];
+    let TableView::Complete(TableRows::BuildingConstruction(rows)) =
+        &mut *frames[1].tables[TableId::BuildingConstruction.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].amount = 2;
+    let report = checked(&frames);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
+    output(&mut frames[1]).construction_raw += 1;
+    assert_eq!(checked(&frames).differences.len(), 1);
+}
+
+#[test]
+fn quantity_decreases_without_target_growth_or_ownership_transfer_fail() {
+    let mut frames = [frame(100, 0, 0, 1, false), frame(124, 0, 0, 1, false)];
+    let TableView::Complete(TableRows::BuildingConstruction(rows)) =
+        &mut *frames[1].tables[TableId::BuildingConstruction.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].amount -= 1;
+    let report = checked(&frames);
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("unexplained remaining-count decrease"));
+    assert_eq!(report.compared_tables["ConstructionLineOutput"], 0);
+    let TableView::Complete(TableRows::BuildingConstruction(rows)) =
+        &mut *frames[1].tables[TableId::BuildingConstruction.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].amount += 1;
+    assert_eq!(
+        checked(&frames).compared_tables["ConstructionLineOutput"],
+        1
+    );
+    output(&mut frames[1]).construction_raw += 1;
+    assert_eq!(checked(&frames).differences.len(), 1);
+}
+
+#[test]
+fn ownership_transfer_verifies_count_reset_and_unexplained_decrease_fails() {
+    use replay::rows::{CountryLinkRow, StateRow};
+    let mut frames = [frame(100, 0, 0, 1, false), frame(124, 0, 0, 1, false)];
+    for (index, f) in frames.iter_mut().enumerate() {
+        let TableView::Complete(TableRows::BuildingConstruction(rows)) =
+            &mut *f.tables[TableId::BuildingConstruction.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].country = 11;
+        rows[0].amount = if index == 0 { 1 } else { 0 };
+        output(f).count_reset = replay::rows::Recorded::Value(index as i64);
+        *f.tables[TableId::States.index()] =
+            TableView::Complete(TableRows::States(vec![StateRow {
+                id: 7,
+                owner: if index == 0 { 12 } else { 21 },
+                controller: if index == 0 { 12 } else { 21 },
+                ..Default::default()
+            }]));
+        *f.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(vec![
+                CountryLinkRow {
+                    id: 11,
+                    canonical_slot: 1,
+                },
+                CountryLinkRow {
+                    id: 12,
+                    canonical_slot: 1,
+                },
+                CountryLinkRow {
+                    id: 21,
+                    canonical_slot: 2,
+                },
+            ]));
+    }
+    let report = checked(&frames);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        report.compared_tables["ConstructionLineOutput ownership transfer count resets"],
+        1
+    );
+    assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
+    let original = frames.clone();
+    // SetOwner@1409D1710 resets the count before 1409D26D0 can lower
+    // shared levels. Independent script growth can also surround the reset.
+    for level in [0, 1, 3] {
+        for completed in [0, 1] {
+            let mut frames = original.clone();
+            let TableView::Complete(TableRows::StateBuildings(rows)) =
+                &mut *frames[1].tables[TableId::StateBuildings.index()]
+            else {
+                unreachable!()
+            };
+            rows[0].level = level;
+            for (index, f) in frames.iter_mut().enumerate() {
+                let TableView::Complete(TableRows::BuildingConstruction(rows)) =
+                    &mut *f.tables[TableId::BuildingConstruction.index()]
+                else {
+                    unreachable!()
+                };
+                rows[0].amount = if index == 0 { 1 + completed } else { 0 };
+                output(f).count_reset = replay::rows::Recorded::Value(index as i64);
+            }
+            output(&mut frames[1]).construction_raw = i64::from(completed) * 1_000_000;
+            let report = checked(&frames);
+            assert!(
+                report.differences.is_empty(),
+                "level {level}, completed {completed}: {:?}",
+                report.differences
+            );
+            assert_eq!(
+                report.compared_tables["ConstructionLineOutput ownership transfer count resets"],
+                1
+            );
+            for extra in [1, 1_000_000] {
+                let mut bad = frames.clone();
+                output(&mut bad[1]).construction_raw += extra;
+                assert_eq!(checked(&bad).differences.len(), 1);
+            }
+            // Readable historical prefixes still check exact native progress
+            // and cost debits, including completion followed by a reset.
+            for f in &mut frames {
+                output(f).count_reset = replay::rows::Recorded::NotRecorded;
+            }
+            assert!(checked(&frames).differences.is_empty());
+            output(&mut frames[1]).construction_raw += 1;
+            assert_eq!(checked(&frames).differences.len(), 1);
+        }
+    }
+    output(&mut frames[1]).construction_raw = 1;
+    assert_eq!(checked(&frames).differences.len(), 1);
+    output(&mut frames[1]).construction_raw = 0;
+    let mut historical = original.clone();
+    for f in &mut historical {
+        output(f).count_reset = replay::rows::Recorded::NotRecorded;
+    }
+    for owner in [11, 12, 0, u32::MAX, 999] {
+        let mut frames = historical.clone();
+        let TableView::Complete(TableRows::States(rows)) =
+            &mut *frames[1].tables[TableId::States.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].owner = owner;
+        assert_eq!(checked(&frames).differences.len(), 1, "owner {owner}");
+    }
+    let mut frames = historical.clone();
+    let TableView::Complete(TableRows::States(rows)) =
+        &mut *frames[0].tables[TableId::States.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].owner = 21;
+    assert_eq!(checked(&frames).differences.len(), 1);
+    for table in [
+        TableId::States,
+        TableId::CountryLinks,
+        TableId::StateBuildings,
+    ] {
+        let mut frames = historical.clone();
+        *frames[1].tables[table.index()] = TableView::Unavailable {
+            reason: "missing ownership-reset witness".into(),
+        };
+        assert_eq!(
+            checked(&frames).differences.len(),
+            1,
+            "{table:?}: historical ownership inputs are required"
+        );
+    }
+    let mut frames = historical;
+    for f in &mut frames {
+        let TableView::Complete(TableRows::BuildingConstruction(rows)) =
+            &mut *f.tables[TableId::BuildingConstruction.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].amount += 1;
+    }
+    assert_eq!(
+        checked(&frames).differences.len(),
+        1,
+        "a historical ownership reset must clear the remaining count"
+    );
+}
+
 #[test]
 fn new_building_completions_and_railway_progress_pass_and_wrong_amount_fails() {
     for rail in [false, true] {
@@ -153,6 +353,47 @@ fn new_building_completions_and_railway_progress_pass_and_wrong_amount_fails() {
         assert!(report.differences.is_empty(), "{:?}", report.differences);
         assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
         output(&mut frames[1]).construction_raw += 1;
+        assert_eq!(checked(&frames).differences.len(), 1);
+    }
+}
+
+#[test]
+fn script_target_growth_does_not_spend_the_waiting_lines_ic() {
+    // A focus reward adds two levels while the queue has zero factories and
+    // unchanged progress; an independent gift can also accompany paid work.
+    for amount in [0, 350, 1_000_350, 2_000_350] {
+        let progress = if amount == 0 { 0 } else { 350 };
+        let mut frames = [
+            frame(100, 0, 0, 2, false),
+            frame(124, amount, progress, 4, false),
+        ];
+        for (index, frame) in frames.iter_mut().enumerate() {
+            let TableView::Complete(TableRows::BuildingConstruction(rows)) =
+                &mut *frame.tables[TableId::BuildingConstruction.index()]
+            else {
+                unreachable!()
+            };
+            rows[0].amount = 3 - if index == 0 {
+                0
+            } else {
+                (amount / 1_000_000) as i32
+            };
+        }
+        let report = checked(&frames);
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+        assert_eq!(report.compared_tables["ConstructionLineOutput"], 1);
+        assert_eq!(
+            report.compared_tables["ConstructionLineOutput external target growth bounds"],
+            usize::from(amount < 2_000_350)
+        );
+        // A fractional missing debit and an extra whole level remain defects.
+        output(&mut frames[1]).construction_raw += 1;
+        assert_eq!(checked(&frames).differences.len(), 1);
+        if amount >= 1_000_000 {
+            output(&mut frames[1]).construction_raw = amount - 1_000_000;
+            assert_eq!(checked(&frames).differences.len(), 1);
+        }
+        output(&mut frames[1]).construction_raw = 3_000_000 + progress;
         assert_eq!(checked(&frames).differences.len(), 1);
     }
 }
@@ -345,7 +586,7 @@ fn repair_necessary_check_accepts_factory_and_zero_ic_advances_and_rejects_missi
     }
 }
 #[test]
-fn linked_instant_and_missing_building_operands_are_named_limitations() {
+fn linked_instant_and_missing_repair_operands_are_named_limitations() {
     let mut frames = [frame(100, 0, 0, 1, false), frame(124, 200, 999, 1, false)];
     output(&mut frames[1]).linked = true;
     assert!(checked(&frames).differences.is_empty());
@@ -353,6 +594,12 @@ fn linked_instant_and_missing_building_operands_are_named_limitations() {
     output(&mut frames[1]).exact = false;
     assert!(checked(&frames).differences.is_empty());
     output(&mut frames[1]).exact = true;
+    let TableView::Complete(TableRows::BuildingConstruction(rows)) =
+        &mut *frames[1].tables[TableId::BuildingConstruction.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].repair_levels = 1;
     *frames[1].tables[TableId::StateBuildings.index()] = TableView::Unavailable {
         reason: "fixture missing".into(),
     };

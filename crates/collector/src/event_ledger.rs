@@ -1,6 +1,6 @@
 //! Shared loss semantics for the two air ledgers. Only the game thread touches
 //! the store. The spool thread publishes an empty spare through a separate slot.
-use engine::cgame_state::Clock;
+type Clock = engine::cgame_state::Clock<u64>;
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -52,6 +52,8 @@ pub struct EventLedger<T> {
     // Published census/overflow demand, never pooled Vec allocation headroom.
     pub capacity: AtomicUsize,
     required: AtomicUsize,
+    attempted_calls: AtomicUsize,
+    attempted_rows: AtomicUsize,
     pub calls: AtomicU64,
     pub events: AtomicU64,
     pub zero_writes: AtomicU64,
@@ -86,6 +88,8 @@ impl<T: Event> EventLedger<T> {
             active: AtomicUsize::new(0),
             capacity: AtomicUsize::new(0),
             required: AtomicUsize::new(0),
+            attempted_calls: AtomicUsize::new(0),
+            attempted_rows: AtomicUsize::new(0),
             calls: AtomicU64::new(0),
             events: AtomicU64::new(0),
             zero_writes: AtomicU64::new(0),
@@ -134,6 +138,8 @@ impl<T: Event> EventLedger<T> {
         self.active.store(0, Ordering::SeqCst);
         self.capacity.store(0, Ordering::Release);
         self.required.store(0, Ordering::Release);
+        self.attempted_calls.store(0, Ordering::Relaxed);
+        self.attempted_rows.store(0, Ordering::Relaxed);
         for count in [
             &self.calls,
             &self.events,
@@ -183,6 +189,10 @@ impl<T: Event> EventLedger<T> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     pub fn prepare(&self, demand: usize) {
+        engine::allocation::advisory(|| self.prepare_storage(demand));
+    }
+
+    fn prepare_storage(&self, demand: usize) {
         if let Ok(mut retired) = self.retired.lock() {
             drop(retired.take());
         }
@@ -213,6 +223,15 @@ impl<T: Event> EventLedger<T> {
             self.lost_events_unknown.fetch_add(1, Ordering::Relaxed);
             self.refuse("event ledger native calls overlap");
         }
+    }
+    /// Reached native writer, including calls skipped after an interval loss.
+    /// This sizes the next prepared store without acquiring refused operands.
+    pub fn attempt(&self) {
+        let attempted = self
+            .attempted_calls
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        self.required.fetch_max(attempted, Ordering::Release);
     }
     pub fn leave(&self) {
         if self.active.fetch_sub(1, Ordering::SeqCst) == 1 {
@@ -290,6 +309,13 @@ impl<T: Event> EventLedger<T> {
         }
         store.claim = None;
         let event = event?;
+        if event.is_some() {
+            let attempted = self
+                .attempted_rows
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
+            self.required.fetch_max(attempted, Ordering::Release);
+        }
         if self.poisoned.load(Ordering::SeqCst) {
             return Err("event ledger observation invalidated");
         }
@@ -338,6 +364,8 @@ impl<T: Event> EventLedger<T> {
             self.lost_drain();
             return;
         };
+        self.attempted_calls.store(0, Ordering::Relaxed);
+        self.attempted_rows.store(0, Ordering::Relaxed);
         let transition = store.world_generation != crate::world_lifetime::generation()
             || !store.clock.is_some_and(|before| {
                 before.hour.checked_add(1) == Some(clock.hour)
@@ -386,7 +414,16 @@ impl<T: Event> EventLedger<T> {
             self.partial_intervals.fetch_add(1, Ordering::Relaxed);
         }
     }
+    #[cfg(test)]
     pub fn drain(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
+        self.drain_buffer(output, false)
+    }
+    /// Worker-only: owned events still covered by this interval size the
+    /// returned frame before handoff; no native operation is attempted again.
+    pub fn drain_growing(&self, output: &mut Vec<T>) -> Result<usize, &'static str> {
+        self.drain_buffer(output, true)
+    }
+    fn drain_buffer(&self, output: &mut Vec<T>, growing: bool) -> Result<usize, &'static str> {
         self.drains.fetch_add(1, Ordering::Relaxed);
         if self.active.load(Ordering::SeqCst) != 0 {
             self.mark_stranded();
@@ -426,6 +463,10 @@ impl<T: Event> EventLedger<T> {
             return Err("event ledger first/branch/recovery interval is partial");
         }
         output.clear();
+        if growing {
+            engine::allocation::reserve_exact(output, store.entries.len())
+                .map_err(|_| "event ledger drain allocation failed")?;
+        }
         if output.capacity() < store.entries.len() {
             self.refusals.fetch_add(1, Ordering::Relaxed);
             self.discard(&mut store);
@@ -458,7 +499,7 @@ impl<T: Event> EventLedger<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Default)]
     struct Row(u64);
     impl Event for Row {
         fn set_id(&mut self, id: u64) {
@@ -646,6 +687,71 @@ mod tests {
         assert_eq!(ledger.drain(&mut rows).unwrap(), 5000);
         assert_eq!(rows[4999].0, 4999);
         assert!(ledger.store.lock().unwrap().claim.is_none());
+    }
+    #[test]
+    fn worker_drain_grows_empty_and_recycled_frames_before_handoff() {
+        fn exercise<T: Event + Default>() {
+            let ledger = EventLedger::<T>::new();
+            let mut frame = Vec::new();
+            ledger.prepare(5000);
+            ledger.boundary(clock(1));
+            assert!(ledger.drain_growing(&mut frame).is_err());
+            ledger.boundary(clock(2));
+            for (hour, count) in [(2, 5000), (3, 10003)] {
+                if hour > 2 {
+                    ledger.prepare(count);
+                    ledger.boundary(clock(hour));
+                    assert_eq!(ledger.drain_growing(&mut frame), Ok(0));
+                }
+                crate::allocation_failure_tests::with_allocations_denied(|| {
+                    for country in 0..count {
+                        let token = ledger.claim((country, 0)).unwrap();
+                        ledger.complete(token, Ok(Some(T::default()))).unwrap();
+                    }
+                });
+                assert_eq!(ledger.drain_growing(&mut frame), Ok(count));
+                assert_eq!(frame.len(), count);
+                assert_eq!(ledger.overflow.load(Ordering::Relaxed), 0);
+                assert_eq!(ledger.lost_events.load(Ordering::Relaxed), 0);
+            }
+        }
+        exercise::<Row>();
+        exercise::<crate::air_losses::Entry>();
+        exercise::<crate::building_bombing::Entry>();
+    }
+    #[test]
+    fn refused_native_calls_retain_the_full_burst_after_the_first_overflow() {
+        let ledger = EventLedger::<Row>::new();
+        ledger.prepare(1);
+        ledger.boundary(clock(1));
+        assert!(ledger.drain_growing(&mut Vec::new()).is_err());
+        ledger.boundary(clock(2));
+        let token = ledger.claim((1, 0)).unwrap();
+        ledger.complete(token, Ok(Some(Row::default()))).unwrap();
+        let token = ledger.claim((1, 0)).unwrap();
+        let reason = ledger
+            .complete(token, Ok(Some(Row::default())))
+            .unwrap_err();
+        ledger.refuse(reason);
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            for _ in 0..10003 {
+                ledger.attempt();
+            }
+        });
+        assert_eq!(ledger.demand(), 10003);
+        ledger.prepare(0);
+        ledger.boundary(clock(3));
+        assert!(ledger.drain_growing(&mut Vec::new()).is_err());
+        ledger.boundary(clock(4));
+        let mut frame = Vec::new();
+        assert_eq!(ledger.drain_growing(&mut frame), Ok(0));
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            for country in 0..10003 {
+                let token = ledger.claim((country, 0)).unwrap();
+                ledger.complete(token, Ok(Some(Row::default()))).unwrap();
+            }
+        });
+        assert_eq!(ledger.drain_growing(&mut frame), Ok(10003));
     }
     #[test]
     fn published_ordinals_survive_active_and_contended_valid_clock_boundaries() {

@@ -422,7 +422,7 @@ fn compare_nukes(
         );
         count += 1;
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         let entries = country
             .nukes
             .as_ref()
@@ -448,7 +448,7 @@ fn compare_facilities(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut expected = BTreeMap::new();
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         let status = country
             .status
             .as_ref()
@@ -527,7 +527,7 @@ fn compare_programs(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut expected = BTreeMap::new();
-    for country in pack.countries.values() {
+    for (_, country) in report.canonical_countries(&pack.countries) {
         let status = country
             .status
             .as_ref()
@@ -682,7 +682,7 @@ fn compare_projects(
         }
         count += 1;
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         let status = country
             .status
             .as_ref()
@@ -798,7 +798,7 @@ fn compare_history(
         }
         count += 1;
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         let status = country
             .status
             .as_ref()
@@ -874,7 +874,7 @@ fn compare_breakthroughs(
         );
         count += 1;
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         let status = country
             .status
             .as_ref()

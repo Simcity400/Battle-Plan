@@ -87,6 +87,14 @@ const MODIFIER_NAMES: [&str; 30] = [
     BM_NIGHT_MODIFIER,
 ];
 
+/// One shared native141440750 dispatch for actual combat and selected preview.
+pub(crate) fn modifier_name_key(id: u32) -> Result<&'static str, String> {
+    MODIFIER_NAMES
+        .get(id as usize)
+        .copied()
+        .ok_or_else(|| format!("combat modifier {id} has no native name key"))
+}
+
 fn tactic_effects(
     icons: &dyn TextIcons,
     loc: &Localisation,
@@ -189,9 +197,7 @@ fn combat_stat(
         if value == 0 {
             continue;
         }
-        let modifier_key = MODIFIER_NAMES
-            .get(modifier.id as usize)
-            .ok_or_else(|| format!("combat modifier {} has no native name key", modifier.id))?;
+        let modifier_key = modifier_name_key(modifier.id)?;
         let name = builtin(icons, loc, modifier_key, &[])?;
         text.push_str(&builtin(
             icons,

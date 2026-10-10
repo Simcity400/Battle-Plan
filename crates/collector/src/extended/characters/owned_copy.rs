@@ -5,6 +5,11 @@ use engine::allocation::{owned_vec, reserve, vec};
 /// verified definitions; all other observations retain the raw replay order.
 #[derive(Debug, Default)]
 pub(crate) struct CharactersJob {
+    pub(super) worker_growing: bool,
+    pub(super) capture_growing: bool,
+    pub(super) leader_rows: usize,
+    pub(super) character_demand: AdvisorDemand,
+    pub(super) unit_demand: AdvisorDemand,
     pub part: usize,
     pub log: crate::raw::RawLog<6>,
     pub game_state: usize,
@@ -12,7 +17,8 @@ pub(crate) struct CharactersJob {
     pub(super) traits: TraitCapture,
     pub(super) advisor_demand: AdvisorDemand,
     // Authenticated roles whose appended fields are copied after every old
-    // field. Capacity comes from the admitted raw-span storage and grows idle.
+    // field. Worker growth follows the authenticated roles; callback storage
+    // records shortage for idle growth.
     pub(super) appended_roles: Vec<AppendedRole>,
     pub(super) appended_required: usize,
     pub(super) appended_overflowed: bool,
@@ -66,7 +72,7 @@ pub(super) struct CharacterSourceBindings {
 impl CharacterSourceBindings {
     pub(super) fn new() -> Self {
         let mut value = Self {
-            sources: owned_vec(vec(8192)),
+            sources: owned_vec(vec(census::initial_len().saturating_mul(2))),
             overflowed: false,
             ready: false,
             rows: [0; 2],
@@ -98,7 +104,17 @@ impl CharacterSourceBindings {
         self.bytes = context.trait_bytes;
     }
 
-    pub(super) fn remember(&mut self, source: TraitVectorCopy) {
+    pub(super) fn remember(&mut self, source: TraitVectorCopy, growing: bool) {
+        if growing {
+            let capacity = self.sources.capacity();
+            if reserve(&mut self.sources, 1).is_err() {
+                self.overflowed = true;
+                return;
+            }
+            if self.sources.capacity() != capacity {
+                self.update_charge();
+            }
+        }
         if self.sources.len() == self.sources.capacity() {
             self.overflowed = true;
         } else {
@@ -108,7 +124,7 @@ impl CharacterSourceBindings {
 
     pub(super) fn grow(&mut self) {
         if self.overflowed {
-            crate::raw::double_capacity(&mut self.sources);
+            let _ = engine::allocation::reserve(&mut self.sources, 1);
             self.update_charge();
         }
     }
@@ -154,6 +170,15 @@ pub(super) struct AdvisorDemand {
     pub(super) overflowed: bool,
 }
 
+impl AdvisorDemand {
+    fn add(&mut self, rows: usize, bytes: usize) {
+        self.overflowed |=
+            self.rows.checked_add(rows).is_none() || self.bytes.checked_add(bytes).is_none();
+        self.rows = self.rows.saturating_add(rows);
+        self.bytes = self.bytes.saturating_add(bytes);
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) enum AppendedRole {
     Leader(usize),
@@ -167,7 +192,7 @@ pub(super) enum AppendedRole {
 
 impl CharactersJob {
     pub(crate) fn has_storage(&self) -> bool {
-        self.advisor_cache.is_some() || self.log.spans.capacity() != 0
+        self.worker_growing || self.advisor_cache.is_some() || self.log.spans.capacity() != 0
     }
     pub(super) fn source_mask(&self) -> u32 {
         self.active
@@ -179,7 +204,10 @@ impl CharactersJob {
     }
     #[cfg(test)]
     pub fn new() -> Self {
-        Self::with_storage(0, 1 << 19, 24 << 20, true)
+        let mut job = Self::with_storage(0, 1 << 19, 24 << 20, true);
+        job.traits = TraitCapture::with_test_capacities(4096, [4096, 32768], 4096, 1 << 20);
+        job.source_bindings = Some(super::tests::fixture_bindings());
+        job
     }
 
     pub(super) fn with_storage(part: usize, spans: usize, bytes: usize, has_traits: bool) -> Self {
@@ -188,19 +216,15 @@ impl CharactersJob {
         log.initialize_scattered_read_plan(trace_capacity, trace_capacity, bytes.min(4 << 20));
         let census = (part == 0)
             .then(|| {
-                ccharacter_manager::PortraitCensus::try_new(
-                    ccharacter_manager::PortraitCensus::INITIAL_CAPACITY,
-                )
-                .map_err(crate::allocation::io)
-                .ok()
+                ccharacter_manager::PortraitCensus::try_new(census::initial_len())
+                    .map_err(crate::allocation::io)
+                    .ok()
             })
             .flatten();
-        let role_census =
-            (part == 0).then(|| census::RoleCensus::new(census::RoleCensus::INITIAL_CAPACITY));
-        // A pass visits at most every census occurrence, so the list is seeded
-        // at the live census length (none before the first census) and
-        // follows it off-thread.
-        let census_visited = owned_vec(vec(if part == 0 { 0 } else { census::live_len() }));
+        let role_census = (part == 0).then(|| census::RoleCensus::new(census::initial_len()));
+        // A pass visits at most every roster occurrence. Attach/cadence hints
+        // seed the list; original acquired occurrences grow worker storage.
+        let census_visited = owned_vec(vec(if part == 0 { 0 } else { census::initial_len() }));
         let mut census_charge = crate::raw_memory::Charge::default();
         census_charge.set(crate::raw_memory::Capacity {
             auxiliary_vectors: census
@@ -212,15 +236,20 @@ impl CharactersJob {
                 + crate::raw_memory::vector_bytes(&census_visited),
             ..Default::default()
         });
-        // Start below the raw-span budget; an unusually dense role population
-        // counts its exact suffix-queue demand and grows off-thread.
-        let appended_roles = owned_vec(vec(spans / 8));
+        // Live role counts seed the suffix queue with raw-span headroom.
+        // Worker acquisition reserves new occurrences before appending.
+        let appended_roles = owned_vec(vec(demand::initial_roles(part).max(spans / 8)));
         let mut appended_charge = crate::raw_memory::Charge::default();
         appended_charge.set(crate::raw_memory::Capacity {
             auxiliary_vectors: crate::raw_memory::vector_bytes(&appended_roles),
             ..Default::default()
         });
         Self {
+            worker_growing: false,
+            capture_growing: false,
+            leader_rows: 0,
+            character_demand: AdvisorDemand::default(),
+            unit_demand: AdvisorDemand::default(),
             part,
             log,
             game_state: 0,
@@ -264,24 +293,13 @@ impl CharactersJob {
                 ..Default::default()
             };
         }
-        // Each owner stages only its own tables. These are starting capacities,
-        // not capture limits: the existing fallback and off-thread growth handle
-        // larger saves. Non-trait owners need no trait-definition/occurrence pools.
-        let (spans, bytes) = match part {
-            0 | 2 => (1 << 18, 4 << 20),
-            1 | 3 => (1 << 17, 2 << 20),
-            _ => unreachable!("invalid character part"),
-        };
+        assert!(part < PARTS, "invalid character part");
         let mask = PART_MASKS[part];
-        let mut job = Self::with_storage(part, spans, bytes, mask[4] || mask[5]);
+        let mut job = Self::with_storage(part, 0, 0, mask[4] || mask[5]);
+        job.worker_growing = true;
         if part == 2 {
             job.advisor_roots = crate::raw::RawLog::new(4, 48);
-            job.advisor_dynamic = Some(Box::new(Self::with_storage(
-                part,
-                1 << 15,
-                512 << 10,
-                false,
-            )));
+            job.advisor_dynamic = Some(Box::new(Self::with_storage(part, 0, 0, false)));
         }
         job
     }
@@ -383,6 +401,10 @@ impl CharactersJob {
     }
 
     pub fn grow(&mut self) {
+        engine::allocation::advisory(|| self.grow_hints());
+    }
+
+    fn grow_hints(&mut self) {
         // Every portrait lease returns before recycle. The grown census was
         // incomplete, so retire any prepared program: the next pass must
         // rediscover the roster to publish it.
@@ -464,6 +486,16 @@ impl CharactersJob {
 
     fn remember_appended(&mut self, role: AppendedRole) {
         self.appended_required = self.appended_required.saturating_add(1);
+        if self.worker_growing {
+            if reserve(&mut self.appended_roles, 1).is_err() {
+                self.appended_overflowed = true;
+                return;
+            }
+            self.appended_charge.set(crate::raw_memory::Capacity {
+                auxiliary_vectors: crate::raw_memory::vector_bytes(&self.appended_roles),
+                ..Default::default()
+            });
+        }
         if self.appended_roles.len() < self.appended_roles.capacity() {
             self.appended_roles.push(role);
         }
@@ -1120,6 +1152,8 @@ pub(super) fn copy_character_text(
         dead.characters = true;
         return;
     };
+    job.character_demand.add(1, name.len);
+    job.character_demand.add(0, token.len);
     // The staged view already hinted both heap strings before this page's
     // bodies began. Repeating those hints here adds no useful read lead.
     if !copy_character_literal_bytes(job, memory, &name, MASK_CHARACTERS)
@@ -1152,7 +1186,12 @@ pub(super) fn copy_character_template(
         dead.characters = true;
         return;
     };
-    if template == 0 || job.templates.known(id, template).is_some() {
+    if template == 0 {
+        return;
+    }
+    if let Some(known) = job.templates.known(id, template) {
+        let bytes = known.file.len();
+        job.character_demand.add(0, bytes);
         return;
     }
     let [header, _] = take_fixed_fields::<2, false>(
@@ -1189,7 +1228,9 @@ pub(super) fn copy_character_template(
             .flatten()
     };
     match file {
-        Some(file) if copy_character_literal_bytes(job, memory, &file, MASK_CHARACTERS) => {}
+        Some(file) if copy_character_literal_bytes(job, memory, &file, MASK_CHARACTERS) => {
+            job.character_demand.add(0, file.len);
+        }
         _ => dead.characters = true,
     }
 }
@@ -1227,6 +1268,12 @@ pub(super) fn copy_leaders(
             return true;
         }
     };
+    // CCharacter::Serialize@140F913A0 retains the full ordered leader map.
+    let Some(required) = job.leader_rows.checked_add(walk.count as usize) else {
+        dead.leaders = true;
+        return true;
+    };
+    job.leader_rows = required;
     let mut previous = None;
     loop {
         let node = match tree_next(job, memory, &mut walk, MASK_LEADERS) {
@@ -1832,8 +1879,12 @@ pub(super) fn copy_unit_text(
     let name = copy_unit_literal(job, memory, &header, MASK_UNITS);
     header.copy_from_slice(&job.log.bytes[token_header..token_header + 32]);
     let token = copy_unit_literal(job, memory, &header, MASK_UNITS);
-    if name.is_none() || token.is_none() {
-        dead.units = true;
+    match (name, token) {
+        (Some(name), Some(token)) => {
+            job.unit_demand.add(1, name);
+            job.unit_demand.add(0, token);
+        }
+        _ => dead.units = true,
     }
 }
 
@@ -1961,6 +2012,7 @@ fn copy_unit_codename(job: &mut CharactersJob, memory: &impl Memory, base: usize
         let Ok(len) = usize::try_from(len) else {
             return;
         };
+        job.unit_demand.add(0, len);
         if capacity == msvc_string::INLINE_CAPACITY {
             if len != 0 && header[len] != 0 {
                 return;
@@ -2008,7 +2060,7 @@ pub(super) fn copy_trait_vector(
         return true;
     }
     if let Some(plan) = &mut job.source_bindings {
-        plan.remember(params);
+        plan.remember(params, job.worker_growing);
     }
     *dead = job.traits.acquire(memory, base, params).is_err();
     !job.traits.overflowed()
@@ -2130,11 +2182,14 @@ pub(super) fn copy_pass(
 ) {
     let _reads = read_accounting::table(TABLES[anchor(context.active)]);
     job.log.clear();
+    if job.worker_growing {
+        job.log.enable_worker_growth();
+    }
     job.advisor_demand = AdvisorDemand::default();
     job.appended_overflowed = false;
     job.skills.fill(SkillCopy::default());
     job.active = context.active;
-    job.traits.begin(context);
+    job.traits.begin(context, job.worker_growing);
     job.game_state = context.game_state;
     job.census_current = false;
     job.role_census_current = false;
@@ -2169,6 +2224,9 @@ pub(super) fn copy_pass(
         },
     );
     if !(hourly || bound) || !job.log.begin_planned_capture(memory, key) {
+        job.leader_rows = 0;
+        job.character_demand = AdvisorDemand::default();
+        job.unit_demand = AdvisorDemand::default();
         job.appended_roles.clear();
         job.appended_required = 0;
         if bound {
@@ -2275,6 +2333,9 @@ pub(super) fn copy_roster(
     // Demand the whole native roster even if staging stops this pass early.
     if let Some(census) = census.as_mut() {
         census.expect(arrays[0].count as usize + arrays[1].count as usize);
+        if job.worker_growing && census.grow().map_err(crate::allocation::io).is_err() {
+            return;
+        }
         job.census_historical = arrays[0].count as usize;
     }
     copy_roster_entries(memory, base, game_state, job, census, arrays, &mut dead);
@@ -2459,7 +2520,13 @@ pub(super) fn gather_role_census(
         .as_ref()
         .and_then(|census| census.rows(ctx.base, ctx.game_state));
     if let (Some(rows), Some(roles)) = (rows, job.role_census.as_mut().and_then(Arc::get_mut)) {
-        job.role_census_current = roles.acquire(memory, scope, rows, job.census_historical);
+        job.role_census_current = roles.acquire_with_growth(
+            memory,
+            scope,
+            rows,
+            job.census_historical,
+            job.worker_growing,
+        );
         if job.role_census_current {
             job.log.raw_bytes[0] += (rows.len() * (census::ROW - 4)) as u64;
         }
@@ -2477,13 +2544,17 @@ pub(super) fn copy_census(
 ) {
     let _reads = read_accounting::table(TABLES[anchor(context.active)]);
     job.log.clear();
+    if job.worker_growing {
+        job.log.enable_worker_growth();
+    }
+    job.leader_rows = 0;
     job.advisor_demand = AdvisorDemand::default();
     job.appended_roles.clear();
     job.appended_required = 0;
     job.appended_overflowed = false;
     job.skills.fill(SkillCopy::default());
     job.active = context.active;
-    job.traits.begin(context);
+    job.traits.begin(context, job.worker_growing);
     job.game_state = context.game_state;
     job.census_current = false;
     job.role_census_current = false;
@@ -2520,6 +2591,9 @@ pub(super) fn visit_census(
     index: usize,
     needs: impl Fn(census::Occurrence) -> bool,
 ) -> bool {
+    if job.worker_growing && reserve(&mut job.census_visited, 1).is_err() {
+        return false;
+    }
     if job.census_visited.len() < job.census_visited.capacity() {
         job.census_visited.push(census.occurrence(index));
         return true;
@@ -2689,6 +2763,9 @@ pub(super) fn copy_advisor_sections(
     debug_assert_eq!(ctx.active, PART_MASKS[2]);
     let _reads = read_accounting::table(TableId::AdvisorRoles);
     job.clear();
+    if job.worker_growing {
+        job.advisor_roots.enable_worker_growth();
+    }
     job.active = ctx.active;
     job.game_state = ctx.game_state;
     let roster = ccharacter_manager::Roster::read(
@@ -2703,6 +2780,7 @@ pub(super) fn copy_advisor_sections(
         return;
     };
     let mut dynamic = job.advisor_dynamic.take().expect("advisor section storage");
+    dynamic.worker_growing = job.worker_growing;
     for (index, (array, _)) in roster.sections().into_iter().enumerate() {
         if index == 1 && !job.advisor_section_complete {
             break;

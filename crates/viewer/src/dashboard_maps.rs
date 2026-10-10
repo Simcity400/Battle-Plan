@@ -862,10 +862,11 @@ impl DashboardMaps {
                 });
             } else if view.viewer.has_map() {
                 if let Some(source) = view.source.as_ref().and_then(|key| self.sources.get(key)) {
-                    view.viewer.graphics = self
+                    let graphics = self
                         .service
                         .widget_map_settings(&source.source.replay(), &view.target.id)
                         .graphics;
+                    view.viewer.set_embedded_graphics(graphics);
                 }
                 view.viewer.ui_scale = self.ui_scale;
                 view.viewer.map_ui(&mut map_ui, frame, &view.target);

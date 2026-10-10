@@ -453,9 +453,11 @@ fn game_score_live_demand_presizes_all_frame_and_wing_job_buffers() {
         naval_limit: 2,
         game_score: true,
     };
-    // Fresh jobs and replacements returned by frame loans both use the hints.
+    // Fresh score buffers and replacements returned by frame loans use the
+    // hints; the fixed core wing walk has its explicit fixture storage.
     for _ in 0..3 {
-        let mut job = AirWingJob::with_game_score(true);
+        let mut job = AirWingJob::fixture();
+        job.game_score = AirWingJob::with_game_score(true).game_score;
         let report = crate::allocation_failure_tests::with_allocations_denied(|| {
             air::copy_air_refresh(&memory, context, &mut job)
         });
@@ -579,7 +581,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
         naval_limit: 4096,
         game_score: true,
     };
-    let mut job = AirWingJob::new();
+    let mut job = AirWingJob::fixture();
     job.game_score = AirInputs::new(false, 3, 2, 2);
     let report = crate::allocation_failure_tests::with_allocations_denied(|| {
         air::copy_air_refresh(&kit::memory(&bytes), context, &mut job)
@@ -694,7 +696,7 @@ fn game_score_owned_air_shares_census_and_preserves_independent_failures() {
 }
 
 #[test]
-fn game_score_arena_pressure_keeps_other_operands_and_recovers_after_growth() {
+fn game_score_fleet_header_grows_first_witness_and_keeps_independent_air_pressure() {
     use crate::extended::air::wing_test_kit as kit;
     let mut bytes = kit::fixture();
     const COUNTRY: usize = 0x20000;
@@ -749,8 +751,8 @@ fn game_score_arena_pressure_keeps_other_operands_and_recovers_after_growth() {
     let mut capture = Captured::with_capacities(&capacity);
     for hour in 0..2 {
         capture.reset();
+        capture.capture(&memory, 0, kit::GAME_STATE);
         crate::allocation_failure_tests::with_allocations_denied(|| {
-            capture.capture(&memory, 0, kit::GAME_STATE);
             capture.begin_air();
             capture.owner(&memory, 0, 1, Some(ENTRY));
             capture.finish_air(Outcome::Rows { len: 0 });
@@ -771,12 +773,9 @@ fn game_score_arena_pressure_keeps_other_operands_and_recovers_after_growth() {
             (multipliers[0].total_raw, multipliers[0].land_raw),
             (Some(100_000), Some(100_000))
         );
+        assert_eq!(countries[0].navy_count, Some(7));
+        assert_eq!(countries[0].fleets[0].fleet, 61);
         if hour == 0 {
-            assert_eq!(countries[0].navy_count, None);
-            assert_eq!(
-                countries[0].navy_error,
-                b"game score fleet witness arena exhausted"
-            );
             assert_eq!(
                 countries[0].air_state,
                 rows::CountryGameScoreInputRow::AIR_UNKNOWN
@@ -886,8 +885,17 @@ fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
     let mut captured = extended::Captured::with_capacities(&capacity);
     let countries =
         std::sync::Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
-    let mut ordinary = captured.take_ordinary_request(&countries, 0, kit::GAME_STATE);
-    let mut map = MapCaptured::with_capacities(&MapCapacities::default());
+    let mut ordinary = captured.take_ordinary_request(
+        &countries,
+        0,
+        kit::GAME_STATE,
+        0,
+        Ok(()),
+        Default::default(),
+    );
+    let mut map_capacity = MapCapacities::default();
+    map_capacity.raise_air_wings(2);
+    let mut map = MapCaptured::with_capacities(&map_capacity);
     {
         let mut sources = captured.sources(&memory, 0, false, true);
         crate::allocation_failure_tests::with_allocations_denied(|| {
@@ -895,7 +903,14 @@ fn game_score_typed_air_fallback_uses_frame_buffers_while_ordinary_is_loaned() {
         });
     }
     assert!(matches!(map.air_wings.outcome, Outcome::Unavailable { .. }));
-    ordinary.packs.capture(&memory, 0, kit::GAME_STATE);
+    ordinary.packs.capture(
+        &memory,
+        0,
+        kit::GAME_STATE,
+        None,
+        (ordinary.hour, &mut ordinary.naval_missions),
+        ordinary.fresh_modifier_guard,
+    );
     captured.restore_ordinary_request(ordinary, None);
     let [
         TableView::Complete(TableRows::CountryGameScoreInputs(rows)),

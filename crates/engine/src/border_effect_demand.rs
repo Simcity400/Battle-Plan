@@ -183,6 +183,42 @@ pub fn walk(
     stack: &mut [Frame],
     events: &mut [u32],
 ) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(stack),
+        crate::walk::Buffer::Fixed(events),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Token>,
+    stack: &mut Vec<Frame>,
+    events: &mut Vec<u32>,
+) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(stack),
+        crate::walk::Buffer::Growing(events),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: crate::walk::Buffer<'_, Token>,
+    stack: crate::walk::Buffer<'_, Frame>,
+    events: crate::walk::Buffer<'_, u32>,
+) -> Walk {
     let mut reader = Reader {
         memory,
         base,
@@ -290,9 +326,9 @@ pub fn matches(memory: &impl Memory, token: Token, bytes: &[u8]) -> Result<bool,
 struct Reader<'a, M> {
     memory: &'a M,
     base: usize,
-    output: &'a mut [Token],
-    stack: &'a mut [Frame],
-    events: &'a mut [u32],
+    output: crate::walk::Buffer<'a, Token>,
+    stack: crate::walk::Buffer<'a, Frame>,
+    events: crate::walk::Buffer<'a, u32>,
     events_len: usize,
     result: Walk,
 }
@@ -333,6 +369,7 @@ impl<M: Memory> Reader<'_, M> {
             .events_len
             .checked_add(1)
             .ok_or("border demand event count overflow")?;
+        self.events.ensure(self.result.required_events)?;
         let destination = self
             .events
             .get_mut(self.events_len)
@@ -385,6 +422,7 @@ impl<M: Memory> Reader<'_, M> {
         }
         let required = depth.checked_add(1).ok_or("border demand depth overflow")?;
         self.result.required_stack = self.result.required_stack.max(required);
+        self.stack.ensure(required)?;
         if depth == self.stack.len() {
             return Ok(false);
         }
@@ -395,6 +433,7 @@ impl<M: Memory> Reader<'_, M> {
                 .required_rows
                 .checked_add(1)
                 .ok_or("border demand row count overflow")?;
+            self.output.ensure(self.result.required_rows)?;
             if let Some(slot) = self.output.get_mut(self.result.len) {
                 *slot = name;
                 self.result.len += 1;

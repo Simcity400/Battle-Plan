@@ -2,6 +2,23 @@ use super::*;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+#[test]
+fn terminal_failure_releases_a_decode_handoff_waiting_on_a_full_queue() {
+    let ready = crossbeam_queue::ArrayQueue::new(1);
+    ready.push(7).unwrap();
+    let completed = std::sync::atomic::AtomicI64::new(99);
+    let mut checks = 0;
+    assert!(!publish_ready(&ready, 8, &completed, 123, || {
+        checks += 1;
+        checks == 2
+    }));
+    assert_eq!(completed.load(Ordering::Acquire), 0);
+    assert_eq!(ready.pop(), Some(7));
+    assert!(publish_ready(&ready, 8, &completed, 123, || false));
+    assert_eq!(completed.load(Ordering::Acquire), 123);
+    assert_eq!(ready.pop(), Some(8));
+}
+
 // Tests retaining payloads exercise decoding directly and publish only after
 // that successful walk; production also gates after payload recycling.
 fn process_test_job(shared: &Shared, job: &mut DecodeJob, memo: &mut AirBasesMemo) {
@@ -10,6 +27,15 @@ fn process_test_job(shared: &Shared, job: &mut DecodeJob, memo: &mut AirBasesMem
         shared.ready.push(job.index).unwrap();
         shared.completed[job.index].store(job.game_elapsed.max(1), Ordering::Release);
     }
+}
+
+fn copy_divisions_worker_refresh(
+    memory: &impl engine::Memory,
+    ctx: crate::sampling::DivisionsCopyContext,
+    payload: &mut crate::sampling::DivisionsJob,
+) -> crate::sampling::DivisionsCopyReport {
+    crate::sampling::copy_divisions_inputs_refresh_growing(memory, ctx, payload);
+    crate::sampling::copy_divisions_core_refresh(memory, ctx, payload)
 }
 
 /// Calibration globals are shared across tests in this binary; the tests
@@ -77,6 +103,32 @@ fn retirement_capacity_covers_every_character_part_and_owned_frame() {
     reclaim_payloads();
     assert!(retired.is_empty());
 }
+
+#[test]
+fn cold_growing_weather_jobs_survive_pool_preparation_and_recycling() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let saved = std::mem::take(&mut *WEATHER_JOB_POOL.lock().unwrap());
+    release_weather_job(WeatherJob::new());
+    for _ in 0..2 {
+        assert_eq!(WEATHER_JOB_POOL.lock().unwrap().len(), 1);
+        let job = acquire_weather_job();
+        assert!(
+            job.is_provisioned(),
+            "cold worker job must retain growth admission"
+        );
+        assert_eq!(job.log.spans.capacity(), 0);
+        assert_eq!(job.log.bytes.capacity(), 0);
+        release_weather_job(job);
+    }
+    release_weather_job(WeatherJob::default());
+    assert_eq!(
+        WEATHER_JOB_POOL.lock().unwrap().len(),
+        1,
+        "empty fixed fallback must still be discarded"
+    );
+    *WEATHER_JOB_POOL.lock().unwrap() = saved;
+}
+
 #[test]
 fn exhausted_or_contended_payload_pools_decline_without_allocating() {
     let _guard = TEST_LOCK.lock().unwrap();
@@ -112,10 +164,11 @@ fn exhausted_or_contended_payload_pools_decline_without_allocating() {
 }
 
 #[test]
-fn worker_returns_every_owned_payload_to_its_reuse_pool() {
+fn worker_recycles_captured_payload_and_drains_vacant_retirements_before_publication() {
+    use crate::extended::air::{AirStatsCopyContext, stats_test_kit as kit};
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
-    let shared = Shared::new(0, 0, 1);
+    let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled frame");
     RELATIONS_JOB_POOL.lock().unwrap().clear();
     CHARACTERS_JOB_POOL
@@ -143,33 +196,47 @@ fn worker_returns_every_owned_payload_to_its_reuse_pool() {
     INTEL_JOB_POOL.lock().unwrap().clear();
     WEATHER_JOB_POOL.lock().unwrap().clear();
     CAPITULATION_JOB_POOL.lock().unwrap().clear();
-    let air = AirStatsJob::new();
+    let bytes = kit::fixture();
+    let mut air = AirStatsJob::new();
+    assert!(
+        crate::extended::air::copy_air_stats_refresh_growing(
+            &kit::memory(&bytes),
+            AirStatsCopyContext {
+                base: kit::BASE,
+                game_state: kit::GAME_STATE,
+                hour: 0,
+                force_full: true,
+            },
+            &mut air,
+        )
+        .raw_ok
+    );
     let air_allocation = air.log.bytes.as_ptr();
     let job = DecodeJob {
         index,
         game_elapsed: 17,
-        relations_payload: Some(RelationsJob::new()),
-        characters_payload: [Some(CharactersJob::new()), None, None, None],
-        projects_payload: Some(ProjectsJob::new()),
-        lexical_payload: Some(LexicalJob::new()),
-        divisions_payload: Some(DivisionsJob::new()),
-        focus_payload: Some(FocusJob::new()),
-        air_wing_payload: Some(AirWingJob::new()),
+        relations_payload: Some(RelationsJob::default()),
+        characters_payload: [Some(CharactersJob::default()), None, None, None],
+        projects_payload: Some(ProjectsJob::default()),
+        lexical_payload: Some(LexicalJob::default()),
+        divisions_payload: Some(DivisionsJob::default()),
+        focus_payload: Some(FocusJob::default()),
+        air_wing_payload: Some(AirWingJob::default()),
         air_stats_payload: Some(air),
-        naval_payload: Some(NavalJob::new()),
-        players_payload: Some(PlayersJob::new()),
-        session_payload: Some(SessionJob::new()),
-        production_rest_payload: Some(ProductionRestJob::new()),
-        construction_rest_payload: Some(ConstructionRestJob::new()),
-        economy_rest_payload: Some(EconomyRestJob::new()),
-        air_bases_payload: Some(AirBasesJob::new()),
-        air_history_payload: Some(AirHistoryJob::new()),
-        supremacy_payload: Some(SupremacyJob::new()),
-        sunk_payload: Some(SunkJob::new()),
-        radar_payload: Some(RadarJob::new()),
-        intel_payload: Some(IntelJob::new()),
-        weather_payload: Some(WeatherJob::new()),
-        capitulation_payload: Some(CapitulationJob::new()),
+        naval_payload: Some(NavalJob::default()),
+        players_payload: Some(PlayersJob::default()),
+        session_payload: Some(SessionJob::default()),
+        production_rest_payload: Some(ProductionRestJob::default()),
+        construction_rest_payload: Some(ConstructionRestJob::default()),
+        economy_rest_payload: Some(EconomyRestJob::default()),
+        air_bases_payload: Some(AirBasesJob::default()),
+        air_history_payload: Some(AirHistoryJob::default()),
+        supremacy_payload: Some(SupremacyJob::default()),
+        sunk_payload: Some(SunkJob::default()),
+        radar_payload: Some(RadarJob::default()),
+        intel_payload: Some(IntelJob::default()),
+        weather_payload: Some(WeatherJob::default()),
+        capitulation_payload: Some(CapitulationJob::default()),
         ..Default::default()
     };
     // A callback can retire a refusal after an idle drain and then enqueue
@@ -177,100 +244,40 @@ fn worker_returns_every_owned_payload_to_its_reuse_pool() {
     recycle_focus_job(FocusJob::default());
     let retirement = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     assert_eq!(retirement.len(), 1);
+    assert_eq!(shared.ready.pop(), None);
     process_owned_job(&shared, job, &mut AirBasesMemo::default());
     assert!(retirement.is_empty());
     assert_eq!(shared.ready.pop(), Some(index));
     assert_eq!(shared.completed[index].load(Ordering::Acquire), 17);
-    assert_eq!(
-        RELATIONS_JOB_POOL.lock().unwrap().len(),
-        1,
-        "RELATIONS_JOB_POOL"
-    );
-    assert_eq!(
-        CHARACTERS_JOB_POOL.lock().unwrap()[0].len(),
-        1,
-        "CHARACTERS_JOB_POOL"
-    );
-    assert_eq!(
-        PROJECTS_JOB_POOL.lock().unwrap().len(),
-        1,
-        "PROJECTS_JOB_POOL"
-    );
-    assert_eq!(
-        LEXICAL_JOB_POOL.lock().unwrap().len(),
-        1,
-        "LEXICAL_JOB_POOL"
-    );
-    assert_eq!(
-        DIVISIONS_JOB_POOL.lock().unwrap().len(),
-        1,
-        "DIVISIONS_JOB_POOL"
-    );
-    assert_eq!(FOCUS_JOB_POOL.lock().unwrap().len(), 1, "FOCUS_JOB_POOL");
-    assert_eq!(
-        AIR_WING_JOB_POOL.lock().unwrap().len(),
-        1,
-        "AIR_WING_JOB_POOL"
-    );
-    assert_eq!(
-        AIR_STATS_JOB_POOL.lock().unwrap().len(),
-        1,
-        "AIR_STATS_JOB_POOL"
-    );
-    assert_eq!(NAVAL_JOB_POOL.lock().unwrap().len(), 1, "NAVAL_JOB_POOL");
-    assert_eq!(
-        PLAYERS_JOB_POOL.lock().unwrap().len(),
-        1,
-        "PLAYERS_JOB_POOL"
-    );
-    assert_eq!(
-        SESSION_JOB_POOL.lock().unwrap().len(),
-        1,
-        "SESSION_JOB_POOL"
-    );
-    assert_eq!(
-        PRODUCTION_REST_JOB_POOL.lock().unwrap().len(),
-        1,
-        "PRODUCTION_REST_JOB_POOL"
-    );
-    assert_eq!(
-        CONSTRUCTION_REST_JOB_POOL.lock().unwrap().len(),
-        1,
-        "CONSTRUCTION_REST_JOB_POOL"
-    );
-    assert_eq!(
-        ECONOMY_REST_JOB_POOL.lock().unwrap().len(),
-        1,
-        "ECONOMY_REST_JOB_POOL"
-    );
-    assert_eq!(
-        AIR_BASES_JOB_POOL.lock().unwrap().len(),
-        1,
-        "AIR_BASES_JOB_POOL"
-    );
-    assert_eq!(
-        AIR_HISTORY_JOB_POOL.lock().unwrap().len(),
-        1,
-        "AIR_HISTORY_JOB_POOL"
-    );
-    assert_eq!(
-        SUPREMACY_JOB_POOL.lock().unwrap().len(),
-        1,
-        "SUPREMACY_JOB_POOL"
-    );
-    assert_eq!(SUNK_JOB_POOL.lock().unwrap().len(), 1, "SUNK_JOB_POOL");
-    assert_eq!(RADAR_JOB_POOL.lock().unwrap().len(), 1, "RADAR_JOB_POOL");
-    assert_eq!(INTEL_JOB_POOL.lock().unwrap().len(), 1, "INTEL_JOB_POOL");
-    assert_eq!(
-        WEATHER_JOB_POOL.lock().unwrap().len(),
-        1,
-        "WEATHER_JOB_POOL"
-    );
-    assert_eq!(
-        CAPITULATION_JOB_POOL.lock().unwrap().len(),
-        1,
-        "CAPITULATION_JOB_POOL"
-    );
+    for (name, len) in [
+        ("relations", RELATIONS_JOB_POOL.lock().unwrap().len()),
+        ("characters", CHARACTERS_JOB_POOL.lock().unwrap()[0].len()),
+        ("projects", PROJECTS_JOB_POOL.lock().unwrap().len()),
+        ("lexical", LEXICAL_JOB_POOL.lock().unwrap().len()),
+        ("divisions", DIVISIONS_JOB_POOL.lock().unwrap().len()),
+        ("focus", FOCUS_JOB_POOL.lock().unwrap().len()),
+        ("air wings", AIR_WING_JOB_POOL.lock().unwrap().len()),
+        ("naval", NAVAL_JOB_POOL.lock().unwrap().len()),
+        ("players", PLAYERS_JOB_POOL.lock().unwrap().len()),
+        ("session", SESSION_JOB_POOL.lock().unwrap().len()),
+        ("production", PRODUCTION_REST_JOB_POOL.lock().unwrap().len()),
+        (
+            "construction",
+            CONSTRUCTION_REST_JOB_POOL.lock().unwrap().len(),
+        ),
+        ("economy", ECONOMY_REST_JOB_POOL.lock().unwrap().len()),
+        ("air bases", AIR_BASES_JOB_POOL.lock().unwrap().len()),
+        ("air history", AIR_HISTORY_JOB_POOL.lock().unwrap().len()),
+        ("supremacy", SUPREMACY_JOB_POOL.lock().unwrap().len()),
+        ("sunk ships", SUNK_JOB_POOL.lock().unwrap().len()),
+        ("radar", RADAR_JOB_POOL.lock().unwrap().len()),
+        ("intel", INTEL_JOB_POOL.lock().unwrap().len()),
+        ("weather", WEATHER_JOB_POOL.lock().unwrap().len()),
+        ("capitulation", CAPITULATION_JOB_POOL.lock().unwrap().len()),
+    ] {
+        assert_eq!(len, 0, "empty fixed {name} payload must be discarded");
+    }
+    assert_eq!(AIR_STATS_JOB_POOL.lock().unwrap().len(), 1);
     let air = acquire_air_stats_job();
     assert_eq!(air.log.bytes.as_ptr(), air_allocation);
     recycle_air_stats_job(air);
@@ -321,7 +328,6 @@ fn fifo_absent_daily_payloads_preserve_skipped_outcomes_and_idle_pools() {
         ]
     };
     let idle_pools = daily_pool_lengths();
-    assert!(idle_pools.iter().all(|len| *len != 0));
     let shared = Shared::new(0, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -375,7 +381,6 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
         ]
     };
     let idle = pool_lengths();
-    assert!(idle.iter().all(|&len| len > 0));
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(16).unwrap());
     let shared = Shared::new(0, 0, 1);
@@ -429,7 +434,7 @@ fn lazy_world_request_acquires_only_scheduled_parts_and_retires_them_once() {
         );
         let owned = [parts[0], parts[1], parts[2], true];
         let after_acquire: [usize; 4] =
-            std::array::from_fn(|slot| idle[slot] - usize::from(owned[slot]));
+            std::array::from_fn(|slot| idle[slot].saturating_sub(usize::from(owned[slot])));
         assert_eq!(pool_lengths(), after_acquire);
         assert!(retired.is_empty(), "absent parts must not retire a payload");
         assert_eq!(Arc::strong_count(&countries), 2);
@@ -850,10 +855,8 @@ fn worker_decodes_a_relations_refresh_payload_into_the_same_typed_rows() {
     let shared = Shared::new(relations_test_kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    // Reference with the pooled caps so truncation behavior matches.
-    let opinion_cap = frame.extended.relations_pilot().opinion_rows_cap();
-    let tuple_cap = frame.extended.relations_pilot().tuple_rows_cap();
-    let direct = relations_test_kit::direct(&memory, opinion_cap, tuple_cap);
+    // The fixed reference holds the complete two-row fixture.
+    let direct = relations_test_kit::direct(&memory, 2, 2);
     let (report, first) = relations_test_kit::split(&memory, frame.extended.relations_pilot());
     assert!(report.raw_ok);
     shared.completed[index].store(0, Ordering::Relaxed);
@@ -932,7 +935,7 @@ fn worker_relations_mixed_payload_keeps_hourly_tuples_and_skips_opinions() {
         let captured = frame.extended.relations_pilot();
         let opinion_cap = captured.opinion_rows_cap();
         let tuple_cap = captured.tuple_rows_cap();
-        let mut direct = kit::direct(&memory, opinion_cap, tuple_cap);
+        let mut direct = kit::direct(&memory, 2, 2);
         if !opinions_active {
             direct.opinion_rows.clear();
             direct.opinion_outcome = Outcome::Unavailable {
@@ -1004,7 +1007,12 @@ fn worker_decodes_a_characters_refresh_payload_into_the_same_typed_rows() {
         trait_bytes,
     };
     let mut first = CharactersJob::new();
-    let report = crate::extended::characters::copy_characters_refresh(&memory, ctx, &mut first);
+    let report = crate::extended::characters::copy_characters_growing(
+        &memory,
+        ctx,
+        &mut first,
+        crate::extended::characters::Roles::Independent,
+    );
     assert!(report.raw_ok);
     frame.extended.characters_pilot().raw_active = [true; 6];
     shared.completed[index].store(0, Ordering::Relaxed);
@@ -1113,7 +1121,7 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
                 continue;
             }
             let mut owned = CharactersJob::new_part(part);
-            let report = characters::copy_characters_refresh(
+            let report = characters::copy_characters_growing(
                 &memory,
                 CharactersCopyContext {
                     force_full: false,
@@ -1124,6 +1132,7 @@ fn independent_character_handoffs_isolate_a_missing_part_before_publication() {
                     trait_bytes,
                 },
                 &mut owned,
+                crate::extended::characters::Roles::Independent,
             );
             assert!(report.raw_ok);
             *payload = Some(owned);
@@ -1164,7 +1173,7 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
         *frame.extended.characters_pilot() = characters::Captured::with_capacities(&capacities);
         let (trait_rows, trait_bytes) = direct.trait_capture_capacities();
         let mut payload = CharactersJob::new();
-        let report = characters::copy_characters_refresh(
+        let report = characters::copy_characters_growing(
             &memory,
             CharactersCopyContext {
                 force_full: false,
@@ -1175,6 +1184,7 @@ fn worker_characters_mixed_payload_matches_native_with_frozen_activity() {
                 trait_bytes,
             },
             &mut payload,
+            crate::extended::characters::Roles::Independent,
         );
         assert!(report.raw_ok);
         for (slot, is_active) in active.into_iter().enumerate() {
@@ -1393,11 +1403,11 @@ fn worker_preserves_already_typed_wars_rows() {
     let memory = wars_test_kit::memory(&bytes);
     let shared = Shared::new(wars_test_kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
-    let direct = wars_test_kit::direct(&memory, 64);
+    let direct = wars_test_kit::direct(&memory, 2);
     {
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         frame.wars_result = direct.owned_outcome;
-        frame.wars[..direct.owned.len()].copy_from_slice(&direct.owned);
+        frame.wars.clone_from(&direct.owned);
         frame.table_ns[TableId::WarRelations.index()] = 601;
     }
     shared.completed[index].store(0, Ordering::Relaxed);
@@ -1463,9 +1473,7 @@ fn worker_preserves_already_typed_wars_rows() {
 
 #[test]
 fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
-    use crate::sampling::{
-        DivisionsCopyContext, DivisionsJob, copy_divisions_refresh, divisions_test_kit,
-    };
+    use crate::sampling::{DivisionsCopyContext, DivisionsJob, divisions_test_kit};
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let bytes = divisions_test_kit::fixture();
@@ -1482,7 +1490,7 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
         details_active: true,
     };
     let mut first = DivisionsJob::new();
-    let report = copy_divisions_refresh(&memory, ctx, &mut first);
+    let report = copy_divisions_worker_refresh(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
     frame.extended.test_division_detail().groups.rows = Vec::new();
@@ -1550,34 +1558,34 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
     );
     assert_eq!(frame.divisions_result, direct.divisions_outcome);
     assert_eq!(
-        &frame.divisions[..direct.divisions.len()],
-        &direct.divisions[..]
+        &frame.divisions[..direct.divisions_outcome.len()],
+        &direct.divisions[..direct.divisions_outcome.len()]
     );
     let detail = frame.extended.test_division_detail();
     assert_eq!(detail.division_equipment.outcome, direct.equipment_outcome);
     assert_eq!(
-        &detail.division_equipment.rows[..direct.equipment.len()],
-        &direct.equipment[..]
+        &detail.division_equipment.rows[..direct.equipment_outcome.len()],
+        &direct.equipment[..direct.equipment_outcome.len()]
     );
     assert_eq!(detail.groups.outcome, direct.groups_outcome);
     assert_eq!(
-        &detail.groups.rows[..direct.groups.len()],
-        &direct.groups[..]
+        &detail.groups.rows[..direct.groups_outcome.len()],
+        &direct.groups[..direct.groups_outcome.len()]
     );
     assert_eq!(detail.requests.outcome, direct.requests_outcome);
     assert_eq!(
-        &detail.requests.rows[..direct.requests.len()],
-        &direct.requests[..]
+        &detail.requests.rows[..direct.requests_outcome.len()],
+        &direct.requests[..direct.requests_outcome.len()]
     );
     assert_eq!(detail.deliveries.outcome, direct.deliveries_outcome);
     assert_eq!(
-        &detail.deliveries.rows[..direct.deliveries.len()],
-        &direct.deliveries[..]
+        &detail.deliveries.rows[..direct.deliveries_outcome.len()],
+        &direct.deliveries[..direct.deliveries_outcome.len()]
     );
     assert_eq!(detail.produced.outcome, direct.produced_outcome);
     assert_eq!(
-        &detail.produced.rows[..direct.produced.len()],
-        &direct.produced[..]
+        &detail.produced.rows[..direct.produced_outcome.len()],
+        &direct.produced[..direct.produced_outcome.len()]
     );
     // The worker clears the raw-mode gate it consumed.
     assert!(!detail.divisions_raw_mode);
@@ -1597,9 +1605,7 @@ fn worker_decodes_a_divisions_refresh_payload_into_the_same_typed_rows() {
 
 #[test]
 fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
-    use crate::sampling::{
-        DivisionsCopyContext, copy_divisions_refresh, divisions_test_kit as kit,
-    };
+    use crate::sampling::{DivisionsCopyContext, divisions_test_kit as kit};
     use engine::walk::Outcome;
 
     let _guard = TEST_LOCK.lock().unwrap();
@@ -1622,7 +1628,7 @@ fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
         .division_equipment
         .rows
         .as_ptr();
-    let pool_len = DIVISIONS_JOB_POOL.lock().unwrap().len();
+    let pool_len = DIVISIONS_JOB_POOL.lock().unwrap().len().max(1);
     let mut payload = acquire_divisions_job();
     let context = DivisionsCopyContext {
         base: kit::BASE,
@@ -1633,7 +1639,7 @@ fn fifo_uses_frozen_division_detail_activity_and_retires_the_owned_core_once() {
         detail_capacities: [usize::MAX; 5],
         details_active: false,
     };
-    let report = copy_divisions_refresh(&memory, context, &mut payload);
+    let report = copy_divisions_worker_refresh(&memory, context, &mut payload);
     assert!(report.raw_ok);
     assert_eq!(report.copy_ticks[1..], [0; 5]);
     assert_eq!(report.raw_bytes[1..], [0; 5]);
@@ -1675,8 +1681,8 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
     use crate::{
         read_accounting,
         sampling::{
-            DivisionsCopyContext, copy_divisions_core_refresh, copy_divisions_inputs_refresh,
-            copy_divisions_refresh, divisions_test_kit as kit,
+            DivisionsCopyContext, copy_divisions_core_refresh,
+            copy_divisions_inputs_refresh_growing, divisions_test_kit as kit,
         },
     };
     use engine::{
@@ -1717,7 +1723,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
     let bytes = kit::fixture();
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
-    let pool_len = DIVISIONS_JOB_POOL.lock().unwrap().len();
+    let pool_len = DIVISIONS_JOB_POOL.lock().unwrap().len().max(1);
     let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
     for (active_hour, reject_context) in [(2, false), (26, true)] {
         let context = DivisionsCopyContext {
@@ -1729,7 +1735,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
             details_active: true,
         };
         let mut payload = acquire_divisions_job();
-        assert!(copy_divisions_refresh(&kit::memory(&bytes), context, &mut payload).raw_ok);
+        assert!(copy_divisions_worker_refresh(&kit::memory(&bytes), context, &mut payload).raw_ok);
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         frame.extended.set_divisions_raw_mode(true);
         assert_eq!(
@@ -1789,7 +1795,7 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
         });
         let reads = read_accounting::Capture::new();
         let mut payload = acquire_divisions_job();
-        assert!(copy_divisions_inputs_refresh(
+        assert!(copy_divisions_inputs_refresh_growing(
             &memory,
             context,
             &mut payload
@@ -1939,53 +1945,73 @@ fn prior_active_division_details_stay_skipped_through_core_failure_and_retiremen
 }
 
 #[test]
-fn initial_payload_capacities_cover_documented_seed_shapes() {
-    use crate::extended::{
-        air::AirStatsJob, characters::CharactersJob, intel::RelationsJob, lexical::LexicalJob,
-        projects::ProjectsJob,
+fn cold_worker_payload_grows_from_native_headers_before_publication_and_reuses_storage() {
+    use crate::extended::air::{AirStatsCopyContext, Capacities, stats_test_kit as kit};
+    use engine::walk::Outcome;
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset_calibration_for_test();
+    let saved = std::mem::take(&mut *AIR_STATS_JOB_POOL.lock().unwrap());
+    let shared = Shared::new(kit::BASE, 0, 1);
+    let index = shared.free.pop().expect("pooled frame");
+    let context = AirStatsCopyContext {
+        base: kit::BASE,
+        game_state: kit::GAME_STATE,
+        hour: 0,
+        force_full: true,
     };
-    // Analytic worst cases from the 2026-09-11 appendix (late-campaign
-    // maxima): relations 8639 opinions / 1512 tuples; characters 13127 rows with
-    // 19744 experience rows; projects 21511 rows with 1756 breakthroughs;
-    // lexical 70851 tokens; divisions 2843 with 17364 equipment rows and
-    // about 4000 upgrade rows. Every cap below must exceed its shape's
-    // span/byte cost so staging overflow — which falls back to the typed
-    // walk with identical rows (`raw_ok=false`, enqueues nothing, no gap)
-    // — never triggers in steady state. This is distinct from a full
-    // decode queue, which takes the existing whole-frame drop plus
-    // `LossBatch` gap path. A
-    // force-full hour stages every family at once. These are seed-shape
-    // assertions, not an aggregate memory bound or a growth limit.
-    let relations = RelationsJob::new();
-    assert!(relations.opinions.len() >= 8639);
-    assert!(relations.tuples.len() >= 1512);
-    let characters = CharactersJob::new();
-    assert!(characters.log.spans.capacity() >= 300_000);
-    assert!(characters.log.bytes.capacity() >= 10 << 20);
-    let projects = ProjectsJob::new();
-    assert!(projects.log.spans.capacity() >= 21_511 * 32);
-    assert!(projects.log.bytes.capacity() >= 21_511 * 1024);
-    let lexical = LexicalJob::new();
-    assert!(lexical.capacities().0 >= 70_851 + 16);
-    assert!(lexical.capacities().1 >= 70_851 * 32 * 3);
-    let divisions = crate::sampling::DivisionsJob::new();
-    assert!(divisions.initialized());
-    // Hourly focus worst case is 439 countries with about 3.9k completed
-    // rows plus token bytes (the appendix census proves the shape).
-    let focus = FocusJob::new();
-    assert!(focus.capacities().0[0] >= 439);
-    assert!(focus.capacities().0[1] >= 3_900);
-    assert!(focus.capacities().1 >= 128 << 10);
-    // Hourly air-statistics worst case is 330 rows (appendix census)
-    // with per-history channel spans; both pools start above that so
-    // steady state never overflows.
-    let air_stats = AirStatsJob::new();
-    assert!(air_stats.log.spans.capacity() >= 330 * 64);
-    assert!(air_stats.log.bytes.capacity() >= 330 * 2048);
-    // Queue capacity follows the typed-frame ownership bound. Raw spans,
-    // metadata and all three owned jobs must also be counted in memory
-    // reporting; byte arenas alone substantially undercount the live set.
-    assert_eq!(BUFFERS, 4);
+    let mut fixed = AirStatsJob::default();
+    let bytes = kit::mod_fixture(5_000);
+    assert!(
+        !crate::extended::air::copy_air_stats_refresh(&kit::memory(&bytes), context, &mut fixed,)
+            .raw_ok
+    );
+    assert!(fixed.log.overflowed);
+    drop(bytes);
+
+    let mut retained = None;
+    for (step, count) in [5_000, 5_000, 11_003].into_iter().enumerate() {
+        let mut payload = if step == 0 {
+            AirStatsJob::new()
+        } else {
+            acquire_air_stats_job()
+        };
+        if let Some((bytes, span_capacity, byte_capacity)) = retained {
+            assert_eq!(payload.log.bytes.as_ptr(), bytes);
+            assert!(payload.log.spans.capacity() >= span_capacity);
+            assert!(payload.log.bytes.capacity() >= byte_capacity);
+        } else {
+            assert_eq!(payload.log.spans.capacity(), 0);
+            assert_eq!(payload.log.bytes.capacity(), 0);
+        }
+        let bytes = kit::mod_fixture(count);
+        let memory = kit::memory(&bytes);
+        let mut capacities = Capacities::default();
+        capacities.rows[6] = count;
+        let direct = kit::direct(&memory, &capacities);
+        assert_eq!(direct.outcome, Outcome::Rows { len: count });
+        let report =
+            crate::extended::air::copy_air_stats_refresh_growing(&memory, context, &mut payload);
+        assert!(report.raw_ok);
+        assert!(!payload.log.overflowed);
+        retained = Some((
+            payload.log.bytes.as_ptr(),
+            payload.log.spans.capacity(),
+            payload.log.bytes.capacity(),
+        ));
+        // Publication and decoding use only the owned original observations.
+        drop(bytes);
+        assert_eq!(shared.ready.pop(), None);
+        let mut job = bare_job(index, next_seq(), 0, step as i64 + 1);
+        job.force_full = true;
+        job.air_stats_refresh = true;
+        job.air_stats_payload = Some(payload);
+        process_owned_job(&shared, job, &mut AirBasesMemo::default());
+        assert_eq!(shared.ready.pop(), Some(index));
+        let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+        kit::assert_captured_matches_direct(frame.extended.air_stats_pilot(), &direct);
+        assert_eq!(AIR_STATS_JOB_POOL.lock().unwrap().len(), 1);
+    }
+    *AIR_STATS_JOB_POOL.lock().unwrap() = saved;
 }
 
 #[test]
@@ -2157,7 +2183,7 @@ fn worker_decodes_a_wing_pack_payload_into_the_same_typed_rows() {
         game_score: false,
     };
     let mut first = acquire_air_wing_job();
-    let report = crate::extended::air::copy_air_refresh(&memory, ctx, &mut first);
+    let report = crate::extended::air::copy_air_refresh_growing(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
@@ -2231,7 +2257,8 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
     let memory = stats_test_kit::memory(&bytes);
     let shared = Shared::new(stats_test_kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
-    let capacities = crate::extended::air::Capacities::default();
+    let mut capacities = crate::extended::air::Capacities::default();
+    capacities.rows[6] = 2;
     let direct = stats_test_kit::direct(&memory, &capacities);
     let ctx = AirStatsCopyContext {
         base: stats_test_kit::BASE,
@@ -2240,7 +2267,7 @@ fn worker_decodes_an_air_stats_payload_into_the_same_typed_rows() {
         force_full: true,
     };
     let mut first = acquire_air_stats_job();
-    let report = crate::extended::air::copy_air_stats_refresh(&memory, ctx, &mut first);
+    let report = crate::extended::air::copy_air_stats_refresh_growing(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
@@ -2319,12 +2346,6 @@ fn air_stats_calibration_counters_are_monotonic_and_additive() {
     assert_eq!(snapshot.air_stats_raw_bytes, [100]);
     assert_eq!(snapshot.json()["air_stats_copy_ns"][0], 11);
     assert_eq!(snapshot.json()["air_stats_tables"][0], "AirStatistics");
-    let job = acquire_air_stats_job();
-    assert!(job.log.spans.capacity() >= 1 << 16);
-    recycle_air_stats_job(job);
-    let again = acquire_air_stats_job();
-    assert!(again.log.spans.capacity() >= 1 << 16);
-    recycle_air_stats_job(again);
 }
 
 #[test]
@@ -2345,7 +2366,8 @@ fn worker_decodes_a_naval_pack_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_naval_job();
     naval_test_kit::stage_wings(&memory, &mut first);
-    let report = crate::extended::naval_history::copy_naval_refresh(&memory, ctx, &mut first);
+    let report =
+        crate::extended::naval_history::copy_naval_refresh_growing(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     shared.completed[index].store(0, Ordering::Relaxed);
     let mut job = DecodeJob {
@@ -2430,7 +2452,8 @@ fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
         naval_limit: 4096,
         game_score: false,
     };
-    let air_report = crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job);
+    let air_report =
+        crate::extended::air::copy_air_refresh_growing(&air_memory, air_ctx, &mut air_job);
     assert!(
         air_report.raw_ok,
         "wing force-full live set must fit owned storage"
@@ -2446,7 +2469,7 @@ fn retained_air_naval_payload_caps_fit_the_force_full_hour_live_set() {
         force_full: true,
     };
     naval_kit::stage_wings(&naval_memory, &mut naval_job);
-    let naval_report = crate::extended::naval_history::copy_naval_refresh(
+    let naval_report = crate::extended::naval_history::copy_naval_refresh_growing(
         &naval_memory,
         naval_ctx,
         &mut naval_job,
@@ -2473,19 +2496,6 @@ fn focus_calibration_counters_are_monotonic_and_additive_per_table() {
     assert_eq!(snapshot.focus_raw_bytes, [0, 100]);
     assert_eq!(snapshot.json()["focus_copy_ns"][0], 15);
     assert_eq!(snapshot.json()["focus_tables"][0], "Focus");
-    // Recycled jobs keep their capacities for the next hour.
-    let job = acquire_focus_job();
-    assert!(job.is_provisioned());
-    assert!(job.capacities().0[0] >= 439);
-    assert!(job.capacities().0[1] >= 3_900);
-    assert!(job.capacities().1 >= 128 << 10);
-    recycle_focus_job(job);
-    let again = acquire_focus_job();
-    assert!(again.is_provisioned());
-    assert!(again.capacities().0[0] >= 439);
-    assert!(again.capacities().0[1] >= 3_900);
-    assert!(again.capacities().1 >= 128 << 10);
-    recycle_focus_job(again);
 }
 
 #[test]
@@ -2508,7 +2518,7 @@ fn worker_decodes_a_production_rest_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_production_rest_job();
     let report =
-        crate::extended::production::copy_production_rest_refresh(&memory, ctx, &mut first);
+        crate::extended::production::copy_production_rest_refresh_growing(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.production_rest_pilot().rest_raw_mode = true;
     shared.completed[index].store(0, Ordering::Relaxed);
@@ -2607,8 +2617,9 @@ fn worker_decodes_a_construction_rest_payload_into_the_same_typed_rows() {
         game_state: kit::BASE,
     };
     let mut first = acquire_construction_rest_job();
-    let report =
-        crate::extended::construction::copy_construction_rest_refresh(&memory, ctx, &mut first);
+    let report = crate::extended::construction::copy_construction_rest_refresh_growing(
+        &memory, ctx, &mut first,
+    );
     assert!(report.raw_ok);
     frame.extended.construction_rest_pilot().rest_raw_mode = true;
     shared.completed[index].store(0, Ordering::Relaxed);
@@ -2700,12 +2711,6 @@ fn production_rest_calibration_counters_are_monotonic_and_additive_per_table() {
         snapshot.json()["production_rest_tables"][0],
         "ProductionLines"
     );
-    let job = acquire_production_rest_job();
-    assert!(job.log.spans.capacity() >= 1 << 17);
-    recycle_production_rest_job(job);
-    let again = acquire_production_rest_job();
-    assert!(again.log.spans.capacity() >= 1 << 17);
-    recycle_production_rest_job(again);
 }
 
 #[test]
@@ -2738,7 +2743,8 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
         game_score: false,
     };
     let mut air_job = acquire_air_wing_job();
-    let air_report = crate::extended::air::copy_air_refresh(&air_memory, air_ctx, &mut air_job);
+    let air_report =
+        crate::extended::air::copy_air_refresh_growing(&air_memory, air_ctx, &mut air_job);
     assert!(air_report.raw_ok);
     let naval_bytes = naval_kit::fixture();
     let naval_memory = naval_kit::memory(&naval_bytes);
@@ -2751,7 +2757,7 @@ fn worker_decodes_two_payloads_in_one_job_with_copy_only_table_ns() {
     };
     let mut naval_job = acquire_naval_job();
     naval_kit::stage_wings(&naval_memory, &mut naval_job);
-    let naval_report = crate::extended::naval_history::copy_naval_refresh(
+    let naval_report = crate::extended::naval_history::copy_naval_refresh_growing(
         &naval_memory,
         naval_ctx,
         &mut naval_job,
@@ -2861,12 +2867,6 @@ fn construction_rest_calibration_counters_are_monotonic_and_additive_per_table()
         snapshot.json()["construction_rest_tables"][0],
         "StateBaseResources"
     );
-    let job = acquire_construction_rest_job();
-    assert!(job.log.spans.capacity() >= 1 << 17);
-    recycle_construction_rest_job(job);
-    let again = acquire_construction_rest_job();
-    assert!(again.log.spans.capacity() >= 1 << 17);
-    recycle_construction_rest_job(again);
 }
 
 /// Build a FIFO job carrying only the selected family payload (all other
@@ -2933,6 +2933,8 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let mut bytes = kit::fixture();
+    let mut capacities = Capacities::default();
+    capacities.rows[6] = 2;
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
     let mut bases_memo = AirBasesMemo::default();
@@ -2948,7 +2950,7 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
             kit::set_first_value(&mut bytes, -(step as i64 + 1));
             let memory = kit::memory(&bytes);
             let mut payload = AirStatsJob::new();
-            let report = crate::extended::air::copy_air_stats_refresh(
+            let report = crate::extended::air::copy_air_stats_refresh_growing(
                 &memory,
                 AirStatsCopyContext {
                     base: kit::BASE,
@@ -2992,7 +2994,7 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
                 }
             );
         } else {
-            let direct = kit::direct(&kit::memory(&bytes), &Capacities::default());
+            let direct = kit::direct(&kit::memory(&bytes), &capacities);
             kit::assert_captured_matches_direct(captured, &direct);
         }
         assert!(!captured.stats_raw_mode);
@@ -3001,13 +3003,22 @@ fn worker_air_stats_keeps_current_daily_payloads_and_explicit_missing_results() 
 
 #[test]
 fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_changes() {
-    use crate::extended::air::{AirBasesCopyContext, air_bases_test_kit as kit};
+    use crate::extended::air::{
+        AirBasesCopyContext, Capacities, Captured, air_bases_test_kit as kit,
+    };
     use engine::walk::Outcome;
     let _guard = TEST_LOCK.lock().unwrap();
     reset_calibration_for_test();
     let bytes = kit::fixture();
     let shared = Shared::new(kit::BASE, 0, 1);
     let index = shared.free.pop().expect("pooled buffer");
+    let reference = kit::direct(&kit::memory(&bytes));
+    let mut capacities = Capacities::default();
+    capacities.rows[1] = reference.bases_outcome.len();
+    capacities.rows[5] = reference.aces_outcome.len();
+    capacities.ace_names = reference.ace_names.len();
+    let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
+    *frame.extended.air_bases_pilot() = Captured::with_capacities(&capacities);
     let mut memo = AirBasesMemo::default();
     let expected_hits = [0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 4, 5];
     let expected_installs = [1, 1, 1, 2, 2, 2, 3, 3, 4, 4, 5, 5];
@@ -3022,8 +3033,9 @@ fn worker_air_bases_memo_invalidates_on_skip_missing_payload_and_ace_mask_change
                 game_state: kit::GAME_STATE,
                 hour: if (9..=10).contains(&step) { 21 } else { 0 },
                 force_full: false,
+                transport_admission: Default::default(),
             };
-            let report = crate::extended::air::copy_air_bases_refresh(
+            let report = crate::extended::air::copy_air_bases_refresh_growing(
                 &kit::memory(&bytes),
                 ctx,
                 &mut payload,
@@ -3089,10 +3101,11 @@ fn worker_decodes_a_shared_bases_payload_into_the_same_typed_rows() {
         game_state: kit::GAME_STATE,
         hour: 0,
         force_full: true,
+        transport_admission: Default::default(),
     };
     let mut first = acquire_air_bases_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let report = crate::extended::air::copy_air_bases_refresh(&memory, ctx, &mut first);
+    let report = crate::extended::air::copy_air_bases_refresh_growing(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.air_bases_pilot().bases_raw_mode = true;
     frame.extended.radar_pilot().registrations_raw_mode = true;
@@ -3153,7 +3166,7 @@ fn worker_decodes_a_shared_history_payload_into_the_same_typed_rows() {
         damage_limit,
     };
     let mut first = acquire_air_history_job();
-    let report = crate::extended::air::copy_air_history_refresh(&memory, ctx, &mut first);
+    let report = crate::extended::air::copy_air_history_refresh_growing(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.air_history_pilot().history_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 43);
@@ -3202,7 +3215,8 @@ fn worker_decodes_a_supremacy_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_supremacy_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let report = crate::extended::naval_history::copy_supremacy_refresh(&memory, ctx, &mut first);
+    let report =
+        crate::extended::naval_history::copy_supremacy_refresh_growing(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.supremacy_pilot().supremacy_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 53);
@@ -3245,7 +3259,8 @@ fn worker_decodes_a_sunk_payload_into_the_same_typed_rows() {
     };
     let mut first = acquire_sunk_job();
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let report = crate::extended::naval_history::copy_sunk_refresh(&memory, ctx, &mut first);
+    let report =
+        crate::extended::naval_history::copy_sunk_refresh_growing(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.sunk_pilot().sunk_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 59);
@@ -3293,7 +3308,7 @@ fn worker_decodes_a_radar_payload_into_the_same_typed_rows() {
         .extended
         .radar_pilot()
         .radar_copy_context(kit::BASE, kit::GAME_STATE, 0, true);
-    let report = crate::extended::fog::copy_radar_refresh(&memory, ctx, &mut first);
+    let report = crate::extended::fog::copy_radar_refresh_growing(&memory, ctx, &mut first);
     assert!(report.raw_ok);
     frame.extended.radar_pilot().radar_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 61);
@@ -3331,8 +3346,9 @@ fn worker_decodes_an_intel_payload_into_the_same_typed_rows() {
         .extended
         .intel_pilot()
         .intel_copy_context(kit::BASE, kit::GAME_STATE);
-    let report =
-        crate::extended::fog::copy_intel_refresh_with_divisions(&memory, ctx, &mut first, None);
+    let report = crate::extended::fog::copy_intel_refresh_with_divisions_growing(
+        &memory, ctx, &mut first, None,
+    );
     assert!(report.raw_ok);
     frame.extended.intel_pilot().intel_raw_mode = true;
     let mut job = bare_job(index, next_seq(), 7, 67);
@@ -3381,14 +3397,70 @@ fn new_family_calibration_counters_are_monotonic_and_additive_per_table() {
     assert_eq!(json["sunk_tables"][0], "SunkShips");
     assert_eq!(json["radar_tables"][0], "RadarCoverage");
     assert_eq!(json["intel_tables"][0], "UnitIntel");
-    for acquire in [
-        acquire_air_bases_job().log.spans.capacity() >= 1 << 17,
-        acquire_air_history_job().has_storage(),
-        acquire_supremacy_job().log.spans.capacity() >= 1 << 12,
-        acquire_sunk_job().log.spans.capacity() >= 1 << 13,
-        acquire_radar_job().allocated_bytes() > 0,
-        acquire_intel_job().allocated_bytes() > 0,
-    ] {
-        assert!(acquire);
+}
+
+pub(crate) fn presize_and_acquire_carrier_jobs_for_test(
+    jobs: [AirBasesJob; 2],
+) -> [AirBasesJob; 2] {
+    let _guard = TEST_LOCK.lock().unwrap();
+    struct RestorePool(Vec<AirBasesJob>);
+    impl Drop for RestorePool {
+        fn drop(&mut self) {
+            *AIR_BASES_JOB_POOL
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = std::mem::take(&mut self.0);
+        }
     }
+    let _restore = RestorePool(std::mem::replace(
+        &mut *AIR_BASES_JOB_POOL.lock().unwrap(),
+        Vec::from(jobs),
+    ));
+    // This is the same idle-pool path used when live demand changes after
+    // attach. Each job is independently prepared before callback acquisition.
+    presize_country_pools();
+    assert_eq!(AIR_BASES_JOB_POOL.lock().unwrap().len(), 2);
+    [acquire_air_bases_job(), acquire_air_bases_job()]
+}
+
+pub(crate) fn retire_and_reacquire_two_carrier_jobs_for_test(
+    jobs: [AirBasesJob; 2],
+) -> [AirBasesJob; 2] {
+    let _guard = TEST_LOCK.lock().unwrap();
+    prepare_retirement();
+    reclaim_payloads();
+
+    struct RestorePool(Vec<AirBasesJob>);
+    impl Drop for RestorePool {
+        fn drop(&mut self) {
+            // Reclaim our outstanding ownership even if an assertion unwinds.
+            // Other pool tests cannot enter while TEST_LOCK is held.
+            reclaim_payloads();
+            *AIR_BASES_JOB_POOL
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = std::mem::take(&mut self.0);
+        }
+    }
+    let _restore = RestorePool(std::mem::take(&mut AIR_BASES_JOB_POOL.lock().unwrap()));
+    let identities = jobs.each_ref().map(|job| job.log.spans.as_ptr());
+    for job in jobs {
+        recycle_air_bases_job(job);
+    }
+    let retired = unsafe { &*RETIRED_PAYLOADS.load(Ordering::Acquire) };
+    assert_eq!(
+        retired.len(),
+        2,
+        "both queued payloads await worker retirement"
+    );
+    assert!(AIR_BASES_JOB_POOL.lock().unwrap().is_empty());
+
+    // The actual worker release grows, clears and pools each retained job.
+    reclaim_payloads();
+    assert!(retired.is_empty());
+    assert_eq!(AIR_BASES_JOB_POOL.lock().unwrap().len(), 2);
+    let second = acquire_air_bases_job();
+    let first = acquire_air_bases_job();
+    assert!(AIR_BASES_JOB_POOL.lock().unwrap().is_empty());
+    assert_eq!(first.log.spans.as_ptr(), identities[0]);
+    assert_eq!(second.log.spans.as_ptr(), identities[1]);
+    [first, second]
 }

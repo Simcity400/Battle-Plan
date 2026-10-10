@@ -1,16 +1,18 @@
 use super::*;
 
 /// The tables the construction output self-check decodes.
-pub(super) const OUTPUT_TABLES: [TableId; 5] = [
+pub(super) const OUTPUT_TABLES: [TableId; 7] = [
     TableId::ConstructionLineOutput,
     TableId::BuildingConstruction,
     TableId::RailwayConstruction,
     TableId::StateBuildings,
     TableId::ProvinceBuildings,
+    TableId::States,
+    TableId::CountryLinks,
 ];
 
 /// No save holds cumulative spending. Check it against successive queue reads
-/// and hourly building levels; repairs have a necessary health/cadence check.
+/// and target growth; repairs have a necessary health/cadence check.
 pub(in crate::oracle) fn compare_output(
     replay: &Replay,
     frame: &DecodedFrame,
@@ -65,9 +67,12 @@ struct Published {
     output: ConstructionLineOutputRow,
     produced: i64,
     cost: i64,
+    amount: i32,
     shares_segment: bool,
     /// Building target identity; changing one cannot continue a progress check.
-    target: Option<(u32, u32, u32, u32)>,
+    target: Option<(u32, u32, u32, u32, u32)>,
+    country: Option<u32>,
+    state_owner: Option<u32>,
     repair_levels: i32,
     building: Option<replay::rows::BuildingRow>,
 }
@@ -80,7 +85,9 @@ pub(super) struct OutputCheck {
     natural_repairs: usize,
     excluded: usize,
     missing_buildings: usize,
+    ownership_resets: usize,
     bounded_carries: usize,
+    external_levels: usize,
     shared_railways: usize,
     seen: BTreeSet<u64>,
     output_handles: BTreeSet<u64>,
@@ -138,6 +145,29 @@ impl OutputCheck {
         }
         let state = super::complete::<tables::StateBuildings>(frame).ok();
         let province = super::complete::<tables::ProvinceBuildings>(frame).ok();
+        let mut links = BTreeMap::new();
+        if let Ok(rows) = super::complete::<tables::CountryLinks>(frame) {
+            for row in rows {
+                if links.insert(row.id, row.canonical_slot).is_some() {
+                    return Err(invalid(
+                        "duplicate country link in construction ownership inputs",
+                    ));
+                }
+            }
+        }
+        let canonical = |raw: u32| {
+            ((raw as i32) > 0)
+                .then(|| links.get(&raw).copied())
+                .flatten()
+        };
+        let mut owners = BTreeMap::new();
+        if let Ok(rows) = super::complete::<tables::States>(frame) {
+            for row in rows {
+                if owners.insert(row.id, canonical(row.owner)).is_some() {
+                    return Err(invalid("duplicate state in construction ownership inputs"));
+                }
+            }
+        }
         // 1419EEEA0 looks progress up by province pair; 140E7DF25/3D and
         // 140E7DF4B/64 write both directions. 1419F0DF0 and 1419F0ED3/E7
         // recompute produced from that shared progress, not this line's spend.
@@ -165,8 +195,11 @@ impl OutputCheck {
                         output: row.clone(),
                         produced: r.produced,
                         cost: r.cost,
+                        amount: r.amount,
                         shares_segment: shared.contains(&r.id),
                         target: None,
+                        country: canonical(r.country),
+                        state_owner: None,
                         repair_levels: 0,
                         building: None,
                     })
@@ -185,13 +218,17 @@ impl OutputCheck {
                         output: row.clone(),
                         produced: r.produced,
                         cost: r.cost,
+                        amount: r.amount,
                         shares_segment: false,
                         target: Some((
                             r.building_type,
                             r.target_flags,
                             r.target_location,
                             r.target_state,
+                            r.target_country,
                         )),
+                        country: canonical(r.country),
+                        state_owner: owners.get(&r.target_state).copied().flatten(),
                         repair_levels: r.repair_levels,
                         building: values
                             .and_then(|v| {
@@ -279,21 +316,114 @@ impl OutputCheck {
                     continue;
                 }
                 let mut expected = i128::from(now.produced) - i128::from(was.produced);
+                let spent = i128::from(b.construction_raw) - i128::from(a.construction_raw)
+                    + i128::from(b.bank_raw)
+                    - i128::from(a.bank_raw);
+                let mut ownership_reset = false;
+                let mut external_growth = false;
                 if !b.railway {
-                    let (Some(old), Some(new)) = (&was.building, &now.building) else {
-                        self.missing_buildings += 1;
-                        continue;
-                    };
-                    let finished = i128::from(new.level) - i128::from(old.level);
+                    // 140F55590 -> 140F59250 consumes this line's +48 amount
+                    // for each completed cost subtraction from +38. A target's
+                    // level can also rise through another line or an effect.
+                    let mut finished = i128::from(was.amount) - i128::from(now.amount);
                     if finished < 0 {
                         self.excluded += 1;
                         continue;
                     }
+                    let growth = was
+                        .building
+                        .as_ref()
+                        .zip(now.building.as_ref())
+                        .map(|(old, new)| i128::from(new.level) - i128::from(old.level));
+                    // set_level@1410C71A0 also serves script effects
+                    // (14031CF00, 14030DFF0/14030F480) without spending
+                    // this line's IC or consuming its remaining count.
+                    let reset = match (&a.count_reset, &b.count_reset) {
+                        (replay::rows::Recorded::Value(a), replay::rows::Recorded::Value(b)) => {
+                            Some(i128::from(*b) - i128::from(*a))
+                        }
+                        (
+                            replay::rows::Recorded::NotRecorded,
+                            replay::rows::Recorded::NotRecorded,
+                        ) => None,
+                        _ => {
+                            report.difference(
+                                format!("ConstructionLineOutput {handle}.count_reset"),
+                                "inconsistent witness presence",
+                                "both publications recorded or both historical",
+                            );
+                            continue;
+                        }
+                    };
+                    if finished == 0 && reset.is_some_and(|reset| reset != 0) {
+                        report.difference(
+                            format!("ConstructionLineOutput {handle}.count_reset"),
+                            reset,
+                            "zero with no remaining-count decrease",
+                        );
+                        continue;
+                    }
+                    if finished > 0 {
+                        // SetOwner@1409D1710 -> 140E5C190 calls slot27 on
+                        // the old owner's lines for this state. MarkComplete
+                        // @140F55390 clears count and repair levels without
+                        // touching progress, spending or the building level.
+                        // 140BA60A0 compares canonical identity, not raw tags.
+                        ownership_reset = now.amount == 0
+                            && was.country.is_some()
+                            && was.country == now.country
+                            && was.state_owner == was.country
+                            && now.state_owner.is_some()
+                            && was.state_owner != now.state_owner
+                            && growth.is_some();
+                        if let Some(reset) = reset {
+                            // The native MarkComplete@140F55390 observation
+                            // separates cleared quantity from paid completions,
+                            // even when 1409D26D0 lowers their target afterwards.
+                            finished -= reset;
+                            ownership_reset = reset > 0;
+                            if reset < 0 || finished < 0 {
+                                report.difference(
+                                    format!("ConstructionLineOutput {handle}.count_reset"),
+                                    reset,
+                                    "reset quantity within the remaining-count decrease",
+                                );
+                                continue;
+                            }
+                        } else if ownership_reset {
+                            // An old prefix has no reset quantity. Compare the
+                            // exact native cost debits: any completed quantity
+                            // must be integral and within the cleared count.
+                            // No debit is attributed to the reset itself.
+                            let debit = (spent - expected) as u64;
+                            let cost = now.cost as u64;
+                            if debit != 0
+                                && (now.cost <= 0
+                                    || !debit.is_multiple_of(cost)
+                                    || i128::from(debit / cost) > finished)
+                            {
+                                report.difference(format!("ConstructionLineOutput {handle}.construction_raw ownership reset"), spent,
+                                    "exact progress plus integral completed cost debits within the cleared quantity");
+                                continue;
+                            }
+                            finished = if debit == 0 {
+                                0
+                            } else {
+                                i128::from(debit / cost)
+                            };
+                        }
+                        if !ownership_reset && growth.is_none_or(|growth| growth < finished) {
+                            report.difference(
+                                format!("ConstructionLineOutput {handle} unexplained remaining-count decrease {hour}..{}", frame.hour),
+                                format!("{} -> {}; target growth {growth:?}; canonical owners {:?} -> {:?}, line country {:?}", was.amount, now.amount, was.state_owner, now.state_owner, was.country),
+                                "completed target levels or the witnessed old-owner count reset on a positive ownership transfer",
+                            );
+                            continue;
+                        }
+                    }
                     expected += finished * i128::from(now.cost);
+                    external_growth = growth.is_some_and(|growth| growth > finished);
                 }
-                let spent = i128::from(b.construction_raw) - i128::from(a.construction_raw)
-                    + i128::from(b.bank_raw)
-                    - i128::from(a.bank_raw);
                 let carry = i128::from(b.carry_raw) - i128::from(a.carry_raw);
                 // 1419EF5C1 forwards the overdraw to another segment. Its
                 // destination can consume some or all of it; args alone do not
@@ -313,6 +443,8 @@ impl OutputCheck {
                         self.bounded_carries += usize::from(carry > 0);
                     } else {
                         self.buildings += 1;
+                        self.external_levels += usize::from(external_growth);
+                        self.ownership_resets += usize::from(ownership_reset);
                     }
                 } else {
                     report.difference(format!("ConstructionLineOutput {handle}.construction_raw added from hour {hour} to {}", frame.hour), spent,
@@ -334,6 +466,14 @@ impl OutputCheck {
         );
         report.compared("ConstructionLineOutput", self.buildings + self.railways);
         report.compared("ConstructionLineOutput new buildings", self.buildings);
+        report.compared(
+            "ConstructionLineOutput external target growth bounds",
+            self.external_levels,
+        );
+        report.compared(
+            "ConstructionLineOutput ownership transfer count resets",
+            self.ownership_resets,
+        );
         report.compared("ConstructionLineOutput railways", self.railways);
         report.compared(
             "ConstructionLineOutput repair necessary-check",
@@ -350,7 +490,7 @@ impl OutputCheck {
             ),
             (
                 self.excluded,
-                "linked, instant, changed-cost or changed-target construction stretches are not progress comparators",
+                "linked, instant, changed-cost, increased-count or changed-target construction stretches are not progress comparators",
             ),
             (
                 self.missing_buildings,
@@ -370,5 +510,6 @@ impl OutputCheck {
             }
         }
         report.limitation("natural repair rate includes BASE_FACTORY_REPAIR and runtime country/state/template multipliers; the repair check certifies observed cadence, not the rate", "ConstructionLineOutput repairs");
+        report.limitation("building target levels also change through native script effects and owner changes without this line consuming IC; progress accounting uses this line's remaining count and requires target growth or a witnessed ownership reset for decreases, without attributing every gained level to this line", "ConstructionLineOutput buildings");
     }
 }

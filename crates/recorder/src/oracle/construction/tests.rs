@@ -81,6 +81,73 @@ fn saved_pack(text: &[u8]) -> saved::Pack {
 }
 
 #[test]
+fn occupation_law_names_compare_native_first_nul_prefixes() {
+    use replay::rows::{
+        OccupationGroupLaw, OccupationSettingsRow, Recorded, StateOccupationLawRow,
+    };
+    let saved = saved_pack(b"countries={AAA={occupation_status={default_law=Law occupation={BBB={occupation_law=Law occupation_law_list={1=Law}}}}} BBB={}} states={} provinces={}");
+    let countries = [b"AAA", b"BBB"].map(|tag| CountryRow {
+        tag: tag.to_vec(),
+        ..Default::default()
+    });
+    let links = BTreeMap::from([(1, &countries[0]), (2, &countries[1])]);
+    let row = OccupationSettingsRow {
+        country: 1,
+        default_law_present: 1,
+        law: b"Law\0tail".to_vec(),
+        group_laws: Recorded::Value(Some(vec![OccupationGroupLaw {
+            occupied: 2,
+            scope_country: Some(2),
+            law: Some(b"Law\0tail".to_vec()),
+        }])),
+        ..Default::default()
+    };
+    let state = StateOccupationLawRow {
+        controller: 1,
+        occupied: 2,
+        state: 1,
+        name: b"Law\0tail".to_vec(),
+    };
+    let mut report = Report::default();
+    occupation_settings(std::slice::from_ref(&row), &saved, &links, &mut report).unwrap();
+    occupation_laws(std::slice::from_ref(&state), &saved, &links, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(
+        report
+            .limitations
+            .iter()
+            .filter(|(reason, _)| reason.contains("first NUL"))
+            .flat_map(|(_, fields)| fields)
+            .count(),
+        3
+    );
+    let mut changed = row.clone();
+    changed.law[0] = b'X';
+    let Recorded::Value(Some(groups)) = &mut changed.group_laws else {
+        unreachable!()
+    };
+    groups[0].law.as_mut().unwrap()[0] = b'X';
+    let mut state = state;
+    state.name[0] = b'X';
+    let mut report = Report::default();
+    occupation_settings(&[changed], &saved, &links, &mut report).unwrap();
+    occupation_laws(&[state], &saved, &links, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 3);
+    let saved_empty = saved_pack(b"countries={AAA={occupation_status={default_law=\"\" occupation={BBB={occupation_law=\"\"}}}} BBB={}} states={} provinces={}");
+    for name in [b"\0tail".as_slice(), b"".as_slice()] {
+        let mut empty = row.clone();
+        empty.law = name.to_vec();
+        let Recorded::Value(Some(groups)) = &mut empty.group_laws else {
+            unreachable!()
+        };
+        groups[0].law = Some(name.to_vec());
+        let mut report = Report::default();
+        occupation_settings(&[empty], &saved_empty, &links, &mut report).unwrap();
+        assert!(report.differences.is_empty(), "{:?}", report.differences);
+    }
+}
+
+#[test]
 fn garrison_equipment_oracle_compares_requirements_and_names_the_unsaved_allocation_cache() {
     use replay::{
         frame::TableView,
@@ -158,6 +225,61 @@ fn garrison_equipment_oracle_compares_requirements_and_names_the_unsaved_allocat
                 .any(|reason| reason.contains("140FEB450"))
         );
     }
+}
+
+#[test]
+fn state_resource_block_gate_keeps_negative_siblings_but_omits_negative_only_pools() {
+    let saved =
+        saved_pack(b"countries={} provinces={} states={2={resources={ore=8 coolant=-2}} 3={}}");
+    let names = BTreeMap::from([(7, b"ore".as_slice()), (8, b"coolant".as_slice())]);
+    let mut rows = vec![
+        replay::rows::StateResourceRow {
+            state: 2,
+            resource: 7,
+            pool: 800_000,
+            ..Default::default()
+        },
+        replay::rows::StateResourceRow {
+            state: 2,
+            resource: 8,
+            pool: -200_000,
+            ..Default::default()
+        },
+        replay::rows::StateResourceRow {
+            state: 3,
+            resource: 8,
+            pool: -300_000,
+            ..Default::default()
+        },
+    ];
+    let mut report = Report::default();
+    state_pools(
+        &rows,
+        &saved.state_resources,
+        &names,
+        &|_| true,
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["StateResources.pool"], 2);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("negative pool values"))
+    );
+    rows[1].pool -= 1;
+    let mut report = Report::default();
+    state_pools(
+        &rows,
+        &saved.state_resources,
+        &names,
+        &|_| true,
+        &mut report,
+    )
+    .unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
 }
 
 #[test]
@@ -295,6 +417,50 @@ fn resource_inputs_compare_origins_and_infrastructure_levels() {
     let report = run(&[input(2, 0, None)], &|state| state != 2);
     assert!(report.differences.is_empty());
     assert_eq!(report.compared_tables["StateResourceInputs"], 0);
+}
+
+#[test]
+fn resource_inputs_compare_null_controller_without_a_country_join() {
+    let saved = saved_pack(
+        b"countries={A={resources={origin={country=A state=2}}}} states={2={}} provinces={}",
+    );
+    let states = [replay::rows::StateRow {
+        id: 2,
+        controller: 0,
+        ..Default::default()
+    }];
+    let names = BTreeMap::from([(
+        engine::cbuilding_database::INFRASTRUCTURE_TOKEN,
+        b"infra".as_slice(),
+    )]);
+    let mut row = replay::rows::StateResourceInputRow {
+        state: 2,
+        ..Default::default()
+    };
+    let run = |row| {
+        let mut report = Report::default();
+        resource_inputs(
+            &[row],
+            &states,
+            &saved,
+            &BTreeMap::new(),
+            &names,
+            &|_| true,
+            &mut report,
+        )
+        .unwrap();
+        report
+    };
+    let report = run(row.clone());
+    assert!(report.differences.is_empty());
+    assert_eq!(report.compared_tables["StateResourceInputs"], 1);
+    row.origin = 1;
+    assert!(
+        run(row)
+            .differences
+            .iter()
+            .any(|row| row.contains(".origin"))
+    );
 }
 
 /// Overrides compare entry by entry and element by element in native
@@ -901,10 +1067,23 @@ fn resolved_province_buildings_compare_signed_zero_values_and_named_membership()
 fn naval_bases_sum_the_contents_port_buildings() {
     let saved = saved_pack(b"countries={} states={} provinces={7={buildings={dock={level=2 healthy_levels=1 partial_health=0} pier={level=3 healthy_levels=3 partial_health=0} factory={level=5 healthy_levels=5 partial_health=0}}}}");
     let ports = BTreeSet::from([b"dock".to_vec(), b"pier".to_vec()]);
+    let country_bases = [
+        installed_content::save::naval_launch::CountryNavalLaunchOccurrence {
+            ordinal: 0,
+            tag: b"TST".to_vec(),
+            naval_bases: Some(
+                vec![7]
+                    .into_iter()
+                    .map(installed_content::save::naval_launch::NavalBaseOccurrence::from)
+                    .collect(),
+            ),
+        },
+    ];
     let mut row = replay::rows::NavalBaseRow {
         province: 7,
         level: 5,
         healthy_level: 4,
+        country_tags: replay::rows::Recorded::Value(Some(Vec::new())),
         ..Default::default()
     };
     let mut report = Report::default();
@@ -912,6 +1091,8 @@ fn naval_bases_sum_the_contents_port_buildings() {
         std::slice::from_ref(&row),
         &saved.province_buildings,
         &ports,
+        &country_bases,
+        &BTreeMap::new(),
         &mut report,
     )
     .unwrap();
@@ -922,6 +1103,8 @@ fn naval_bases_sum_the_contents_port_buildings() {
         &[row.clone()],
         &saved.province_buildings,
         &ports,
+        &country_bases,
+        &BTreeMap::new(),
         &mut report,
     )
     .unwrap();
@@ -930,9 +1113,137 @@ fn naval_bases_sum_the_contents_port_buildings() {
     row.level = 5;
     row.countries_unreadable = true;
     let mut report = Report::default();
-    naval_bases(&[row], &saved.province_buildings, &ports, &mut report).unwrap();
+    naval_bases(
+        &[row],
+        &saved.province_buildings,
+        &ports,
+        &country_bases,
+        &BTreeMap::new(),
+        &mut report,
+    )
+    .unwrap();
     assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
     assert_eq!(report.compared_tables["NavalBases"], 1);
+}
+
+#[test]
+fn naval_base_membership_uses_saved_rosters_rather_than_all_port_buildings() {
+    let saved = saved_pack(b"countries={} states={} provinces={19={buildings={synthetic_port={level=2 healthy_levels=2 partial_health=0}}}}");
+    let ports = BTreeSet::from([b"synthetic_port".to_vec()]);
+    let mut report = Report::default();
+    naval_bases(
+        &[],
+        &saved.province_buildings,
+        &ports,
+        &[],
+        &BTreeMap::new(),
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    let rosters = [
+        installed_content::save::naval_launch::CountryNavalLaunchOccurrence {
+            ordinal: 0,
+            tag: b"TST".to_vec(),
+            naval_bases: Some(
+                vec![19]
+                    .into_iter()
+                    .map(installed_content::save::naval_launch::NavalBaseOccurrence::from)
+                    .collect(),
+            ),
+        },
+    ];
+    naval_bases(
+        &[],
+        &saved.province_buildings,
+        &ports,
+        &rosters,
+        &BTreeMap::new(),
+        &mut report,
+    )
+    .unwrap();
+    assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+    assert!(report.differences[0].contains("membership"));
+}
+
+#[test]
+fn naval_base_saved_country_lists_compare_order_multiplicity_and_zero_level_bases() {
+    use installed_content::save::naval_launch::parse_country_occurrences;
+    use replay::rows::{NavalBaseRow, Recorded};
+    let bases = parse_country_occurrences(&installed_content::parser::parse(
+        b"A={strategic_navy={naval_base={7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"} 7={disabled_for_repairs=\"A\" disabled_for_repairs=\"B\" disabled_for_repairs=\"A\" disabled_for_repairs=\"\"}}}}",
+    ).unwrap().items).unwrap();
+    // Raw aliases cannot be projected through the canonical CountryLinks:
+    // 140BA5C20 reads their own tag-table slots; slot zero uses the database.
+    let tags = [
+        b"A\0tail".to_vec(),
+        b"B".to_vec(),
+        b"A".to_vec(),
+        Vec::new(),
+    ];
+    let mut row = NavalBaseRow {
+        province: 7,
+        countries: vec![5, 8, 5, 0],
+        country_tags: Recorded::Value(Some(tags.to_vec())),
+        ..Default::default()
+    };
+    let run = |row: &NavalBaseRow, bases: &[_]| {
+        let mut report = Report::default();
+        naval_bases(
+            std::slice::from_ref(row),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            bases,
+            &BTreeMap::from([
+                (5, b"A".as_slice()),
+                (8, b"B".as_slice()),
+                (0, b"".as_slice()),
+            ]),
+            &mut report,
+        )
+        .unwrap();
+        report
+    };
+    let report = run(&row, &bases);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    for wrong in [
+        vec![b"X".to_vec(), b"B".to_vec(), b"A".to_vec(), Vec::new()],
+        vec![b"B".to_vec(), b"A".to_vec(), b"A".to_vec(), Vec::new()],
+        vec![b"A".to_vec(), b"B".to_vec(), b"A".to_vec()],
+        vec![
+            b"A".to_vec(),
+            b"B".to_vec(),
+            b"A".to_vec(),
+            Vec::new(),
+            Vec::new(),
+        ],
+    ] {
+        row.country_tags = Recorded::Value(Some(wrong));
+        let report = run(&row, &bases);
+        assert_eq!(report.differences.len(), 2, "{:?}", report.differences);
+        assert!(
+            report
+                .differences
+                .iter()
+                .all(|difference| difference.contains(".countries"))
+        );
+    }
+    row.country_tags = Recorded::NotRecorded;
+    assert!(run(&row, &bases).differences.is_empty());
+    row.countries.swap(0, 1);
+    assert_eq!(run(&row, &bases).differences.len(), 2);
+    row.countries.swap(0, 1);
+    row.country_tags = Recorded::Value(None);
+    assert_eq!(run(&row, &bases).differences.len(), 2);
+    row.countries_unreadable = true;
+    assert_eq!(run(&row, &bases).differences.len(), 1);
+    row.countries_unreadable = false;
+    row.country_tags = Recorded::Value(Some(tags.to_vec()));
+    let mut wrong_occurrence = bases.clone();
+    wrong_occurrence[0].naval_bases.as_mut().unwrap()[1]
+        .countries
+        .reverse();
+    assert_eq!(run(&row, &wrong_occurrence).differences.len(), 1);
 }
 
 #[test]

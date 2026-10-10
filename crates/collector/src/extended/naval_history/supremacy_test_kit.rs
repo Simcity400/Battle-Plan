@@ -117,6 +117,23 @@ pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
     SliceMemory { base: 0, bytes }
 }
 
+pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
+    let mut bytes = fixture();
+    let entry = bytes[ROWS..ROWS + 0x50].to_vec();
+    let data = bytes.len();
+    bytes.resize(data + count * 0x50, 0);
+    header(
+        &mut bytes,
+        DOMINANCE + engine::cnaval_region_dominance::ENTRIES,
+        data,
+        count as u32,
+    );
+    for row in bytes[data..].chunks_exact_mut(0x50) {
+        row.copy_from_slice(&entry);
+    }
+    bytes
+}
+
 pub(crate) struct Split {
     pub outcome: Outcome,
     pub rows: Vec<engine::cnaval_region_dominance::Row>,
@@ -124,7 +141,7 @@ pub(crate) struct Split {
 
 fn collect_typed(memory: &impl Memory, cap: usize) -> Split {
     use engine::cnaval_region_dominance;
-    let mut capacities = Capacities::default();
+    let mut capacities = Capacities::fixture();
     capacities.rows[0] = cap;
     let mut captured = Captured::with_capacities(&capacities);
     let walked =
@@ -143,10 +160,10 @@ fn collect_split(memory: &impl Memory, cap: usize) -> (Split, SupremacyCopyRepor
         base: BASE,
         game_state: GAME_STATE,
     };
-    let mut capacities = Capacities::default();
+    let mut capacities = Capacities::fixture();
     capacities.rows[0] = cap;
     let mut captured = Captured::with_capacities(&capacities);
-    let mut first = SupremacyJob::new();
+    let mut first = SupremacyJob::fixture();
     let report = super::copy_supremacy_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     let mut ticks = [0u64; 1];

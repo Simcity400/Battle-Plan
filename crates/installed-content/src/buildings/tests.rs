@@ -496,3 +496,156 @@ fn empty_replacement_files_contribute_no_buildings() {
         assert!(parse(input).unwrap().types.is_empty());
     }
 }
+
+#[test]
+fn base_maximum_prefers_positive_caps_without_reading_the_default() {
+    let buildings = parse(
+        b"buildings={
+            both={level_cap={state_max=9 province_max=4}}
+            state_only={level_cap={state_max=9}}
+            province_only={level_cap={province_max=4}}
+        }",
+    )
+    .unwrap();
+    let defines = crate::defines::Defines::new().unwrap();
+    for (name, maximum) in [("both", 4), ("state_only", 9), ("province_only", 4)] {
+        assert_eq!(
+            buildings.types[name].base_maximum(&defines).unwrap(),
+            maximum
+        );
+    }
+    assert_eq!(buildings.types["state_only"].province_max, None);
+    assert_eq!(buildings.types["province_only"].state_max, 0);
+}
+
+#[test]
+fn level_caps_normalize_negative_values_and_province_above_positive_state() {
+    let buildings = parse(
+        b"buildings={
+            oversized={level_cap={state_max=4 province_max=6}}
+            negative={level_cap={state_max=-5 province_max=-3}}
+            negative_state={level_cap={state_max=-5 province_max=7}}
+            negative_province={level_cap={state_max=4 province_max=-3}}
+            zero_state={level_cap={state_max=0 province_max=7}}
+            equal={level_cap={state_max=4 province_max=4}}
+        }",
+    )
+    .unwrap();
+    for (name, state_max, province_max) in [
+        ("oversized", 4, 0),
+        ("negative", 0, 0),
+        ("negative_state", 0, 7),
+        ("negative_province", 4, 0),
+        ("zero_state", 0, 7),
+        ("equal", 4, 4),
+    ] {
+        let building = &buildings.types[name];
+        assert_eq!(building.state_max, state_max, "{name}");
+        assert_eq!(building.province_max, Some(province_max), "{name}");
+        assert_eq!(building.provincial(), province_max > 0, "{name}");
+    }
+}
+
+#[test]
+fn repeated_level_cap_blocks_validate_before_later_assignments() {
+    let buildings = parse(
+        b"buildings={
+            rejected_first={
+                level_cap={state_max=4 province_max=6}
+                level_cap={state_max=8}
+            }
+            rejected_later={
+                level_cap={province_max=6}
+                level_cap={state_max=4}
+                level_cap={state_max=8}
+            }
+            raised_same_block={level_cap={state_max=4 province_max=6 state_max=8}}
+        }",
+    )
+    .unwrap();
+    for name in ["rejected_first", "rejected_later"] {
+        assert_eq!(buildings.types[name].state_max, 8);
+        assert_eq!(buildings.types[name].province_max, Some(0));
+    }
+    assert_eq!(buildings.types["raised_same_block"].state_max, 8);
+    assert_eq!(buildings.types["raised_same_block"].province_max, Some(6));
+}
+
+#[test]
+fn failed_cap_scans_retain_the_previous_normalized_values() {
+    let buildings = parse(
+        b"buildings={
+            rejected={
+                level_cap={state_max=3 province_max=7}
+                level_cap={state_max=bad province_max=bad}
+            }
+            negative={
+                level_cap={state_max=-4 province_max=-2}
+                level_cap={state_max=bad province_max=bad}
+            }
+            retained={
+                level_cap={state_max=014 province_max=0x5}
+                level_cap={state_max=bad province_max=bad}
+            }
+        }",
+    )
+    .unwrap();
+    for (name, state_max, province_max) in
+        [("rejected", 3, 0), ("negative", 0, 0), ("retained", 12, 5)]
+    {
+        assert_eq!(buildings.types[name].state_max, state_max, "{name}");
+        assert_eq!(
+            buildings.types[name].province_max,
+            Some(province_max),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn differing_state_caps_refuse_repeated_type_tokens() {
+    for source in [
+        b"buildings={Depot={level_cap={state_max=3}} depot={level_cap={state_max=4}}}".as_slice(),
+        b"buildings={Depot={level_cap={state_max=3}} Depot={level_cap={state_max=4}}}",
+    ] {
+        let buildings = parse(source).unwrap();
+        assert!(
+            buildings
+                .by_token("DEPOT")
+                .unwrap_err()
+                .to_string()
+                .contains("differing fields")
+        );
+    }
+    let equal =
+        parse(b"buildings={Depot={level_cap={state_max=3}} depot={level_cap={state_max=3}}}")
+            .unwrap();
+    assert_eq!(equal.by_token("DEPOT").unwrap().unwrap().state_max, 3);
+}
+
+#[test]
+fn nonpositive_caps_use_the_exact_signed_default() {
+    let buildings =
+        parse(b"buildings={absent={} zero={level_cap={state_max=0 province_max=0}}}").unwrap();
+    let defines = crate::defines::Defines::new().unwrap();
+    assert!(buildings.types["absent"].base_maximum(&defines).is_err());
+    for (source, maximum) in [
+        (
+            b"NDefines={NBuildings={MAX_BUILDING_LEVELS=-7}}".as_slice(),
+            -7,
+        ),
+        (b"NDefines={NBuildings={MAX_BUILDING_LEVELS=0}}", 0),
+        (
+            b"NDefines={NBuildings={MAX_BUILDING_LEVELS=2147483648}}",
+            i32::MIN,
+        ),
+    ] {
+        defines.load("caps.lua", source).unwrap();
+        for name in ["absent", "zero"] {
+            assert_eq!(
+                buildings.types[name].base_maximum(&defines).unwrap(),
+                maximum
+            );
+        }
+    }
+}

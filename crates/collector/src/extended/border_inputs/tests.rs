@@ -259,7 +259,10 @@ fn real_border_capture_isolates_faults_and_preserves_incomplete_censuses() {
         fault: None,
         reads: Cell::new(0),
     };
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&Capacities {
+        division_presentation: super::super::division_presentation::Capacities::status_fixture(1),
+        ..Default::default()
+    });
     let provinces = [cprovince::Row {
         id: 1,
         state: 1,

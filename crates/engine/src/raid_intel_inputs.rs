@@ -236,6 +236,38 @@ pub fn walk(
     output: &mut [Row],
     operatives: &mut [Operative],
 ) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game,
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(operatives),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    output: &mut Vec<Row>,
+    operatives: &mut Vec<Operative>,
+) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(operatives),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    mut output: crate::walk::Buffer<'_, Row>,
+    mut operatives: crate::walk::Buffer<'_, Operative>,
+) -> Walk {
     let mut operative_len = 0usize;
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, game)?;
@@ -292,6 +324,11 @@ pub fn walk(
                         modifier_keys::INTELLIGENCE_AGENCY_DEFENSE,
                     )?;
                     let missions = array(memory, strategic, MISSIONS, 8)?;
+                    operatives.ensure(
+                        operative_len
+                            .checked_add(missions.count as usize)
+                            .ok_or("raid operative row count overflow")?,
+                    )?;
                     for ordinal in 0..missions.count {
                         let handle = field::<u64>(
                             memory,
@@ -314,6 +351,10 @@ pub fn walk(
                     row.operatives_len = operative_len - row.operatives_start;
                 }
             }
+            output.ensure(
+                len.checked_add(1)
+                    .ok_or("raid intel country count overflow")?,
+            )?;
             if let Some(out) = output.get_mut(len) {
                 *out = row;
             }

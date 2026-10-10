@@ -66,8 +66,8 @@ impl Captured {
             self.storage = storage;
         }
     }
-    pub fn drain(&mut self, continuous: bool) {
-        self.drained = crate::peace_settlements::drain(&mut self.storage, continuous);
+    pub(crate) fn drain_growing(&mut self, continuous: bool) {
+        self.drained = crate::peace_settlements::drain_growing(&mut self.storage, continuous);
     }
     pub(crate) fn capture_bids(
         &mut self,
@@ -82,21 +82,20 @@ impl Captured {
                 .checked_add(engine::cgame_state::PEACE_CONFERENCES_DATA)
                 .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
                 .ok_or("peace bid roster unreadable or invalid")?;
-            let mut lost = 0;
+            if self.storage.events.len() < array.count as usize {
+                engine::allocation::resize_default(&mut self.storage.events, array.count as usize)
+                    .map_err(|_| "peace bid event allocation failed")?;
+            }
             for index in 0..array.count {
                 let pointer = array
                     .element(index, 8)
                     .and_then(|at| engine::read::<u64>(memory, at))
                     .ok_or("peace bid roster pointer unreadable")?
                     as usize;
-                if !self
-                    .storage
-                    .observe(memory, base, pointer, Some(hour), index as u64, false)
-                {
-                    lost += 1;
-                }
+                self.storage
+                    .observe_bids_growing(memory, base, pointer, hour, index as u64);
             }
-            Ok(lost)
+            Ok(0)
         })();
         self.drained = attempt;
     }
@@ -212,6 +211,45 @@ impl Captured {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resident_bids_grow_all_original_headers_before_first_and_later_sample() {
+        use crate::peace_settlement_tests::fixture::Fixture;
+        let mut captured = Captured::vacant();
+        for (countries, actions, name_len) in [(1_500, 8_193, 5_001), (5_000, 16_385, 10_003)] {
+            let mut fixture = Fixture::new(countries, actions);
+            fixture.bytes[0x100 + engine::peace_conference::FINALIZED] = 0;
+            let payload = fixture.bytes.len();
+            fixture.bytes.resize(payload + name_len + 1, b'x');
+            fixture.bytes[payload + name_len] = 0;
+            let text = 0x20000 + engine::peace_action::CACHED_NAME;
+            fixture.u64(text, payload as u64);
+            fixture.u64(text + engine::msvc_string::LENGTH, name_len as u64);
+            fixture.u64(text + engine::msvc_string::CAPACITY, name_len as u64);
+            let roster = fixture.bytes.len();
+            fixture.bytes.resize(roster + 16, 0);
+            fixture.array(
+                0x10000 + engine::cgame_state::PEACE_CONFERENCES_DATA,
+                roster,
+                2,
+                8,
+            );
+            fixture.u64(roster, 0x100);
+            fixture.u64(roster + 8, 0x100);
+            for hour in [91, 92] {
+                captured.capture_bids(&fixture.memory(), 0, 0x10000, hour);
+                assert_eq!(captured.outcomes(), [Outcome::Rows { len: 2 }]);
+                let rows = captured.convert().unwrap();
+                for row in rows {
+                    assert_eq!(row.winners.len(), countries);
+                    assert_eq!(row.actions.len(), actions);
+                    assert_eq!(row.actions[0].cached_name.as_ref().unwrap().len(), name_len);
+                    assert_eq!(row.omitted, 0);
+                    assert_eq!(row.failure, None);
+                }
+            }
+        }
+    }
 
     #[test]
     fn ordinary_forms_capture_loaded_cached_names_without_invented_keys() {

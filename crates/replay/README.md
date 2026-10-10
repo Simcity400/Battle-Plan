@@ -34,6 +34,8 @@ A frame belongs to one hour/branch. Missing, truncated and unavailable tables ar
 
 Preserve these distinctions through inspection, analytics and save joins. Sibling timing is not freshness proof; scheduling/merge rules live in [cadence.rs](src/cadence.rs) and [sliced.rs](src/sliced.rs).
 
+`SharedView::sampled_at` certifies complete acquisitions with that table's own nonzero read timing. Equal timed reads advance it without copying rows; unchanged carries retain it. Untimed replacement snapshots/deltas, carried keyframes, failures and local mutation leave it unknown. Uncharged shared reads require their producer-specific provenance. Row equality and allocation identity exclude the sample hour.
+
 A witnessed native world invalidation splits branch continuity even when stored clock and load timestamp values agree. The collector supplies this fact to `BranchTracker`; the existing branch controls preserve it without replacing native clock values.
 
 `FrameDecoder::for_tables` fixes its selection for its lifetime; omitted tables are unavailable. `Replay::read_block_selected` validates all updates before discarding unselected ones. Both keep ordinary baseline/recovery rules. `Replay::read_block_parallel` preserves sequential frames/first error and requires caller-owned spare workers; collector and recorder read sequentially.
@@ -42,9 +44,13 @@ A witnessed native world invalidation splits branch continuity even when stored 
 
 Keep keys, field order, native evidence, census/coverage and save joins beside each row. Start with [rows.rs](src/rows.rs), [extended_rows.rs](src/extended_rows.rs) and its [domain modules](src/extended_rows/). Dedicated contracts include [combat_rows.rs](src/combat_rows.rs), [land_rows.rs](src/land_rows.rs), [modifier_breakdown_rows.rs](src/modifier_breakdown_rows.rs), [naval_mission_rows.rs](src/naval_mission_rows.rs), [production_modifier_rows.rs](src/production_modifier_rows.rs), [politics_rows.rs](src/politics_rows.rs), [peace_rows.rs](src/peace_rows.rs) and [event_feed_rows.rs](src/event_feed_rows.rs). Playback arithmetic lives in [eta_derive.rs](src/eta_derive.rs) and [naval_mission_derive.rs](src/naval_mission_derive.rs).
 
+The [weather boundary packet](src/extended_rows/naval_weather.rs) retains native snow/mud planes and refresh operands. Its refresh identity is an equality witness, never playback animation time. Historical absence remains distinct from a known empty optional packet.
+
 Event feed actions keep event dates separate from supplying reads; incomplete history can retain known actions without proving absence. Rocket totals survive site removal with independent spending/delivery coverage; coverage-only rows add no amounts. [Air events](src/extended_rows/air_ledger.rs) retain signed corrections and native dates; zero health change is not a bombing event.
 
 Identity stores ordered layer hashes and coverage policy, not assets or machine paths. [installed-content](../installed-content/README.md) resolves content. Older supported policies retain their verification roots; newer-only reads produce uncovered-read notes, and unsupported policies are refused.
+
+Finalization uses two streaming spool passes and compresses blocks before the shared decoder size bound. Split hours become self-contained keyframes with original metrics and sample hours; an oversized frame or a split with a truncated table is refused by name. Allocation and I/O failures abort finalization and retain the spool. Repeated finalization compares complete decoded values, availability and metrics before leaving an existing replay unchanged.
 
 ## Compatibility and recovery
 
@@ -54,11 +60,15 @@ Writers emit only the current format. Older recordings still open when today's r
 
 Appended fields decode through the source prefix and delta-mask width. `Recorded::NotRecorded` differs from native empty, zero or absence, including `Recorded::Value(None)`. Only dependent features receive named, counted refusals; readable prefixes remain usable. Opaque nested records retain source-format context even when the parent field count is unchanged. Inspection counts recorded bytes and nested gaps without rewriting rows.
 
+Older air-history, naval-base and construction-output prefixes remain readable with their absent scenario channels and native oracle witnesses reported as field gaps. The changed technology occurrence keys require named whole-table refusals for research inventories and technology definitions.
+
 Lifetimes determine timing entries/updates. Absent new tables are not recorded, not empty; retired tables retain IDs/framing for named discard. Append requires current format. Check each spool record's version/contract before decoding; incompatible old spools stay on disk, refused for finalization/append and never re-encoded. Recovery keeps CRC-valid prefixes, preserves existing good files and never joins branches through probable parentage.
 
 A validated terminal failure produces a replay prefix with a visible `Partial` control. Only known attributable unrecorded attempted hours become `Gap`s; missing context invents no hour, clock or branch. A prepared identity-only witness is not failure evidence. Validate terminal identity/context and committed/pending spool bounds in [witness.rs](src/witness.rs) and [recorder recovery](../recorder/src/replay_io.rs). Partial notices cannot make coverage complete.
 
 Spool writes stay ordered. Periodic durability may run off-thread; segment creation, forced boundaries and detach are synchronous barriers. Check pending errors before writes/idle polls and join workers before destroying sinks. Publish complete-record bounds before durability; promote baselines only after complete encoding. Collector allocation-failure diagnostics must not allocate; see [codec.rs](src/codec.rs) and [engine allocation](../engine/src/allocation.rs).
+
+[Transport packets](src/extended_rows/transport_mission_inputs.rs) retain the physical navy domain, nullable ledgers and authenticated receivers. Same-hour numerical views preserve independent failures and native short circuits; convoy stock, spotting, damage, air normalization and carrier fill use ordered recorded inputs and content-defined operands. Historical absence stays distinct from current refusal and native null.
 
 ## Naval modifier breakdowns
 
@@ -72,6 +82,8 @@ Naval trees retain native source/child order, formatting gates and root values w
 - Cumulative output starts with branch observation, not line creation. Respect observation start, exactness and coverage; a linked partner's unknown share is never zero. See [economy rows](src/extended_rows/economy_construction.rs).
 - Event application time can differ from frame time. Complete empty batches certify only their capture scope; missing batches/partial intervals/lost drains never prove zero. Domain rows own these contracts.
 - [fixed_layout.rs](src/fixed_layout.rs) owns fixed-key/token families and named refusals. Verify complete recorded dictionaries and registered spelling/layout; dynamic keys remain content-driven.
+
+Research inventories and definitions key each native template occurrence by database index. Slot inputs append exact occurrence identity with historical absence retained by `Recorded`; equal handles cannot establish assignment continuity. The inventory also retains the native serializer's applied-bonus-count inclusion operand.
 
 ## Add or change a table
 

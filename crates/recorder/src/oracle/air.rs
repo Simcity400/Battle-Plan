@@ -299,10 +299,22 @@ fn compare_aces(
         for (name, actual, expected) in [
             ("name", &actual.name, &expected.name),
             ("surname", &actual.surname, &expected.surname),
-            ("callsign", &actual.callsign, &expected.callsign),
         ] {
-            check(report, &format!("{label}.{name}"), actual, expected);
+            // CAce::Serialize@14060F1F0 always emits +0xF0/+0x110.
+            let label = format!("{label}.{name}");
+            let text = super::serialized_text(report, &label, actual);
+            check(report, &label, text, expected.as_slice());
         }
+        // 14060F1F0 gates the +0x130 callsign on stored length +0x140.
+        let callsign_label = format!("{label}.callsign");
+        let callsign = (!actual.callsign.is_empty())
+            .then(|| super::serialized_text(report, &callsign_label, &actual.callsign));
+        check(
+            report,
+            &callsign_label,
+            callsign,
+            expected.callsign.as_deref(),
+        );
         match &actual.presentation {
             replay::rows::Recorded::Value(Some(fields)) => {
                 check(report, &format!("{label}.modifier"), &fields.definition, &expected.modifier);
@@ -367,6 +379,59 @@ fn compare_aces(
         "extended air country references",
     );
     Ok(())
+}
+
+#[test]
+fn ace_names_use_first_nul_and_callsign_stored_length() {
+    let (mut frame, _, _, _) = super::tests::fixture();
+    let country = CountryRow {
+        id: 101,
+        tag: b"AAA".to_vec(),
+        ..Default::default()
+    };
+    let links = BTreeMap::from([(101, &country)]);
+    for (stored, callsign, differences) in [
+        (b"C\0tail".as_slice(), "callsign=C", 0),
+        (b"\0tail".as_slice(), "callsign=\"\"", 0),
+        (b"".as_slice(), "", 0),
+        (b"".as_slice(), "callsign=\"\"", 1),
+        (b"C\0tail".as_slice(), "callsign=D", 1),
+    ] {
+        let doc = installed_content::parser::parse(format!("countries={{AAA={{ace={{id={{id=1 type=4}} name=N surname=S portrait=0 {callsign}}}}}}}").as_bytes()).unwrap();
+        let saved = air::parse(&doc.items).unwrap();
+        *frame.tables[replay::rows::TableId::AirAces.index()] =
+            replay::frame::TableView::Complete(replay::rows::TableRows::AirAces(vec![
+                replay::rows::AirAceRow {
+                    id: (1_u64 << 32) | 4,
+                    country: 101,
+                    alive: 1,
+                    name: b"N\0tail".to_vec(),
+                    surname: b"S\0tail".to_vec(),
+                    callsign: stored.to_vec(),
+                    presentation: replay::rows::Recorded::NotRecorded,
+                    ..Default::default()
+                },
+            ]));
+        let mut report = Report::default();
+        compare_aces(&frame, &saved, &links, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{:?}",
+            report.differences
+        );
+        assert_eq!(
+            report
+                .limitations
+                .values()
+                .flatten()
+                .filter(|field| field.ends_with(".name")
+                    || field.ends_with(".surname")
+                    || field.ends_with(".callsign"))
+                .count(),
+            2 + usize::from(stored.contains(&0))
+        );
+    }
 }
 
 fn record_key(record: &air::CombatRecord) -> (u8, i32, u32, u8) {
@@ -648,7 +713,7 @@ mod tests {
 
     #[test]
     fn typed_wing_tables_compare_visible_order_and_refuse_incomplete_data() {
-        let save = parsed(br#"strategic_air={GER={air_wing_pool={air_wings={id={id=1 type=69} experience=-0.00001 equipment={equipment={id={id=4294967295 type=4294967295} amount=-92233720368547.75808} equipment={id={id=4294967295 type=4294967295} amount=7} allow_zero_entries=no}}}}}"#);
+        let save = parsed(br#"strategic_air={GER={air_wing_pool={definition=fixture_plane air_wings={id={id=1 type=69} experience=-0.00001 equipment={equipment={id={id=4294967295 type=4294967295} amount=-92233720368547.75808} equipment={id={id=4294967295 type=4294967295} amount=7} allow_zero_entries=no}}}}}"#);
         let wing = (1_u64 << 32) | 69;
         let mut frame = frame([
             TableRows::WingCumulative(vec![WingCumulativeRow {

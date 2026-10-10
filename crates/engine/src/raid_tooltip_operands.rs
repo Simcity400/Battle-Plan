@@ -146,13 +146,18 @@ fn field<T: crate::memory::Raw>(
 }
 
 struct Sink<'a> {
-    rows: &'a mut [Row],
+    rows: crate::walk::Buffer<'a, Row>,
     required: usize,
     raid: u64,
     ordinal: u32,
 }
 impl Sink<'_> {
     fn push(&mut self, kind: u32, key: u32, raw: i64) -> Result<(), &'static str> {
+        self.rows.ensure(
+            self.required
+                .checked_add(1)
+                .ok_or("raid tooltip row count overflow")?,
+        )?;
         if let Some(row) = self.rows.get_mut(self.required) {
             *row = Row {
                 raid: self.raid,
@@ -609,6 +614,24 @@ fn operands(
 }
 
 pub fn walk(memory: &impl Memory, base: usize, game: usize, rows: &mut [Row]) -> Outcome {
+    walk_buffer(memory, base, game, crate::walk::Buffer::Fixed(rows))
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    rows: &mut Vec<Row>,
+) -> Outcome {
+    walk_buffer(memory, base, game, crate::walk::Buffer::Growing(rows))
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game: usize,
+    rows: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
     let mut sink = Sink {
         rows,
         required: 0,
@@ -663,7 +686,7 @@ mod tests {
         }
         let mut rows = [Row::default(); 4];
         let mut sink = Sink {
-            rows: &mut rows,
+            rows: crate::walk::Buffer::Fixed(&mut rows),
             required: 0,
             raid: 3,
             ordinal: 0,
@@ -708,7 +731,7 @@ mod tests {
                 &SliceMemory { base: 0, bytes },
                 pointer,
                 &mut Sink {
-                    rows,
+                    rows: crate::walk::Buffer::Fixed(rows),
                     required: 0,
                     raid: 77,
                     ordinal: 0,
@@ -739,7 +762,7 @@ mod tests {
                 &SliceMemory { base: 0, bytes },
                 pointer,
                 &mut Sink {
-                    rows: &mut [Row::default(); 6],
+                    rows: crate::walk::Buffer::Fixed(&mut [Row::default(); 6]),
                     required: 0,
                     raid: 77,
                     ordinal: 0,
@@ -782,7 +805,7 @@ mod tests {
         };
         let mut rows = [Row::default(); 8];
         let mut sink = Sink {
-            rows: &mut rows,
+            rows: crate::walk::Buffer::Fixed(&mut rows),
             required: 0,
             raid: 77,
             ordinal: 0,
@@ -794,7 +817,7 @@ mod tests {
             [3, -4, i64::from(i32::MAX)]
         );
         let mut sink = Sink {
-            rows: &mut rows[..1],
+            rows: crate::walk::Buffer::Fixed(&mut rows[..1]),
             required: 0,
             raid: 77,
             ordinal: 0,

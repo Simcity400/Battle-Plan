@@ -7,6 +7,57 @@ fn localisation(language: &str) -> Localisation {
 }
 
 #[test]
+fn retained_task_force_name_preserves_empty_and_raw_text_with_language_guard() {
+    let mut row = TaskForceCounterInputRow {
+        task_force: (7_u64 << 32) | 61,
+        ..Default::default()
+    };
+    for bytes in [b"Native task force".to_vec(), b"Name\0tail".to_vec()] {
+        row.name = Recorded::Value(Some(bytes.clone()));
+        assert_eq!(
+            task_force_name(&row, &localisation("english"), "english"),
+            Ok(String::from_utf8(bytes).unwrap())
+        );
+        assert!(
+            task_force_name(&row, &localisation("french"), "english")
+                .unwrap_err()
+                .contains("stored in english")
+        );
+    }
+    row.name = Recorded::Value(Some(Vec::new()));
+    assert_eq!(
+        task_force_name(&row, &localisation("french"), "english").as_deref(),
+        Ok("")
+    );
+    row.name = Recorded::Value(Some(vec![0xff]));
+    assert!(
+        task_force_name(&row, &localisation("english"), "english")
+            .unwrap_err()
+            .contains("not UTF-8")
+    );
+}
+
+#[test]
+fn task_force_name_capture_failure_and_historical_absence_remain_distinct() {
+    let mut row = TaskForceCounterInputRow {
+        task_force: (7_u64 << 32) | 61,
+        name: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    assert!(
+        task_force_name(&row, &localisation("english"), "english")
+            .unwrap_err()
+            .contains("TaskForceCounterInputs.name not recorded")
+    );
+    row.name = Recorded::Value(None);
+    assert!(
+        task_force_name(&row, &localisation("english"), "english")
+            .unwrap_err()
+            .contains("guarded read or name arena refusal")
+    );
+}
+
+#[test]
 fn retained_army_name_is_authoritative_without_generator_or_content() {
     for bytes in [
         b"Allocated legacy name".to_vec(),
@@ -137,4 +188,98 @@ fn only_historical_absence_uses_authored_name_selection() {
         .as_deref(),
         Ok("Retained allocation")
     );
+}
+
+#[test]
+fn template_literal_and_known_empty_name_do_not_acquire_country_or_content() {
+    use replay::rows::TemplateDisplayNameParts as Parts;
+    assert_eq!(
+        template_name(
+            Parts {
+                literal: b"Authored\0tail",
+                fallback_key: None
+            },
+            -7,
+            |_, _| panic!("nonempty literal must not acquire country")
+        ),
+        Ok("Authored\0tail".into())
+    );
+    assert_eq!(
+        template_name(
+            Parts {
+                literal: b"",
+                fallback_key: Some(b"")
+            },
+            0,
+            |_, _| panic!("known empty name must not acquire country")
+        ),
+        Ok(String::new())
+    );
+    assert!(
+        template_name(
+            Parts {
+                literal: &[255],
+                fallback_key: None
+            },
+            0,
+            |_, _| panic!("invalid literal still does not acquire fallback")
+        )
+        .unwrap_err()
+        .contains("UTF-8")
+    );
+}
+
+#[test]
+fn template_fallback_lazily_preserves_genuine_signed_country_and_key() {
+    use replay::rows::TemplateDisplayNameParts as Parts;
+    for country in [i32::MIN, -1, 0, 1, i32::MAX] {
+        assert_eq!(
+            template_name(
+                Parts {
+                    literal: b"",
+                    fallback_key: Some(b"KEY\0tail")
+                },
+                country,
+                |raw, key| {
+                    assert_eq!(raw, country);
+                    assert_eq!(key, b"KEY\0tail");
+                    Ok("country-localised".into())
+                }
+            ),
+            Ok("country-localised".into())
+        );
+    }
+    assert_eq!(
+        template_name(
+            Parts {
+                literal: b"",
+                fallback_key: Some(b"KEY")
+            },
+            0,
+            |_, _| Err("authenticated slot zero missing".into())
+        ),
+        Err("authenticated slot zero missing".into())
+    );
+}
+
+#[test]
+fn template_noncanonical_demand_is_refused_without_country_read() {
+    use replay::rows::TemplateDisplayNameParts as Parts;
+    for parts in [
+        Parts {
+            literal: b"literal",
+            fallback_key: Some(b"KEY"),
+        },
+        Parts {
+            literal: b"",
+            fallback_key: None,
+        },
+    ] {
+        assert!(
+            template_name(parts, 3, |_, _| panic!(
+                "malformed demand never acquires country"
+            ))
+            .is_err()
+        );
+    }
 }

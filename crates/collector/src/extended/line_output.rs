@@ -38,8 +38,8 @@ pub struct Observation;
 impl output_continuity::Observation for Observation {
     type Entry = Entry;
     const ASSEMBLED_BY_SPOOL: &'static str = ASSEMBLED_BY_SPOOL;
-    fn drain(entries: &mut [Entry]) -> Result<Drained, &'static str> {
-        crate::line_output::drain(entries)
+    fn drain_growing(entries: &mut Vec<Entry>) -> Result<Drained, &'static str> {
+        crate::line_output::drain_growing(entries)
     }
 }
 pub type Captured = output_continuity::Captured<Observation, N>;

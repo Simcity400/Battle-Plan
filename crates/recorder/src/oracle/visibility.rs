@@ -76,6 +76,7 @@ pub(super) fn compare_links(
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::RelationLinks>(frame)?;
+    compare_transport_subject_access(frame, rows, report);
     let spelling = |token: u32| {
         tokens.get(&token).copied().ok_or_else(|| {
             invalid(format!(
@@ -163,8 +164,137 @@ pub(super) fn compare_links(
     Ok(())
 }
 
-/// Every nonzero strategic-region access mode against the navy's saved
-/// `per_region_access` pairs. A saved zero mode is the absent row.
+/// The save serializes relation objects, never the current +288 association
+/// or the sparse owner-coverage certificate. Check current suffix admission
+/// independently while keeping the saved link-byte comparison unchanged.
+fn compare_transport_subject_access(
+    frame: &DecodedFrame,
+    rows: &[RelationLinkRow],
+    report: &mut Report,
+) {
+    let mut admitted = 0;
+    for row in rows {
+        let label = format!(
+            "RelationLinks {} -> {}.transport_subject",
+            row.country, row.target_index
+        );
+        let Some(packet) = report.recorded(
+            &row.transport_subject,
+            "RelationLinks.transport_subject",
+            &label,
+        ) else {
+            continue;
+        };
+        let Some(packet) = packet else {
+            report.difference(&label, "capture refused", "current subject status inputs");
+            continue;
+        };
+        super::pass_inputs::eq(
+            report,
+            &format!("{label}.sample_hour"),
+            packet.sample_hour,
+            frame.hour,
+        );
+        if packet.complete_owner {
+            super::pass_inputs::eq(
+                report,
+                &format!("{label}.certificate status inputs"),
+                (packet.target_raw, packet.subject),
+                (None, None),
+            );
+            super::pass_inputs::eq(
+                report,
+                &format!("{label}.certificate link flags"),
+                row.links,
+                0,
+            );
+        } else if packet.target_raw.is_none() || packet.subject.is_none() {
+            report.difference(
+                &label,
+                "incomplete current status operands",
+                "target and subject inputs",
+            );
+        }
+        admitted += 1;
+        report.limitation(
+            "current subject status +288 pointer/type, ordered endpoint admission and sparse owner coverage are unsaved runtime witnesses; historical Subjects dates are not independent acceptance",
+            label,
+        );
+    }
+    if admitted != 0 {
+        report.compared(
+            "RelationLinks current subject admission only; no saved counterpart",
+            admitted,
+        );
+    }
+}
+
+#[cfg(test)]
+mod transport_subject_tests {
+    use super::*;
+    use replay::{
+        frame::{Metrics, TableView},
+        rows::{Recorded, TransportSubjectAccess},
+    };
+    fn frame() -> DecodedFrame {
+        DecodedFrame {
+            branch: 1,
+            hour: 7,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn(|_| {
+                TableView::Unavailable {
+                    reason: "undemanded".into(),
+                }
+                .into()
+            }),
+        }
+    }
+    #[test]
+    fn transport_subject_oracle_distinguishes_runtime_admission_legacy_and_refusal() {
+        let certificate = RelationLinkRow {
+            country: 11,
+            target_index: 1,
+            transport_subject: Recorded::Value(Some(TransportSubjectAccess {
+                sample_hour: 7,
+                complete_owner: true,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let frame = frame();
+        let mut report = Report::default();
+        compare_transport_subject_access(&frame, std::slice::from_ref(&certificate), &mut report);
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|reason| reason.contains("unsaved runtime witnesses"))
+        );
+        assert_eq!(
+            report.compared_tables["RelationLinks current subject admission only; no saved counterpart"],
+            1
+        );
+        let mut historical = certificate.clone();
+        historical.transport_subject = Recorded::NotRecorded;
+        let mut report = Report::default();
+        compare_transport_subject_access(&frame, &[historical], &mut report);
+        assert!(report.differences.is_empty());
+        assert!(
+            report
+                .limitations
+                .contains_key("RelationLinks.transport_subject not recorded")
+        );
+        let mut refused = certificate;
+        refused.transport_subject = Recorded::Value(None);
+        let mut report = Report::default();
+        compare_transport_subject_access(&frame, &[refused], &mut report);
+        assert_eq!(report.differences.len(), 1);
+    }
+}
+
+/// E9D0C0 saves only signed-positive CHAR access modes. The table retains
+/// every nonzero raw byte; omitted high-bit values have no exact save witness.
 pub(super) fn compare_naval_access(
     frame: &DecodedFrame,
     save: &Save,
@@ -173,14 +303,11 @@ pub(super) fn compare_naval_access(
 ) -> io::Result<()> {
     let rows = complete::<tables::NavalRegionAccess>(frame)?;
     let mut expected: BTreeMap<(&[u8], u32), u8> = BTreeMap::new();
-    for (tag, country) in &save.countries {
-        for &(region, mode) in country.naval_region_access.iter().flatten() {
-            if mode != 0 && expected.insert((tag.as_slice(), region), mode).is_some() {
-                return Err(invalid(format!(
-                    "{} saves strategic region {region} twice",
-                    String::from_utf8_lossy(tag)
-                )));
-            }
+    for (tag, country) in report.canonical_countries(&save.countries) {
+        for (region, mode) in super::selected_transport::saved_access_modes(
+            country.naval_region_access.as_deref().unwrap_or(&[]),
+        )? {
+            expected.insert((tag.as_slice(), region), mode);
         }
     }
     let mut compared = 0;
@@ -192,9 +319,17 @@ pub(super) fn compare_naval_access(
             row.region
         );
         compared += 1;
+        if row.mode == 0 {
+            return Err(invalid(
+                "NavalRegionAccess has a zero row outside its original nonzero projection",
+            ));
+        }
         match expected.remove(&(tag, row.region)) {
             Some(saved) if saved == row.mode => {}
             Some(saved) => report.difference(label, row.mode, saved),
+            None if (row.mode as i8) < 0 => report.limitation(
+                "native navy access serializer E9D0C0 omission proves signed nonpositive; exact high-bit raw mode is not saved",
+                label),
             None => report.difference(label, row.mode, "no saved mode"),
         }
     }
@@ -359,7 +494,7 @@ pub(super) fn compare_stockpile_archetypes(
         .ok_or_else(|| invalid("save lacks production country roster"))?;
     let mut expected: BTreeMap<(&[u8], u32), i128> = BTreeMap::new();
     let mut underived: BTreeMap<&[u8], u64> = BTreeMap::new();
-    for (tag, country) in saved {
+    for (tag, country) in report.canonical_countries(saved) {
         let pool = country
             .production
             .as_ref()

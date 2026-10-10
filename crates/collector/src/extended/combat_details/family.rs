@@ -930,6 +930,63 @@ fn live_detail_demand_presizes_attach_and_later_combat_arena_growth() {
 }
 
 #[test]
+fn every_worker_combat_destination_grows_before_first_and_later_publication_at_5000_countries() {
+    let mut captured = Captured::vacant();
+    // The excluded naval-commander text path is not part of this fixture.
+    for (combats, divisions) in [(5_000, 3), (5_100, 5)] {
+        let built = world(&Shape {
+            countries: 5_000,
+            combats,
+            divisions,
+            leaders: 0,
+            transports: 0,
+            ..Shape::small()
+        });
+        pass(&mut captured, &built.world);
+        assert_eq!(captured.details.outcome, Outcome::Rows { len: combats });
+        assert_eq!(
+            captured.divisions.outcome,
+            Outcome::Rows {
+                len: combats * divisions
+            }
+        );
+        assert_eq!(captured.sides.outcome, Outcome::Rows { len: combats * 2 });
+        assert_eq!(
+            captured.combat_sides.outcome,
+            Outcome::Rows { len: combats }
+        );
+        assert!(
+            captured
+                .tables()
+                .iter()
+                .all(|view| matches!(view, TableView::Complete(_)))
+        );
+        for arena in [&captured.country_tags, &captured.exile_tags] {
+            assert_eq!(arena.len, arena.required);
+        }
+        assert_eq!(captured.rosters.len, captured.rosters.required);
+        assert_eq!(captured.members.len, captured.members.required);
+        assert_eq!(captured.modifiers.len, captured.modifiers.required);
+        assert_eq!(captured.width_terms.len, captured.width_terms.required);
+        assert_eq!(
+            captured.division_names.len,
+            captured.division_names.required
+        );
+        assert_eq!(captured.detail_text.len, captured.detail_text.required);
+        assert_eq!(captured.air_counts.len, captured.air_counts.required);
+        assert_eq!(
+            captured.reinforcement_modifiers.len,
+            captured.reinforcement_modifiers.required
+        );
+        assert_eq!(captured.supply_terms.len, captured.supply_terms.required);
+        assert_eq!(
+            captured.acclimatization.len,
+            captured.acclimatization.required
+        );
+    }
+}
+
+#[test]
 fn combat_details_hint_reserve_failure_keeps_existing_lengths() {
     let capacities = Capacities::default();
     let mut captured = Captured::with_capacities(&capacities);
@@ -1374,10 +1431,10 @@ fn census_failure_stops_the_walk_at_its_combat() {
     assert_ne!(reason(observed.outcomes[1]), census);
 }
 
-/// Detail and side slots too few for the census truncate as the
-/// reference walk does, and publish every row after growth.
+/// Small initial row storage grows before the first publication and preserves
+/// the unshared reference walk's rows, faults and demand.
 #[test]
-fn truncated_walk_matches_the_reference_and_grows() {
+fn worker_rows_match_the_reference_without_a_truncated_first_hour() {
     let shape = Shape {
         combats: 5,
         ..Shape::small()
@@ -1389,20 +1446,8 @@ fn truncated_walk_matches_the_reference_and_grows() {
         ..Capacities::default()
     };
     let truncated = assert_equivalent_with(&built.world, c);
-    assert_eq!(
-        truncated.outcomes[0],
-        Outcome::Truncated {
-            len: 4,
-            unread_rows: 1
-        }
-    );
-    assert_eq!(
-        truncated.outcomes[2],
-        Outcome::Truncated {
-            len: 8,
-            unread_rows: 2
-        }
-    );
+    assert_eq!(truncated.outcomes[0], Outcome::Rows { len: 5 });
+    assert_eq!(truncated.outcomes[2], Outcome::Rows { len: 10 });
     let mut captured = Captured::with_capacities(&c);
     pass(&mut captured, &built.world);
     captured.grow(&mut c);
@@ -1554,9 +1599,8 @@ fn border_war_hooks_reference_relocates_after_neighbouring_heap_text() {
 
 /// 140C16FB0 stores a selected commander's +0x20 name as an ordinary MSVC
 /// string and 142230F20 takes any length, empty included; +0x80 is the
-/// same kind of string. A long name omits its combat's detail until the
-/// detail text arena grows, then it publishes whole, as the reference
-/// walk does.
+/// same kind of string. A long name grows the land-detail text arena during
+/// its original read and publishes whole, as the reference walk does.
 #[test]
 fn selected_commander_texts_keep_native_length_and_grow() {
     use engine::cunit_leader::{DESCRIPTION_TOKEN, TOKEN};
@@ -1583,7 +1627,7 @@ fn selected_commander_texts_keep_native_length_and_grow() {
     };
     let truncated = assert_equivalent_with(&built.world, c);
     assert!(
-        matches!(truncated.outcomes[0], Outcome::Truncated { .. }),
+        matches!(truncated.outcomes[0], Outcome::Rows { .. }),
         "{:?}",
         truncated.outcomes[0]
     );

@@ -71,30 +71,53 @@ fn deployment_days(memory: &impl Memory, base: usize, manpower: i32) -> Result<i
     Ok((rounded as i32).max(minimum))
 }
 
+pub(super) fn direct_leader(memory: &impl Memory, group: usize) -> Result<usize, &'static str> {
+    usize::try_from(field::<u64>(memory, group, LEADER)?)
+        .map_err(|_| "HQ cooldown leader pointer overflow")
+}
+
+pub(super) fn authenticate_leader(
+    memory: &impl Memory,
+    base: usize,
+    leader: usize,
+) -> Result<Option<u64>, &'static str> {
+    if leader == 0 {
+        return Ok(None);
+    }
+    let (kind, reference_type, id) = cunit_leader::identity(memory, base, leader)?;
+    if kind != cunit_leader::KIND_ARMY || id == 0 {
+        return Err("HQ cooldown needs an authenticated army leader");
+    }
+    let handle = u64::from(reference_type) | (u64::from(id) << 32);
+    if HeaderResolver::default().resolve(memory, base, handle)? != Some(leader) {
+        return Err("HQ cooldown leader registry identity mismatch");
+    }
+    Ok(Some(handle))
+}
+
 pub(super) fn leader_enroute_days(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
     group: usize,
 ) -> Result<i32, &'static str> {
-    let leader = usize::try_from(field::<u64>(memory, group, LEADER)?)
-        .map_err(|_| "HQ cooldown leader pointer overflow")?;
-    if leader == 0 {
+    let pointer = direct_leader(memory, group);
+    let leader = pointer.and_then(|pointer| authenticate_leader(memory, base, pointer));
+    leader_enroute_observed(memory, base, game_state, pointer, leader)
+}
+
+pub(super) fn leader_enroute_observed(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    pointer: Result<usize, &'static str>,
+    observed: Result<Option<u64>, &'static str>,
+) -> Result<i32, &'static str> {
+    let leader = pointer?;
+    if observed?.is_none() {
         return Ok(0);
     }
-    let (kind, reference_type, id) = cunit_leader::identity(memory, base, leader)?;
-    if kind != cunit_leader::KIND_ARMY || id == 0 {
-        return Err("HQ cooldown needs an authenticated army leader");
-    }
     let mut registry = HeaderResolver::default();
-    if registry.resolve(
-        memory,
-        base,
-        u64::from(reference_type) | (u64::from(id) << 32),
-    )? != Some(leader)
-    {
-        return Err("HQ cooldown leader registry identity mismatch");
-    }
     let mut days = if field::<i32>(memory, leader, COOLDOWN_TYPE)? == 0 {
         0
     } else {

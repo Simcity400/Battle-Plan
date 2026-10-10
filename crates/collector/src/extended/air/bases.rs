@@ -1,6 +1,51 @@
 use super::*;
 use engine::allocation;
 
+impl Capacities {
+    /// Attach/cadence floors from native populations. These count-only walks
+    /// supply no sampled values; acquisitions retain their original headers.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let mut failure = None;
+        let mut raise = |index: usize, result: Result<usize, &'static str>| match result {
+            Ok(count) => self.rows[index] = self.rows[index].max(count),
+            Err(reason) => {
+                failure.get_or_insert(reason);
+            }
+        };
+        raise(
+            1,
+            crate::country_scale::table_demand::rows(cair_base::walk(memory, base, state, &mut [])),
+        );
+        let aces = cace::walk(memory, base, state, &mut [], &mut []);
+        raise(5, crate::country_scale::table_demand::rows(aces.outcome));
+        self.ace_names = self.ace_names.max(aces.required_bytes);
+        raise(
+            6,
+            crate::country_scale::table_demand::rows(cloop_history::walk(
+                memory,
+                base,
+                state,
+                &mut [],
+            )),
+        );
+        let history = cair_region_combat_data::walk_world(memory, base, state, &mut [], &mut []);
+        raise(3, crate::country_scale::table_demand::rows(history.records));
+        raise(4, crate::country_scale::table_demand::rows(history.damage));
+        if let Err(reason) = self.presize_missions(memory, base, state) {
+            failure.get_or_insert(reason);
+        }
+        if let Err(reason) = self.sorties.presize(memory, base, state) {
+            failure.get_or_insert(reason);
+        }
+        failure.map_or(Ok(()), Err)
+    }
+}
+
 fn reserve_to<T>(rows: &mut Vec<T>, len: usize) -> std::io::Result<()> {
     let additional = len.saturating_sub(rows.len());
     allocation::reserve(rows, additional)
@@ -18,7 +63,8 @@ fn reserve_to<T>(rows: &mut Vec<T>, len: usize) -> std::io::Result<()> {
 // ONCE with the combined mask and serve every dependent replay: Recorded
 // spans are address-keyed with last-value repeat, so one census walk feeds
 // the bases, registrations and aces decodes with no duplicated copy of the
-// walk. No row is decoded on the game thread. The single FIFO decode worker
+// walk. The game thread parses only copied identity/field inputs for the fixed
+// optional carrier observer; replay projections remain off-thread. The FIFO decode worker
 // replays `cair_base::walk`, `cair_base::walk_registrations` and `cace::walk`
 // against the recorded spans, so rows, ordinals, skips, truncation counts
 // and failure reasons are identical by construction (see `crate::raw` for
@@ -58,12 +104,16 @@ const REG_MIRROR_BATCH: usize = 64;
 /// One hour of raw shared bases payload: the country census, the manager and
 /// base vectors, per-base fields, containers with pools and wings, and ace
 /// rosters with objects and names. Flat pools recycle capacities and the
-/// steady state allocates on neither thread; growth happens on the decode
-/// side only (see `crate::decode::recycle_air_bases_job`).
+/// steady state reuses storage; worker growth follows original native headers
+/// before publication, and decode grows from that owned payload.
 #[derive(Debug, Default)]
 pub(crate) struct AirBasesJob {
     pub log: RawLog<AIR_BASES_N>,
+    pub(crate) carrier: carrier::Job,
     pub game_state: usize,
+    /// Numerical callback witness copied before moving the native job to a
+    /// worker. The decoder validates its exact world/hour without using TLS.
+    pub(crate) transport_context: Option<AirBasesCopyContext>,
     /// Complete registration-row and wing-handle demand from the original
     /// subtree acquisition. Shared census faults can coexist with these counts;
     /// the worker rejects faulted hints and the owned walk validates all fields.
@@ -89,36 +139,19 @@ pub(crate) struct AirBasesJob {
 
 impl AirBasesJob {
     pub fn new() -> Self {
-        let mut seen_links = Vec::new();
-        let mut census = Vec::new();
-        let capacity = crate::country_scale::census_rows(1024);
-        let _ = allocation::reserve(&mut seen_links, capacity);
-        let _ = allocation::reserve(&mut census, capacity);
-        let seen_link_index =
-            allocation::owned_vec(allocation::filled(seen_links.capacity(), usize::MAX));
         let mut job = Self {
-            // Late-campaign worst case is 396 bases with 5,148 registration
-            // rows plus wing vectors and 57 aces with names (appendix
-            // census); both pools start above that so steady state never
-            // overflows (see the worst-case caps test).
-            log: RawLog::new(1 << 17, 8 << 20),
-            game_state: 0,
-            registration_demand: None,
-            aces_active: false,
-            census,
-            seen_links,
-            seen_link_index,
-            required_census: 0,
-            required_links: 0,
-            capacity_charge: crate::raw_memory::Charge::default(),
+            carrier: carrier::Job::new(),
+            ..Self::default()
         };
-        job.update_capacity_charge();
+        job.presize_countries();
         job
     }
 
     pub fn clear(&mut self) {
         self.log.clear();
+        self.carrier.clear();
         self.game_state = 0;
+        self.transport_context = None;
         self.registration_demand = None;
         self.aces_active = false;
         self.census.clear();
@@ -132,22 +165,33 @@ impl AirBasesJob {
         self.log.grow_for_next()
             || self.required_census > self.census.capacity()
             || self.required_links > self.seen_links.capacity()
+            || self.carrier.grow_for_next()
     }
 
-    /// Off-thread only. Census storage jumps to the observed live demand;
-    /// otherwise it keeps the existing doubling after a staging overflow.
+    /// Off-thread only. Census storage follows its own observed live demand.
     pub fn grow(&mut self) {
+        engine::allocation::advisory(|| self.grow_hints());
+    }
+
+    fn grow_hints(&mut self) {
         fn grow_to<T>(rows: &mut Vec<T>, required: usize) {
             if required > rows.capacity() {
                 let _ = allocation::reserve_exact(rows, required - rows.len());
-            } else {
-                crate::raw::double_capacity(rows);
             }
         }
-        self.log.grow();
-        grow_to(&mut self.census, self.required_census);
-        grow_to(&mut self.seen_links, self.required_links);
-        let capacity = self.seen_links.capacity();
+        // Optional carrier pressure never doubles the predecessor's census.
+        if self.log.grow_for_next()
+            || self.required_census > self.census.capacity()
+            || self.required_links > self.seen_links.capacity()
+        {
+            self.log.grow();
+            grow_to(&mut self.census, self.required_census);
+            grow_to(&mut self.seen_links, self.required_links);
+        }
+        self.carrier.grow();
+        let capacity = self
+            .required_links
+            .max(crate::country_scale::census_rows(0));
         if reserve_to(&mut self.seen_link_index, capacity).is_err() {
             return;
         }
@@ -157,19 +201,21 @@ impl AirBasesJob {
     }
 
     /// Off the game thread: one census row and one link hint per observed
-    /// country slot, so a large save's first hour does not overflow.
+    /// country slot, plus independently observed carrier arena floors, so a
+    /// mid-game attachment does not need an earlier callback for storage.
     pub fn presize_countries(&mut self) {
-        let census = crate::country_scale::reserve_census(&mut self.census);
+        crate::country_scale::reserve_census(&mut self.census);
         if crate::country_scale::reserve_census(&mut self.seen_links) {
-            let capacity = self.seen_links.capacity();
+            let capacity = self
+                .required_links
+                .max(crate::country_scale::census_rows(0));
             if reserve_to(&mut self.seen_link_index, capacity).is_err() {
                 return;
             }
             self.seen_link_index.resize(capacity, usize::MAX);
             self.seen_link_index.fill(usize::MAX);
-        } else if !census {
-            return;
         }
+        self.carrier.presize(crate::country_scale::carrier_demand());
         self.update_capacity_charge();
     }
 
@@ -178,7 +224,8 @@ impl AirBasesJob {
         self.capacity_charge.set(Capacity {
             auxiliary_vectors: vector_bytes(&self.census)
                 + vector_bytes(&self.seen_links)
-                + vector_bytes(&self.seen_link_index),
+                + vector_bytes(&self.seen_link_index)
+                + self.carrier.bytes(),
             ..Default::default()
         });
     }
@@ -204,6 +251,9 @@ pub(super) struct AirBasesMemoKey {
     // Logical slice lengths control admission and therefore observations.
     // Exact equality is deliberately more conservative than "large enough".
     pub(super) capacities: [usize; 5],
+    pub(super) carrier_capacities: [usize; 10],
+    pub(super) carrier_seed: Result<(), &'static str>,
+    pub(super) transport_planes: Result<(), &'static str>,
     pub(super) aces_active: bool,
 }
 
@@ -254,6 +304,7 @@ pub(crate) struct AirBasesMemo {
     pub(super) names: Vec<u8>,
     pub(super) required_names: usize,
     pub(super) registrations: super::fog::RegistrationsMemo,
+    pub(super) carrier: carrier::Memo,
     pub(super) capacity_charge: crate::raw_memory::Charge,
 }
 
@@ -276,6 +327,7 @@ impl AirBasesMemo {
             names: Vec::new(),
             required_names: 0,
             registrations: super::fog::RegistrationsMemo::default(),
+            carrier: carrier::Memo::default(),
             capacity_charge: crate::raw_memory::Charge::empty_on(tracker),
         }
     }
@@ -290,11 +342,14 @@ impl AirBasesMemo {
     pub(super) fn capacity(&self) -> crate::raw_memory::Capacity {
         use crate::raw_memory::{Capacity, vector_bytes};
         Capacity {
-            payload_vectors: vector_bytes(&self.spans) + vector_bytes(&self.bytes),
+            payload_vectors: vector_bytes(&self.spans)
+                + vector_bytes(&self.bytes)
+                + self.carrier.bytes().0,
             auxiliary_vectors: vector_bytes(&self.bases)
                 + vector_bytes(&self.aces)
                 + vector_bytes(&self.names)
-                + self.registrations.capacity_bytes(),
+                + self.registrations.capacity_bytes()
+                + self.carrier.bytes().1,
             ..Capacity::default()
         }
     }
@@ -335,17 +390,35 @@ impl AirBasesMemo {
         // Storage must be final before comparing or installing the capacity
         // fingerprint: another pooled frame may still have the old limits.
         fog.prepare_registrations_payload(job);
+        fog.prepare_carrier_payload(job, &mut air.carrier);
         let capacity = air
             .bases_memo_context()
             .zip(fog.registrations_memo_context());
+        let carrier_capacities =
+            carrier_capacities(&air.carrier, &fog.carrier, &fog.carrier_scratch);
+        let transport_planes = job
+            .transport_context
+            .map(|source| {
+                source
+                    .transport_admission
+                    .check(ctx.base, job.game_state, ctx.hour)
+            })
+            .unwrap_or(Err(
+                "transport original carrier callback witness unavailable",
+            ));
         let key = capacity.map(|(air, fog)| AirBasesMemoKey {
             owner: ctx.owner,
             base: ctx.base,
             game_state: job.game_state,
             capacities: [air[0], air[1], air[2], fog[0], fog[1]],
+            carrier_capacities,
+            carrier_seed: job.carrier.seed,
+            transport_planes,
             aces_active: job.aces_active,
         });
         report.eligible = key.is_some()
+            && job.carrier.seed.is_ok()
+            && !job.carrier.log.borrow().overflowed
             && !job.log.overflowed
             && !job
                 .log
@@ -356,7 +429,8 @@ impl AirBasesMemo {
             && job.log.spans.iter().all(|span| span.ok);
         if report.eligible && self.key == key {
             report.compared = true;
-            report.hit = self.input_equal(&job.log);
+            report.hit =
+                self.input_equal(&job.log) && self.carrier.input_equal(&job.carrier.log.borrow());
         }
         report.compare_ticks = elapsed(compared_started);
         decode_ticks[1] += report.compare_ticks;
@@ -385,6 +459,7 @@ impl AirBasesMemo {
             air.bases_raw_mode = false;
             let started = qpc();
             fog.restore_registrations_memo(&self.registrations);
+            self.carrier.restore(&mut air.carrier, &mut fog.carrier);
             decode_ticks[1] += elapsed(started);
             report.restore_ticks = decode_ticks
                 .iter()
@@ -398,7 +473,14 @@ impl AirBasesMemo {
         // Preserve both original Recorded lifetimes: bases+aces share cursors;
         // registrations starts a separate reader over the same current log.
         air.decode_air_bases_payload(ctx.base, job, decode_ticks);
-        fog.decode_registrations_payload(ctx.base, job, decode_ticks);
+        fog.decode_registrations_with_carrier_payload(
+            ctx.base,
+            job,
+            &air.bases.rows[..air.bases.outcome.len()],
+            &mut air.carrier,
+            transport_planes,
+            decode_ticks,
+        );
         // Range validation is memo work too, even when it rejects an install.
         let install_started = qpc();
         if report.eligible && air.bases_memo_complete() && fog.registrations_memo_complete() {
@@ -410,6 +492,7 @@ impl AirBasesMemo {
                         || reserve_to(&mut self.names, air.names.len).is_err()))
             {
                 self.invalidate();
+                self.capacity_charge.set(self.capacity());
                 return report;
             }
             self.spans.clear();
@@ -431,6 +514,16 @@ impl AirBasesMemo {
                 self.required_names = air.names.required;
             }
             fog.save_registrations_memo(&mut self.registrations);
+            if !self.carrier.save(
+                &air.carrier,
+                &fog.carrier,
+                &job.carrier.log.borrow(),
+                job.carrier.demand,
+            ) {
+                self.invalidate();
+                self.capacity_charge.set(self.capacity());
+                return report;
+            }
             self.capacity_charge.set(self.capacity());
             self.key = key;
             self.previous = Some((ctx.seq, ctx.hour));
@@ -475,6 +568,28 @@ impl Captured {
     }
 }
 
+fn carrier_capacities(
+    bases: &carrier::Bases,
+    registrations: &carrier::Registrations,
+    scratch: &carrier::Scratch,
+) -> [usize; 10] {
+    let bases = bases.capacity();
+    let registrations = registrations.capacity();
+    let scratch = scratch.capacity();
+    [
+        bases[0],
+        bases[1],
+        bases[2],
+        registrations[0],
+        registrations[1],
+        scratch[0],
+        scratch[1],
+        scratch[2],
+        scratch[3],
+        scratch[4],
+    ]
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct AirBasesCopyReport {
     /// False when staging overflowed: the caller falls back to the typed
@@ -491,6 +606,7 @@ pub(crate) struct AirBasesCopyContext {
     pub game_state: usize,
     pub hour: i32,
     pub force_full: bool,
+    pub transport_admission: crate::transport_admission::Admission,
 }
 
 fn bases_pool_u64(log: &RawLog<AIR_BASES_N>, start: usize) -> u64 {
@@ -578,6 +694,9 @@ fn copy_air_bases_census(
     let [required_census, required_links] = required;
     *required_census = countries.count as usize - 1;
     *required_links = links.count as usize;
+    if log.worker_growth_enabled() && reserve_to(census, *required_census).is_err() {
+        return None;
+    }
     let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
     for slot in 1..countries.count {
         let pointer_addr = (slot as usize)
@@ -681,6 +800,12 @@ pub(super) fn resolve_link(
     if slot >= countries {
         return None;
     }
+    if seen.len() == seen.capacity()
+        && log.worker_growth_enabled()
+        && allocation::reserve(seen, 1).is_err()
+    {
+        return None;
+    }
     if seen.len() == seen.capacity() {
         log.overflowed = true;
         return None;
@@ -709,41 +834,30 @@ fn copy_air_base_row(
     base: usize,
     pointer: usize,
     state_slot: Option<u32>,
-) -> bool {
+    handle: u64,
+) -> Option<cair_base::Row> {
     // The 16-byte identity is taken once per base by the shared vector loop
     // (both walks read it); only the bases-private host/state/province
     // fields are taken here.
-    let host = match bspan(
+    let host = bspan(
         log,
         memory,
         pointer.checked_add(cair_base::HOST_REFERENCE),
         32,
         BASES_MASK,
-    ) {
-        Some(start) => start,
-        None => return false,
-    };
-    let state_pointer = match usize::try_from(bases_pool_u64(log, host + 8)).ok() {
-        Some(pointer) => pointer,
-        None => return false,
-    };
-    let province_pointer = match usize::try_from(bases_pool_u64(log, host + 16)).ok() {
-        Some(pointer) => pointer,
-        None => return false,
-    };
+    )?;
+    let state_pointer = usize::try_from(bases_pool_u64(log, host + 8)).ok()?;
+    let province_pointer = usize::try_from(bases_pool_u64(log, host + 16)).ok()?;
     let state = if state_pointer == 0 {
         None
     } else {
-        let vtable = match bspan(log, memory, Some(state_pointer), 8, BASES_MASK) {
-            Some(start) => start,
-            None => return false,
-        };
+        let vtable = bspan(log, memory, Some(state_pointer), 8, BASES_MASK)?;
         let expected_state = match base.checked_add(cstate::VTABLE_RVA) {
             Some(expected) => expected as u64,
-            None => return false,
+            None => return None,
         };
         if bases_pool_u64(log, vtable) != expected_state {
-            return false;
+            return None;
         }
         let id = match bspan(
             log,
@@ -753,55 +867,55 @@ fn copy_air_base_row(
             BASES_MASK,
         ) {
             Some(start) => bases_pool_u32(log, start),
-            None => return false,
+            None => return None,
         };
         Some(id)
     };
     if state != state_slot {
-        return false;
+        return None;
     }
     let host_ref = bases_pool_u64(log, host);
     if state.is_none() && host_ref == 0 {
-        return false;
+        return None;
     }
-    if province_pointer != 0 {
-        let vtable = match bspan(log, memory, Some(province_pointer), 8, BASES_MASK) {
-            Some(start) => start,
-            None => return false,
-        };
+    let province = if province_pointer != 0 {
+        let vtable = bspan(log, memory, Some(province_pointer), 8, BASES_MASK)?;
         let expected_province = match base.checked_add(cprovince::VTABLE_RVA) {
             Some(expected) => expected as u64,
-            None => return false,
+            None => return None,
         };
         if bases_pool_u64(log, vtable) != expected_province {
-            return false;
+            return None;
         }
-        let owner = match bspan(
+        let owner = bspan(
             log,
             memory,
             province_pointer.checked_add(cprovince::STATE),
             8,
             BASES_MASK,
-        ) {
-            Some(start) => start,
-            None => return false,
-        };
+        )?;
         if state_pointer != 0 && bases_pool_u64(log, owner) != state_pointer as u64 {
-            return false;
+            return None;
         }
-        if bspan(
+        let id = bspan(
             log,
             memory,
             province_pointer.checked_add(cprovince::ID),
             4,
             BASES_MASK,
-        )
-        .is_none()
-        {
-            return false;
-        }
-    }
-    true
+        )?;
+        Some(bases_pool_u32(log, id))
+    } else {
+        None
+    };
+    Some(cair_base::Row {
+        id: handle,
+        state,
+        province,
+        host: host_ref,
+        capacity: i32::from_le_bytes(log.bytes[host + 24..host + 28].try_into().unwrap()),
+        kind: i32::from_le_bytes(log.bytes[host + 28..host + 32].try_into().unwrap()),
+    })
 }
 
 /// Mirror of one country's ace roster and objects. Takes every
@@ -1101,6 +1215,7 @@ fn copy_air_base_registrations(
     seen: &mut Vec<(u32, u32)>,
     seen_index: &mut [usize],
     demand: &mut Option<[usize; 2]>,
+    carrier: &mut Option<cair_base::CarrierCapture<'_, impl Memory>>,
 ) -> bool {
     let _ = base_handle;
     let header = match bspan(
@@ -1119,6 +1234,9 @@ fn copy_air_base_registrations(
         Some(array) => array,
         None => return false,
     };
+    if let Some(carrier) = carrier.as_mut() {
+        carrier.indexed_header(containers.count);
+    }
     let expected_pool = match base.checked_add(cair_wing_pool::VTABLE_RVA) {
         Some(expected) => expected as u64,
         None => return false,
@@ -1206,6 +1324,10 @@ fn copy_air_base_registrations(
                 return false;
             }
         }
+        if let Some(carrier) = carrier.as_mut() {
+            carrier.indexed_container(country, slot, container);
+            carrier.begin_registration();
+        }
         let pools_header = match bspan(
             log,
             memory,
@@ -1221,6 +1343,10 @@ fn copy_air_base_registrations(
             Some(array) => array,
             None => return false,
         };
+        if let Some(carrier) = carrier.as_mut() {
+            carrier.registration_header(pools.count);
+        }
+        let mut registration_wings = Some(0usize);
         *demand = demand.and_then(|[rows, wings]| Some([rows.checked_add(1)?, wings]));
         let mut pool_first = 0u32;
         while pool_first < pools.count {
@@ -1272,6 +1398,11 @@ fn copy_air_base_registrations(
                     Some(array) => array,
                     None => return false,
                 };
+                registration_wings =
+                    registration_wings.and_then(|count| count.checked_add(members.count as usize));
+                if let Some(carrier) = carrier.as_mut() {
+                    carrier.begin_pool(pointer, members);
+                }
                 *demand = demand.and_then(|[rows, wings]| {
                     Some([rows, wings.checked_add(members.count as usize)?])
                 });
@@ -1289,7 +1420,10 @@ fn copy_air_base_registrations(
                         Some(start) => start,
                         None => return false,
                     };
-                    for wing_index in 0..wing_chunk {
+                    let mut wing_pointers = [0usize; REG_MIRROR_BATCH];
+                    for (wing_index, destination) in
+                        wing_pointers[..wing_chunk].iter_mut().enumerate()
+                    {
                         let wing = match block_word(log, wing_block, wing_index) {
                             Some(wing) => wing,
                             None => return false,
@@ -1297,30 +1431,72 @@ fn copy_air_base_registrations(
                         if wing == 0 {
                             return false;
                         }
-                        // `copy_records` WING_FIELDS: the 32-byte identity
-                        // span as one exact span.
+                        *destination = wing;
+                    }
+                    let mut fields = [(0usize, 0usize); REG_MIRROR_BATCH];
+                    let mut complete_wings = 0;
+                    for (wing_index, &wing) in wing_pointers[..wing_chunk].iter().enumerate() {
+                        // `copy_records` WING_FIELDS: identity32, then the
+                        // exact +38 backlink. The complete chunk's copied
+                        // prefix precedes any row's semantic validation.
                         let identity =
                             match bspan(log, memory, Some(wing), 32, AIR_REGISTRATIONS_MASK) {
                                 Some(start) => start,
-                                None => return false,
+                                None => break,
                             };
-                        if bases_pool_u64(log, identity) != expected_primary
-                            || bases_pool_u64(log, identity + 16) != expected_secondary
-                            || bases_pool_u64(log, identity + 24) == 0
-                        {
-                            return false;
-                        }
+                        let backlink = match bspan(
+                            log,
+                            memory,
+                            wing.checked_add(engine::cair_wing::POOL),
+                            8,
+                            AIR_REGISTRATIONS_MASK,
+                        ) {
+                            Some(start) => start,
+                            None => break,
+                        };
+                        fields[wing_index] = (identity, backlink);
+                        complete_wings += 1;
                     }
                     if log.overflowed {
                         return false;
                     }
+                    // copy_records validates its completely copied prefix
+                    // before reporting a later field failure. Feed that same
+                    // authenticated prefix; the incomplete pool is still
+                    // discarded by the original registration failure.
+                    for (wing_index, &(identity, backlink)) in
+                        fields[..complete_wings].iter().enumerate()
+                    {
+                        if bases_pool_u64(log, identity) != expected_primary
+                            || bases_pool_u64(log, identity + 16) != expected_secondary
+                        {
+                            return false;
+                        }
+                        if bases_pool_u64(log, backlink) != pointer as u64
+                            || bases_pool_u64(log, identity + 24) == 0
+                        {
+                            return false;
+                        }
+                        if let Some(carrier) = carrier.as_mut() {
+                            carrier.wing(wing_pointers[wing_index]);
+                        }
+                    }
+                    if complete_wings != wing_chunk {
+                        return false;
+                    }
                     wing_first += wing_chunk as u32;
+                }
+                if let Some(carrier) = carrier.as_mut() {
+                    carrier.finish_pool();
                 }
             }
             if log.overflowed {
                 return false;
             }
             pool_first += chunk as u32;
+        }
+        if let Some(carrier) = carrier.as_mut() {
+            carrier.finish_registration(registration_wings);
         }
         if log.overflowed {
             return false;
@@ -1336,7 +1512,7 @@ fn copy_air_base_registrations(
 /// replay derives its own verdict from the recorded spans. The aces phase
 /// runs last on the shared census takes. The job is cleared on entry so
 /// pooled refreshes never accumulate spans across hours.
-#[allow(clippy::too_many_lines)]
+#[cfg(test)]
 pub(super) fn copy_air_bases_pass(
     job: &mut AirBasesJob,
     memory: &impl engine::Memory,
@@ -1345,9 +1521,66 @@ pub(super) fn copy_air_bases_pass(
     aces_active: bool,
     ticks: &mut [u64; AIR_BASES_N],
 ) {
+    copy_air_bases_pass_with_context(job, memory, base, game_state, aces_active, None, ticks);
+}
+
+#[cfg(test)]
+fn copy_air_bases_pass_with_context(
+    job: &mut AirBasesJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    aces_active: bool,
+    transport_context: Option<AirBasesCopyContext>,
+    ticks: &mut [u64; AIR_BASES_N],
+) {
+    copy_air_bases_pass_mode::<false>(
+        job,
+        memory,
+        base,
+        game_state,
+        aces_active,
+        transport_context,
+        ticks,
+    );
+}
+
+fn copy_air_bases_pass_with_context_growing(
+    job: &mut AirBasesJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    aces_active: bool,
+    transport_context: Option<AirBasesCopyContext>,
+    ticks: &mut [u64; AIR_BASES_N],
+) {
+    copy_air_bases_pass_mode::<true>(
+        job,
+        memory,
+        base,
+        game_state,
+        aces_active,
+        transport_context,
+        ticks,
+    );
+}
+
+fn copy_air_bases_pass_mode<const GROWING: bool>(
+    job: &mut AirBasesJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    aces_active: bool,
+    transport_context: Option<AirBasesCopyContext>,
+    ticks: &mut [u64; AIR_BASES_N],
+) {
     let started = qpc();
     job.clear();
+    if GROWING {
+        job.log.enable_worker_growth();
+    }
     job.game_state = game_state;
+    job.transport_context = transport_context;
     job.aces_active = aces_active;
     let census_mask = if aces_active {
         AIR_BASES_CENSUS_MASK
@@ -1417,250 +1650,408 @@ fn copy_air_bases_vectors(
 ) {
     let _reads = read_accounting::table(TableId::AirBases);
     let vectors_started = qpc();
-    let manager = match bspan(
-        &mut job.log,
-        memory,
-        job.game_state
-            .checked_add(cgame_state::STRATEGIC_AIR_MANAGER),
-        8,
-        BASE_VECTORS_MASK,
-    ) {
-        Some(start) => match usize::try_from(bases_pool_u64(&job.log, start))
-            .ok()
-            .filter(|&pointer| pointer != 0)
-        {
-            Some(manager) => manager,
-            None => {
-                ticks[0] += elapsed(vectors_started);
-                return;
+    let AirBasesJob {
+        log,
+        carrier: staged,
+        game_state,
+        transport_context,
+        seen_links,
+        seen_link_index,
+        registration_demand: job_registration_demand,
+        ..
+    } = job;
+    let carrier::Job {
+        log: carrier_log,
+        index,
+        required_index,
+        bases: carrier_bases,
+        registrations: carrier_registrations,
+        scratch,
+        demand: staged_demand,
+        seed,
+    } = staged;
+    let growing = log.worker_growth_enabled();
+    if growing {
+        carrier_log.get_mut().enable_worker_growth();
+    }
+    let index = std::cell::RefCell::new(if growing {
+        super::carrier_memory::ExactIndex::new_growing(index)
+    } else {
+        super::carrier_memory::ExactIndex::new(index)
+    });
+    *seed = super::carrier_memory::seed_census(carrier_log.get_mut(), log, &mut index.borrow_mut());
+    if let Err(reason) = *seed {
+        carrier::note_seed_refusal(reason);
+    }
+    *required_index = index.borrow().required_slots();
+    let (lengths, demand) = {
+        let optional = super::carrier_memory::CaptureMemory::new(carrier_log, memory, &index);
+        let countries = seed.and_then(|()| ccountry::Reader::new(&optional, base, *game_state));
+        let mut refusal = countries.as_ref().err().copied();
+        let mut observer = countries.as_ref().ok().and_then(|countries| {
+            let captured = if growing {
+                cair_base::CarrierCapture::new_growing(
+                    &optional,
+                    base,
+                    *game_state,
+                    countries,
+                    carrier::buffers_growing(carrier_bases, carrier_registrations, scratch),
+                )
+            } else {
+                Ok(cair_base::CarrierCapture::new(
+                    &optional,
+                    base,
+                    *game_state,
+                    countries,
+                    carrier::buffers(carrier_bases, carrier_registrations, scratch),
+                ))
+            };
+            match captured {
+                Ok(capture) => Some(
+                    capture.with_transport_planes(
+                        transport_context
+                            .map(|source| {
+                                source
+                                    .transport_admission
+                                    .check(base, *game_state, source.hour)
+                            })
+                            .unwrap_or(Err(
+                                "transport original carrier callback witness unavailable",
+                            )),
+                    ),
+                ),
+                Err(reason) => {
+                    refusal = Some(reason);
+                    None
+                }
             }
-        },
-        None => {
-            ticks[0] += elapsed(vectors_started);
-            return;
-        }
-    };
-    let vtable = bspan(&mut job.log, memory, Some(manager), 8, BASE_VECTORS_MASK);
-    let expected_manager = base.checked_add(cstrategic_air_manager::VTABLE_RVA);
-    let manager_ok = match (vtable, expected_manager) {
-        (Some(start), Some(expected)) => bases_pool_u64(&job.log, start) == expected as u64,
-        _ => false,
-    };
-    // Four base vectors in walk order, with the walk's indexed flags.
-    let mut headers = [(0usize, 0u32, true); 4];
-    let mut headers_ok = manager_ok;
-    for (slot, (offset, indexed)) in [
-        (cstrategic_air_manager::STATE_AIR_BASES, true),
-        (cstrategic_air_manager::STATE_ROCKET_BASES, true),
-        (cstrategic_air_manager::STATE_GUN_BASES, true),
-        (cstrategic_air_manager::STATELESS_AIR_BASES, false),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let header = bspan(
-            &mut job.log,
-            memory,
-            manager.checked_add(offset),
-            16,
-            BASE_VECTORS_MASK,
-        );
-        match header {
-            Some(start) => {
-                let mut raw = [0u8; 16];
-                raw.copy_from_slice(&job.log.bytes[start..start + 16]);
-                match Array::from_header(raw, 8) {
-                    Some(array) => {
-                        headers[slot] = (start, array.count, indexed);
-                        let _ = array;
+        });
+        (|| {
+            let manager = match bspan(
+                &mut *log,
+                memory,
+                (*game_state).checked_add(cgame_state::STRATEGIC_AIR_MANAGER),
+                8,
+                BASE_VECTORS_MASK,
+            ) {
+                Some(start) => match usize::try_from(bases_pool_u64(&*log, start))
+                    .ok()
+                    .filter(|&pointer| pointer != 0)
+                {
+                    Some(manager) => manager,
+                    None => {
+                        ticks[0] += elapsed(vectors_started);
+                        return;
+                    }
+                },
+                None => {
+                    ticks[0] += elapsed(vectors_started);
+                    return;
+                }
+            };
+            let vtable = bspan(&mut *log, memory, Some(manager), 8, BASE_VECTORS_MASK);
+            let expected_manager = base.checked_add(cstrategic_air_manager::VTABLE_RVA);
+            let manager_ok = match (vtable, expected_manager) {
+                (Some(start), Some(expected)) => bases_pool_u64(&*log, start) == expected as u64,
+                _ => false,
+            };
+            // Four base vectors in walk order, with the walk's indexed flags.
+            let mut headers = [(0usize, 0u32, true); 4];
+            let mut headers_ok = manager_ok;
+            for (slot, (offset, indexed)) in [
+                (cstrategic_air_manager::STATE_AIR_BASES, true),
+                (cstrategic_air_manager::STATE_ROCKET_BASES, true),
+                (cstrategic_air_manager::STATE_GUN_BASES, true),
+                (cstrategic_air_manager::STATELESS_AIR_BASES, false),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let header = bspan(
+                    &mut *log,
+                    memory,
+                    manager.checked_add(offset),
+                    16,
+                    BASE_VECTORS_MASK,
+                );
+                match header {
+                    Some(start) => {
+                        let mut raw = [0u8; 16];
+                        raw.copy_from_slice(&log.bytes[start..start + 16]);
+                        match Array::from_header(raw, 8) {
+                            Some(array) => {
+                                headers[slot] = (start, array.count, indexed);
+                                let _ = array;
+                            }
+                            None => headers_ok = false,
+                        }
                     }
                     None => headers_ok = false,
                 }
+                if log.overflowed {
+                    ticks[0] += elapsed(vectors_started);
+                    return;
+                }
             }
-            None => headers_ok = false,
-        }
-        if job.log.overflowed {
-            ticks[0] += elapsed(vectors_started);
-            return;
-        }
-    }
-    let mut bases_alive = headers_ok;
-    let mut reg_alive = headers_ok && census.is_some();
-    let mut registration_demand = Some([0usize; 2]);
-    let mut bases_ticks = 0u64;
-    let mut reg_ticks = 0u64;
-    for (header_start, count, indexed) in headers {
-        if !bases_alive && !reg_alive {
-            break;
-        }
-        // Re-parse the recorded header (already validated above when
-        // headers_ok; re-parse identically when headers failed so the
-        // failure scope stays per-walk below).
-        let mut raw = [0u8; 16];
-        raw.copy_from_slice(&job.log.bytes[header_start..header_start + 16]);
-        let Some(array) = Array::from_header(raw, 8) else {
-            // Both typed walks fail on this header; later vectors are unread
-            // by either replay.
-            break;
-        };
-        let _ = count;
-        for index in 0..array.count {
-            if !bases_alive && !reg_alive {
-                break;
-            }
-            let addr = (index as usize)
-                .checked_mul(8)
-                .and_then(|offset| array.data.checked_add(offset));
-            let element = bspan(&mut job.log, memory, addr, 8, BASE_VECTORS_MASK);
-            let Some(element) = element else {
-                bases_alive = false;
-                reg_alive = false;
-                break;
-            };
-            let pointer = match usize::try_from(bases_pool_u64(&job.log, element))
-                .ok()
-                .filter(|&pointer| pointer != 0)
-            {
-                Some(pointer) => pointer,
-                None => {
-                    if indexed {
-                        continue;
-                    }
-                    bases_alive = false;
-                    reg_alive = false;
+            let mut bases_alive = headers_ok;
+            let mut reg_alive = headers_ok && census.is_some();
+            let mut registration_demand = Some([0usize; 2]);
+            let mut bases_ticks = 0u64;
+            let mut reg_ticks = 0u64;
+            for (header_start, count, indexed) in headers {
+                if !bases_alive && !reg_alive {
                     break;
                 }
-            };
-            if bases_alive {
-                let begin = qpc();
-                // Shared identity take (both walks read it); a failure or a
-                // failed identity stops both walks, mirroring both typed
-                // walks. Bases-private fields follow on the bases path only.
-                let identity = bspan(&mut job.log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
-                let expected = base.checked_add(cair_base::VTABLE_RVA);
-                let (identity_ok, handle) = match (identity, expected) {
-                    (Some(start), Some(expected)) => (
-                        bases_pool_u64(&job.log, start) == expected as u64
-                            && bases_pool_u64(&job.log, start + 8) != 0,
-                        bases_pool_u64(&job.log, start + 8),
-                    ),
-                    _ => (false, 0),
+                // Re-parse the recorded header (already validated above when
+                // headers_ok; re-parse identically when headers failed so the
+                // failure scope stays per-walk below).
+                let mut raw = [0u8; 16];
+                raw.copy_from_slice(&log.bytes[header_start..header_start + 16]);
+                let Some(array) = Array::from_header(raw, 8) else {
+                    // Both typed walks fail on this header; later vectors are unread
+                    // by either replay.
+                    break;
                 };
-                if !identity_ok {
-                    bases_alive = false;
-                    reg_alive = false;
-                    bases_ticks += elapsed(begin);
-                    if job.log.overflowed {
+                let _ = count;
+                for index in 0..array.count {
+                    if !bases_alive && !reg_alive {
                         break;
                     }
-                    // Both typed walks fail at this base; later bases are
-                    // unread by either replay.
-                    break;
-                }
-                if !copy_air_base_row(
-                    &mut job.log,
-                    memory,
-                    base,
-                    pointer,
-                    indexed.then_some(index),
-                ) {
-                    bases_alive = false;
-                }
-                bases_ticks += elapsed(begin);
-                if reg_alive {
-                    let _reads = read_accounting::table(TableId::AirBaseRegistrations);
-                    let begin = qpc();
-                    let (links, countries) = census.expect("reg takes need census links");
-                    if !copy_air_base_registrations(
-                        &mut job.log,
-                        memory,
-                        base,
-                        handle,
-                        pointer,
-                        links,
-                        countries,
-                        &mut job.seen_links,
-                        &mut job.seen_link_index,
-                        &mut registration_demand,
-                    ) {
+                    let addr = (index as usize)
+                        .checked_mul(8)
+                        .and_then(|offset| array.data.checked_add(offset));
+                    let element = bspan(&mut *log, memory, addr, 8, BASE_VECTORS_MASK);
+                    let Some(element) = element else {
+                        bases_alive = false;
                         reg_alive = false;
+                        break;
+                    };
+                    let pointer = match usize::try_from(bases_pool_u64(&*log, element))
+                        .ok()
+                        .filter(|&pointer| pointer != 0)
+                    {
+                        Some(pointer) => pointer,
+                        None => {
+                            if indexed {
+                                continue;
+                            }
+                            bases_alive = false;
+                            reg_alive = false;
+                            break;
+                        }
+                    };
+                    if bases_alive {
+                        let begin = qpc();
+                        // Shared identity take (both walks read it); a failure or a
+                        // failed identity stops both walks, mirroring both typed
+                        // walks. Bases-private fields follow on the bases path only.
+                        let identity =
+                            bspan(&mut *log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
+                        let expected = base.checked_add(cair_base::VTABLE_RVA);
+                        let (identity_ok, handle) = match (identity, expected) {
+                            (Some(start), Some(expected)) => (
+                                bases_pool_u64(&*log, start) == expected as u64
+                                    && bases_pool_u64(&*log, start + 8) != 0,
+                                bases_pool_u64(&*log, start + 8),
+                            ),
+                            _ => (false, 0),
+                        };
+                        if !identity_ok {
+                            bases_alive = false;
+                            reg_alive = false;
+                            bases_ticks += elapsed(begin);
+                            if log.overflowed {
+                                break;
+                            }
+                            // Both typed walks fail at this base; later bases are
+                            // unread by either replay.
+                            break;
+                        }
+                        if let Some(carrier) = observer.as_mut() {
+                            carrier.begin_base(pointer, handle, !indexed);
+                        }
+                        optional.set_mask(1);
+                        match copy_air_base_row(
+                            &mut *log,
+                            memory,
+                            base,
+                            pointer,
+                            indexed.then_some(index),
+                            handle,
+                        ) {
+                            Some(source) => {
+                                if let Some(carrier) = observer.as_mut() {
+                                    carrier.authenticated_base(source);
+                                }
+                            }
+                            None => bases_alive = false,
+                        }
+                        bases_ticks += elapsed(begin);
+                        if reg_alive {
+                            let _reads = read_accounting::table(TableId::AirBaseRegistrations);
+                            let begin = qpc();
+                            let (links, countries) = census.expect("reg takes need census links");
+                            optional.set_mask(2);
+                            if !copy_air_base_registrations(
+                                &mut *log,
+                                memory,
+                                base,
+                                handle,
+                                pointer,
+                                links,
+                                countries,
+                                &mut *seen_links,
+                                &mut *seen_link_index,
+                                &mut registration_demand,
+                                &mut observer,
+                            ) {
+                                reg_alive = false;
+                            }
+                            reg_ticks += elapsed(begin);
+                        }
+                    } else if reg_alive {
+                        // The bases walk already stopped: the registrations walk
+                        // still needs the shared identity take plus its own takes.
+                        let _reads = read_accounting::table(TableId::AirBaseRegistrations);
+                        let begin = qpc();
+                        let identity =
+                            bspan(&mut *log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
+                        let expected = base.checked_add(cair_base::VTABLE_RVA);
+                        let (identity_ok, handle) = match (identity, expected) {
+                            (Some(start), Some(expected)) => (
+                                bases_pool_u64(&*log, start) == expected as u64
+                                    && bases_pool_u64(&*log, start + 8) != 0,
+                                bases_pool_u64(&*log, start + 8),
+                            ),
+                            _ => (false, 0),
+                        };
+                        if !identity_ok {
+                            reg_alive = false;
+                            reg_ticks += elapsed(begin);
+                            break;
+                        }
+                        if let Some(carrier) = observer.as_mut() {
+                            carrier.begin_base(pointer, handle, !indexed);
+                        }
+                        optional.set_mask(2);
+                        let (links, countries) = census.expect("reg takes need census links");
+                        if !copy_air_base_registrations(
+                            &mut *log,
+                            memory,
+                            base,
+                            handle,
+                            pointer,
+                            links,
+                            countries,
+                            &mut *seen_links,
+                            &mut *seen_link_index,
+                            &mut registration_demand,
+                            &mut observer,
+                        ) {
+                            reg_alive = false;
+                        }
+                        reg_ticks += elapsed(begin);
                     }
-                    reg_ticks += elapsed(begin);
+                    optional.set_mask(1);
+                    let dense_started = qpc();
+                    if let Some(carrier) = observer.as_mut() {
+                        carrier.finish_base(reg_alive);
+                    }
+                    bases_ticks += elapsed(dense_started);
+                    if log.overflowed {
+                        break;
+                    }
                 }
-            } else if reg_alive {
-                // The bases walk already stopped: the registrations walk
-                // still needs the shared identity take plus its own takes.
-                let _reads = read_accounting::table(TableId::AirBaseRegistrations);
-                let begin = qpc();
-                let identity = bspan(&mut job.log, memory, Some(pointer), 16, BASE_VECTORS_MASK);
-                let expected = base.checked_add(cair_base::VTABLE_RVA);
-                let (identity_ok, handle) = match (identity, expected) {
-                    (Some(start), Some(expected)) => (
-                        bases_pool_u64(&job.log, start) == expected as u64
-                            && bases_pool_u64(&job.log, start + 8) != 0,
-                        bases_pool_u64(&job.log, start + 8),
-                    ),
-                    _ => (false, 0),
-                };
-                if !identity_ok {
-                    reg_alive = false;
-                    reg_ticks += elapsed(begin);
+                if log.overflowed {
                     break;
                 }
-                let (links, countries) = census.expect("reg takes need census links");
-                if !copy_air_base_registrations(
-                    &mut job.log,
-                    memory,
-                    base,
-                    handle,
-                    pointer,
-                    links,
-                    countries,
-                    &mut job.seen_links,
-                    &mut job.seen_link_index,
-                    &mut registration_demand,
-                ) {
-                    reg_alive = false;
-                }
-                reg_ticks += elapsed(begin);
             }
-            if job.log.overflowed {
-                break;
+            if reg_alive && !log.overflowed {
+                *job_registration_demand = registration_demand;
             }
+            ticks[0] += elapsed(vectors_started)
+                .saturating_sub(bases_ticks)
+                .saturating_sub(reg_ticks);
+            ticks[0] += bases_ticks;
+            ticks[1] += reg_ticks;
+        })();
+        if let Some(carrier) = observer.as_mut() {
+            carrier.finish_walk();
         }
-        if job.log.overflowed {
-            break;
-        }
-    }
-    if reg_alive && !job.log.overflowed {
-        job.registration_demand = registration_demand;
-    }
-    ticks[0] += elapsed(vectors_started)
-        .saturating_sub(bases_ticks)
-        .saturating_sub(reg_ticks);
-    ticks[0] += bases_ticks;
-    ticks[1] += reg_ticks;
+        observer.as_ref().map_or(
+            (
+                cair_base::CarrierLengths::default(),
+                cair_base::CarrierDemand {
+                    failure: refusal,
+                    ..Default::default()
+                },
+            ),
+            |carrier| (carrier.lengths(), carrier.demand()),
+        )
+    };
+    *required_index = (*required_index).max(index.borrow().required_slots());
+    carrier_bases.install(lengths, demand);
+    carrier_registrations.install(lengths, demand);
+    *staged_demand = demand;
 }
 
 /// Acquire the shared bases, registrations and aces into one owned payload.
+pub(crate) fn copy_air_bases_refresh_growing(
+    memory: &impl Memory,
+    ctx: AirBasesCopyContext,
+    job: &mut AirBasesJob,
+) -> AirBasesCopyReport {
+    let mut ticks = [0u64; AIR_BASES_N];
+    copy_air_bases_pass_with_context_growing(
+        job,
+        memory,
+        ctx.base,
+        ctx.game_state,
+        replay::cadence::should_walk(TableId::AirAces, ctx.hour, ctx.force_full),
+        Some(ctx),
+        &mut ticks,
+    );
+    AirBasesCopyReport {
+        raw_ok: !job.log.overflowed,
+        copy_ticks: ticks,
+        raw_bytes: {
+            let extra = job.carrier.log.borrow().raw_bytes;
+            [
+                job.log.raw_bytes[0].saturating_add(extra[0]),
+                job.log.raw_bytes[1].saturating_add(extra[1]),
+                job.log.raw_bytes[2],
+            ]
+        },
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn copy_air_bases_refresh(
     memory: &impl Memory,
     ctx: AirBasesCopyContext,
     job: &mut AirBasesJob,
 ) -> AirBasesCopyReport {
     let mut ticks = [0u64; AIR_BASES_N];
-    copy_air_bases_pass(
+    copy_air_bases_pass_with_context(
         job,
         memory,
         ctx.base,
         ctx.game_state,
         replay::cadence::should_walk(TableId::AirAces, ctx.hour, ctx.force_full),
+        Some(ctx),
         &mut ticks,
     );
     AirBasesCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: job.log.raw_bytes,
+        raw_bytes: {
+            let extra = job.carrier.log.borrow().raw_bytes;
+            [
+                job.log.raw_bytes[0].saturating_add(extra[0]),
+                job.log.raw_bytes[1].saturating_add(extra[1]),
+                job.log.raw_bytes[2],
+            ]
+        },
     }
 }
 
@@ -1669,6 +2060,7 @@ impl Captured {
     /// Registrations are failed separately by their fog owner; no live retry runs.
     pub(crate) fn fail_air_bases_capture(&mut self, reason: &'static str) {
         self.bases.outcome = Outcome::Unavailable { reason };
+        self.carrier.reset();
         self.aces.outcome = failed(self.active[5], reason);
         self.names.reset();
         self.bases_raw_mode = false;
@@ -1688,7 +2080,11 @@ impl Captured {
         self.active[5] = job.aces_active;
         let recorded = crate::raw::Recorded::build(&job.log);
         let started = qpc();
-        let walked = cair_base::walk(&recorded, base, job.game_state, &mut self.bases.rows);
+        let walked = if job.log.worker_growth_enabled() {
+            cair_base::walk_growing(&recorded, base, job.game_state, &mut self.bases.rows)
+        } else {
+            cair_base::walk(&recorded, base, job.game_state, &mut self.bases.rows)
+        };
         self.bases.outcome = bounded(walked, self.bases.rows.len());
         decode_ticks[0] += elapsed(started);
         if !job.aces_active {
@@ -1698,13 +2094,23 @@ impl Captured {
             return;
         }
         let started = qpc();
-        let walked = cace::walk(
-            &recorded,
-            base,
-            job.game_state,
-            &mut self.aces.rows,
-            &mut self.names.first,
-        );
+        let walked = if job.log.worker_growth_enabled() {
+            cace::walk_growing(
+                &recorded,
+                base,
+                job.game_state,
+                &mut self.aces.rows,
+                &mut self.names.first,
+            )
+        } else {
+            cace::walk(
+                &recorded,
+                base,
+                job.game_state,
+                &mut self.aces.rows,
+                &mut self.names.first,
+            )
+        };
         self.aces.outcome = names_outcome(walked, &self.aces.rows, &self.names.first);
         self.names.len = walked.bytes_len;
         self.names.required = walked.required_bytes;

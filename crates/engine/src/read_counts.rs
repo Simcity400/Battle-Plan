@@ -233,6 +233,23 @@ impl<M: Memory> Memory for CountedMemory<M> {
         self.0.authenticated_countries(base, game_state)
     }
 
+    fn authenticated_reserved_country(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<Result<crate::ccountry::Country, &'static str>> {
+        self.0.authenticated_reserved_country(base, game_state)
+    }
+
+    fn authenticated_reserved_country_observation(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<crate::ccountry::ReservedCountryObservation> {
+        self.0
+            .authenticated_reserved_country_observation(base, game_state)
+    }
+
     fn modifier_accumulator_value(
         &self,
         address: usize,

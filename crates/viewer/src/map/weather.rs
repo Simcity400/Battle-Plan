@@ -8,20 +8,16 @@
 //! passes leave unchanged keeps drawing bare ground until a later pass moves
 //! it. The recorder copies both arrays every hour (`WeatherProvinces
 //! .display_snow/.display_mud`), so every hour, including the first after a
-//! load and any hour reached by a seek, draws exactly the game's bytes with no
-//! history.
+//! load and any hour reached by a seek has its own simulation operands.
 //!
 //! `140f00200` averages four by four province-image pixels into one grid cell
 //! (a `perm_snow` terrain pixel counts 255 snow), always dividing by sixteen;
 //! the grid is the province image's size shifted right by two. `14124be50`
 //! packs RGBA (previous mud, current snow, previous snow, current mud) and the
-//! shaders mix the planes by `SnowMudFade`. A still frame is the settled fade,
-//! so both planes hold the hour's bytes.
-//!
-//! Not reproduced: the second of fade after a refresh, and the engine's last
-//! grid row and column, which after a load keep the bytes of the load's full
-//! rebuild (`140f0a240` clamps its dirty cells one short of the grid edge);
-//! here they follow the hour like every other cell.
+//! shaders mix the planes by `SnowMudFade`. The final row/column come from the
+//! live +388/+390 boundary recorded in slot zero, including a mid-game attach.
+//! [`Presentation`] carries previous/current planes and the native linear fade
+//! on the viewer's graphics clock; no replay hour drives that phase.
 //!
 //! The terrain shading of this grid was checked term by term against the
 //! engine's own `PixelShaderTerrain` in RenderDoc (reference 03, archived
@@ -32,10 +28,15 @@ use std::{io, time::Duration, time::Instant};
 use installed_content::map::MapData;
 use replay::{
     frame::DecodedFrame,
-    rows::{TableId, WeatherProvinceRow, tables},
+    rows::{Recorded, TableId, WeatherProvinceRow, tables},
 };
 
 use super::{gradient::ProvinceMap, tables::rows, textures::SNOW_MUD_BLOCK};
+
+mod presentation;
+pub use presentation::Presentation;
+mod render_delta;
+pub use render_delta::RenderDelta;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -54,6 +55,13 @@ pub struct SnowMud {
     /// Wall time of the rasterisation, for reporting.
     pub build: Duration,
     pub summary: Summary,
+    pub refresh: Option<Refresh>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Refresh {
+    pub interval: i64,
+    pub identity: u64,
 }
 
 /// What the hour's weather table held, for the status line.
@@ -69,18 +77,28 @@ pub struct Summary {
     pub shown_snow: usize,
     /// Rows with a nonzero mud display byte.
     pub shown_mud: usize,
+    /// Retained native edge cells unavailable in this sample.
+    pub missing_edges: usize,
 }
 
 impl Summary {
     /// One line for the status bar and the headless dump.
     pub fn line(&self) -> String {
         format!(
-            "{} provinces{}, {} with snow, {} drawn snowed, {} drawn muddy",
+            "{} provinces{}, {} with snow, {} drawn snowed, {} drawn muddy{}",
             self.provinces,
             if self.complete { "" } else { " (incomplete)" },
             self.with_snow,
             self.shown_snow,
-            self.shown_mud
+            self.shown_mud,
+            if self.missing_edges == 0 {
+                String::new()
+            } else {
+                format!(
+                    ", {} retained snow/mud edge cells unavailable",
+                    self.missing_edges
+                )
+            }
         )
     }
 }
@@ -148,7 +166,45 @@ fn grid_with(
         summary.shown_mud += usize::from(display_mud != 0);
     }
     let start = Instant::now();
-    let (width, height, cells) = average(&bytes)?;
+    let (width, height, mut cells) = average(&bytes)?;
+    let edge_cells = (width as usize)
+        .checked_add(height as usize)
+        .and_then(|count| count.checked_sub(1))
+        .filter(|_| width > 0 && height > 0)
+        .ok_or_else(|| invalid("Snow/mud presentation: 1 refused empty grid"))?;
+    let display = recorded
+        .iter()
+        .find(|row| row.id == 0)
+        .and_then(|row| match &row.display {
+            Recorded::Value(Some(display)) => Some(display),
+            _ => None,
+        });
+    let refresh = if let Some(display) = display {
+        if [display.width, display.height] != [width, height]
+            || display.edges.len() != edge_cells * 2
+        {
+            return Err(invalid(
+                "Snow/mud presentation: 1 refused retained boundary size mismatch",
+            ));
+        }
+        Some(Refresh {
+            interval: display.refresh_interval,
+            identity: display.refresh_identity,
+        })
+    } else {
+        summary.missing_edges = edge_cells;
+        None
+    };
+    // 140F0A240 never dirties these cells. Missing historical data is unknown,
+    // not evidence that the edge follows today's per-province simulation.
+    let boundary = (0..height - 1)
+        .map(|z| z * width + width - 1)
+        .chain((0..width).map(|x| (height - 1) * width + x));
+    for (edge, cell) in boundary.enumerate() {
+        cells[cell as usize * 2..cell as usize * 2 + 2].copy_from_slice(
+            &display.map_or([0; 2], |d| [d.edges[edge], d.edges[edge_cells + edge]]),
+        );
+    }
     let texels = cells
         .chunks_exact(2)
         .flat_map(|cell| [cell[1], cell[0], cell[0], cell[1]])
@@ -160,6 +216,7 @@ fn grid_with(
         province_snow,
         build: start.elapsed(),
         summary,
+        refresh,
     })
 }
 
@@ -364,6 +421,19 @@ mod tests {
         }
     }
 
+    fn display_row(width: u32, height: u32, edges: Vec<u8>, identity: u64) -> WeatherProvinceRow {
+        WeatherProvinceRow {
+            display: Recorded::Value(Some(replay::rows::WeatherDisplay {
+                width,
+                height,
+                refresh_interval: 25_000,
+                refresh_identity: identity,
+                edges,
+            })),
+            ..Default::default()
+        }
+    }
+
     fn texel(snow: &SnowMud, x: u32, z: u32) -> [u8; 4] {
         let at = ((z * snow.width + x) * 4) as usize;
         snow.texels[at..at + 4].try_into().unwrap()
@@ -372,6 +442,7 @@ mod tests {
     #[test]
     fn cells_average_the_recorded_bytes_south_first_with_both_planes_settled() {
         let rows = vec![
+            display_row(3, 3, vec![200, 240, 0, 0, 0, 0, 0, 255, 255, 255], 1),
             row(10, 5, 200, 0),
             // Recorded snow without a written byte draws bare, as in the game.
             row(20, 7, 0, 0),
@@ -395,11 +466,12 @@ mod tests {
         assert_eq!(
             snow.summary,
             Summary {
-                provinces: 4,
+                provinces: 5,
                 complete: true,
                 with_snow: 2,
                 shown_snow: 2,
                 shown_mud: 1,
+                missing_edges: 0,
             }
         );
     }
@@ -413,7 +485,11 @@ mod tests {
         }
         let mut perm = [false; 144];
         perm[4..8].fill(true);
-        let rows = vec![row(20, 0, 40, 0), row(21, 0, 240, 0)];
+        let rows = vec![
+            display_row(3, 3, vec![0, 240, 0, 63, 0, 0, 0, 0, 0, 0], 1),
+            row(20, 0, 40, 0),
+            row(21, 0, 240, 0),
+        ];
         let snow = grid(
             &map(ids),
             &perm,
@@ -496,5 +572,74 @@ mod tests {
     fn the_grid_follows_the_province_image_size() {
         assert_eq!(grid_size(5632, 2048), [1408, 512]);
         assert_eq!(grid_size(4099, 2050), [1024, 512]);
+    }
+
+    #[test]
+    fn snow_mud_retains_live_edges_across_dirty_updates_and_rebuilds() {
+        let map = map(vec![1; 144]);
+        let cells = SnowCells::new(&map, &[false; 144]).unwrap();
+        let snapshot = |snow, mud, edge_snow, edge_mud, identity| {
+            let edges = [vec![edge_snow; 5], vec![edge_mud; 5]].concat();
+            grid_from_cells(
+                &cells,
+                &frame(TableView::Complete(TableRows::WeatherProvinces(vec![
+                    display_row(3, 3, edges, identity),
+                    row(1, 0, snow, mud),
+                ]))),
+            )
+            .unwrap()
+        };
+        // Attachment occurs after a rebuild the recorder never saw. Its live
+        // edge already differs from simulation; no previous frame is needed.
+        let attached = snapshot(10, 20, 30, 40, 7);
+        let dirty = snapshot(100, 200, 30, 40, 8);
+        let rebuilt = snapshot(100, 200, 70, 80, 9);
+        for (x, z) in [(2, 0), (2, 1), (0, 2), (1, 2), (2, 2)] {
+            assert_eq!(texel(&attached, x, z), [40, 30, 30, 40]);
+            assert_eq!(texel(&dirty, x, z), [40, 30, 30, 40]);
+            assert_eq!(texel(&rebuilt, x, z), [80, 70, 70, 80]);
+        }
+        assert_eq!(texel(&dirty, 0, 0), [200, 100, 100, 200]);
+        assert_eq!(dirty.refresh.unwrap().identity, 8);
+        // Historical rows retain available interior data, never invent edges.
+        let old = grid_from_cells(
+            &cells,
+            &frame(TableView::Complete(TableRows::WeatherProvinces(vec![
+                WeatherProvinceRow {
+                    display: Recorded::NotRecorded,
+                    ..Default::default()
+                },
+                row(1, 0, 100, 200),
+            ]))),
+        )
+        .unwrap();
+        assert_eq!(old.summary.missing_edges, 5);
+        assert_eq!(texel(&old, 2, 2), [0; 4]);
+        assert_eq!(texel(&old, 0, 0), [200, 100, 100, 200]);
+        assert!(old.refresh.is_none());
+    }
+
+    #[test]
+    fn snow_mud_refuses_mismatched_live_boundary_dimensions_and_length() {
+        let map = map(vec![1; 144]);
+        for packet in [
+            display_row(2, 3, vec![1; 8], 1),
+            display_row(3, 3, vec![1; 9], 1),
+        ] {
+            let error = grid(
+                &map,
+                &[false; 144],
+                &frame(TableView::Complete(TableRows::WeatherProvinces(vec![
+                    packet,
+                ]))),
+            )
+            .err()
+            .unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("1 refused retained boundary size mismatch")
+            );
+        }
     }
 }

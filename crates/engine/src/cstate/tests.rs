@@ -206,8 +206,8 @@ fn named_states(count: usize, names: &dyn Fn(usize) -> (Vec<u8>, Vec<u8>)) -> Ma
         let state = 0x20_0000 + index * 0x1000;
         memory.put(SLOTS + index * 8, &(state as u64).to_le_bytes());
         memory.put(state, &(VTABLE_RVA as u64).to_le_bytes());
-        memory.put(state + ID, &(index as u32).to_le_bytes());
         memory.put(state + PRIMARY_DISPLAY_NAME, &[0; 0xd0]);
+        memory.put(state + ID, &(index as u32).to_le_bytes());
         let (custom, owner) = names(index);
         put_string(
             &mut memory,
@@ -232,6 +232,34 @@ fn census_rows(count: usize) -> Vec<Row> {
             ..Row::default()
         })
         .collect()
+}
+
+#[test]
+fn state_rows_and_names_grow_before_first_and_later_publication() {
+    let mut rows = Vec::new();
+    let mut text = Vec::new();
+    for count in [5_000, 7_000] {
+        let mut memory = named_states(count, &|_| (vec![b'p'; 31], vec![b'o'; 19]));
+        for index in 1..=count {
+            let state = 0x20_0000 + index * 0x1000;
+            memory.put(state + OWNER, &0_u32.to_le_bytes());
+            memory.put(state + CONTROLLER, &0_u32.to_le_bytes());
+            memory.put(state + MANPOWER_AVAILABLE, &0_i32.to_le_bytes());
+        }
+        let mut sources = 0;
+        assert_eq!(name_demand(&memory, 0, 0), Ok(count * 50));
+        let census = walk_with_growing(&memory, 0, 0, &mut rows, |_| sources += 1);
+        assert_eq!(census, Outcome::Rows { len: count });
+        assert_eq!(sources, count);
+        let names = read_names_growing(&memory, 0, census, &mut rows, &mut text);
+        assert_eq!(names.outcome, census);
+        assert_eq!(
+            (names.bytes_len, names.required_bytes),
+            (count * 50, count * 50)
+        );
+        assert_eq!(rows[count - 1].owner_name.len, 19);
+        assert_eq!(rows[count - 1].id, count as u32);
+    }
 }
 
 /// Both display names copy exactly, inline and heap alike; an empty one is

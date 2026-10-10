@@ -38,7 +38,7 @@ fn equivalent_mount_notation_preserves_root_membership_and_priority() {
     assert!(mounts_match(&[text(b"F:/game")], &[r"F:\game".to_owned()]));
     assert!(!mounts_match(&[text(b"F:/game")], &["F:/GAME".to_owned()]));
     // Empty lists cannot establish even the vanilla root.
-    assert!(!mounts_match(&[], &[]));
+    assert!(!mounts_match::<Descriptor>(&[], &[]));
 }
 
 struct SearchPathMemory<'a> {
@@ -268,12 +268,8 @@ fn counts_read_headers_and_the_mount_terminator_only() {
         bytes[manager + offset + 12..manager + offset + 16].copy_from_slice(&count.to_le_bytes());
     }
     u64_at(&mut bytes, manager + DLCS + msvc_map::COUNT, 90);
-    // Above the reader's node bound: `observe` refuses the map, so no hint.
-    u64_at(
-        &mut bytes,
-        manager + MODS + msvc_map::COUNT,
-        MAX_MAP_NODES as usize + 1,
-    );
+    // The native map size remains demand even above the former node ceiling.
+    u64_at(&mut bytes, manager + MODS + msvc_map::COUNT, 5_001);
     for index in 0..80 {
         u64_at(&mut bytes, 0x1000 + index * 8, 0x1800);
     }
@@ -285,7 +281,7 @@ fn counts_read_headers_and_the_mount_terminator_only() {
             dlc_filter_strings: 70,
             requested_mods: 100,
             dlcs: 90,
-            mods: 0,
+            mods: 5_001,
             mounts: 80,
         }
     );
@@ -415,7 +411,7 @@ fn search_path_string_capacity_and_missing_terminators_are_explicit() {
 }
 
 #[test]
-fn search_path_rejects_overflow_and_bounds_an_unterminated_pointer_list() {
+fn search_path_rejects_overflow_and_reads_until_native_terminator_or_fault() {
     let memory = SearchPathMemory {
         root: usize::MAX - 7,
         bytes: &[],
@@ -434,7 +430,10 @@ fn search_path_rejects_overflow_and_bounds_an_unterminated_pointer_list() {
     );
     struct Unterminated;
     impl Memory for Unterminated {
-        fn copy(&self, _: usize, output: &mut [u8]) -> bool {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address != SEARCH_PATH_RVA && address >= 0x100 + 5_001 * 8 {
+                return false;
+            }
             assert_eq!(output.len(), 8);
             output.copy_from_slice(&0x100_u64.to_le_bytes());
             true
@@ -443,7 +442,64 @@ fn search_path_rejects_overflow_and_bounds_an_unterminated_pointer_list() {
     assert_eq!(
         observe_search_path(&Unterminated, 0, &mut []),
         Outcome::Unavailable {
-            reason: "search path list exceeds reader limit or has no terminator"
+            reason: "search path entry pointer unreadable"
         }
+    );
+}
+
+#[test]
+fn content_map_enumerates_five_thousand_nodes_without_a_depth_or_node_quota() {
+    const COUNT: usize = 5_001;
+    const HEAD: usize = 0x300;
+    const NODES: usize = 0x1000;
+    let mut bytes = vec![0; NODES + COUNT * 0x100];
+    u64_at(&mut bytes, 0x100 + DLCS + msvc_map::HEAD, HEAD);
+    u64_at(&mut bytes, 0x100 + DLCS + msvc_map::COUNT, COUNT);
+    node(
+        &mut bytes,
+        HEAD,
+        NODES,
+        NODES,
+        NODES + (COUNT - 1) * 0x100,
+        true,
+    );
+    for index in 0..COUNT {
+        let at = NODES + index * 0x100;
+        node(
+            &mut bytes,
+            at,
+            HEAD,
+            if index == 0 { HEAD } else { at - 0x100 },
+            if index + 1 == COUNT { HEAD } else { at + 0x100 },
+            false,
+        );
+        string_at(
+            &mut bytes,
+            at + content_node::VALUE + content_entry::NAME,
+            b"name",
+        );
+        string_at(
+            &mut bytes,
+            at + content_node::VALUE + content_entry::DESCRIPTOR,
+            b"dlc/synthetic",
+        );
+    }
+    let mut rows = vec![Entry::default(); COUNT];
+    assert_eq!(
+        walk_map(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes
+            },
+            0x100,
+            DLCS,
+            &mut rows,
+            |_, _| Ok(true)
+        ),
+        Outcome::Rows { len: COUNT }
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.descriptor.as_bytes() == b"dlc/synthetic")
     );
 }

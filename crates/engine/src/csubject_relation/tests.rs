@@ -144,6 +144,36 @@ fn capture(bytes: &[u8], matrix: bool, output: &mut [Row], names: &mut [u8]) -> 
 }
 
 #[test]
+fn growing_subject_rows_names_and_membership_snapshots_capture_the_first_5000_country_pass() {
+    let mut rows = Vec::new();
+    let mut names = Vec::new();
+    let mut scratch = OwnedSnapshotScratch::default();
+    for countries in [5_000_usize, 10_000] {
+        let (bytes, expected) = overlord_census(countries);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        let captured = walk_owned_growing(&memory, 0, GS, &mut rows, &mut names, &mut scratch);
+        assert_eq!(
+            captured,
+            NameWalk {
+                outcome: Outcome::Rows { len: countries - 1 },
+                bytes_len: (countries - 1) * 6,
+                required_bytes: (countries - 1) * 6
+            }
+        );
+        assert_eq!(&rows[..countries - 1], expected.as_slice());
+        assert!(
+            names[..captured.bytes_len]
+                .chunks(6)
+                .all(|value| value == b"puppet")
+        );
+        assert!(scratch.stats().installed > 0);
+    }
+}
+
+#[test]
 fn censuses_preserve_native_direction_full_width_and_literal_bytes() {
     let bytes = fixture();
     for matrix in [false, true] {
@@ -591,12 +621,8 @@ fn owned_subject_walk_at_census_scale_is_linear_in_relations() {
         base: 0,
         bytes: &bytes,
     };
-    // A cold pass (no storage) fails cleanly once its complete rescans
-    // pass the census budget, instead of stalling on 4.5e8 reads; it
-    // still records the whole world's demand. A small test budget keeps
-    // this fixture fast.
+    // An empty fixed output still records the complete original headers.
     let mut scratch = OwnedSnapshotScratch::default();
-    scratch.rescan_override = Some(1_000_000);
     let mut rows = vec![Row::default(); COUNTRIES];
     let mut names = vec![0; COUNTRIES * 6];
     let hub = {
@@ -612,9 +638,16 @@ fn owned_subject_walk_at_census_scale_is_linear_in_relations() {
         watched: hub.data..hub.data + hub.count as usize * 8,
         hits: std::cell::Cell::new(0),
     };
-    let cold = walk_owned(&counting, 0, GS, &mut rows, &mut names, &mut scratch);
-    assert_eq!(cold, unavailable(SUBJECT_MEMBERSHIP.budget));
-    assert!(counting.hits.get() <= 1_000_000 + 3 * hub.count as usize);
+    // Measure original headers on a fixed empty output, then prepare exactly
+    // that demand. Complete cold rescans are covered by the war fixture.
+    let cold = walk_owned(&counting, 0, GS, &mut [], &mut [], &mut scratch);
+    assert_eq!(
+        cold.outcome,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: (COUNTRIES - 1) as u32
+        }
+    );
     scratch.grow(0).unwrap();
     let allocated = scratch.allocated_bytes();
     counting.hits.set(0);

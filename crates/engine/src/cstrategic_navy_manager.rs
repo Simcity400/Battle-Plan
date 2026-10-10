@@ -6,13 +6,11 @@ pub const VTABLE_RVA: usize = 0x0295_c6c0;
 /// CStrategicNavyManager CPdxArray<CStrategicNavy*>; constructor E88580 and getter6ECBF0.
 pub const NAVIES: usize = 8;
 
-fn with_navy<T>(
+pub(crate) fn navies(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    country: ccountry::Country,
-    consume: impl FnOnce(usize) -> Result<T, &'static str>,
-) -> Result<T, &'static str> {
+) -> Result<Array, &'static str> {
     let root = state
         .checked_add(cgame_state::STRATEGIC_NAVY_MANAGER)
         .ok_or("navy manager root overflow")?;
@@ -28,7 +26,17 @@ fn with_navy<T>(
     let header = manager
         .checked_add(NAVIES)
         .ok_or("navy manager array overflow")?;
-    let array = Array::read(memory, header, 8).ok_or("navy manager array invalid")?;
+    Array::read(memory, header, 8).ok_or("navy manager array invalid")
+}
+
+fn with_navy<T>(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    country: ccountry::Country,
+    consume: impl FnOnce(usize) -> Result<T, &'static str>,
+) -> Result<T, &'static str> {
+    let array = navies(memory, base, state)?;
     let slot = array
         .element(country.canonical_slot, 8)
         .ok_or("navy manager country outside array")?;
@@ -73,16 +81,5 @@ pub fn regional_operand(
 ) -> Result<i64, &'static str> {
     with_navy(memory, base, state, country, |navy| {
         cstrategic_navy::regional_operand(memory, base, state, navy, country, region)
-    })
-}
-
-pub(crate) fn regional_inputs(
-    memory: &impl Memory,
-    base: usize,
-    state: usize,
-    country: ccountry::Country,
-) -> Result<Array, &'static str> {
-    with_navy(memory, base, state, country, |navy| {
-        cstrategic_navy::regional_inputs(memory, base, state, navy, country)
     })
 }

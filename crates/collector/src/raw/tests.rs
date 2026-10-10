@@ -1,6 +1,89 @@
 use super::*;
 use engine::memory::SliceMemory;
 
+#[test]
+fn worker_growth_preserves_raw_prefixes_and_first_fault_without_retry() {
+    struct Once {
+        reads: std::cell::RefCell<Vec<usize>>,
+    }
+    impl Memory for Once {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            assert!(
+                !self.reads.borrow().contains(&address),
+                "native read repeated"
+            );
+            self.reads.borrow_mut().push(address);
+            if address == 0x9000 {
+                return false;
+            }
+            destination.fill(address as u8);
+            true
+        }
+    }
+    let memory = Once {
+        reads: Default::default(),
+    };
+    let mut log = RawLog::<1>::new(1, 1);
+    log.enable_worker_growth();
+    for ordinal in 0..5000 {
+        assert_eq!(log.take(&memory, 0x1000 + ordinal, 4, 1), Some(ordinal * 4));
+    }
+    assert_eq!(log.take(&memory, 0x9000, 4, 1), None);
+    assert!(!log.overflowed);
+    assert!(log.fault[0]);
+    let reader = Recorded::build(&log);
+    for ordinal in 0..5000 {
+        let mut bytes = [0; 4];
+        assert!(reader.copy(0x1000 + ordinal, &mut bytes));
+        assert_eq!(bytes, [(0x1000 + ordinal) as u8; 4]);
+    }
+    assert!(!reader.copy(0x9000, &mut [0; 4]));
+    assert_eq!(memory.reads.borrow().len(), 5001);
+    drop(reader);
+    log.clear();
+    assert!(!log.worker_growth_enabled());
+}
+
+#[test]
+fn worker_growth_prepares_scattered_and_record_storage_before_native_reads() {
+    let bytes: Vec<u8> = (0..256).map(|value| value as u8).collect();
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &bytes,
+    };
+    let mut log = RawLog::<1>::default();
+    log.enable_worker_growth();
+    assert_eq!(
+        log.take_scattered(&memory, [0x1000, 0x1004], [4, 4], [1, 1]),
+        Some(([0, 4], 2))
+    );
+    let fields = [engine::memory::RecordField {
+        source_offset: 0,
+        destination_offset: 0,
+        len: 4,
+    }];
+    let layout = engine::memory::RecordLayout::new(&fields, 4).unwrap();
+    assert_eq!(
+        log.take_records(
+            &memory,
+            engine::memory::RecordSources::Strided {
+                base: 0x1008,
+                stride: 4,
+                count: 32
+            },
+            &layout,
+            1
+        ),
+        Some((8, 32))
+    );
+    assert_eq!(
+        log.take_array_entries(&memory, 0x1088, 4, 8, 1),
+        Some((136, 8))
+    );
+    assert!(!log.overflowed);
+    assert_eq!(&log.bytes[..168], &bytes[..168]);
+}
+
 fn immutable_view_positions(reader: &Recorded<'_>) -> (Vec<usize>, usize, usize) {
     (
         reader
@@ -540,6 +623,7 @@ fn raw_specialization_frozen_array(
         || end > u32::MAX as usize
     {
         log.span_exhausted = log.spans.capacity() - log.spans.len() < 2;
+        log.required_spans = log.spans.len() + 2;
         log.required_bytes = end;
         log.overflowed = true;
         return None;
@@ -1365,6 +1449,21 @@ fn cached_bulk_index_uses_current_pool_offsets_and_bulk_gate() {
     assert_eq!(bytes, [9; 8]);
     log.has_bulk = false;
     assert!(!Recorded::build(&log).copy(0x1004, &mut bytes));
+    {
+        let range = Recorded::build_range(&log, 0..1).unwrap();
+        assert!(!range.copy(0x1004, &mut bytes));
+        assert!(range.immutable_view(0x1004, bytes.len()).is_none());
+        // The gate withdraws enclosing reads, never exact observations.
+        assert!(range.copy(0x1000, &mut [0; 16]));
+    }
+    log.has_bulk = true;
+    let range = Recorded::build_range(&log, 0..1).unwrap();
+    assert!(range.copy(0x1004, &mut bytes));
+    assert_eq!(bytes, [9; 8]);
+    assert_eq!(
+        range.immutable_view(0x1004, bytes.len()).unwrap().bytes,
+        &bytes[..]
+    );
 }
 
 #[test]
@@ -2573,22 +2672,6 @@ fn logs_compare_by_spans_and_bytes() {
 }
 
 #[test]
-fn growth_increases_empty_and_partially_filled_capacities() {
-    let mut empty = Vec::<u8>::with_capacity(16);
-    double_capacity(&mut empty);
-    assert!(empty.capacity() >= 32);
-    assert!(empty.is_empty());
-    let mut partial = Vec::with_capacity(16);
-    partial.extend_from_slice(&[7u8; 3]);
-    double_capacity(&mut partial);
-    assert!(partial.capacity() >= 32);
-    assert_eq!(partial, [7; 3]);
-    let mut zero = Vec::<u8>::new();
-    double_capacity(&mut zero);
-    assert!(zero.capacity() >= 2);
-}
-
-#[test]
 fn span_pressure_does_not_grow_the_byte_arena() {
     let bytes = [1; 64];
     let memory = SliceMemory {
@@ -2873,4 +2956,47 @@ fn canonical_gate_matches_engine_vectors_and_keeps_valid_data() {
     assert!(!is_canonical_range(0x0000_7FFF_FFFF_FFF0, 32));
     assert!(is_canonical_range(0x2000, 0));
     assert!(!is_canonical_range(usize::MAX - 3, 8));
+}
+
+#[test]
+fn recorded_ranges_keep_later_success_and_bulk_outside_a_failed_prefix() {
+    let memory = SliceMemory {
+        base: 0x1000,
+        bytes: &[9; 64],
+    };
+    let mut log = RawLog::<1>::new(8, 128);
+    assert!(log.take(&FailAll, 0x1010, 4, 1).is_none());
+    let boundary = log.spans.len();
+    assert!(log.take(&memory, 0x1010, 4, 0).is_some());
+    assert!(log.take_bulk(&memory, 0x1000, 64, 0).is_some());
+    {
+        let prefix = Recorded::build_range(&log, 0..boundary).unwrap();
+        let mut output = [0xa5; 4];
+        assert!(!prefix.copy(0x1010, &mut output));
+        assert_eq!(output, [0xa5; 4]);
+        assert!(!prefix.copy(0x1004, &mut output));
+    }
+    {
+        let suffix = Recorded::build_range(&log, boundary..log.spans.len()).unwrap();
+        let mut output = [0; 4];
+        assert!(suffix.copy(0x1010, &mut output));
+        assert_eq!(output, [9; 4]);
+        assert!(suffix.copy(0x1004, &mut output));
+        assert_eq!(output, [9; 4]);
+    }
+    let prefix = Recorded::build_range(&log, 0..boundary).unwrap();
+    assert!(!prefix.copy(0x1010, &mut [0; 4]));
+}
+
+#[test]
+fn recorded_range_bounds_fail_before_taking_the_pooled_index() {
+    let log = immutable_view_log();
+    drop(Recorded::build_range(&log, 0..log.spans.len()).unwrap());
+    assert!(log.index.borrow().is_some());
+    assert!(Recorded::build_range(&log, std::ops::Range { start: 1, end: 0 }).is_err());
+    assert!(log.index.borrow().is_some());
+    assert!(Recorded::build_range(&log, 0..log.spans.len() + 1).is_err());
+    assert!(log.index.borrow().is_some());
+    let empty = Recorded::build_range(&log, 0..0).unwrap();
+    assert!(!empty.copy(0x1000, &mut [0; 4]));
 }

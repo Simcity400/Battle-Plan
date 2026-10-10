@@ -79,6 +79,80 @@ fn capture(bytes: &[u8], rows: &mut [Row]) -> Outcome {
 }
 
 #[test]
+fn strategic_bombing_stat_uses_the_signed_mission_index_and_default_only_for_minus_one() {
+    const RECORDS: usize = 0xe000;
+    const COLLECTION: usize = WING_A + 0x968;
+    const INDEX: usize = COLLECTION + 0x18 + 3;
+    const DEFAULT: usize = WING_A + 0x520;
+    let mut bytes = fixture();
+    bytes.resize(RECORDS + 3 * 0x270, 0);
+    array(&mut bytes, COLLECTION, RECORDS, 3);
+    p64(&mut bytes, DEFAULT, 765_432);
+    p64(&mut bytes, RECORDS + 2 * 0x270 + 0x32 * 8, i64::MIN as u64);
+    for (index, expected) in [
+        (2_i8, Ok(i64::MIN)),
+        (-1, Ok(765_432)),
+        (-2, Err("strategic bombing mission index outside vector")),
+        (3, Err("strategic bombing mission index outside vector")),
+    ] {
+        bytes[INDEX] = index as u8;
+        assert_eq!(
+            strategic_bombing_stat(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes
+                },
+                WING_A
+            ),
+            expected
+        );
+    }
+    bytes[INDEX] = 2;
+    for (fault, expected) in [
+        (INDEX, "strategic bombing mission index unreadable"),
+        (COLLECTION, "strategic bombing mission-stat vector invalid"),
+        (
+            RECORDS + 2 * 0x270 + 0x32 * 8,
+            "strategic bombing selected stat unreadable",
+        ),
+    ] {
+        let memory = Traced {
+            bytes: &bytes,
+            reads: Default::default(),
+            fault: Some(fault),
+        };
+        assert_eq!(strategic_bombing_stat(&memory, WING_A), Err(expected));
+        assert!(!memory.reads.borrow().iter().any(|&(at, _)| at == DEFAULT));
+    }
+    bytes[INDEX] = u8::MAX;
+    let memory = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: Some(COLLECTION),
+    };
+    assert_eq!(strategic_bombing_stat(&memory, WING_A), Ok(765_432));
+}
+
+#[test]
+fn strategic_bombing_optional_fault_preserves_the_wing_and_observed_zero() {
+    let mut bytes = fixture();
+    p32(&mut bytes, WING_A + MISSION + air_mission::ENABLED_MASK, 8);
+    bytes[WING_A + 0x968 + 0x18 + 3] = u8::MAX;
+    let mut rows = [Row::default(); 2];
+    assert_eq!(capture(&bytes, &mut rows), Outcome::Rows { len: 2 });
+    assert_eq!(rows[0].strategic_bombing_raw, Some(0));
+    assert_eq!(rows[1].strategic_bombing_raw, None);
+    let memory = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: Some(WING_A + 0x520),
+    };
+    assert_eq!(walk(&memory, 0, GS, &mut rows), Outcome::Rows { len: 2 });
+    assert_eq!(rows[0].strategic_bombing_raw, None);
+    assert_eq!(rows[0].id, u64::MAX);
+}
+
+#[test]
 fn stored_wing_names_keep_sso_heap_empty_bytes_and_field_local_failures() {
     for text in [
         Vec::new(),
@@ -165,6 +239,84 @@ fn stored_wing_names_keep_sso_heap_empty_bytes_and_field_local_failures() {
         assert_eq!(rows[1].name, Some((0, 0)));
         assert_eq!(arena.failures, 1);
     }
+}
+
+#[test]
+fn worker_wing_name_growth_uses_one_original_large_header_and_named_native_faults() {
+    use crate::{msvc_string, raid_tooltip_operands::NameReadError};
+    let text = vec![b'x'; 131_073];
+    let mut bytes = fixture();
+    bytes.resize(0xe000 + text.len() + 1, 0);
+    bytes[0xe000..0xe000 + text.len()].copy_from_slice(&text);
+    p64(&mut bytes, WING_A + NAME, 0xe000);
+    p64(
+        &mut bytes,
+        WING_A + NAME + msvc_string::LENGTH,
+        text.len() as u64,
+    );
+    p64(
+        &mut bytes,
+        WING_A + NAME + msvc_string::CAPACITY,
+        text.len() as u64,
+    );
+    let memory = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: None,
+    };
+    let mut storage = vec![b'p'];
+    let (mut used, mut required) = (1, 1);
+    assert_eq!(
+        capture_name_growing(&memory, WING_A, &mut storage, &mut used, &mut required),
+        Ok((1, text.len()))
+    );
+    assert_eq!(used, text.len() + 1);
+    assert_eq!(required, used);
+    assert_eq!(storage[0], b'p');
+    assert_eq!(storage[1..used], text);
+    assert_eq!(
+        *memory.reads.borrow(),
+        [
+            (WING_A + NAME + msvc_string::LENGTH, 8),
+            (WING_A + NAME + msvc_string::CAPACITY, 8),
+            (WING_A + NAME, 8),
+            (0xe000 + text.len(), 1),
+            (0xe000, text.len()),
+        ]
+    );
+    let failed = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: Some(0xe000),
+    };
+    assert_eq!(
+        capture_name_growing(&failed, WING_A, &mut storage, &mut used, &mut required),
+        Err(NameFailure::Native(NameReadError::Unreadable))
+    );
+    assert_eq!(used, text.len() + 1);
+    assert_eq!(storage[1..used], text);
+    assert_eq!(
+        failed
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == 0xe000)
+            .count(),
+        1
+    );
+    p64(&mut bytes, WING_B + NAME + msvc_string::LENGTH, 16);
+    p64(&mut bytes, WING_B + NAME + msvc_string::CAPACITY, 15);
+    let failed = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: None,
+    };
+    assert_eq!(
+        capture_name_growing(&failed, WING_B, &mut storage, &mut used, &mut required),
+        Err(NameFailure::Native(NameReadError::Header))
+    );
+    assert_eq!(failed.reads.borrow().len(), 2);
+    assert_eq!(used, text.len() + 1);
 }
 
 #[test]
@@ -589,6 +741,80 @@ struct Traced<'a> {
     fault: Option<usize>,
 }
 
+#[test]
+fn optional_transport_reads_follow_map_admission_and_do_not_withhold_core_rows() {
+    let bytes = fixture();
+    let memory = Traced {
+        bytes: &bytes,
+        reads: Default::default(),
+        fault: None,
+    };
+    let mut map = [Row::default(); 2];
+    let mut sources = [Source::default(); 2];
+    let mut name_bytes = [0; 16];
+    let mut names = NameArena {
+        bytes: &mut name_bytes,
+        used: 0,
+        required: 0,
+        failures: 0,
+    };
+    let mut scratch = transport_operands::Scratch::with_capacity(2).unwrap();
+    {
+        let mut optional = transport_operands::Pass::new(0, map.len(), &mut scratch);
+        let result = walk_shared_names_with_operands(
+            &memory,
+            0,
+            GS,
+            &mut map,
+            &mut sources,
+            2,
+            &mut names,
+            |pointer, pool, row, admitted| {
+                if admitted.map {
+                    optional.capture(&memory, pointer, pool, row);
+                }
+            },
+        );
+        assert_eq!(result.map, Outcome::Rows { len: 2 });
+        assert!(map.iter().all(|row| row.pool_subunit.is_none()));
+        assert!(map.iter().all(|row| row.planes == i32::MIN));
+        assert_eq!(
+            memory
+                .reads
+                .borrow()
+                .iter()
+                .filter(|(address, _)| *address == POOL_OBJECT + cair_wing_pool::DEFINITION)
+                .count(),
+            1,
+            "failed pool identity is not retried by a second wing"
+        );
+    }
+    memory.reads.borrow_mut().clear();
+    let mut optional = transport_operands::Pass::new(0, 0, &mut scratch);
+    let result = walk_shared_names_with_operands(
+        &memory,
+        0,
+        GS,
+        &mut [],
+        &mut sources,
+        2,
+        &mut names,
+        |pointer, pool, row, admitted| {
+            if admitted.map {
+                optional.capture(&memory, pointer, pool, row);
+            }
+        },
+    );
+    assert_eq!(result.sources, Outcome::Rows { len: 2 });
+    assert!(
+        !memory
+            .reads
+            .borrow()
+            .iter()
+            .any(|(address, _)| *address == POOL_OBJECT + cair_wing_pool::DEFINITION)
+    );
+}
+
 impl Memory for Traced<'_> {
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         self.reads.borrow_mut().push((address, destination.len()));
@@ -689,6 +915,58 @@ fn shared_walk_three_capacities_match_independent_walks_with_one_read_sequence()
                 );
             }
         }
+    }
+}
+
+#[test]
+fn growing_naval_projection_uses_the_original_pool_range_without_rereads() {
+    let bytes = fixture();
+    for fault in [None, Some(WING_B), Some(WING_B + COUNTRY_OVERRIDE)] {
+        let reference = Traced {
+            bytes: &bytes,
+            reads: Default::default(),
+            fault,
+        };
+        let expected = walk_shared(
+            &reference,
+            0,
+            GS,
+            &mut [Row::default(); 2],
+            &mut [Source::default(); 2],
+            2,
+            |_, _, _, _| {},
+        );
+        let memory = Traced {
+            bytes: &bytes,
+            reads: Default::default(),
+            fault,
+        };
+        let mut map = Vec::new();
+        let mut sources = Vec::new();
+        let mut visited = Vec::new();
+        let actual = walk_shared_game_score_buffers_with_owners(
+            &memory,
+            0,
+            GS,
+            Buffer::Growing(&mut map),
+            Buffer::Growing(&mut sources),
+            0,
+            None,
+            None,
+            |pointer, _, _, admitted| visited.push((pointer, admitted)),
+            |_, _| {},
+            |_, _| {},
+        );
+        assert_eq!(actual.shared, expected);
+        if fault.is_none() {
+            assert_eq!(actual.shared.naval, Outcome::Rows { len: 2 });
+        }
+        assert!(visited.iter().all(|(_, admitted)| admitted.naval));
+        assert_eq!(
+            memory.reads.borrow().as_slice(),
+            reference.reads.borrow().as_slice(),
+            "growth keeps the original body observations and faults"
+        );
     }
 }
 
@@ -1059,6 +1337,9 @@ fn raw_handles_signed_counts_alias_owner_and_nullable_region_survive() {
             eligibility_limit: i32::MAX,
             attached_orders_group: None,
             name: None,
+            pool_subunit: None,
+            raid_reference: None,
+            strategic_bombing_raw: None,
         }
     );
     assert_eq!(rows[1].id, 69); // One zero handle word is not a null handle.
@@ -1117,6 +1398,58 @@ fn capacity_counts_omitted_wings_but_does_not_hide_a_broken_roster() {
 }
 
 #[test]
+fn strategic_air_manager_absence_is_zero_sizing_but_other_identities_refuse() {
+    let mut bytes = fixture();
+    p64(&mut bytes, GS + cgame_state::STRATEGIC_AIR_MANAGER, 0);
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        crate::transport_air_normalization::wing_entry_demand(&memory, 0, GS),
+        Ok(0)
+    );
+    assert_eq!(
+        capture(&bytes, &mut [Row::default(); 2]),
+        Outcome::Unavailable {
+            reason: "strategic air manager absent"
+        }
+    );
+
+    let unreadable = bytes.len() as u64;
+    p64(
+        &mut bytes,
+        GS + cgame_state::STRATEGIC_AIR_MANAGER,
+        unreadable,
+    );
+    assert_eq!(
+        capture(&bytes, &mut [Row::default(); 2]),
+        Outcome::Unavailable {
+            reason: "strategic air manager vtable unreadable"
+        }
+    );
+    p64(
+        &mut bytes,
+        GS + cgame_state::STRATEGIC_AIR_MANAGER,
+        MANAGER as u64,
+    );
+    // The secondary CPersistent base vtable is not the complete manager.
+    p64(
+        &mut bytes,
+        MANAGER,
+        (cstrategic_air_manager::VTABLE_RVA + 0x20) as u64,
+    );
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    assert_eq!(
+        crate::transport_air_normalization::wing_entry_demand(&memory, 0, GS),
+        Err("strategic air manager vtable mismatch")
+    );
+}
+
+#[test]
 fn bad_identity_links_and_missing_roots_never_become_empty_air() {
     for (at, value, reason) in [
         (WING_A, 0, "air wing primary vtable mismatch"),
@@ -1132,7 +1465,7 @@ fn bad_identity_links_and_missing_roots_never_become_empty_air() {
             0,
             "air wing mission region secondary vtable mismatch",
         ),
-        (GS + 0x690, 0, "strategic air manager vtable mismatch"),
+        (GS + 0x690, 0, "strategic air manager absent"),
     ] {
         let mut bytes = fixture();
         p64(&mut bytes, at, value);

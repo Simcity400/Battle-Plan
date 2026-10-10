@@ -24,6 +24,155 @@ fn zero() -> save::Decimal {
 }
 
 #[test]
+fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
+    use replay::rows::{DivisionMovementRow, Recorded};
+    let (mut frame, mut saved, _, _) = super::super::tests::fixture();
+    let id = (7_u64 << 32) | 51;
+    saved.divisions.clear();
+    saved.divisions.insert(
+        id,
+        save::Division {
+            id,
+            roster_owner: b"GER".to_vec(),
+            logical_owner: b"GER".to_vec(),
+            expeditionary_owner: None,
+            province: None,
+            template: None,
+            alternate_template: None,
+            separate_counter: false,
+            hit_points: zero(),
+            organisation: zero(),
+            country_intel: Vec::new(),
+            presentation: Default::default(),
+        },
+    );
+    let base = DivisionMovementRow {
+        division: id,
+        withdrawal: Recorded::Value(Some(255)),
+        movement_priority: Recorded::Value(Some(1)),
+        // The style fixture predates the independently checked fresh ETA packet.
+        fresh: Recorded::NotRecorded,
+        ..Default::default()
+    };
+    for (raw, expected) in [
+        (0, Some(0)),
+        (1, None),
+        (2, Some(2)),
+        (3, Some(3)),
+        (i32::MIN, Some(0)),
+    ] {
+        saved
+            .divisions
+            .get_mut(&id)
+            .unwrap()
+            .presentation
+            .withdrawal = true;
+        saved
+            .divisions
+            .get_mut(&id)
+            .unwrap()
+            .presentation
+            .movement_priority = expected;
+        set(
+            &mut frame,
+            TableId::DivisionMovement,
+            TableRows::DivisionMovement(vec![DivisionMovementRow {
+                movement_priority: Recorded::Value(Some(raw)),
+                ..base.clone()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_division_movement(&frame, &saved, &mut report).unwrap();
+        assert!(
+            report.differences.is_empty(),
+            "raw {raw}: {:?}",
+            report.differences
+        );
+        assert_eq!(
+            report.limitations["DivisionMovement.fresh not recorded"],
+            vec![format!("division movement {id}")],
+        );
+        if raw == i32::MIN {
+            assert!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|reason| reason.contains("unknown priority word"))
+            );
+        }
+    }
+    // Unknown words serialize to front_order but cannot match player_order.
+    saved
+        .divisions
+        .get_mut(&id)
+        .unwrap()
+        .presentation
+        .movement_priority = Some(2);
+    let mut report = Report::default();
+    compare_division_movement(&frame, &saved, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+    assert!(report.differences[0].contains("movement_priority"));
+
+    saved
+        .divisions
+        .get_mut(&id)
+        .unwrap()
+        .presentation
+        .movement_priority = None;
+    for (value, differences) in [
+        (Recorded::NotRecorded, 0),
+        (Recorded::Value(None), 1),
+        (Recorded::Value(Some(0)), 1),
+    ] {
+        set(
+            &mut frame,
+            TableId::DivisionMovement,
+            TableRows::DivisionMovement(vec![DivisionMovementRow {
+                withdrawal: value,
+                ..base.clone()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_division_movement(&frame, &saved, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{:?}",
+            report.differences
+        );
+    }
+    for (value, differences) in [
+        (Recorded::NotRecorded, 0),
+        (Recorded::Value(None), 1),
+        (Recorded::Value(Some(2)), 1),
+    ] {
+        set(
+            &mut frame,
+            TableId::DivisionMovement,
+            TableRows::DivisionMovement(vec![DivisionMovementRow {
+                movement_priority: value,
+                source: 99,
+                ..base.clone()
+            }]),
+        );
+        let mut report = Report::default();
+        compare_division_movement(&frame, &saved, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences + 1,
+            "{:?}",
+            report.differences
+        );
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("source"))
+        );
+    }
+}
+
+#[test]
 fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
     use replay::rows::{AirWingRow, Recorded};
     let (mut frame, mut saved, _, _) = super::super::tests::fixture();
@@ -32,6 +181,7 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
     let links = BTreeMap::from([(101, &country)]);
     saved.air.wings.push(save::air::Wing {
         id,
+        pool_type: b"fixture_plane".to_vec(),
         name: None,
         accidents: None,
         experience: zero(),
@@ -40,6 +190,7 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
             allow_zero: false,
         },
         ace: None,
+        raid: None,
     });
     for (name, expected, differences) in [
         (
@@ -49,9 +200,9 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
         ),
         (
             Recorded::Value(Some(vec![0xff, 0, b'W'])),
-            // 1424AF5A0 stops at the first NUL; the suffix is a real difference.
+            // 1424AF5A0 stops at the first NUL; the suffix is unsaved.
             Some(vec![0xff]),
-            1,
+            0,
         ),
         (Recorded::Value(Some(Vec::new())), Some(Vec::new()), 0),
         (Recorded::Value(Some(Vec::new())), None, 1),
@@ -59,6 +210,7 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
         (Recorded::NotRecorded, Some(b"Old save name".to_vec()), 0),
         (Recorded::NotRecorded, None, 1),
     ] {
+        let suffix = matches!(&name, Recorded::Value(Some(bytes)) if bytes.contains(&0));
         saved.air_wings.insert(
             id,
             save::AirWing {
@@ -88,6 +240,15 @@ fn stored_air_wing_name_oracle_compares_bytes_presence_and_capture_refusals() {
         );
         let mut report = Report::default();
         compare_air_wings(&frame, &saved, &links, &mut report).unwrap();
+        if suffix {
+            assert!(
+                report
+                    .limitations
+                    .values()
+                    .flatten()
+                    .any(|field| field.ends_with(".name"))
+            );
+        }
         assert_eq!(
             report.differences.len(),
             differences,
@@ -412,6 +573,10 @@ fn naval_units_compare_locations_and_missing_rows_despite_membership_exclusions(
                 path: Vec::new(),
                 target: None,
                 alternate_path: Vec::new(),
+                movement_progress: None,
+                retreat: false,
+                withdrawal: false,
+                exile: false,
             },
         );
     }

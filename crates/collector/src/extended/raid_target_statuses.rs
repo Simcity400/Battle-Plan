@@ -18,20 +18,24 @@ pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::RaidTargetStatuses];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     detected: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 4096,
-            detected: 16_384,
-        }
-    }
-}
 impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let demand = native::demand(memory, base, state)?;
+        self.rows = self.rows.max(demand.rows);
+        self.detected = self.detected.max(demand.detected);
+        Ok(())
+    }
+
     /// Each target holds one detection bit per country slot. Never lowers.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         self.detected = self
@@ -104,7 +108,7 @@ impl Captured {
             return [0];
         }
         let started = qpc();
-        let walk = native::walk(
+        let walk = native::walk_growing(
             memory,
             base,
             game_state,

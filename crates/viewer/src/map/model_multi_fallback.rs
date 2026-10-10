@@ -453,18 +453,20 @@ fn pair_candidates<'a>(
     // `CEquipmentType+0x4E8`, the type itself unless another is named.
     let family = Some((
         equipment.family,
-        inputs
-            .content
-            .equipment_model(equipment.family)
-            .map_err(|error| error.to_string())?
-            .archetype,
+        Some(
+            inputs
+                .content
+                .equipment_model(equipment.family)
+                .map_err(|error| error.to_string())?
+                .archetype,
+        ),
     ));
     let (ideology, culture) = creator_operands(definition, inputs.links, inputs.countries)?;
     let geography = inputs.geography.context(country_ref)?;
     let graphical = inputs.graphics.lookup_with_limits(
         &equipment_graphics::Context {
             equipment: equipment_key,
-            archetype: equipment.archetype,
+            archetype: Some(equipment.archetype),
             family,
             subunit: Some(&group.subunit.key),
             ideology,

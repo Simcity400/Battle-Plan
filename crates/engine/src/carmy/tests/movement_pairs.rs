@@ -225,6 +225,59 @@ fn packet_route_staging_grows_off_capture_and_survives_reuse() {
 }
 
 #[test]
+fn worker_routes_grow_from_first_and_later_mod_sized_original_seed_headers() {
+    let mut source = shared_geometry_fixture();
+    source.bytes.resize(0x70000, 0);
+    let mut packet = carmy::MovementPacket::new(0, 0);
+    packet.enable_growth();
+    for length in [5_000_u32, 12_000] {
+        array(
+            &mut source.bytes,
+            A1 + crate::cunit::ORDINARY_ROUTE_DATA,
+            0x30000,
+            length,
+        );
+        array(
+            &mut source.bytes,
+            A1 + crate::cunit::ALTERNATE_ROUTE_DATA,
+            0x50000,
+            length,
+        );
+        for index in 0..length {
+            p32(&mut source.bytes, 0x30000 + index as usize * 4, 1);
+            p32(&mut source.bytes, 0x50000 + index as usize * 4, 77 + index);
+        }
+        let mut seeds = [carmy::DivisionSeed {
+            pointer: A1,
+            division: presentation_source()[0].division,
+            ..Default::default()
+        }];
+        carmy::capture_division_seeds(&source, &mut seeds);
+        let mut geometry = cprovince::GeometryPacket::default();
+        geometry.begin(&source, 0, GS).unwrap();
+        let outcome = carmy::capture_movement_inputs(
+            &source,
+            0,
+            GS,
+            &seeds,
+            Outcome::Rows { len: 1 },
+            0,
+            0,
+            &mut geometry,
+            &mut packet,
+        );
+        assert_eq!(outcome.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(packet.paths.len(), length as usize * 2);
+        assert_eq!(packet.paths[..length as usize], vec![1; length as usize]);
+        assert_eq!(
+            packet.paths[length as usize..],
+            (77..77 + length).collect::<Vec<_>>()
+        );
+        packet.clear();
+    }
+}
+
+#[test]
 fn packet_pair_failures_keep_primary_arena_prefixes_and_admission() {
     let mut source = shared_geometry_fixture();
     array(

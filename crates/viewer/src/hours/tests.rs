@@ -62,6 +62,7 @@ fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
         behind: 0,
         playing: true,
         perspective: Default::default(),
+        show_allied_plans: false,
         counters: Default::default(),
         view: test_view(),
         have: vec![],
@@ -94,7 +95,18 @@ fn playing_finishes_in_flight_hours_at_or_before_the_playhead() {
         assert!(!old.invalidates(&moved));
     }
     next = old.clone();
+    next.counters.selected = Arc::new(BTreeSet::from([
+        crate::map::unit_selection::Unit::Division(7),
+    ]));
+    next.counters.hovered = Some(crate::map::unit_selection::Unit::Division(7));
+    assert!(!old.invalidates(&next));
+    next.counters.settings.nato = !next.counters.settings.nato;
+    assert!(old.invalidates(&next));
+    next = old.clone();
     next.perspective.fog = !next.perspective.fog;
+    assert!(old.invalidates(&next));
+    next = old.clone();
+    next.show_allied_plans = true;
     assert!(old.invalidates(&next));
 }
 
@@ -291,6 +303,7 @@ fn perspective_changes_discard_old_hour_acknowledgements() {
         behind: 2,
         playing: false,
         perspective: Default::default(),
+        show_allied_plans: false,
         counters: Default::default(),
         view: test_view(),
         have: vec![10, 11],

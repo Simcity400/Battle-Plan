@@ -8,6 +8,10 @@ import type { CampaignMapSettings, DashboardClient, DashboardSource, MapGraphics
 const ANTI_ALIASING = 'Anti-aliasing';
 const TEXTURE_QUALITY = 'Texture quality';
 const graphics: [Exclude<keyof MapGraphics, "samples" | "textureQuality">, string][] = [
+  ['fullResolution', 'Full map resolution'],
+  ['dayNight', 'Day/night cycle'],
+  ['natoCounters', 'NATO counters'],
+  ['showAlliedPlans', 'Allied battle plans'],
   ['highGfxShaders', 'High-quality shaders'], ['waterReflections', 'Water reflections'], ['trees', 'Trees'], ['shadows', 'Shadows'], ['rivers', 'Rivers'], ['citySprawl', 'City sprawl'],
   ['buildings', '3D buildings'], ['units', '3D units'], ['weather', 'Weather effects'], ['sky', 'Sky'],
 ];
@@ -72,8 +76,11 @@ export default function MapAppearance({ source, client, global = false, viewId, 
     </select></label>
     {global && <VideoControls video={video} busy={busy} />}
     </div>
-    <div className="map-graphics-grid">{graphics.map(([key, label]) => <label className="map-option-row" key={key}><span>{label}</span><input type="checkbox" role="switch" disabled={!draft || busy} checked={draft?.graphics[key] ?? false} aria-checked={draft ? draft.graphics[key] : "mixed"}
-      onChange={event => { if (draft) setDraft({ ...draft, useGameGraphics: false, graphics: { ...draft.graphics, [key]: event.currentTarget.checked } }); }} /></label>)}</div>
+    <div className="map-graphics-grid">{graphics.map(([key, label]) => {
+      const value = key === 'natoCounters' ? draft?.graphics.natoCounters ?? reply?.inheritedSettings.graphics.natoCounters : draft?.graphics[key];
+      return <label className="map-option-row" key={key}><span>{label}</span><input type="checkbox" role="switch" disabled={!draft || busy} checked={value ?? false} aria-checked={value ?? "mixed"}
+        onChange={event => { if (draft) setDraft({ ...draft, useGameGraphics: false, graphics: { ...draft.graphics, [key]: event.currentTarget.checked } }); }} /></label>;
+    })}</div>
     </div>
     <button type="button" className="map-menu-action graphics-reset" disabled={busy || !(draft && reply && (!global || reply.gameGraphics)) && !(global && video.canReset)} onClick={() => { if (draft && reply && (!global || reply.gameGraphics)) setDraft({ ...draft, useGameGraphics: true, graphics: reply.inheritedSettings.graphics }); if (global) video.reset(); }}>{global ? 'Revert to the game settings' : `Use ${parentLabel}`}</button>
     {global && reply?.gameGraphicsError && <p className="map-menu-note">Game graphics settings unavailable: {reply.gameGraphicsError}</p>}

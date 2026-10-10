@@ -267,9 +267,12 @@ fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
         }]));
         set(TableRows::ShipModels(vec![ShipModelRow {
             ship: SHIP,
-            hull_sprite: b"destroyer".to_vec(),
+            fallback_sprite: b"destroyer".to_vec(),
             formation_flags: 1 << 8,
-            counter: Some(ShipCounterInputs::default()),
+            counter: Some(ShipCounterInputs {
+                definition_valid: 1,
+                ..Default::default()
+            }),
             ..Default::default()
         }]));
         set(TableRows::TaskForceMapMotion(vec![TaskForceMapMotionRow {
@@ -318,9 +321,11 @@ fn a_patrol_here_has_no_formation_and_one_elsewhere_keeps_its_hulls() {
                 1.0,
             )],
             scale: 1.0,
+            ..ShipAssets::default()
         },
         // Province 5 has content bounds, which model admission requires.
         bounds: std::sync::Arc::new(BTreeMap::from([(5, [0.0, 0.0, 1.0, 1.0])])),
+        registered: ["destroyer_entity".to_owned()].into(),
         ..UnitModelAssets::off(String::new())
     };
     assets
@@ -392,9 +397,10 @@ fn formation_fixture(
         .map(|(ordinal, formation_flags)| ShipModelRow {
             ship: ((ordinal as u64 + 1) << 32) | 51,
             formation_flags,
-            hull_sprite: b"synthetic_hull".to_vec(),
+            fallback_sprite: b"synthetic_hull".to_vec(),
             counter: Some(ShipCounterInputs {
                 roster_ordinal: ordinal as u32,
+                definition_valid: 1,
                 ..Default::default()
             }),
             ..Default::default()
@@ -458,6 +464,7 @@ fn formation_fixture(
                 1.0,
             )],
             scale: 0.6,
+            ..Default::default()
         },
         gates: Gates {
             ships: 240.0,
@@ -467,6 +474,7 @@ fn formation_fixture(
             province,
             [3240.0, 1740.0, 3260.0, 1760.0],
         )])),
+        registered: ["synthetic_hull_entity".to_owned()].into(),
         ..UnitModelAssets::off(String::new())
     };
     assets
@@ -581,7 +589,7 @@ fn l4e9_ordinary_formations_exclude_both_combat_slots() {
                 report
                     .selection_errors
                     .iter()
-                    .filter(|(reason, _)| reason.starts_with("naval_combat_graphics:"))
+                    .filter(|(reason, _)| reason.starts_with("naval_combat_references:"))
                     .map(|(_, count)| count)
                     .sum::<usize>(),
                 1
@@ -841,6 +849,7 @@ fn l4e9_malmo_rosters_hide_port_hulls_and_at_sea_share_one_native_slot() {
                 region: &|_| Some(206),
                 scale: &|_, _| 0.22,
             },
+            None,
             &mut ModelReport::default(),
         )
         .unwrap();

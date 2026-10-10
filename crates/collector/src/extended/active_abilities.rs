@@ -2,7 +2,7 @@
 //!
 //! Abilities start, end and change phase at any hour, so the table is hourly. It runs in the
 //! Ordinary pool job over the authenticated country roster view, never on the game thread;
-//! rows and token bytes grow from the demand a short hour reports.
+//! rows and token bytes grow from the original headers before publication.
 use crate::sampling::qpc;
 use engine::{Memory, active_ability_record, walk::Outcome};
 use replay::{
@@ -10,23 +10,31 @@ use replay::{
     rows::{TableId, tables},
 };
 
-use super::characters::{Buffer, ability_row, valid, view, walk_abilities};
+use super::characters::{Buffer, ability_row, valid, view, walk_abilities_growing};
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ActiveAbilities];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: usize,
     pub bytes: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 128,
-            bytes: 8192,
-        }
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let (rows, bytes) = super::characters::ability_demand(memory, base, state)?;
+        self.raise(rows, bytes);
+        Ok(())
+    }
+    pub(crate) fn raise(&mut self, rows: usize, bytes: usize) {
+        crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(rows, 1));
+        crate::country_scale::raise(&mut self.bytes, crate::country_scale::rows(bytes, 1));
     }
 }
 
@@ -63,7 +71,7 @@ impl Captured {
     pub fn capture(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
-        let result = walk_abilities(
+        let result = walk_abilities_growing(
             memory,
             base,
             game_state,
@@ -91,8 +99,52 @@ impl Captured {
 
 #[cfg(test)]
 mod tests {
+    use super::super::characters::walk_abilities;
     use super::*;
     use replay::rows::TableRows;
+
+    #[test]
+    fn first_and_later_hours_grow_from_5000_country_headers() {
+        use engine::{ccountry, cgame_state};
+        let mut bytes = world(5_000, 1);
+        let mut captured = Captured::with_capacities(&Capacities { rows: 0, bytes: 0 });
+        captured.capture(
+            &engine::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            GAME_STATE,
+        );
+        assert_eq!(captured.outcomes(), [Outcome::Rows { len: 5_000 }]);
+        assert_eq!(captured.buffer.bytes.len, 35_000);
+        let record = bytes[RECORDS..RECORDS + active_ability_record::STRIDE].to_vec();
+        let data = bytes.len();
+        for _ in 0..4_096 {
+            bytes.extend_from_slice(&record);
+        }
+        let header = COUNTRY0 + ccountry::ACTIVE_ABILITIES;
+        bytes[header..header + 8].copy_from_slice(&(data as u64).to_le_bytes());
+        for offset in [8, 12] {
+            bytes[header + offset..header + offset + 4].copy_from_slice(&4_096_u32.to_le_bytes());
+        }
+        captured.capture(
+            &engine::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            GAME_STATE,
+        );
+        assert_eq!(captured.outcomes(), [Outcome::Rows { len: 9_095 }]);
+        assert_eq!(captured.buffer.bytes.len, 9_095 * 7);
+        assert_eq!(captured.buffer.rows.rows[4_095].ordinal, 4_095);
+        assert_eq!(
+            bytes[GAME_STATE + cgame_state::COUNTRIES + 12
+                ..GAME_STATE + cgame_state::COUNTRIES + 16],
+            5_001_u32.to_le_bytes()
+        );
+    }
 
     #[test]
     fn conversion_refuses_bad_ranges_and_duplicate_keys() {

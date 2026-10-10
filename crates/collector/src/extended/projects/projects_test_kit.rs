@@ -420,6 +420,17 @@ pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> C
     captured
 }
 
+pub(crate) fn job() -> ProjectsJob {
+    let mut job = ProjectsJob::new();
+    job.worker_growth = false;
+    job.log = crate::raw::RawLog::new(8_192, 1 << 20);
+    job.census.reserve_exact(16);
+    job.statuses.reserve_exact(16);
+    job.pointers.reserve_exact(256);
+    job.update_capacity_charge();
+    job
+}
+
 /// Capture one current payload, then decode into fresh pooled buffers.
 pub(crate) fn split(
     memory: &impl engine::Memory,
@@ -431,7 +442,7 @@ pub(crate) fn split(
         game_state: GAME_STATE,
         active: true,
     };
-    let mut first = ProjectsJob::new();
+    let mut first = job();
     let report = copy_projects_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     let mut ticks = [0u64; 4];

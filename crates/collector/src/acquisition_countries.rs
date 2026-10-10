@@ -8,6 +8,14 @@ pub(crate) struct Request {
     countries: Arc<Cache>,
     rows: Vec<ccountry::Row>,
     links: GatherRequest<Vec<ccountry::LinkRow>>,
+    naming: Option<Naming>,
+}
+struct Naming {
+    appearance: crate::extended::country_appearance::Captured,
+    templates: crate::extended::division_templates::Captured,
+    hour: i32,
+    force_full: bool,
+    transport_admission: crate::transport_admission::Admission,
 }
 
 #[derive(Clone, Copy)]
@@ -43,12 +51,91 @@ impl Request {
             countries: Arc::clone(countries),
             rows: std::mem::take(rows),
             links: GatherRequest::take(base, game_state, links),
+            naming: None,
         }
     }
 
     pub(crate) fn restore(self, rows: &mut Vec<ccountry::Row>, links: &mut Vec<ccountry::LinkRow>) {
+        assert!(
+            self.naming.is_none(),
+            "country naming owners require matching restore"
+        );
         *rows = self.rows;
         self.links.restore(links);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn take_with_naming(
+        countries: &Arc<Cache>,
+        base: usize,
+        game_state: usize,
+        rows: &mut Vec<ccountry::Row>,
+        links: &mut Vec<ccountry::LinkRow>,
+        appearance: &mut crate::extended::country_appearance::Captured,
+        templates: &mut crate::extended::division_templates::Captured,
+        hour: i32,
+        force_full: bool,
+    ) -> Self {
+        let mut request = Self::take(countries, base, game_state, rows, links);
+        request.naming = Some(Naming {
+            appearance: std::mem::replace(
+                appearance,
+                crate::extended::country_appearance::Captured::vacant(),
+            ),
+            templates: std::mem::replace(
+                templates,
+                crate::extended::division_templates::Captured::vacant(),
+            ),
+            hour,
+            force_full,
+            transport_admission: crate::transport_admission::current(base, game_state, hour),
+        });
+        request
+    }
+    pub(crate) fn has_naming(&self) -> bool {
+        self.naming.is_some()
+    }
+    pub(crate) fn fail_naming(&mut self, reason: &'static str) -> Report {
+        if let Some(naming) = &mut self.naming {
+            naming.appearance.fail_preacquired(
+                self.links.base,
+                self.links.game_state,
+                naming.hour,
+                reason,
+            );
+            naming.templates.fail_preacquired(
+                self.links.base,
+                self.links.game_state,
+                naming.hour,
+                naming.force_full,
+                reason,
+            );
+        }
+        Report {
+            countries: Outcome::Unavailable { reason },
+            links: GatherReport {
+                result: Outcome::Unavailable { reason },
+            },
+            countries_ticks: 0,
+            links_ticks: 0,
+        }
+    }
+    pub(crate) fn restore_with_naming(
+        mut self,
+        rows: &mut Vec<ccountry::Row>,
+        links: &mut Vec<ccountry::LinkRow>,
+        appearance: &mut crate::extended::country_appearance::Captured,
+        templates: &mut crate::extended::division_templates::Captured,
+        failure: Option<&'static str>,
+    ) {
+        if let Some(reason) = failure {
+            self.fail_naming(reason);
+        }
+        if let Some(naming) = self.naming.take() {
+            *appearance = naming.appearance;
+            *templates = naming.templates;
+        }
+        self.restore(rows, links);
     }
 
     pub(crate) fn run(&mut self, memory: &impl Memory) -> Report {
@@ -57,14 +144,122 @@ impl Request {
         let base = self.links.base;
         let game_state = self.links.game_state;
         let begin = crate::sampling::qpc();
-        let countries = ccountry::walk(&cached, base, game_state, &mut self.rows);
+        let prior_convoy_required = self
+            .naming
+            .as_ref()
+            .map(|naming| naming.appearance.convoys.required());
+        if let Some(naming) = &mut self.naming {
+            naming.appearance.raw.begin(base, game_state, naming.hour);
+            naming
+                .appearance
+                .convoys
+                .begin(naming.hour, self.rows.len());
+            naming.appearance.spotting_owners.begin(
+                naming.hour,
+                Err("transport original country pass not authenticated"),
+            );
+            naming.appearance.spotting_owners.begin_regions(Ok(0));
+            // The original shared authentication seed may have failed before
+            // Countries began. Its later transparent fallback is still an
+            // original family operation, but cannot heal that first control
+            // failure for the new authority or authorize a Map source retry.
+            if let engine::country_memory::SeedStatus::Unavailable { reason } = cached.seed_status()
+            {
+                naming.appearance.raw.link_controls(Err(reason));
+                naming.appearance.raw.table(
+                    engine::raw_country_observations::Source::Countries,
+                    Outcome::Unavailable { reason },
+                );
+            }
+        }
+        let countries = match &mut self.naming {
+            Some(naming) => {
+                let sample_hour = naming.hour;
+                let appearance = &mut naming.appearance;
+                let convoys = &mut appearance.convoys;
+                let spotting = &mut appearance.spotting_owners;
+                let spotting_allowed = !matches!(
+                    cached.seed_status(),
+                    engine::country_memory::SeedStatus::Unavailable { .. }
+                );
+                if naming
+                    .transport_admission
+                    .check(base, game_state, naming.hour)
+                    .is_ok()
+                {
+                    ccountry::walk_observed_with_transport(
+                        &cached,
+                        base,
+                        game_state,
+                        &mut self.rows,
+                        &mut appearance.raw,
+                        &mut |country, original| {
+                            convoys.observe(&cached, base, country, original);
+                        },
+                        &mut |reader, physical_slot, original| {
+                            if spotting_allowed {
+                                if physical_slot == 0 {
+                                    spotting.begin(sample_hour, Ok(reader.count() as usize));
+                                    spotting.begin_regions(Ok(0));
+                                }
+                                spotting.country(&cached, base, reader, physical_slot, original);
+                            }
+                        },
+                    )
+                } else {
+                    if let Some(required) = prior_convoy_required {
+                        convoys.retain_required(required);
+                    }
+                    convoys.fail();
+                    spotting.fail();
+                    ccountry::walk_observed(
+                        &cached,
+                        base,
+                        game_state,
+                        &mut self.rows,
+                        &mut appearance.raw,
+                    )
+                }
+            }
+            None => ccountry::walk(&cached, base, game_state, &mut self.rows),
+        };
+        if let Some(naming) = &mut self.naming {
+            naming.appearance.convoys.finish(countries);
+        }
         let countries_ticks = crate::sampling::qpc().saturating_sub(begin).max(0);
+        drop(_countries_reads);
         let _links_reads = crate::read_accounting::table(replay::rows::TableId::CountryLinks);
         let begin = crate::sampling::qpc();
-        let links = self
-            .links
-            .run(|rows| ccountry::walk_links(&cached, base, game_state, rows));
+        let links = self.links.run(|rows| match &mut self.naming {
+            Some(naming) => ccountry::walk_links_observed(
+                &cached,
+                base,
+                game_state,
+                rows,
+                &mut naming.appearance.raw,
+            ),
+            None => ccountry::walk_links(&cached, base, game_state, rows),
+        });
         let links_ticks = crate::sampling::qpc().saturating_sub(begin).max(0);
+        drop(_links_reads);
+        if let Some(naming) = &mut self.naming {
+            naming.appearance.raw.table(
+                engine::raw_country_observations::Source::Countries,
+                countries,
+            );
+            naming
+                .appearance
+                .capture_preacquired(&cached, base, game_state, naming.hour);
+            naming.templates.capture_preacquired(
+                &cached,
+                base,
+                game_state,
+                naming.hour,
+                naming.force_full,
+                &mut naming.appearance.raw,
+            );
+            naming.appearance.raw.seal();
+        }
         Report {
             countries,
             links,
@@ -386,6 +581,101 @@ mod tests {
             assert_eq!((rows.as_ptr(), links.as_ptr()), pointers);
             assert_eq!(Arc::strong_count(&snapshot), 1);
             assert_eq!(pool.calibration().uncollected, 0);
+        }
+    }
+
+    #[test]
+    fn transport_admission_refuses_only_convoy_suffix_and_preserves_country_rows() {
+        use crate::extended::{country_appearance, division_templates};
+        let bytes = fixture();
+        let snapshot = snapshot(&bytes, 256);
+        let memory = Traced::new(&bytes);
+        let mut appearance = country_appearance::Captured::with_capacities(
+            &country_appearance::Capacities::with_rows(2),
+        );
+        let mut templates = division_templates::Captured::vacant();
+        let mut rows = vec![ccountry::Row::default(); 2];
+        let mut links = vec![ccountry::LinkRow::default(); 8];
+        let mut expected = vec![ccountry::Row::default(); 2];
+        let expected_outcome = ccountry::walk(&snapshot.view(&memory), 0, STATE, &mut expected);
+
+        // Construct on the callback; execute after its thread-local scope has
+        // retired, as the production worker does using its copied admission.
+        for (hour, callback_state, busy, admitted) in [
+            (7, STATE, 0, true),
+            (8, STATE, 1, false),
+            (9, STATE + 8, 0, false),
+            (10, STATE, 0, true),
+        ] {
+            let clock = cgame_state::Clock {
+                game_state: STATE as u64,
+                hour,
+                tick_busy: busy,
+                play_time: 0,
+                play_session_started_at: 3,
+                seed: 0,
+                campaign_id: engine::capture_text::Owned::default(),
+                speed: 0,
+            };
+            let mut request = {
+                let _scope = crate::transport_admission::Scope::enter_fixture(
+                    0,
+                    callback_state,
+                    Some(clock),
+                );
+                Request::take_with_naming(
+                    &snapshot,
+                    0,
+                    STATE,
+                    &mut rows,
+                    &mut links,
+                    &mut appearance,
+                    &mut templates,
+                    hour,
+                    false,
+                )
+            };
+            let report = request.run(&memory);
+            request.restore_with_naming(
+                &mut rows,
+                &mut links,
+                &mut appearance,
+                &mut templates,
+                None,
+            );
+            assert_eq!(report.countries, expected_outcome);
+            assert_eq!(
+                rows, expected,
+                "transport admission preserves the original country result"
+            );
+            let packet = appearance.convoys.projection(7).unwrap();
+            assert_eq!(
+                packet.is_some(),
+                admitted,
+                "a current refusal cannot resurrect the prior packet"
+            );
+            if let Some(packet) = packet {
+                assert_eq!(packet.sample_hour, hour);
+            }
+            assert!(
+                appearance.convoys.required().countries >= 2,
+                "country demand survives refusal"
+            );
+            if !admitted {
+                assert!(
+                    appearance.convoys.required().pool >= 9000,
+                    "refused boundary preserves observed pool demand"
+                );
+            } else if hour == 7 {
+                appearance.convoys.retain_required(
+                    crate::extended::transport_convoys::Capacities {
+                        countries: 2,
+                        pool: 9000,
+                        reservations: 7000,
+                        variants: 8000,
+                    },
+                );
+            }
         }
     }
 }

@@ -2,7 +2,10 @@ use super::*;
 
 #[test]
 fn border_width_projection_preserves_signed_zero_and_ordinary_absence() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&Capacities {
+        details: 1,
+        ..Capacities::default()
+    });
     captured.details.outcome = Outcome::Rows { len: 1 };
     captured.details.rows[0].row.id = 62;
     for combat_width in [i64::MIN, -1, 0, 8_000_000, i64::MAX] {
@@ -61,7 +64,7 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         base: 0,
         bytes: &image,
     };
-    let mut sides = [
+    let mut sides = vec![
         ModifierSide {
             combat: 62,
             ..Default::default()
@@ -72,12 +75,11 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
             ..Default::default()
         },
     ];
-    let mut members = [ModifierMember::default(); 2];
-    let mut values = [carmy_combat_inputs::Modifier::default(); 1];
+    let mut members = vec![ModifierMember::default(); 2];
+    let mut values = vec![carmy_combat_inputs::Modifier::default(); 1];
     let mut test_sources = Sources::new();
     let mut images = Images::default();
     let mut scratch = Scratch::default();
-    scratch.ensure();
     let mut commander_bytes = [0_u8; 16];
     let mut grown_commander_bytes = vec![0_u8; 300];
     let mut destination = Destination {
@@ -86,25 +88,25 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         images: &mut images,
         scratch: &mut scratch,
         name_groups: &mut engine::cname_group_member::GroupKeys::default(),
-        names: engine::cname_group_member::Names {
-            bytes: &mut [],
+        names: engine::cname_group_member::NameArena {
+            bytes: engine::walk::Buffer::Growing(&mut Vec::new()),
             len: 0,
             required: 0,
         },
         reference: false,
-        details: &mut [],
+        details: &mut Vec::new(),
         division_commanders: &mut Vec::new(),
         commander_names: engine::cname_group_member::Names {
             bytes: &mut commander_bytes,
             len: 0,
             required: 0,
         },
-        commander_keys: &mut [],
-        commander_traits: &mut [],
-        detail_text: &mut [],
-        timed_traits: &mut [],
-        air_counts: &mut [],
-        learning_traits: &mut [],
+        commander_keys: &mut Vec::new(),
+        commander_traits: &mut Vec::new(),
+        detail_text: &mut Vec::new(),
+        timed_traits: &mut Vec::new(),
+        air_counts: &mut Vec::new(),
+        learning_traits: &mut Vec::new(),
         unit_scratch: &mut Vec::new(),
         detail_used: cland_combat::DetailCounts::default(),
         detail_required: cland_combat::DetailCounts::default(),
@@ -113,18 +115,18 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
         required_commander_keys: 0,
         divisions: &mut Vec::new(),
         sides: &mut sides,
-        combat_sides: &mut [],
-        country_tags: &mut [],
+        combat_sides: &mut Vec::new(),
+        country_tags: &mut Vec::new(),
         country_tags_progress: Progress::default(),
         country_set_limit: Ok(1),
-        rosters: &mut [],
+        rosters: &mut Vec::new(),
         members: &mut members,
         modifiers: &mut values,
         width_terms: &mut Vec::new(),
         width_progress: Progress::default(),
         progress: [Progress::default(); N],
         arenas: [Progress::default(); N],
-        exile_tags: &mut [],
+        exile_tags: &mut Vec::new(),
         exile_progress: Progress::default(),
         reinforcement_modifiers: &mut Vec::new(),
         supply_terms: &mut Vec::new(),
@@ -141,17 +143,21 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
     destination.modifier_member(&memory, 0, 0x1000, 0x1234_0000_0033, 0, Some(0));
     assert_eq!(destination.arenas[1].required, 1);
     assert_eq!(destination.arenas[2].required, 2);
-    assert_eq!(destination.arenas[2].len, 0);
+    assert_eq!(destination.arenas[2].len, 2);
     destination.finish();
     assert_eq!(
         destination.progress[2].outcome(Outcome::Rows { len: 1 }),
-        Outcome::Truncated {
-            len: 1,
-            unread_rows: 1
-        }
+        Outcome::Rows { len: 2 }
     );
-    assert_eq!(destination.sides[0].side, 1);
-    assert_eq!(destination.sides[0].len, 0);
+    assert_eq!(destination.sides[0].side, 0);
+    assert_eq!(destination.sides[0].len, 1);
+    assert_eq!(
+        destination.modifiers[..2]
+            .iter()
+            .map(|m| m.id)
+            .collect::<Vec<_>>(),
+        [27, 2]
+    );
 
     // The empty division destination grows from the original source
     // count; native failures still fail both consumers and do not prevent
@@ -254,7 +260,7 @@ fn modifier_capacity_and_division_growth_keep_independent_failures() {
     };
     let expected = direct(&memory).unwrap().unwrap();
     let complete_reads = memory.reads.take();
-    let mut keys = [CommanderKey::default(); 1];
+    let mut keys = vec![CommanderKey::default(); 1];
     destination.commander_keys = &mut keys;
     destination.progress = [Progress::default(); N];
     assert_eq!(destination.commander(&memory, 0, handle), Some(0));
@@ -412,7 +418,6 @@ fn roster_spans_project_committed_and_reserve_lists_in_arena_order() {
 
 /// The pass's destination over a capture's own buffers, as `pass` builds it.
 fn destination(c: &mut Captured) -> Destination<'_> {
-    c.scratch.ensure();
     Destination {
         sources: &mut c.sources,
         commanders: Default::default(),
@@ -420,8 +425,8 @@ fn destination(c: &mut Captured) -> Destination<'_> {
         scratch: &mut c.scratch,
         reference: false,
         name_groups: &mut c.name_cache,
-        names: engine::cname_group_member::Names {
-            bytes: &mut c.division_names.first,
+        names: engine::cname_group_member::NameArena {
+            bytes: engine::walk::Buffer::Growing(&mut c.division_names.first),
             len: 0,
             required: 0,
         },
@@ -581,12 +586,13 @@ fn memory_less() -> engine::memory::SliceMemory<'static> {
     }
 }
 
-/// The exile arena is a fixed destination during the pass: a division whose
-/// lists do not fit is counted, and the spool grows the arena from that
-/// demand rather than the pass allocating it.
+/// Recycling preserves the original counted demand in the next frame.
 #[test]
 fn exile_arena_grows_off_the_pass_from_its_counted_demand() {
-    let mut c = Capacities::default();
+    let mut c = Capacities {
+        exile_tags: 3,
+        ..Capacities::default()
+    };
     let mut captured = Captured::with_capacities(&c);
     let before = captured.exile_tags.first.len();
     captured.exile_tags.len = 3;
@@ -844,7 +850,7 @@ fn source_failures_and_primary_arena_capacity_are_explicit() {
         bytes: &[],
     };
     captured.capture(&memory, 0, 0);
-    assert!(captured.commander_keys.len() >= captured.census_participants.len());
+    assert_eq!(captured.commander_keys.len(), c.census_participants);
     assert!(
         captured
             .tables()
@@ -900,7 +906,11 @@ fn source_failures_and_primary_arena_capacity_are_explicit() {
 
 #[test]
 fn combat_sides_project_independently_of_the_larger_tables() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&Capacities {
+        country_tags: 5,
+        combat_sides: 1,
+        ..Capacities::default()
+    });
     captured.details.outcome = Outcome::Unavailable {
         reason: "tactic context failed",
     };

@@ -282,6 +282,11 @@ fn fixture() -> Vec<u8> {
         WING + engine::cair_wing::REFERENCE_TYPE,
         &((77_u64 << 32) | u64::from(engine::cair_wing::TYPE)).to_le_bytes(),
     );
+    put(
+        &mut bytes,
+        WING + engine::cair_wing::POOL,
+        &(POOL as u64).to_le_bytes(),
+    );
     bytes
 }
 
@@ -381,6 +386,8 @@ fn every_family_keeps_native_order_widths_and_absent_values() {
             slot: 1,
             capacity_raw: engine::ccountry_air_container::INITIAL_CAPACITY_RAW,
             wings: vec![(77 << 32) | u64::from(engine::cair_wing::TYPE)],
+            carrier: rows::Recorded::Value(None),
+            transport_planes: rows::Recorded::Value(None),
         }]
     );
 }
@@ -488,8 +495,8 @@ fn free_fog_acquisition_preserves_frame_state_until_owned_decode() {
         ),
         (4, 8, 4)
     );
-    let mut radar_first = RadarJob::new();
-    let mut intel_first = IntelJob::new();
+    let mut radar_first = RadarJob::with_storage(4, 8);
+    let mut intel_first = IntelJob::with_storage(4, 0);
     let radar = copy_radar_refresh(&memory, radar_ctx, &mut radar_first);
     let intel = copy_intel_refresh_with_divisions(&memory, intel_ctx, &mut intel_first, None);
     assert!(radar.raw_ok && intel.raw_ok);
@@ -799,10 +806,11 @@ fn radar_staging_overflow_falls_back_to_typed_walk() {
 }
 
 #[test]
-fn radar_pools_cover_appendix_worst_case() {
+fn radar_pools_start_without_chosen_group_or_coverage_capacity() {
     let job = RadarJob::new();
-    assert!(job.rows.len() >= 18);
-    assert!(job.provinces.len() >= 65_536);
+    assert_eq!(job.allocated_bytes(), 0);
+    assert!(job.rows.is_empty());
+    assert!(job.provinces.is_empty());
 }
 
 #[test]
@@ -946,9 +954,10 @@ fn intel_staging_overflow_falls_back_to_typed_walk() {
 }
 
 #[test]
-fn intel_pools_cover_appendix_worst_case() {
+fn intel_pools_start_without_chosen_unit_capacity() {
     let job = IntelJob::new();
-    assert!(job.rows.len() >= 3_200 + 500);
+    assert_eq!(job.allocated_bytes(), 0);
+    assert!(job.rows.is_empty());
     assert!(job.provinces.is_empty());
 }
 

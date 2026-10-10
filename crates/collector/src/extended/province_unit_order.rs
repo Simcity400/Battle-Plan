@@ -26,19 +26,35 @@ pub(crate) struct CaptureReport {
     pub ticks: [u64; N],
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     arena: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 16384,
-            arena: 32768,
-        }
+
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        // Empty row storage still walks all +E0/+EC and +F8/+104 headers
+        // (141277A00, 1418DDF50), without acquiring the unit bodies.
+        let demand =
+            cprovince::walk_unit_order_with_land(memory, base, state, &mut [], &mut [], |_, _| {
+                Ok(())
+            });
+        let count = crate::country_scale::table_demand::rows(demand.outcome)?;
+        crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(count, 1));
+        crate::country_scale::raise(
+            &mut self.arena,
+            crate::country_scale::rows(demand.required, 1),
+        );
+        Ok(())
     }
 }
+
 pub struct Captured {
     rows: CaptureRows<cprovince::UnitOrderRow>,
     arena: Arena<u64>,
@@ -78,6 +94,8 @@ impl Captured {
             + self.land.capacity() * std::mem::size_of::<(u32, u64)>()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
+        c.rows = c.rows.max(self.rows.rows.len());
+        c.arena = c.arena.max(self.arena.first.len());
         self.rows.grow(&mut c.rows);
         self.arena.grow(&mut c.arena);
     }
@@ -105,7 +123,7 @@ impl Captured {
         let _reads = crate::read_accounting::table(TableId::ProvinceUnitOrder);
         let begin = qpc();
         let land = &mut self.land;
-        let acquired = cprovince::walk_unit_order_with_land(
+        let acquired = cprovince::walk_unit_order_growing_with_land(
             memory,
             base,
             state,

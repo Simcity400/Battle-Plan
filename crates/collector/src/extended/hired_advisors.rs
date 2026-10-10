@@ -29,13 +29,7 @@ pub const TABLES: [TableId; N] = [
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("active and retired character records", 1, &[1, 3])];
 
-/// Appointed advisors per country slot the first capture is sized for; the
-/// engine's own slot counts come from content, so this only presizes.
-const PER_COUNTRY: usize = 4;
-/// Idea token and slot bytes per advisor the first capture is sized for.
-const BYTES_PER_ADVISOR: usize = 48;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     bytes: usize,
@@ -46,29 +40,23 @@ pub struct Capacities {
     available: usize,
     available_bytes: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 1024,
-            bytes: 1024 * BYTES_PER_ADVISOR,
-            active: 1024,
-            tokens: 256,
-            token_bytes: 256 * BYTES_PER_ADVISOR,
-            retired: 256,
-            available: 0,
-            available_bytes: 0,
-        }
-    }
-}
 
 impl Capacities {
-    /// A few rows per country slot. Never lowers.
-    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
-        let rows = crate::country_scale::rows(slots, PER_COUNTRY);
-        self.rows = self.rows.max(rows);
-        self.bytes = self.bytes.max(rows.saturating_mul(BYTES_PER_ADVISOR));
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let (rows, bytes) = native::demand_appointed(memory, base, state)?;
+        self.raise_for_appointed_advisors(rows, bytes);
+        Ok(())
     }
-
+    pub(crate) fn raise_for_appointed_advisors(&mut self, count: usize, bytes: usize) {
+        use crate::country_scale::{raise, rows};
+        raise(&mut self.rows, rows(count, 1));
+        raise(&mut self.bytes, rows(bytes, 1));
+    }
     /// CountryCharacters and CountryRetiredCharacters from the live record
     /// totals (`country_scale::observe_politics`), with the three-quarters
     /// growth rule's headroom. Never lowers.
@@ -188,7 +176,7 @@ impl Captured {
         if should_walk(TABLES[0], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[0]);
             let started = qpc();
-            let walk = native::walk(
+            let walk = native::walk_growing(
                 memory,
                 base,
                 game_state,
@@ -211,19 +199,19 @@ impl Captured {
         if active || retired {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let started = qpc();
-            let [active_outcome, retired_outcome] = native::walk_records(
+            let [active_outcome, retired_outcome] = native::walk_records_buffer(
                 memory,
                 base,
                 game_state,
                 if active {
-                    &mut self.active.rows
+                    engine::walk::Buffer::Growing(&mut self.active.rows)
                 } else {
-                    &mut []
+                    engine::walk::Buffer::Fixed(&mut [])
                 },
                 if retired {
-                    &mut self.retired.rows
+                    engine::walk::Buffer::Growing(&mut self.retired.rows)
                 } else {
-                    &mut []
+                    engine::walk::Buffer::Fixed(&mut [])
                 },
             );
             self.active.outcome = active_outcome;
@@ -240,7 +228,7 @@ impl Captured {
         if should_walk(TABLES[2], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[2]);
             let started = qpc();
-            let walk = advisor_tokens::walk(
+            let walk = advisor_tokens::walk_growing(
                 memory,
                 base,
                 game_state,
@@ -259,7 +247,7 @@ impl Captured {
         if should_walk(TABLES[4], hour, force_full) {
             let _reads = crate::read_accounting::table(TABLES[4]);
             let started = qpc();
-            let walk = native::walk_available(
+            let walk = native::walk_available_growing(
                 memory,
                 base,
                 game_state,
@@ -423,13 +411,14 @@ mod tests {
     }
 
     #[test]
-    fn capacities_follow_the_live_country_slots() {
+    fn capacities_follow_live_appointed_counts_and_token_bytes() {
         let mut capacity = Capacities::default();
-        capacity.raise_for_countries(5_000);
-        assert!(capacity.rows >= 5_000 * PER_COUNTRY);
-        assert!(capacity.bytes >= capacity.rows * BYTES_PER_ADVISOR);
+        assert_eq!((capacity.rows, capacity.bytes), (0, 0));
+        capacity.raise_for_appointed_advisors(5_000 * 137, 5_000 * 137 * 311);
+        assert!(capacity.rows >= 5_000 * 137);
+        assert!(capacity.bytes >= 5_000 * 137 * 311);
         let raised = capacity;
-        capacity.raise_for_countries(10);
+        capacity.raise_for_appointed_advisors(10, 1);
         assert!(capacity == raised);
     }
 
@@ -493,7 +482,11 @@ mod tests {
             base: 0,
             bytes: &[],
         };
-        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut captured = Captured::with_capacities(&Capacities {
+            active: 2,
+            retired: 1,
+            ..Default::default()
+        });
         for hour in 0..24 {
             captured.capture(&memory, 0, 0x1000, hour, false);
             // Hourly: never skipped, and here unreadable rather than stale.
@@ -584,7 +577,11 @@ mod tests {
 
     #[test]
     fn advisor_tokens_publish_sorted_and_refuse_bad_spans_or_repeats() {
-        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut captured = Captured::with_capacities(&Capacities {
+            tokens: 3,
+            token_bytes: 15,
+            ..Default::default()
+        });
         captured.token_bytes.first[..15].copy_from_slice(b"b_ideaa_idea\0zz");
         captured.token_bytes.len = 15;
         for (index, (start, len)) in [(0, 6), (6, 6), (12, 3)].into_iter().enumerate() {

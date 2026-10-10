@@ -7,13 +7,14 @@ use crate::{
 };
 use engine::allocation::{copy_vec, owned_vec};
 use engine::{
-    Memory, cfront, cfront_section, corder_instance, corders_group, invasion_preparations,
-    modifier_definition::DefinitionMemo, walk::Outcome,
+    Memory, ccountry, cfront, cfront_section, corder_instance, corders_group,
+    invasion_preparations, modifier_definition::DefinitionMemo, order_execution, walk::Outcome,
 };
 use replay::{
     frame::TableView,
     rows::{
-        ArmyOrderPlanRow, FrontRow, InvasionPreparationRow, OrdersGroupPlanRow, TableId, tables,
+        ArmyOrderPlanRow, FrontRow, InvasionPreparationRow, OrderChildFront, OrderChildFrontInputs,
+        OrdersGroupPlanRow, Recorded, TableId, tables,
     },
 };
 use std::mem::size_of;
@@ -27,12 +28,35 @@ pub const TABLES: [TableId; N] = [
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+fn project_execution(
+    inputs: order_execution::OrderExecutionInputs,
+) -> replay::rows::OrderExecutionInputs {
+    replay::rows::OrderExecutionInputs {
+        route_is_ok: inputs.route_is_ok,
+        paradrop: inputs
+            .paradrop
+            .map(|prep| replay::rows::ParadropPreparationInputs {
+                progress: prep.progress,
+                terms: prep
+                    .terms
+                    .map(|terms| replay::rows::ParadropPreparationTerms {
+                        target: terms.target,
+                        country_term: terms.country_term,
+                        relation_term: terms.relation_term,
+                        leader_term: terms.leader_term,
+                        days_term: terms.days_term,
+                    }),
+            }),
+    }
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     plans: usize,
     groups: usize,
     fronts: usize,
     assigned: usize,
+    child_sections: usize,
     links: usize,
     names: usize,
     root_orders: usize,
@@ -43,23 +67,44 @@ pub struct Capacities {
     invasions: usize,
     /// Their route unit owners' nonzero co-belligerent target slots.
     co_belligerents: usize,
+    execution: order_execution::Capacity,
+    country_references: usize,
+    country_links: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            plans: 2048,
-            groups: 2048,
-            fronts: 1024,
-            assigned: 16384,
-            links: 8192,
-            names: 16384,
-            root_orders: 4096,
-            sections: 4096,
-            pairs: 65536,
-            handles: 2048,
-            invasions: 256,
-            co_belligerents: 1024,
-        }
+impl Capacities {
+    pub(crate) fn presize_execution(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let observed = order_execution::demand(memory, base, state);
+        let demand = observed.capacity;
+        grow_capacity(&mut self.execution.units, demand.units);
+        grow_capacity(&mut self.execution.groups, demand.groups);
+        grow_capacity(&mut self.execution.orders, demand.orders);
+        grow_capacity(&mut self.execution.memberships, demand.memberships);
+        grow_capacity(
+            &mut self.execution.scalar_observations,
+            demand.scalar_observations,
+        );
+        grow_capacity(&mut self.execution.modifiers.nodes, demand.modifiers.nodes);
+        grow_capacity(
+            &mut self.execution.modifiers.entries,
+            demand.modifiers.entries,
+        );
+        grow_capacity(&mut self.groups, demand.groups);
+        grow_capacity(&mut self.plans, demand.orders);
+        grow_capacity(&mut self.fronts, demand.orders);
+        grow_capacity(&mut self.handles, demand.orders);
+        grow_capacity(&mut self.invasions, demand.orders);
+        observed.failure.map_or(Ok(()), Err)
+    }
+    /// Existing country_scale observation already bounds native country,
+    /// link and tag widths. Reuse that bound without another source census.
+    pub(crate) fn raise_for_countries(&mut self, slots: usize) {
+        self.country_references = self.country_references.max(slots);
+        self.country_links = self.country_links.max(slots);
     }
 }
 pub struct Captured {
@@ -71,6 +116,10 @@ pub struct Captured {
     /// The invasion terms' modifier metadata, read once per pass.
     memo: DefinitionMemo,
     assigned: Arena<u64>,
+    child_sections: Arena<corder_instance::child_fronts::Section>,
+    child_scratch: corder_instance::child_fronts::Scratch,
+    /// Area/header/payload failures are field-local; the core row still stands.
+    pub(crate) child_front_failures: [usize; 3],
     links: Arena<u32>,
     /// ArmyOrderPlans' order-name bytes and OrdersGroupPlans' group-name bytes,
     /// each in its own arena that the walker grows from `len`. Rows hold
@@ -88,34 +137,245 @@ pub struct Captured {
     required_handles: usize,
     ticks: [u64; N],
     supplied: bool,
+    /// Original assigned-host provenance and execution observations move
+    /// intact from Orders to Late. No native pointer enters a replay row.
+    assigned_hosts: corder_instance::AssignedSources,
+    execution: order_execution::Prepared,
+    execution_countries: ccountry::NativeReferenceMemo,
 }
+
+/// Bounded cumulative optional-field diagnostics, observed off-thread before growth.
+#[derive(Default)]
+pub(crate) struct ChildFrontWork {
+    samples: u64,
+    core_rows: u64,
+    refused: [u64; 3],
+    last_sections: usize,
+    last_capacity_bytes: usize,
+}
+impl ChildFrontWork {
+    pub(crate) fn observe(&mut self, capture: &Captured) {
+        if !capture.supplied {
+            return;
+        }
+        self.samples = self.samples.saturating_add(1);
+        if let Outcome::Rows { len } = capture.plans.outcome {
+            self.core_rows = self.core_rows.saturating_add(len as u64);
+        }
+        for (total, current) in self.refused.iter_mut().zip(capture.child_front_failures) {
+            *total = total.saturating_add(current as u64);
+        }
+        self.last_sections = capture.child_sections.len;
+        self.last_capacity_bytes =
+            capture.child_sections.allocated_bytes() + capture.child_scratch.allocated_bytes();
+    }
+    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
+        crate::status::status!({
+            "scope": "cumulative consumed Orders acquisitions; optional failures preserve core rows",
+            "samples": self.samples, "core_rows": self.core_rows,
+            "area_refused": self.refused[0], "header_refused": self.refused[1],
+            "payload_refused": self.refused[2], "last_used_sections": self.last_sections,
+            "last_retained_capacity_bytes": self.last_capacity_bytes,
+        })
+    }
+}
+
+/// Spool-side cumulative work over consumed captures, before off-hook growth.
+/// Plain counters mirror the engine packet; no live observer or event log.
+#[derive(Default)]
+pub(crate) struct ExecutionWork {
+    samples: u64,
+    total: order_execution::Work,
+    /// Latest consumed pass; zero scalar refusals do not certify independent
+    /// modifier/country storage, source completeness or native field success.
+    last_scalar_observations: usize,
+    last_scalar_failed: usize,
+    last_scalar_capacity_refused: usize,
+    required: order_execution::Capacity,
+    capacity: order_execution::Capacity,
+    hosts_used: usize,
+    hosts_required: usize,
+    hosts_failure: Option<&'static str>,
+    raw_used: usize,
+    raw_required: usize,
+    raw_capacity: usize,
+    raw_lower_bound: bool,
+    canonical_used: usize,
+    links_used: usize,
+    links_required: usize,
+    links_capacity: usize,
+    retained_bytes: usize,
+    output_bytes: usize,
+    output_failures: u64,
+    output_failure: Option<&'static str>,
+}
+impl ExecutionWork {
+    pub(crate) fn observe(&mut self, capture: &Captured, output_bytes: usize, output: Outcome) {
+        if !capture.supplied {
+            return;
+        }
+        self.samples = self.samples.saturating_add(1);
+        let current = capture.execution.work();
+        self.last_scalar_observations = current.scalar_reads;
+        self.last_scalar_failed = current.scalar_failed;
+        self.last_scalar_capacity_refused = current.scalar_capacity;
+        macro_rules! add { ($($field:ident),+ $(,)?) => {$(
+            self.total.$field = self.total.$field.saturating_add(current.$field);
+        )+}; }
+        add!(
+            route_demand,
+            route_available,
+            progress_demand,
+            progress_available,
+            terms_demand,
+            terms_available,
+            assigned_occurrences,
+            scoped_units,
+            identity_refused,
+            naval_demand,
+            naval_available,
+            eligibility_demand,
+            eligibility_available,
+            modifiers_demand,
+            modifiers_available,
+            province_demand,
+            province_available,
+            root_queries,
+            root_refused,
+            selectors,
+            selectors_some,
+            selectors_none,
+            selectors_refused,
+            stale_clean,
+            scalar_reads,
+            scalar_failed,
+            scalar_capacity
+        );
+        for (total, count) in self
+            .total
+            .stat_refusals
+            .iter_mut()
+            .zip(current.stat_refusals)
+        {
+            *total = total.saturating_add(count);
+        }
+        self.required = capture.execution.required_capacity();
+        self.capacity = capture.execution.capacity();
+        let sources = capture.execution_sources();
+        self.hosts_used = sources.hosts.used();
+        self.hosts_required = sources.hosts.required();
+        self.hosts_failure = match sources.hosts.outcome() {
+            Outcome::Unavailable { reason } => Some(reason),
+            _ => None,
+        };
+        self.raw_used = capture.execution_countries.raw_used();
+        self.raw_required = capture.execution_countries.raw_required();
+        self.raw_capacity = capture.execution_countries.raw_capacity();
+        self.raw_lower_bound = capture.execution_countries.raw_required_is_lower_bound();
+        self.canonical_used = capture.execution_countries.canonical_used();
+        self.links_used = capture.execution_countries.link_used();
+        self.links_required = capture.execution_countries.link_required();
+        self.links_capacity = capture.execution_countries.link_capacity();
+        self.output_bytes = output_bytes;
+        self.retained_bytes = capture.execution.allocated_bytes()
+            + capture.execution_countries.allocated_bytes()
+            + capture.assigned_hosts.allocated_bytes()
+            + output_bytes;
+        self.output_failure = match output {
+            Outcome::Unavailable { reason } => {
+                self.output_failures = self.output_failures.saturating_add(1);
+                Some(reason)
+            }
+            _ => None,
+        };
+    }
+    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
+        let total = &self.total;
+        crate::status::status!({
+            "scope": "consumed hourly plan execution captures; optional refusals preserve established prefixes",
+            "samples": self.samples,
+            "route_demand": total.route_demand, "route_available": total.route_available,
+            "progress_demand": total.progress_demand, "progress_available": total.progress_available,
+            "terms_demand": total.terms_demand, "terms_available": total.terms_available,
+            "assigned_occurrences": total.assigned_occurrences, "scoped_units": total.scoped_units,
+            "identity_refused": total.identity_refused,
+            "naval_demand": total.naval_demand, "naval_available": total.naval_available,
+            "eligibility_demand": total.eligibility_demand, "eligibility_available": total.eligibility_available,
+            "stat_refusals": crate::status::map(order_execution::STAT_REFUSALS.into_iter().zip(total.stat_refusals)),
+            "modifiers_demand": total.modifiers_demand, "modifiers_available": total.modifiers_available,
+            "province_demand": total.province_demand, "province_available": total.province_available,
+            "root_queries": total.root_queries, "root_refused": total.root_refused,
+            "selectors": total.selectors, "selectors_some": total.selectors_some,
+            "selectors_none": total.selectors_none, "selectors_refused": total.selectors_refused,
+            "stale_clean": total.stale_clean,
+            "scalar_observations": total.scalar_reads, "scalar_failed": total.scalar_failed,
+            "scalar_capacity_refused": total.scalar_capacity,
+            "last_scalar_observations": self.last_scalar_observations,
+            "last_scalar_failed": self.last_scalar_failed,
+            "last_scalar_capacity_refused": self.last_scalar_capacity_refused,
+            "last_scalar_requirement_is_lower_bound": self.last_scalar_capacity_refused != 0,
+            "last_assigned_hosts_used": self.hosts_used, "last_assigned_hosts_required": self.hosts_required,
+            "last_assigned_hosts_failure": self.hosts_failure,
+            "last_raw_countries_used": self.raw_used, "last_raw_countries_required": self.raw_required,
+            "last_raw_countries_capacity": self.raw_capacity, "last_raw_requirement_is_lower_bound": self.raw_lower_bound,
+            "last_canonical_countries_used": self.canonical_used,
+            "last_links_used": self.links_used, "last_links_required": self.links_required,
+            "last_links_capacity": self.links_capacity,
+            "last_required": capacity_status(&self.required), "last_capacity": capacity_status(&self.capacity),
+            "last_retained_execution_bytes": self.retained_bytes,
+            "last_presentation_output_bytes": self.output_bytes,
+            "output_failures": self.output_failures, "last_output_failure": self.output_failure,
+        })
+    }
+}
+fn capacity_status(capacity: &order_execution::Capacity) -> impl serde::Serialize + '_ {
+    crate::status::status!({
+        "units": capacity.units, "groups": capacity.groups, "orders": capacity.orders,
+        "memberships": capacity.memberships, "scalar_observations": capacity.scalar_observations,
+        "modifier_nodes": capacity.modifiers.nodes, "modifier_entries": capacity.modifiers.entries,
+    })
+}
+
 impl Captured {
     /// Placeholder while the Orders job owns the buffers.
     pub fn vacant() -> Self {
-        Self::with_capacities(&Capacities {
-            plans: 0,
-            groups: 0,
-            fronts: 0,
-            assigned: 0,
-            links: 0,
-            names: 0,
-            root_orders: 0,
-            sections: 0,
-            pairs: 0,
-            handles: 0,
-            invasions: 0,
-            co_belligerents: 0,
-        })
+        Self::new(
+            &Capacities {
+                plans: 0,
+                groups: 0,
+                fronts: 0,
+                assigned: 0,
+                child_sections: 0,
+                links: 0,
+                names: 0,
+                root_orders: 0,
+                sections: 0,
+                pairs: 0,
+                handles: 0,
+                invasions: 0,
+                co_belligerents: 0,
+                execution: order_execution::Capacity::default(),
+                country_references: 0,
+                country_links: 0,
+            },
+            true,
+        )
     }
     pub fn with_capacities(c: &Capacities) -> Self {
-        Self {
+        Self::new(c, false)
+    }
+    fn new(c: &Capacities, placeholder: bool) -> Self {
+        let mut capture = Self {
             plans: CaptureRows::new(c.plans),
             colors: CaptureRows::new(c.groups),
             fronts: CaptureRows::new(c.fronts),
             invasions: CaptureRows::new(c.invasions),
             co_belligerents: Arena::new(c.co_belligerents),
-            memo: DefinitionMemo::with_capacity(3),
+            memo: DefinitionMemo::with_capacity(if placeholder { 0 } else { 3 }),
             assigned: Arena::new(c.assigned),
+            child_sections: Arena::new(c.child_sections),
+            child_scratch: Default::default(),
+            child_front_failures: [0; 3],
             links: Arena::new(c.links),
             names: Arena::new(c.names),
             group_names: Arena::new(c.names),
@@ -127,7 +387,38 @@ impl Captured {
             required_handles: 0,
             ticks: [0; N],
             supplied: false,
+            assigned_hosts: if placeholder {
+                corder_instance::AssignedSources::default()
+            } else {
+                corder_instance::AssignedSources::try_with_capacity(c.assigned).unwrap_or_default()
+            },
+            execution: if placeholder {
+                order_execution::Prepared::vacant()
+            } else {
+                order_execution::Prepared::try_new(order_execution::Capacity {
+                    groups: c.execution.groups.max(c.groups),
+                    orders: c.execution.orders.max(c.plans),
+                    memberships: c.execution.memberships.max(c.assigned),
+                    ..c.execution
+                })
+                .unwrap_or_else(|_| order_execution::Prepared::vacant())
+            },
+            execution_countries: if placeholder {
+                ccountry::NativeReferenceMemo::vacant()
+            } else {
+                ccountry::NativeReferenceMemo::try_with_capacity(
+                    c.country_references,
+                    c.country_links,
+                )
+                .unwrap_or_default()
+            },
+        };
+        if !placeholder {
+            capture.execution.enable_worker_growth();
+            capture.assigned_hosts.enable_worker_growth();
+            capture.execution_countries.enable_worker_growth();
         }
+        capture
     }
     pub fn reset(&mut self) {
         self.plans.reset();
@@ -137,6 +428,8 @@ impl Captured {
         self.co_belligerents.reset();
         self.memo.clear();
         self.assigned.reset();
+        self.child_sections.reset();
+        self.child_front_failures = [0; 3];
         self.links.reset();
         self.names.reset();
         self.group_names.reset();
@@ -146,6 +439,8 @@ impl Captured {
         self.required_handles = 0;
         self.ticks = [0; N];
         self.supplied = false;
+        self.assigned_hosts.reset();
+        self.execution.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
         self.plans.allocated_bytes()
@@ -155,6 +450,8 @@ impl Captured {
             + self.co_belligerents.allocated_bytes()
             + self.memo.allocated_bytes()
             + self.assigned.allocated_bytes()
+            + self.child_sections.allocated_bytes()
+            + self.child_scratch.allocated_bytes()
             + self.links.allocated_bytes()
             + self.names.allocated_bytes()
             + self.group_names.allocated_bytes()
@@ -163,6 +460,9 @@ impl Captured {
             + self.pairs.allocated_bytes()
             + self.handles.capacity() * size_of::<u64>()
             + self.order.capacity() * size_of::<(u128, u32)>()
+            + self.assigned_hosts.allocated_bytes()
+            + self.execution.allocated_bytes()
+            + self.execution_countries.allocated_bytes()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
         self.plans.grow(&mut c.plans);
@@ -171,6 +471,7 @@ impl Captured {
         self.invasions.grow(&mut c.invasions);
         self.co_belligerents.grow(&mut c.co_belligerents);
         self.assigned.grow(&mut c.assigned);
+        self.child_sections.grow(&mut c.child_sections);
         self.links.grow(&mut c.links);
         let mut group_names = c.names;
         self.names.grow(&mut c.names);
@@ -181,6 +482,146 @@ impl Captured {
         self.pairs.grow(&mut c.pairs);
         grow_capacity(&mut c.handles, self.required_handles);
         grow_vec(&mut self.handles, c.handles);
+        grow_capacity(&mut c.assigned, self.assigned_hosts.required());
+        let _ = self.assigned_hosts.try_grow(c.assigned);
+        let required = self.execution.required_capacity();
+        let admitted = self.execution.capacity();
+        c.execution.units = c.execution.units.max(admitted.units);
+        c.execution.groups = c.execution.groups.max(admitted.groups);
+        c.execution.orders = c.execution.orders.max(admitted.orders);
+        c.execution.memberships = c.execution.memberships.max(admitted.memberships);
+        c.execution.scalar_observations = c
+            .execution
+            .scalar_observations
+            .max(admitted.scalar_observations);
+        c.execution.modifiers.nodes = c.execution.modifiers.nodes.max(admitted.modifiers.nodes);
+        c.execution.modifiers.entries = c
+            .execution
+            .modifiers
+            .entries
+            .max(admitted.modifiers.entries);
+        grow_capacity(&mut c.execution.units, required.units);
+        grow_capacity(&mut c.execution.groups, required.groups);
+        grow_capacity(&mut c.execution.orders, required.orders);
+        grow_capacity(&mut c.execution.memberships, required.memberships);
+        grow_capacity(
+            &mut c.execution.scalar_observations,
+            required.scalar_observations,
+        );
+        grow_capacity(&mut c.execution.modifiers.nodes, required.modifiers.nodes);
+        grow_capacity(
+            &mut c.execution.modifiers.entries,
+            required.modifiers.entries,
+        );
+        let _ = self.execution.try_grow(c.execution);
+        grow_capacity(
+            &mut c.country_references,
+            self.execution_countries.raw_required(),
+        );
+        grow_capacity(
+            &mut c.country_links,
+            self.execution_countries.link_required(),
+        );
+        let _ = self
+            .execution_countries
+            .reserve(c.country_references, c.country_links);
+    }
+
+    /// Uses the already prepared shared division source bound; no extra native
+    /// census or arbitrary modifier-entry multiplier is introduced.
+    pub(crate) fn reserve_units(&mut self, units: usize) {
+        let mut capacity = self.execution.capacity();
+        capacity.units = capacity.units.max(units);
+        let _ = self.execution.try_grow(capacity);
+    }
+    /// The borrowed parallel sources keep their separate completeness verdicts.
+    /// A healthy plan prefix cannot certify a short assigned-host lane.
+    fn assigned_outcome(&self) -> Outcome {
+        match self.plans.outcome {
+            Outcome::Rows { .. } => Outcome::Rows {
+                len: self.assigned.len,
+            },
+            Outcome::Unavailable { reason } => Outcome::Unavailable { reason },
+            Outcome::Truncated { .. } => Outcome::Unavailable {
+                reason: "plan assigned source incomplete",
+            },
+        }
+    }
+
+    pub(crate) fn execution_sources(&self) -> order_execution::SourceView<'_> {
+        order_execution::SourceView {
+            plans: &self.plans.rows[..self.plans.outcome.len()],
+            source: self.plans.outcome,
+            groups: &self.colors.rows[..self.colors.outcome.len()],
+            group_source: self.colors.outcome,
+            primary: &self.root_orders.first[..self.root_orders.len],
+            assigned: &self.assigned.first[..self.assigned.len],
+            assigned_source: self.assigned_outcome(),
+            hosts: &self.assigned_hosts,
+        }
+    }
+
+    /// The completed Orders payload and full current unit census are borrowed
+    /// once by Late. Its country observations and metadata memo are not reset.
+    pub(crate) fn capture_unit_transports(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        inputs: Option<&crate::division_census::UnitInputs>,
+        orders: &crate::map_capture::Orders,
+    ) -> u64 {
+        if !self.supplied {
+            self.execution
+                .fail_units("plan execution source not supplied");
+            return 0;
+        }
+        let _reads = crate::read_accounting::table(TableId::DivisionMovement);
+        let started = qpc();
+        let countries = self.execution_countries.view(memory, base, game_state);
+        // Borrow the fields individually: Prepared mutates only its own bounded
+        // arenas; none of the finished plans or parallel source spans change.
+        let sources = order_execution::SourceView {
+            plans: &self.plans.rows[..self.plans.outcome.len()],
+            source: self.plans.outcome,
+            groups: &self.colors.rows[..self.colors.outcome.len()],
+            group_source: self.colors.outcome,
+            primary: &self.root_orders.first[..self.root_orders.len],
+            assigned: &self.assigned.first[..self.assigned.len],
+            assigned_source: self.assigned_outcome(),
+            hosts: &self.assigned_hosts,
+        };
+        self.execution.capture_units(
+            memory,
+            base,
+            game_state,
+            inputs.map_or(&[], crate::division_census::UnitInputs::seeds),
+            inputs.map_or(super::MISSING, crate::division_census::UnitInputs::outcome),
+            order_execution::Orders {
+                roots: orders.roots(),
+                root_source: orders.root_outcome,
+                visits: orders.visits(),
+                rows: &orders.rows.rows[..orders.rows.outcome.len()],
+                source: orders.rows.outcome,
+                geometry: &orders.geometry[..orders.geometry_len],
+            },
+            sources,
+            &countries,
+        );
+        qpc().saturating_sub(started).max(0) as u64
+    }
+
+    pub(crate) fn fail_unit_transports(&mut self, reason: &'static str) {
+        self.execution.fail_units(reason);
+    }
+
+    /// Only the completed sparse output moves; native pointer/memo arenas stay
+    /// private to plans. The returned output buffer is grown off-hook if needed.
+    pub(crate) fn install_order_transport(
+        &mut self,
+        presentation: &mut super::division_presentation::Captured,
+    ) {
+        presentation.install_order_transport(&mut self.execution);
     }
     /// Called on the Orders worker, which may grow payloads from owned census
     /// lengths and the original native headers. `visits` and `successors` are
@@ -197,8 +638,15 @@ impl Captured {
         successors: &corder_instance::SuccessorLists,
         root_source: Outcome,
         order_source: Outcome,
+        owned_orders: &[corder_instance::Row],
+        owned_paths: &[u32],
+        group_source: Option<&super::naval_history::NavalJob>,
     ) -> u64 {
         self.supplied = true;
+        self.execution.enable_worker_growth();
+        self.assigned_hosts.enable_worker_growth();
+        self.execution_countries.enable_worker_growth();
+        self.execution_countries.reset(base, game_state);
         let begin_all = qpc();
         let before = self.ticks.iter().sum::<u64>();
         let mut read_phase = crate::read_accounting::table(TABLES[1]);
@@ -239,7 +687,7 @@ impl Captured {
         self.ticks[1] += qpc().saturating_sub(begin).max(0) as u64;
         read_phase.select(TABLES[0]);
         let begin = qpc();
-        let report = corder_instance::walk_plans_ordered(
+        let report = corder_instance::walk_plans_ordered_with_sources(
             memory,
             base,
             roots,
@@ -251,6 +699,7 @@ impl Captured {
             &mut self.links.first,
             &mut self.names.first,
             &mut self.order,
+            Some(&mut self.assigned_hosts),
         );
         self.plans.outcome = report.outcome;
         self.assigned.len = report.assigned;
@@ -259,6 +708,52 @@ impl Captured {
         self.links.required = report.links;
         self.names.len = report.names;
         self.names.required = report.names;
+        let countries = self.execution_countries.view(memory, base, game_state);
+        self.execution.capture_orders(
+            memory,
+            base,
+            game_state,
+            order_execution::Orders {
+                roots,
+                root_source,
+                visits,
+                rows: owned_orders,
+                source: order_source,
+                geometry: owned_paths,
+            },
+            &mut self.plans.rows[..report.outcome.len()],
+            report.outcome,
+            &countries,
+        );
+        if let Outcome::Rows { len } = report.outcome {
+            // Owned OOB index preparation is charged to this optional plan
+            // phase. Failed/empty core plans need no index; successful queries
+            // preserve exact root-batch faults and return the index for Naval.
+            let group_source = group_source
+                .filter(|_| len != 0)
+                .map(super::naval_history::OrderGroupSource::new);
+            let children = corder_instance::child_fronts::walk(
+                memory,
+                base,
+                game_state,
+                roots,
+                visits,
+                owned_orders,
+                owned_paths,
+                order_source,
+                &mut self.plans.rows[..len],
+                &mut self.child_sections.first,
+                &mut self.child_scratch,
+                group_source.as_ref(),
+            );
+            self.child_sections.len = children.sections;
+            self.child_sections.required = children.required_sections;
+            self.child_front_failures = [
+                children.area_failures,
+                children.header_failures,
+                children.section_failures,
+            ];
+        }
         self.ticks[0] += qpc().saturating_sub(begin).max(0) as u64;
         read_phase.select(TABLES[2]);
         let begin = qpc();
@@ -281,13 +776,14 @@ impl Captured {
         self.ticks[2] += qpc().saturating_sub(begin).max(0) as u64;
         read_phase.select(TABLES[3]);
         let begin = qpc();
-        let invasions = invasion_preparations::walk(
+        let invasions = invasion_preparations::walk_growing(
             memory,
             base,
             game_state,
             visits,
             order_source,
             &self.memo,
+            &countries,
             &mut self.invasions.rows,
             &mut self.co_belligerents.first,
         );
@@ -311,6 +807,8 @@ impl Captured {
         self.invasions.fail(outcome);
         self.co_belligerents.len = 0;
         self.assigned.len = 0;
+        self.child_sections.len = 0;
+        self.child_front_failures = [0; 3];
         self.links.len = 0;
         self.names.len = 0;
         self.group_names.len = 0;
@@ -319,6 +817,8 @@ impl Captured {
         self.pairs.len = 0;
         self.ticks = [0; N];
         self.supplied = true;
+        self.assigned_hosts.fail(reason);
+        self.execution.fail_units(reason);
     }
     pub fn capture(&mut self) -> [u64; N] {
         if !self.supplied {
@@ -334,6 +834,26 @@ impl Captured {
     }
     fn name(&self, (start, len): (usize, usize)) -> Vec<u8> {
         owned_vec(copy_vec(&self.names.first[start..start + len]))
+    }
+    fn child_fronts(
+        &self,
+        inputs: Option<corder_instance::child_fronts::Inputs>,
+    ) -> Option<OrderChildFrontInputs> {
+        inputs.map(|inputs| OrderChildFrontInputs {
+            area_province_count: inputs.area_province_count,
+            count: inputs.count,
+            group_child_count: inputs.group_child_count,
+            sections: inputs.sections.map(|(start, len)| {
+                let source = &self.child_sections.first[start..start + len];
+                let mut sections = owned_vec(engine::allocation::vec(source.len()));
+                sections.extend(source.iter().map(|section| OrderChildFront {
+                    group: section.group,
+                    segment_start: section.segment_start,
+                    segment_end: section.segment_end,
+                }));
+                sections
+            }),
+        })
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [
@@ -378,6 +898,9 @@ impl Captured {
                     name_second: self.name(r.names[3]),
                     name_unique: self.name(r.names[4]),
                     name_postfix: self.name(r.names[5]),
+                    invasion_transports: r.invasion_transports.into(),
+                    child_fronts: Recorded::Value(self.child_fronts(r.child_fronts)),
+                    execution: Recorded::Value(r.execution.map(project_execution)),
                 }
             }),
             table::<tables::OrdersGroupPlans, _>(outcomes[1], &self.colors.rows, |r| {
@@ -519,15 +1042,17 @@ mod tests {
         m.u32(ORDER + corder_instance::ID, 9);
         m
     }
-    fn pass(m: &Image, c: &mut Captured) {
+    fn pass(m: &impl Memory, c: &mut Captured) {
         let mut groups = [corders_group::Root::default(); 4];
         let mut visits = vec![corder_instance::Visit::default(); 8];
         let mut successors = corder_instance::SuccessorLists::default();
+        let mut orders = vec![corder_instance::Row::default(); 4];
+        let mut paths = vec![0; 4];
         let r = corder_instance::walk_listing_successors(
             m,
             0,
-            &mut vec![corder_instance::Row::default(); 4],
-            &mut vec![0; 4],
+            &mut orders,
+            &mut paths,
             &mut groups,
             &mut visits,
             &mut successors,
@@ -542,7 +1067,401 @@ mod tests {
             &successors,
             r.root_outcome,
             r.outcome,
+            &orders[..r.outcome.len()],
+            &paths[..r.geometry_len],
+            None,
         );
+    }
+    fn execution_image() -> Image {
+        let mut image = image();
+        image.u32(
+            ORDER + corder_instance::TYPE,
+            corder_instance::TYPE_PARADROP as u32,
+        );
+        for offset in corder_instance::NAME_STRINGS {
+            image.u64(ORDER + offset + 0x18, 15);
+        }
+        image.put(ORDER + corder_instance::CONDITION_CACHE, &[7]);
+        image.u64(
+            ORDER + corder_instance::ACCUMULATED_PREPARATION,
+            i64::MIN as u64,
+        );
+        image
+    }
+
+    fn execution_capture() -> Captured {
+        let mut capacities = Capacities::default();
+        capacities.raise_for_countries(5);
+        capacities.execution.units = 1;
+        capacities.execution.scalar_observations = 32;
+        Captured::with_capacities(&capacities)
+    }
+
+    #[test]
+    fn attach_execution_hint_follows_native_graph_with_five_thousand_countries() {
+        let mut world =
+            crate::unit_scale_tests::fixture::build(crate::unit_scale_tests::fixture::Shape {
+                countries: 5_000,
+                divisions: 0,
+                wings: 1,
+                planes: 1,
+                ships: 0,
+            });
+        world.bytes[engine::cgame_state::SINGLETON_RVA..engine::cgame_state::SINGLETON_RVA + 8]
+            .copy_from_slice(&(world.state as u64).to_le_bytes());
+        let mut image = execution_image();
+        image.u64(GROUP, (world.base + corders_group::VTABLE_RVA) as u64);
+        image.u64(ORDER, (world.base + corder_instance::VTABLE_RVA) as u64);
+        image.u64(world.base + registry::LOW_ROOTS_RVA + 53 * 8, 0x1000);
+        image.u64(world.base + registry::INVALID_REFERENCE_RVA, 0);
+        struct Combined<'a> {
+            image: &'a Image,
+            world: &'a crate::unit_scale_tests::fixture::World,
+        }
+        impl Memory for Combined<'_> {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if self.image.0.contains_key(&address) {
+                    self.image.copy(address, output)
+                } else {
+                    self.world.live().copy(address, output)
+                }
+            }
+        }
+        let memory = Combined {
+            image: &image,
+            world: &world,
+        };
+        let mut capacity = Capacities::default();
+        assert_eq!(capacity.execution.scalar_observations, 0);
+        capacity
+            .presize_execution(&memory, world.base, world.state)
+            .unwrap();
+        assert!(capacity.execution.scalar_observations >= 1);
+        assert!(capacity.execution.modifiers.nodes >= 1);
+        let before = capacity;
+        let broken = Image::default();
+        assert!(
+            capacity
+                .presize_execution(&broken, world.base, world.state)
+                .is_err()
+        );
+        assert!(capacity == before);
+    }
+
+    #[test]
+    fn live_country_bound_presizes_aliases_and_retains_reserved_success_and_failure_across_views() {
+        use crate::sampling::wars_test_kit as kit;
+        use std::{cell::Cell, sync::Arc};
+        struct Counted<'a> {
+            bytes: &'a [u8],
+            calls: Cell<usize>,
+        }
+        impl Memory for Counted<'_> {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                self.calls.set(self.calls.get() + 1);
+                kit::memory(self.bytes).copy(at, output)
+            }
+        }
+        for reserved_present in [false, true] {
+            let mut bytes = kit::fixture();
+            const RESERVED: usize = 0x24000;
+            if reserved_present {
+                bytes[kit::CTAB..kit::CTAB + 8].copy_from_slice(&(RESERVED as u64).to_le_bytes());
+                bytes[RESERVED..RESERVED + 8]
+                    .copy_from_slice(&(ccountry::VTABLE_RVA as u64).to_le_bytes());
+                bytes[RESERVED + ccountry::ID..RESERVED + ccountry::ID + 4]
+                    .copy_from_slice(&0_u32.to_le_bytes());
+            }
+            let memory = Counted {
+                bytes: &bytes,
+                calls: Cell::new(0),
+            };
+            let mut storage =
+                Arc::new(engine::country_memory::Cache::try_with_capacity(64).unwrap());
+            let countries = engine::country_memory::Cache::prepare_shared(
+                &mut storage,
+                &memory,
+                kit::BASE,
+                kit::GAME_STATE,
+            )
+            .unwrap();
+            let mut capacities = Capacities::default();
+            capacities.raise_for_countries(5);
+            let mut capture = Captured::with_capacities(&capacities);
+            assert_eq!(capture.execution_countries.raw_capacity(), 5);
+            assert_eq!(capture.execution_countries.link_capacity(), 5);
+            capture
+                .execution_countries
+                .reset(kit::BASE, kit::GAME_STATE);
+            let cached = countries.roster_view(&memory);
+            let context = capture
+                .execution_countries
+                .view(&cached, kit::BASE, kit::GAME_STATE);
+            assert_eq!(context.resolve(4).unwrap().pointer, kit::C0);
+            assert_eq!(context.resolve(1).unwrap().pointer, kit::C0);
+            let root = context.resolve(0);
+            assert_eq!(root.is_ok(), reserved_present);
+            if let Ok(root) = root {
+                assert_eq!((root.pointer, root.id), (RESERVED, 0));
+            }
+            let calls = memory.calls.get();
+            // Orders and Late reconstruct their borrowed views over this same
+            // owned memo. Neither success nor a reserved failure retries bytes.
+            let next = capture
+                .execution_countries
+                .view(&cached, kit::BASE, kit::GAME_STATE);
+            assert_eq!(next.resolve(4).unwrap().pointer, kit::C0);
+            assert_eq!(next.resolve(0).is_ok(), reserved_present);
+            assert_eq!(memory.calls.get(), calls);
+            assert!(!capture.execution_countries.raw_required_is_lower_bound());
+        }
+    }
+
+    #[test]
+    fn execution_scalar_faults_keep_the_core_plan_and_earlier_progress() {
+        struct Fault<'a> {
+            image: &'a Image,
+            at: usize,
+        }
+        impl Memory for Fault<'_> {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                if at <= self.at && self.at < at.saturating_add(output.len()) {
+                    return false;
+                }
+                self.image.copy(at, output)
+            }
+        }
+        let image = execution_image();
+        for fault in [
+            None,
+            Some(corder_instance::CONDITION_CACHE),
+            Some(corder_instance::ACCUMULATED_PREPARATION),
+        ] {
+            let mut capture = execution_capture();
+            match fault {
+                Some(offset) => pass(
+                    &Fault {
+                        image: &image,
+                        at: ORDER + offset,
+                    },
+                    &mut capture,
+                ),
+                None => pass(&image, &mut capture),
+            }
+            let TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(rows)) =
+                capture.tables()[0].clone()
+            else {
+                panic!("optional scalar faults must preserve the plan prefix");
+            };
+            assert_eq!(
+                (rows[0].owner_group, rows[0].instance),
+                ((7_u64 << 32) | 53, 9)
+            );
+            let Recorded::Value(Some(inputs)) = rows[0].execution else {
+                panic!("known type4 keeps its observation");
+            };
+            assert_eq!(
+                inputs.route_is_ok,
+                (fault != Some(corder_instance::CONDITION_CACHE)).then_some(7)
+            );
+            if fault.is_none() {
+                let prep = inputs
+                    .paradrop
+                    .expect("progress survives an unavailable country term");
+                assert_eq!(prep.progress, i64::MIN);
+                assert_eq!(prep.terms, None);
+            } else {
+                assert_eq!(inputs.paradrop, None);
+            }
+            assert_eq!(capture.execution.work().route_demand, 1);
+        }
+    }
+
+    #[test]
+    fn first_pass_saved_execution_scalars_need_no_terms_memo_and_keep_native_faults() {
+        struct Fault<'a> {
+            image: &'a Image,
+            at: usize,
+        }
+        impl Memory for Fault<'_> {
+            fn copy(&self, at: usize, output: &mut [u8]) -> bool {
+                if at <= self.at && self.at < at.saturating_add(output.len()) {
+                    return false;
+                }
+                self.image.copy(at, output)
+            }
+        }
+        let row = |capture: &Captured| {
+            let [
+                TableView::Complete(replay::rows::TableRows::ArmyOrderPlans(mut rows)),
+                _,
+                _,
+                _,
+            ] = capture.tables()
+            else {
+                panic!("saved scalar acquisition must keep the core plan");
+            };
+            assert_eq!(rows.len(), 1);
+            rows.pop().unwrap()
+        };
+        let image = execution_image();
+        let mut capacities = Capacities::default();
+        capacities.raise_for_countries(5);
+        assert_eq!(capacities.execution.scalar_observations, 0);
+        let mut capture = Captured::with_capacities(&capacities);
+        pass(&image, &mut capture);
+        let ready = row(&capture);
+        let mut cold = Captured::vacant();
+        pass(&image, &mut cold);
+        assert_eq!(row(&cold), ready);
+        let Recorded::Value(Some(inputs)) = &ready.execution else {
+            panic!("first pass needs the readable execution prefix");
+        };
+        let prep = inputs.paradrop.as_ref().unwrap();
+        assert_eq!((inputs.route_is_ok, prep.progress), (Some(7), i64::MIN));
+        assert_eq!(prep.terms, None); // Independent unavailable country source.
+        for (offset, expected) in [
+            (
+                corder_instance::CONDITION_CACHE,
+                replay::rows::OrderExecutionInputs::default(),
+            ),
+            (
+                corder_instance::ACCUMULATED_PREPARATION,
+                replay::rows::OrderExecutionInputs {
+                    route_is_ok: Some(7),
+                    paradrop: None,
+                },
+            ),
+        ] {
+            capture.reset();
+            pass(
+                &Fault {
+                    image: &image,
+                    at: ORDER + offset,
+                },
+                &mut capture,
+            );
+            let mut original = ready.clone();
+            original.execution = Recorded::Value(Some(expected));
+            assert_eq!(row(&capture), original);
+        }
+        capture.reset();
+        pass(&image, &mut capture);
+        assert_eq!(row(&capture), ready);
+    }
+
+    #[test]
+    fn completed_plans_survive_late_success_panic_stop_and_admission_rejection() {
+        use crate::acquisition::{Failure, SubmitError};
+        use crate::acquisition_jobs::{Job, LateReport, Report};
+        use std::sync::Arc;
+        for mode in 0..4 {
+            let image = execution_image();
+            let mut captured =
+                crate::extended::Captured::with_capacities(&crate::extended::Capacities::default());
+            captured.plans = execution_capture();
+            pass(&image, &mut captured.plans);
+            let expected = captured.plans.tables();
+            let mut orders =
+                crate::map_capture::Orders::for_test(&crate::map_capture::MapCapacities::default());
+            orders.walk_roots(&image, 0);
+            orders.walk(&image, 0);
+            let orders_outcome = orders.rows.outcome;
+            let order_storage = orders.geometry.as_ptr();
+            let countries = Arc::new(engine::country_memory::Cache::try_with_capacity(0).unwrap());
+            let bytes = captured.allocated_bytes() + orders.allocated_bytes();
+            let pool = crate::acquisition::Pool::start(0, 1, move |job: &mut Job| {
+                let Job::Late(request) = job else {
+                    panic!("only Late is submitted");
+                };
+                assert!(mode != 1, "synthetic Late unwind");
+                request
+                    .plans
+                    .fail_unit_transports("synthetic optional transport refusal");
+                Report::Late(LateReport)
+            })
+            .unwrap();
+            if mode == 3 {
+                pool.shutdown().unwrap();
+            }
+            let request = captured.take_late_request(
+                &countries,
+                &mut orders,
+                true,
+                0,
+                0,
+                1,
+                false,
+                Box::default(),
+            );
+            assert!(Arc::ptr_eq(&request.countries, &countries));
+            assert_eq!(
+                captured.plans.allocated_bytes(),
+                0,
+                "the parked plan owner has no duplicate payload"
+            );
+            assert_eq!(
+                captured.allocated_bytes()
+                    + orders.allocated_bytes()
+                    + request.packs.allocated_bytes()
+                    + request.plans.allocated_bytes(),
+                bytes
+            );
+            let mut pending = Some(Job::Late(request));
+            // SAFETY: the fixture runner reads only owned Rust payloads.
+            let submitted = unsafe { pool.submit(&mut pending) };
+            let (request, completed) = if mode == 3 {
+                assert_eq!(submitted, Err(SubmitError::Stopped));
+                let Job::Late(request) = pending.take().unwrap() else {
+                    unreachable!();
+                };
+                (request, false)
+            } else {
+                let ticket = submitted.unwrap();
+                if mode == 2 {
+                    pool.shutdown().unwrap();
+                }
+                let completion = pool.finish(ticket).unwrap();
+                match mode {
+                    0 => assert!(completion.report.is_ok()),
+                    1 => assert!(matches!(completion.report, Err(Failure::Panicked))),
+                    2 => assert!(matches!(completion.report, Err(Failure::Stopped))),
+                    _ => unreachable!(),
+                }
+                let completed = completion.report.is_ok();
+                let Job::Late(request) = completion.request else {
+                    unreachable!();
+                };
+                (request, completed)
+            };
+            captured.restore_late_request(request, completed, &mut orders);
+            assert_eq!(
+                captured.plans.tables(),
+                expected,
+                "Late cannot erase a completed prefix/route/progress"
+            );
+            assert_eq!(orders.rows.outcome, orders_outcome);
+            assert_eq!(orders.geometry.as_ptr(), order_storage);
+            assert_eq!(captured.allocated_bytes() + orders.allocated_bytes(), bytes);
+            assert_eq!(Arc::strong_count(&countries), 1);
+            assert!(matches!(
+                captured.division_presentation.order_transport_storage().1,
+                Outcome::Unavailable { .. }
+            ));
+            let output_bytes = captured.division_presentation.order_transport_storage().0;
+            assert!(
+                output_bytes > 0,
+                "the fixture transferred a real sparse output buffer"
+            );
+            let mut capacities = Capacities::default();
+            captured.plans.grow(&mut capacities);
+            assert_eq!(
+                captured.allocated_bytes() + orders.allocated_bytes(),
+                bytes + output_bytes,
+                "off-hook growth adds exactly the returned output spare, counting each owner once"
+            );
+            pool.shutdown().unwrap();
+        }
     }
     #[test]
     fn primary_plan_styles_and_colors_spool_exact_bytes() {
@@ -592,7 +1511,12 @@ mod tests {
     #[test]
     fn growth_preserves_primary_arenas_and_missing_source_fails() {
         let m = image();
-        let mut capacity = Capacities::default();
+        let mut capacity = Capacities {
+            assigned: 16384,
+            pairs: 65536,
+            handles: 2048,
+            ..Capacities::default()
+        };
         let mut c = Captured::with_capacities(&capacity);
         pass(&m, &mut c);
         c.capture();
@@ -768,6 +1692,7 @@ mod tests {
             groups: 0,
             fronts: 0,
             assigned: 0,
+            child_sections: 0,
             links: 0,
             names: 0,
             root_orders: 0,
@@ -776,6 +1701,9 @@ mod tests {
             handles: 0,
             invasions: 0,
             co_belligerents: 0,
+            execution: order_execution::Capacity::default(),
+            country_references: 0,
+            country_links: 0,
         };
         c.grow(&mut capacities);
         c.reset();
@@ -849,6 +1777,7 @@ mod tests {
             groups: 0,
             fronts: 0,
             assigned: 0,
+            child_sections: 0,
             links: 0,
             names: 0,
             root_orders: 0,
@@ -857,6 +1786,9 @@ mod tests {
             handles: 0,
             invasions: 0,
             co_belligerents: 0,
+            execution: order_execution::Capacity::default(),
+            country_references: 0,
+            country_links: 0,
         };
         for (hour, (unique, unique_heap, group, group_heap)) in hours.into_iter().enumerate() {
             string(&mut m, unique_at, unique, unique_heap.then_some(UNIQUE));
@@ -957,6 +1889,9 @@ mod l3b_bench {
                 &self.successors,
                 census.root_outcome,
                 census.outcome,
+                &self.rows[..census.outcome.len()],
+                &self.geometry[..census.geometry_len],
+                None,
             );
             (census_ticks, plan_ticks)
         }

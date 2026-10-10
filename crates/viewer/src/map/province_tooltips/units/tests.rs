@@ -356,6 +356,40 @@ fn count_ranges_depend_on_native_month_seed_and_subunit_index() {
 }
 
 #[test]
+fn seeded_count_range_preserves_composition_salt_and_separate_air_salt() {
+    let d = content().defines;
+    let law = [d.minimum, d.maximum, d.range];
+    let hour = 60_827_914;
+    assert_eq!(
+        count_range(100, 1, 40_000, 123, hour, d),
+        count_range_seeded(100, 40_000, 0x4A2 + 1 + 123, hour, law),
+    );
+    let air = count_range_seeded(100, 40_000, 0x5E2 + 123, hour, law);
+    assert_eq!(air, count_range(100, 0x140, 40_000, 123, hour, d));
+    assert_ne!(
+        air,
+        count_range_seeded(100, 40_000, 0x5E2 + 0x4A2 + 123, hour, law),
+    );
+}
+
+#[test]
+fn seeded_count_range_keeps_wrapping_native_salt() {
+    let d = content().defines;
+    let law = [d.minimum, d.maximum, d.range];
+    let hour = 60_827_914;
+    // UINT_MAX + 0x4A2 - 1 wraps to 0x4A0 before count and calendar terms.
+    assert_eq!(
+        count_range(100, u32::MAX, 40_000, -1, hour, d),
+        count_range_seeded(100, 40_000, 0x4A0, hour, law),
+    );
+    // Air country UINT_MAX + 0x5E2 wraps to 0x5E1, without the land salt.
+    assert_eq!(
+        count_range_seeded(100, 40_000, u32::MAX.wrapping_add(0x5E2), hour, law),
+        count_range_seeded(100, 40_000, 0x5E1, hour, law),
+    );
+}
+
+#[test]
 fn content_reader_keeps_native_category_reset_and_unknown_tail_refusals() {
     let mut content = content();
     assert_ne!(

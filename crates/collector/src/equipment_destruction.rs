@@ -2,7 +2,8 @@
 //! pool difference. Try-locks never wait on a game thread; overlap, refusal,
 //! overflow or a lost drain refuses its interval until a clean hourly boundary.
 use crate::hook::Hook;
-use engine::{Memory, cgame_state::Clock, equipment_destruction as native, equipment_entry};
+type Clock = engine::cgame_state::Clock<u64>;
+use engine::{Memory, equipment_destruction as native, equipment_entry};
 use native::SiteId;
 mod queue_index;
 mod transfers;
@@ -135,6 +136,8 @@ impl Store {
             .get_or_insert(record_refusal(site_index, reason));
     }
     fn boundary(&mut self, transition: bool, load: bool) {
+        EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
+        CALL_ATTEMPTS.store(0, Ordering::Relaxed);
         self.transition = transition;
         let refused = POISONED.swap(false, Ordering::SeqCst);
         self.interval_refusal = None;
@@ -184,6 +187,12 @@ fn append_entry(entries: &mut Vec<Entry>, site: SiteId, entry: Entry) -> Result<
     } else if entry.amount_raw == 0 {
         return Ok(());
     }
+    // 14134F8E9/14134F948 pool differences can exceed a census allowance
+    // through repeated calls. Retain every reached row, including refusals.
+    let attempted = EVENT_ATTEMPTS
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    EVENT_REQUIRED.fetch_max(attempted, Ordering::Relaxed);
     if entries.len() == entries.capacity() {
         return Err(event_overflow(site));
     }
@@ -272,6 +281,10 @@ pub fn release() -> Result<(), &'static str> {
         QUEUED_CAPACITY.store(0, Ordering::Release);
         DESIGNS.store(0, Ordering::Release);
         POOL_CAPACITY.store(0, Ordering::Release);
+        EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
+        CALL_ATTEMPTS.store(0, Ordering::Relaxed);
+        EVENT_REQUIRED.store(0, Ordering::Relaxed);
+        POOL_REQUIRED.store(0, Ordering::Relaxed);
         std::mem::replace(&mut *store, Store::new())
     };
     drop(storage);
@@ -356,6 +369,10 @@ static WORLD_GENERATION: AtomicU64 = AtomicU64::new(0);
 static BASE: AtomicUsize = AtomicUsize::new(0);
 static CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static OFFERED_CAPACITY: AtomicUsize = AtomicUsize::new(0);
+static EVENT_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+static CALL_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+static EVENT_REQUIRED: AtomicUsize = AtomicUsize::new(0);
+static POOL_REQUIRED: AtomicUsize = AtomicUsize::new(0);
 static QUEUED_CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static DESIGNS: AtomicUsize = AtomicUsize::new(0);
 static POOL_CAPACITY: AtomicUsize = AtomicUsize::new(0);
@@ -402,6 +419,12 @@ static UNKNOWN_CALLERS: AtomicU64 = AtomicU64::new(0);
 pub fn active() -> usize {
     ACTIVE.iter().map(|v| v.load(Ordering::SeqCst)).sum()
 }
+static EVENT_HINT: AtomicUsize = AtomicUsize::new(0);
+pub(crate) fn demand() -> usize {
+    EVENT_HINT
+        .load(Ordering::Acquire)
+        .max(EVENT_REQUIRED.load(Ordering::Acquire))
+}
 pub fn capacity() -> usize {
     CAPACITY
         .load(Ordering::Acquire)
@@ -444,6 +467,10 @@ pub fn lost_drain() {
 /// A failed sizing observation skips growth and counts a prepare failure; it
 /// cannot lose a recorded event or invalidate the existing branch observation.
 pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
+    engine::allocation::advisory(|| prepare_storage(memory, base, countries));
+}
+
+fn prepare_storage(memory: &impl Memory, base: usize, countries: usize) {
     let (prepared_events, prepared_queue, prepared_designs, prepared_pool) = {
         let mut swap = STORAGE_SWAP
             .lock()
@@ -453,7 +480,7 @@ pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
             .as_ref()
             .map_or((0, 0, 0, 0), |(store, designs)| {
                 (
-                    store.entries.capacity(),
+                    EVENT_HINT.load(Ordering::Acquire),
                     store.queued_limit,
                     *designs,
                     store.before.len(),
@@ -472,6 +499,8 @@ pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
         PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
         return;
     };
+    EVENT_HINT.fetch_max(events, Ordering::Release);
+    let events = demand();
     // Merge main/held pools can create corresponding reserve rows in
     // addition to S existing entries (14134F8E9/948,1414F8470/1414F776F).
     let Some(pool_bound) = population
@@ -484,6 +513,7 @@ pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
         return;
     };
     let pool_bound = pool_bound
+        .max(POOL_REQUIRED.load(Ordering::Relaxed))
         .max(designs)
         .max(POOL_CAPACITY.load(Ordering::Acquire))
         .max(prepared_pool);
@@ -495,7 +525,7 @@ pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
     {
         return;
     }
-    let events = events.max(capacity()).max(prepared_events);
+    let events = events.max(prepared_events);
     let designs = designs
         .max(DESIGNS.load(Ordering::Acquire))
         .max(prepared_designs);
@@ -536,7 +566,7 @@ pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
         || engine::allocation::reserve_exact(&mut reserves, army_bound).is_err()
         || engine::allocation::reserve_exact(&mut raw, raw_bytes).is_err()
     {
-        record_refusal(None, "equipment destruction buffer allocation failed");
+        PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
         return;
     }
     let Ok((queued, queued_by_army)) = indexes else {
@@ -578,7 +608,7 @@ pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
         credits,
         ..Store::new()
     };
-    let offered = storage.entries.capacity();
+    let offered = events;
     STORAGE_SWAP
         .lock()
         .unwrap_or_else(|error| error.into_inner())
@@ -792,7 +822,14 @@ fn refuse_boundary(transition: bool, load: bool) {
     }
 }
 
+#[cfg(test)]
 pub fn drain(output: &mut [Entry]) -> Result<usize, &'static str> {
+    drain_buffer(engine::walk::Buffer::Fixed(output))
+}
+pub fn drain_growing(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+    drain_buffer(engine::walk::Buffer::Growing(output))
+}
+fn drain_buffer(mut output: engine::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
     DRAINS.fetch_add(1, Ordering::Relaxed);
     if UNHOOKED.get().is_some() || !ENABLED.load(Ordering::SeqCst) {
         return Err("equipment destruction hooks unavailable (see status unhooked)");
@@ -838,6 +875,9 @@ pub fn drain(output: &mut [Entry]) -> Result<usize, &'static str> {
         return Err("queued division provenance is unavailable; interval is partial");
     }
     let len = store.entries.len();
+    output
+        .ensure(len)
+        .map_err(|_| "equipment destruction drain allocation failed")?;
     if len > output.len() {
         lost_drain();
         return Err("equipment destruction drain storage too small");
@@ -922,6 +962,14 @@ impl Call {
         let admission = Admission::enter();
         ACTIVE[site as usize].fetch_add(1, Ordering::SeqCst);
         CALLS[site as usize].fetch_add(1, Ordering::Relaxed);
+        if ENABLED.load(Ordering::SeqCst) {
+            // Refused calls still reach their original writer. Count their
+            // live burst without reading additional native operands.
+            let attempted = CALL_ATTEMPTS
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
+            EVENT_REQUIRED.fetch_max(attempted, Ordering::Relaxed);
+        }
         Self {
             site,
             _admission: admission,
@@ -1125,11 +1173,33 @@ fn pool_before(
             | SiteId::ScriptedReserveEquipmentFraction => receiver,
             _ => native::pool(receiver, site)?,
         };
-        let len = native::snapshot(memory, base, pool, &mut store.before)?;
+        let len = snapshot(memory, base, pool, &mut store.before, 0)?;
         Ok(Some((country, pool, len)))
     })()
 }
 
+fn snapshot(
+    memory: &impl Memory,
+    base: usize,
+    pool: usize,
+    rows: &mut [equipment_entry::Row],
+    prefix: usize,
+) -> Result<usize, &'static str> {
+    native::snapshot_with_demand(memory, base, pool, rows, |count| {
+        POOL_REQUIRED.fetch_max(prefix.saturating_add(count), Ordering::Relaxed);
+    })
+}
+fn variant_amount(
+    memory: &impl Memory,
+    base: usize,
+    pool: usize,
+    variant: usize,
+    scratch: &mut [u8],
+) -> Result<i64, &'static str> {
+    native::variant_amount_with_demand(memory, base, pool, variant, scratch, |count| {
+        POOL_REQUIRED.fetch_max(count, Ordering::Relaxed);
+    })
+}
 fn pool_after(
     store: &mut Store,
     site: SiteId,
@@ -1141,17 +1211,17 @@ fn pool_after(
     let Some((country, pool, len)) = pre else {
         return Ok(());
     };
-    let after = native::snapshot(memory, base, pool, &mut store.after)?;
+    let after = snapshot(memory, base, pool, &mut store.after, 0)?;
     let mut failure = None;
     let entries = &mut store.entries;
     native::removals(
         &mut store.before[..len],
         &mut store.after[..after],
         |variant, amount_raw| {
-            if entries.len() == entries.capacity() {
-                failure = Some(event_overflow(site));
-            } else {
-                entries.push(Entry {
+            if let Err(reason) = append_entry(
+                entries,
+                site,
+                Entry {
                     country,
                     cause,
                     disposition: native::Disposition::Loss,
@@ -1159,9 +1229,9 @@ fn pool_after(
                     division_handle: 0,
                     variant,
                     amount_raw,
-                });
-                EVENTS.fetch_add(1, Ordering::Relaxed);
-                record_hourly_peak(entries.len(), entries.capacity());
+                },
+            ) {
+                failure.get_or_insert(reason);
             }
         },
     )?;
@@ -1327,7 +1397,7 @@ fn variant_before(
     }
     let country = army_observation_owner(memory, army, context)?;
     let design = engine::cequipment_variant::identity(memory, base, variant)?;
-    let before = native::variant_amount(memory, base, pool, variant, &mut store.raw)?;
+    let before = variant_amount(memory, base, pool, variant, &mut store.raw)?;
     Ok(Some((country, design, before)))
 }
 
@@ -1342,7 +1412,7 @@ fn variant_after(
     let Some((country, design, before)) = pre else {
         return Ok(());
     };
-    let after = native::variant_amount(memory, base, pool, variant, &mut store.raw)?;
+    let after = variant_amount(memory, base, pool, variant, &mut store.raw)?;
     let amount_raw = before
         .checked_sub(after)
         .ok_or("destruction difference overflow")?;
@@ -1690,7 +1760,7 @@ fn return_before(
     let country = country?;
     let reserves = native::reserve_pool(reserves)?;
     native::reserve_owner(memory, base, reserves)?;
-    let sources = native::snapshot(memory, base, pool, &mut store.before)?;
+    let sources = snapshot(memory, base, pool, &mut store.before, 0)?;
     store.before[..sources].sort_unstable_by_key(|row| row.variant_pointer);
     let pre = native::touched_reserves(
         memory,
@@ -1941,7 +2011,7 @@ fn observe_deleted(
         .checked_add(engine::carmy::EQUIPMENT_POOL)
         .ok_or("deleted army equipment pool address overflow")?;
     let mut len = 0;
-    let rows = native::snapshot(memory, base, pool, &mut store.before)?;
+    let rows = snapshot(memory, base, pool, &mut store.before, 0)?;
     for row in &store.before[..rows] {
         transfers::push(
             &mut store.net,
@@ -2439,7 +2509,7 @@ fn merge_before(
         let pool = army
             .checked_add(engine::carmy::EQUIPMENT_POOL)
             .ok_or("merge pool address overflow")?;
-        let rows = native::snapshot(memory, base, pool, &mut store.before[sources..])?;
+        let rows = snapshot(memory, base, pool, &mut store.before[sources..], sources)?;
         let handle = native::army_identity(memory, base, army)?;
         let credited = if army == survivor {
             prior_state == Some(PoolState::Bookkeeping)
@@ -2480,7 +2550,7 @@ fn merge_before(
         // Destructed source families resolve their own roster country. Only
         // reinforcement is canceled on the survivor (1414F8330/1414F7610).
         native::canceled_delivery_pools(memory, base, army, army != survivor, |pool| {
-            let rows = native::snapshot(memory, base, pool, &mut store.after)?;
+            let rows = snapshot(memory, base, pool, &mut store.after, 0)?;
             if rows == 0 {
                 return Ok(());
             }
@@ -2640,7 +2710,7 @@ fn merge_after(
     let pool = survivor
         .checked_add(engine::carmy::EQUIPMENT_POOL)
         .ok_or("merge pool address overflow")?;
-    let rows = native::snapshot(memory, base, pool, &mut store.after)?;
+    let rows = snapshot(memory, base, pool, &mut store.after, 0)?;
     for row in &store.after[..rows] {
         transfers::push(
             &mut store.net,
@@ -2795,8 +2865,9 @@ fn callback(id: native::SiteId) -> usize {
 }
 
 fn set_sites_enabled(hooks: &mut [(native::SiteId, Hook)], enabled: bool) -> Result<bool, String> {
-    let mut family = engine::allocation::collect_vec(hooks.iter_mut().map(|(_, hook)| hook))
+    let mut family = crate::hook::publication_storage(hooks.len(), enabled)
         .map_err(|_| "equipment hook family allocation failed".to_owned())?;
+    family.extend(hooks.iter_mut().map(|(_, hook)| hook));
     let complete = Hook::set_enabled_batch(&mut family, enabled)?;
     drop(family);
     if complete {

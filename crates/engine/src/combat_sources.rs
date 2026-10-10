@@ -463,6 +463,23 @@ impl<M: Memory> Memory for DivisionImage<'_, M> {
     ) -> Option<crate::ccountry::AuthenticatedRoster<'_>> {
         self.inner.authenticated_countries(base, game_state)
     }
+
+    fn authenticated_reserved_country(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<Result<crate::ccountry::Country, &'static str>> {
+        self.inner.authenticated_reserved_country(base, game_state)
+    }
+
+    fn authenticated_reserved_country_observation(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<crate::ccountry::ReservedCountryObservation> {
+        self.inner
+            .authenticated_reserved_country_observation(base, game_state)
+    }
     fn modifier_accumulator_value(
         &self,
         address: usize,

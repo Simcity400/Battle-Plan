@@ -133,6 +133,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         ("interface/fixture.gui", declaration.into_bytes()),
         ("interface/fixture.gfx", br#"spriteTypes = {
             spriteType = { name = "GFX_fixture_substituted" textureFile = "gfx/icon.tga" }
+            spriteType = { name = "GFX_fixture_portrait" textureFile = "gfx/leaders/fixture.tga" }
             spriteType = { name = "GFX_ESCAPE" textureFile = "gfx/icon.tga" }
             spriteType = { name = "GFX_FIXTURE_TEXTURE" textureFile = "gfx/missing.tga" }
             spriteType = { name = "GFX_navalcombat_air_icon_fixture_bomber" textureFile = "gfx/icon.tga" noOfFrames = 2 }
@@ -145,6 +146,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         ("common/combat_tactics.txt", Vec::new()),
         ("localisation/english/fixture.yml", "\u{feff}l_english:\n fixture_unlisted_modifier:0 \"A £$fixture_icon_name$\"\n fixture_icon_name:0 \"fixture_substituted\"\n SHORTCUT:0 \"Shortcut: $KEY$\"\n".as_bytes().to_vec()),
         ("gfx/icon.tga", tga(4, 4)),
+        ("gfx/leaders/fixture.tga", tga(8, 12)),
         ("gfx/fonts/fixture.tga", tga(2, 2)),
         ("gfx/fonts/fixture.fnt", b"info face=\"fixture\" size=4\ncommon lineHeight=4 base=3 scaleW=2 scaleH=2 pages=1\npage id=0 file=\"fixture.tga\"\nchars count=1\nchar id=65 x=0 y=0 width=1 height=1 xoffset=0 yoffset=0 xadvance=1 page=0 chnl=15\n".to_vec()),
         ("gfx/FX/defines_hlsl_dx11.fxh", Vec::new()),
@@ -155,7 +157,17 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, bytes).unwrap();
     }
-    let shared = Arc::new(ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap());
+    let overlay = root.join("mod");
+    for (path, bytes) in [
+        ("gfx/leaders/fixture.tga", tga(14, 20)),
+        ("gfx/interface/landcombat/tactics/.dds", tga(6, 4)),
+    ] {
+        let file = overlay.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, bytes).unwrap();
+    }
+    let shared =
+        Arc::new(ResolvedLayers::from_folders(&[(&root, &[][..]), (&overlay, &[][..])]).unwrap());
     let windows = NativeWindows::load_at(&shared, [640, 480]).unwrap();
     let registry = Registry::load(&shared).unwrap();
     let interface = crate::map::sprites::Interface {
@@ -164,6 +176,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         decode: Decode::default(),
     };
     let lazy = LazyTextures::new();
+    lazy.set_background(false);
     let flags = crate::map::counters::flag_set(
         &shared,
         installed_content::flags::FlagSet::Normal,
@@ -333,6 +346,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
         windows: &windows,
         localisation: &localisation,
         flags: None,
+        physical_viewport: None,
     };
     let mut batch = Batch::default();
     let refused = tooltip_painter::draw(
@@ -355,6 +369,48 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
             .any(|draw| draw.textures.contains(&(0, Some(keycap)))),
         "the shared tooltip painter must draw the close shortcut keycap"
     );
+
+    // A fixed-clock dump repeats this resource refresh after settling queued
+    // artwork. The first snapshot must not hide that decoded portrait forever.
+    let mut bindings = Bindings::default();
+    super::super::binding::sprite(
+        &mut bindings.values,
+        "attacker_leader",
+        "GFX_fixture_portrait".into(),
+    );
+    let mut inventory = gui_resources::GuiAssets::new(&combat, &bindings);
+    inventory.refresh_portraits(&combat, 0.0, lazy.version());
+    assert!(
+        combat
+            .native_sprite(b"GFX_fixture_portrait")
+            .unwrap()
+            .missing
+            .is_some()
+    );
+    assert!(lazy.settle());
+    inventory.refresh_portraits(&combat, 0.0, lazy.version());
+    let resources = gui_resources::GuiResources::new(
+        &combat,
+        &windows,
+        &localisation,
+        &flags,
+        &flags,
+        &inventory,
+    );
+    use crate::map::native_gui::Sheets;
+    let portrait = resources.sheet(b"GFX_fixture_portrait").unwrap();
+    assert_ne!(portrait.texture, NO_TEXTURE);
+    assert_eq!(
+        portrait.size,
+        [14, 20],
+        "the recorded mod overlay supplies the portrait"
+    );
+    let null_picture = combat
+        .gui
+        .sheet(super::super::tactics::NULL_PICTURE.as_bytes())
+        .unwrap();
+    assert_ne!(null_picture.texture, NO_TEXTURE);
+    assert_eq!(null_picture.size, [6, 4]);
     std::fs::remove_dir_all(root).unwrap();
 }
 

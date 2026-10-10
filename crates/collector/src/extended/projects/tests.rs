@@ -6,6 +6,7 @@ fn projects_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and_
     static LOCAL: Tracker = Tracker::new();
     let mut job = ProjectsJob::default();
     job.census.reserve_exact(3);
+    job.census.resize(3, Default::default());
     job.statuses.reserve_exact(3);
     job.pointers.reserve_exact(3);
     job.capacity_charge = Charge::empty_on(&LOCAL);
@@ -116,7 +117,7 @@ fn daily_project_job_skips_empty_storage_and_preserves_raw_typed_identity() {
         );
         let memory = ProgramSource::new(&bytes);
         let mut job = if active {
-            ProjectsJob::new()
+            kit::job()
         } else {
             ProjectsJob::default()
         };
@@ -1274,6 +1275,7 @@ fn staging_overflow_falls_back_to_typed_walk() {
         census: Vec::with_capacity(1),
         statuses: Vec::with_capacity(1),
         pointers: Vec::with_capacity(1),
+        worker_growth: false,
         capacity_charge: crate::raw_memory::Charge::default(),
     };
     tiny.update_capacity_charge();

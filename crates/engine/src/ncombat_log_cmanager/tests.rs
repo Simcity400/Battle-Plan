@@ -943,14 +943,16 @@ fn the_variant_memo_changes_no_row_and_no_failure() {
             reason: "variant vtable or reference type mismatch"
         }
     );
-    // A memo that stops remembering still answers only what it holds.
+    // Later unique identities grow the original memo and retain earlier entries.
     let mut full = VariantMemo::try_new().unwrap();
-    for pointer in 1..=MEMO_LIMIT {
+    for pointer in 1..=10_000 {
+        full.reserve(1).unwrap();
         full.insert(pointer << 4, pointer as u32);
     }
-    assert_eq!(full.len, MEMO_LIMIT);
+    assert_eq!(full.len, 10_000);
+    full.reserve(1).unwrap();
     full.insert(0xdead_0000, 1);
-    assert_eq!(full.get(0xdead_0000), None);
+    assert_eq!(full.get(0xdead_0000), Some(1));
     assert_eq!(full.get(7 << 4), Some(7));
 }
 
@@ -1008,4 +1010,166 @@ fn prepared_selection_failure_at_visitor_does_not_attempt_group_reads() {
     );
     assert_eq!(selected, 1);
     assert_eq!(memory.calls(), 3);
+}
+
+#[test]
+fn growing_pool_rows_cover_first_and_later_demand_for_5000_countries() {
+    let mut fixture = Fixture::default();
+    fixture.array(GAME + cgame_state::COMBAT_LOGS, MANAGERS, 5_001);
+    fixture.pointer(MANAGERS, 0);
+    let pool = [(17, 100_000)];
+    let month = [Entry {
+        reason: 0,
+        date: OCTOBER,
+        pool: &pool,
+    }];
+    for country in 1..=5_000 {
+        let manager = fixture.manager(country, &[(country, [&month, &[], &[], &[], &[]])]);
+        fixture.pointer(MANAGERS + country as usize * 8, manager);
+    }
+    assert_eq!(row_demand(&fixture, BASE, GAME), Ok(5_000));
+    let mut rows = Vec::new();
+    let mut memo = VariantMemo::vacant();
+    let mut read = |fixture: &Fixture, rows: &mut Vec<Row>| {
+        walk_prepared_growing(
+            fixture,
+            BASE,
+            GAME,
+            &mut (),
+            |_, _| Ok(()),
+            |_, _| Ok(Some(Months::All)),
+            rows,
+            &mut memo,
+        )
+    };
+    assert_eq!(read(&fixture, &mut rows), Outcome::Rows { len: 5_000 });
+    assert_eq!((rows[4_999].country, rows[4_999].group), (5_000, 5_000));
+    // A retained country's pool grows without any change in country count.
+    let pool: Vec<_> = (1..=10_000).map(|id| (id, i64::from(id))).collect();
+    let month = [Entry {
+        reason: 0,
+        date: OCTOBER,
+        pool: &pool,
+    }];
+    let manager = fixture.manager(1, &[(1, [&month, &[], &[], &[], &[]])]);
+    fixture.pointer(MANAGERS + 8, manager);
+    assert_eq!(row_demand(&fixture, BASE, GAME), Ok(14_999));
+    assert_eq!(read(&fixture, &mut rows), Outcome::Rows { len: 14_999 });
+    assert_eq!((rows[9_999].country, rows[9_999].variant), (1, 10_000));
+}
+
+#[test]
+fn growing_combat_log_uses_the_same_original_read_trace_as_prepared_fixed_storage() {
+    struct Traced<'a> {
+        inner: &'a Fixture,
+        reads: std::cell::RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, output.len()));
+            self.inner.copy(address, output)
+        }
+    }
+    let pool = [(17, 100_000), (18, 200_000)];
+    let month = [Entry {
+        reason: 0,
+        date: OCTOBER,
+        pool: &pool,
+    }];
+    let (fixture, _) = Fixture::new(&[(29, [&month, &[], &[], &[], &[]])]);
+    let trace = || Traced {
+        inner: &fixture,
+        reads: Default::default(),
+    };
+    let fixed = trace();
+    let growing = trace();
+    let mut fixed_rows = [Row::default(); 2];
+    let mut rows = Vec::new();
+    assert_eq!(
+        walk(
+            &fixed,
+            BASE,
+            GAME,
+            |_| Some(Months::All),
+            &mut fixed_rows,
+            &mut VariantMemo::vacant()
+        ),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(
+        walk_prepared_growing(
+            &growing,
+            BASE,
+            GAME,
+            &mut (),
+            |_, _| Ok(()),
+            |_, _| Ok(Some(Months::All)),
+            &mut rows,
+            &mut VariantMemo::vacant()
+        ),
+        Outcome::Rows { len: 2 }
+    );
+    assert_eq!(rows[..2], fixed_rows);
+    assert_eq!(*fixed.reads.borrow(), *growing.reads.borrow());
+}
+
+#[test]
+fn later_month_reuses_ten_thousand_original_variant_authentications() {
+    const COUNT: u32 = 10_000;
+    let pool: Vec<_> = (1..=COUNT).map(|id| (id, i64::from(id))).collect();
+    let months = [
+        Entry {
+            reason: 0,
+            date: OCTOBER,
+            pool: &pool,
+        },
+        Entry {
+            reason: 0,
+            date: NOVEMBER,
+            pool: &pool,
+        },
+    ];
+    let (fixture, _) = Fixture::new(&[(1, [&months, &[], &[], &[], &[]])]);
+    struct Traced<'a> {
+        source: &'a Fixture,
+        reads: std::cell::RefCell<BTreeMap<usize, usize>>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if output.len() == 16 {
+                *self.reads.borrow_mut().entry(address).or_default() += 1;
+            }
+            self.source.copy(address, output)
+        }
+    }
+    let source = Traced {
+        source: &fixture,
+        reads: Default::default(),
+    };
+    let mut rows = Vec::new();
+    let mut memo = VariantMemo::try_new().unwrap();
+    let outcome = walk_prepared_growing(
+        &source,
+        BASE,
+        GAME,
+        &mut (),
+        |_, _| Ok(()),
+        |_, _| Ok(Some(Months::All)),
+        &mut rows,
+        &mut memo,
+    );
+    assert_eq!(
+        outcome,
+        Outcome::Rows {
+            len: 2 * COUNT as usize
+        }
+    );
+    for id in 1..=COUNT {
+        assert_eq!(
+            source.reads.borrow().get(&(VARIANTS + id as usize * 0x100)),
+            Some(&1)
+        );
+        assert_eq!(rows[id as usize - 1].variant, id);
+        assert_eq!(rows[COUNT as usize + id as usize - 1].variant, id);
+    }
 }

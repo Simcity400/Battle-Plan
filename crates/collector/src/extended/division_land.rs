@@ -73,7 +73,20 @@ impl Captured {
     ) -> u64 {
         let _reads = crate::read_accounting::table(replay::rows::TableId::DivisionLandInputs);
         let start = qpc();
-        let result = native::capture(
+        // Presentation is worker-only; scratch follows this original admitted
+        // census before the reader visits the retained contributor headers.
+        let prepared = (|| {
+            for buffer in [&mut self.pointers, &mut self.ordinals] {
+                engine::walk::Buffer::Growing(buffer).ensure(source.len())?;
+            }
+            engine::walk::Buffer::Growing(&mut self.first).ensure(source.len())?;
+            Ok::<_, &'static str>(())
+        })();
+        if let Err(reason) = prepared {
+            self.fail(reason);
+            return qpc().saturating_sub(start).max(0) as u64;
+        }
+        let result = native::capture_growing(
             memory,
             base,
             sources,

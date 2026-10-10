@@ -180,6 +180,31 @@ pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
     SliceMemory { base: 0, bytes }
 }
 
+pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
+    let mut bytes = fixture();
+    let data = bytes.len();
+    bytes.resize(data + count * 8, 0);
+    put(
+        &mut bytes,
+        GAME_STATE + engine::cgame_state::SUNK_SHIP_HISTORY,
+        &(data as u64).to_le_bytes(),
+    );
+    for offset in [
+        engine::cgame_state::SUNK_SHIP_HISTORY_CAPACITY,
+        engine::cgame_state::SUNK_SHIP_HISTORY_COUNT,
+    ] {
+        put(
+            &mut bytes,
+            GAME_STATE + offset,
+            &(count as u32).to_le_bytes(),
+        );
+    }
+    for index in 0..count {
+        put(&mut bytes, data + index * 8, &(FIRST as u64).to_le_bytes());
+    }
+    bytes
+}
+
 pub(crate) struct Split {
     pub outcome: Outcome,
     pub rows: Vec<engine::csunk_ship_info::Record>,
@@ -189,7 +214,7 @@ pub(crate) struct Split {
 
 fn collect_typed(memory: &impl Memory, rows_cap: usize, names_cap: usize) -> Split {
     use engine::csunk_ship_info;
-    let mut capacities = Capacities::default();
+    let mut capacities = Capacities::fixture();
     capacities.rows[13] = rows_cap;
     capacities.sunk_names = names_cap;
     let mut captured = Captured::with_capacities(&capacities);
@@ -232,11 +257,11 @@ fn collect_split(
         game_state: GAME_STATE,
         hour: HOUR,
     };
-    let mut capacities = Capacities::default();
+    let mut capacities = Capacities::fixture();
     capacities.rows[13] = rows_cap;
     capacities.sunk_names = names_cap;
     let mut captured = Captured::with_capacities(&capacities);
-    let mut first = SunkJob::new();
+    let mut first = SunkJob::fixture();
     let report = super::copy_sunk_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     let mut ticks = [0u64; 1];

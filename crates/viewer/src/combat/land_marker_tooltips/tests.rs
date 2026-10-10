@@ -91,10 +91,16 @@ fn marker_hit_precedes_navigation_and_no_intel_uses_native_key() {
         super::super::Hit {
             selection: super::super::Selection::Land(17),
             rect: [1., 2., 3., 4.],
+            layer: 0,
+            order: 0,
+            supported: true,
         },
         super::super::Hit {
             selection: super::super::Selection::Land(19),
             rect: [1., 2., 3., 4.],
+            layer: 0,
+            order: 1,
+            supported: true,
         },
     ];
     assert_eq!(hit(&hits, [2., 3.]), Some((19, [1., 2., 3., 4.])));

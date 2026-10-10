@@ -148,3 +148,57 @@ fn a_clone_that_is_its_global_definition_or_names_no_entry_is_refused() {
         Outcome::Unavailable { .. }
     ));
 }
+
+#[test]
+fn growing_local_clone_rows_reserve_the_original_changed_requirement_header() {
+    let mut memory = fixture();
+    let (mut rows, mut requirements) = (Vec::new(), Vec::new());
+    let first = walk_local_subunits_growing(&memory, 0, 0x1000, &mut rows, &mut requirements);
+    assert_eq!(first.outcome, Outcome::Rows { len: 1 });
+    memory.subunit(0x6000, 5, &vec![(ARCHETYPE, 300_000); 512]);
+    let later = walk_local_subunits_growing(&memory, 0, 0x1000, &mut rows, &mut requirements);
+    assert_eq!(later.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(later.requirements_len, 512);
+    assert_eq!(requirements[511].amount_raw, 300_000);
+}
+
+#[test]
+fn growing_local_subunits_capture_5000_countries_with_mod_sized_requirements() {
+    const COUNT: usize = 5_000;
+    let mut memory = fixture();
+    let first = 0x30000;
+    memory.0.resize(first + COUNT * 0x1600, 0);
+    memory.array(
+        0x1000 + crate::cgame_state::COUNTRIES,
+        0x10000,
+        COUNT as u32 + 1,
+    );
+    memory.array(
+        0x1000 + crate::cgame_state::COUNTRY_LINKS,
+        0x20000,
+        COUNT as u32 + 1,
+    );
+    memory.subunit(0x6000, 5, &vec![(ARCHETYPE, 300_000); 64]);
+    for slot in 1..=COUNT {
+        let country = first + (slot - 1) * 0x1600;
+        let deployment = country + 0x1100;
+        memory.word(0x10000 + slot * 8, country as u64);
+        memory.put(0x20000 + slot * 4, &(slot as u32).to_le_bytes());
+        memory.word(country, ccountry::VTABLE_RVA as u64);
+        memory.put(country + ccountry::ID, &(slot as u32).to_le_bytes());
+        memory.word(country + ccountry::DEPLOYMENT_MANAGER, deployment as u64);
+        memory.word(deployment, VTABLE_RVA as u64);
+        memory.word(deployment + OWNER, country as u64);
+        memory.array(deployment + LOCAL_SUBUNITS, 0x3a00, 2);
+    }
+    let (mut rows, mut requirements) = (Vec::new(), Vec::new());
+    let first_capture =
+        walk_local_subunits_growing(&memory, 0, 0x1000, &mut rows, &mut requirements);
+    assert_eq!(first_capture.outcome, Outcome::Rows { len: COUNT });
+    assert_eq!(first_capture.requirements_len, COUNT * 64);
+    assert_eq!(rows[COUNT - 1].country, COUNT as u32);
+    memory.subunit(0x6000, 5, &vec![(ARCHETYPE, 300_000); 512]);
+    let later = walk_local_subunits_growing(&memory, 0, 0x1000, &mut rows, &mut requirements);
+    assert_eq!(later.outcome, Outcome::Rows { len: COUNT });
+    assert_eq!(later.requirements_len, COUNT * 512);
+}

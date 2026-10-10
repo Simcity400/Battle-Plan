@@ -40,6 +40,104 @@ fn valid_segment() -> Vec<u8> {
 }
 
 #[test]
+fn record_reader_streams_large_segments_with_one_payload_buffer() {
+    struct SyntheticSegment {
+        bytes: Vec<u8>,
+        position: usize,
+        next_hour: i32,
+        end_hour: i32,
+    }
+    fn large_frame(hour: i32) -> Record {
+        let mut frame = frame(hour, hour == 10);
+        frame.tables[0] = TableUpdate::Unavailable {
+            reason: "x".repeat(32 * 1024),
+        };
+        Record::Frame(frame)
+    }
+    impl Read for SyntheticSegment {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            if self.position == self.bytes.len() {
+                if self.next_hour == self.end_hour {
+                    return Ok(0);
+                }
+                self.bytes = encode_record(&large_frame(self.next_hour))?;
+                self.next_hour += 1;
+                self.position = 0;
+            }
+            let length = out.len().min(self.bytes.len() - self.position);
+            out[..length].copy_from_slice(&self.bytes[self.position..self.position + length]);
+            self.position += length;
+            Ok(length)
+        }
+    }
+    let context = encode_record(&branch()).unwrap();
+    let frame_bytes = encode_record(&large_frame(10)).unwrap().len();
+    let count = 128;
+    let length = context.len() + count * frame_bytes;
+    let source = SyntheticSegment {
+        bytes: context,
+        position: 0,
+        next_hour: 10,
+        end_hour: 10 + count as i32,
+    };
+    let mut reader = RecordReader::new(source, length);
+    let mut frames = 0;
+    while let Some(record) = reader.next_record().unwrap() {
+        if let Record::Frame(frame) = record {
+            assert_eq!(frame.hour, 10 + frames);
+            frames += 1;
+        }
+        assert!(reader.payload.capacity() <= frame_bytes * 2);
+    }
+    assert_eq!(frames, count as i32);
+    assert_eq!(reader.valid_bytes, length);
+}
+
+#[test]
+fn recover_reader_preserves_prefix_damage_and_propagates_resource_failure() {
+    let good = valid_segment();
+    for cut in [0, RECORD_HEADER_BYTES - 1, good.len() - 1, good.len()] {
+        let old = recover_prefix(&good[..cut]);
+        let streamed = recover_reader(io::Cursor::new(&good[..cut]), cut, Ok).unwrap();
+        assert_eq!(streamed.records, old.records);
+        assert_eq!(streamed.valid_bytes, old.valid_bytes);
+        assert_eq!(streamed.damage, old.damage);
+    }
+    for kind in [io::ErrorKind::OutOfMemory, io::ErrorKind::PermissionDenied] {
+        let error = recover_reader(io::Cursor::new(&good), good.len(), |_| {
+            Err(io::Error::from(kind))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), kind);
+    }
+    // A hostile payload length fails against the actual remaining extent,
+    // before requesting its allocation. No segment-size limit is involved.
+    let mut header = good[..RECORD_HEADER_BYTES].to_vec();
+    header[6..10].copy_from_slice(&(MAX_RECORD_BYTES as u32).to_le_bytes());
+    let mut reader = RecordReader::new(io::Cursor::new(&header), header.len());
+    assert!(
+        reader
+            .next_record()
+            .unwrap_err()
+            .to_string()
+            .contains("truncated record payload")
+    );
+    assert_eq!(reader.payload.capacity(), 0);
+    struct FailedRead;
+    impl Read for FailedRead {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::OutOfMemory))
+        }
+    }
+    assert_eq!(
+        recover_reader(FailedRead, RECORD_HEADER_BYTES, Ok)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::OutOfMemory
+    );
+}
+
+#[test]
 fn control_and_context_bounds_match_encoded_fields() {
     for present in [false, true] {
         let controls = [

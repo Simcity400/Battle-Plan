@@ -140,6 +140,55 @@ fn bounded_variant_copy_sums_signed_duplicates_and_refuses_short_or_unreadable()
 }
 
 #[test]
+fn original_pool_demand_survives_short_storage_without_extra_native_reads() {
+    use crate::memory::SliceMemory;
+    use std::cell::{Cell, RefCell};
+    struct Traced<'a> {
+        memory: SliceMemory<'a>,
+        reads: RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, output.len()));
+            self.memory.copy(address, output)
+        }
+    }
+    for count in [5000i32, 10003] {
+        let mut bytes = [0u8; 0x40];
+        bytes[..8].copy_from_slice(&(cequipment_variant_pool::VTABLE_RVA as u64).to_le_bytes());
+        bytes[0x20..0x28].copy_from_slice(&0x2000u64.to_le_bytes());
+        bytes[0x28..0x2c].copy_from_slice(&count.to_le_bytes());
+        bytes[0x2c..0x30].copy_from_slice(&count.to_le_bytes());
+        let memory = Traced {
+            memory: SliceMemory {
+                base: 0x1000,
+                bytes: &bytes,
+            },
+            reads: RefCell::new(Vec::new()),
+        };
+        let expected = snapshot(&memory, 0, 0x1000, &mut []);
+        let reads = memory.reads.take();
+        let demand = Cell::new(0);
+        assert_eq!(
+            snapshot_with_demand(&memory, 0, 0x1000, &mut [], |count| demand.set(count)),
+            expected
+        );
+        assert_eq!(demand.get(), count as usize);
+        assert_eq!(memory.reads.take(), reads);
+        let expected = variant_amount(&memory, 0, 0x1000, 0x3000, &mut []);
+        let reads = memory.reads.take();
+        demand.set(0);
+        assert_eq!(
+            variant_amount_with_demand(&memory, 0, 0x1000, 0x3000, &mut [], |count| demand
+                .set(count)),
+            expected
+        );
+        assert_eq!(demand.get(), count as usize);
+        assert_eq!(memory.reads.take(), reads);
+    }
+}
+
+#[test]
 fn signed_snapshot_preserves_full_native_signed_quantities() {
     use crate::{cequipment_variant, memory::SliceMemory};
     let mut bytes = vec![0u8; 0x180];

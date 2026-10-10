@@ -11,7 +11,12 @@
 //! Land, railway guns and at-sea task forces share this path, including hidden
 //! icons. Port CNavalMissionUnitItem (14197EAC0) never colours its +AE0 type.
 //! The same two flags choose the plate's allegiance colour ([`plate`]).
-use crate::map::{allegiance::Allegiance, memo::Keyed, visibility::Relations};
+use crate::map::{
+    allegiance::Allegiance,
+    directed_wars::Owner,
+    memo::Keyed,
+    visibility::{self, Families},
+};
 use replay::{
     frame::DecodedFrame,
     rows::{DivisionRow, SentVolunteerRow, TableId, tables},
@@ -100,13 +105,13 @@ impl Colors {
     };
 }
 
-/// The tables [`Index`] is built from besides its [`Key`]. Countries and
-/// Divisions change every hour in columns the index does not read; the key
-/// carries the little it needs from them, so an unchanged index is reused.
+/// The tables [`Index`] is built from besides its volunteer and hour [`Key`].
 pub(crate) const TABLES: &[TableId] = &[
     TableId::CountryLinks,
     TableId::FactionMembers,
-    TableId::WarRelations,
+    TableId::Countries,
+    TableId::CountryCounterInputs,
+    TableId::ReservedCountryNaming,
     TableId::Subjects,
 ];
 
@@ -119,10 +124,9 @@ pub(crate) struct Key {
     ours: u32,
     /// Each volunteer host's first position in the viewing country's list, in
     /// list order.
-    hosts: Vec<(u32, u32)>,
-    /// Sorted canonical slots whose stored id (CCountry+8) is not
-    /// signed-positive, or that have no Countries row.
-    nonpositive: Vec<u32>,
+    hosts: Result<Vec<(u32, u32)>, String>,
+    /// Directed packet admission is tied to the presented hour.
+    hour: i32,
 }
 
 impl Key {
@@ -130,8 +134,8 @@ impl Key {
         sent: &[SentVolunteerRow],
         divisions: &[DivisionRow],
         links: &BTreeMap<u32, u32>,
-        ids: &BTreeMap<u32, u32>,
         ours: u32,
+        hour: i32,
     ) -> Result<Self, String> {
         // Rows are in key order (country, ordinal); only the viewing country's
         // own object holds a list.
@@ -163,30 +167,19 @@ impl Key {
             let Ok(at) = divisions.binary_search_by_key(&row.division, |d| d.id) else {
                 continue;
             };
-            let host = canonical(links, divisions[at].logical_owner)
+            let host = divisions[at].logical_owner;
+            let slot = canonical(links, host)
                 .ok_or("SentVolunteers logical country missing from CountryLinks")?;
-            if seen.insert(host) {
+            // Actual zero does not alias a positive reference resolving to zero.
+            if seen.insert((host != 0, slot)) {
                 hosts.push((host, row.ordinal));
             }
         }
-        let mut nonpositive: Vec<u32> = links
-            .values()
-            .chain([&ours])
-            .copied()
-            .filter(|slot| ids.get(slot).is_none_or(|&id| id as i32 <= 0))
-            .collect();
-        nonpositive.sort_unstable();
-        nonpositive.dedup();
         Ok(Self {
             ours,
-            hosts,
-            nonpositive,
+            hosts: Ok(hosts),
+            hour,
         })
-    }
-
-    /// 1406F3A00 requires its receiver's stored country id to be positive.
-    fn positive(&self, slot: u32) -> bool {
-        self.nonpositive.binary_search(&slot).is_err()
     }
 }
 
@@ -199,14 +192,25 @@ impl Key {
 pub(crate) struct Index {
     countries: HashMap<u32, Country>,
     problem: Option<String>,
+    query_problem: Option<String>,
+    volunteer_problem: Option<String>,
 }
 
-#[derive(Clone, Copy, Default)]
 struct Country {
-    friend: bool,
-    enemy: bool,
+    friend: Result<bool, String>,
+    enemy: Result<bool, String>,
     first_host: Option<u32>,
-    first_host_enemy: Option<u32>,
+    /// First hostile or unreadable host, in native order. Equality at that
+    /// position still wins before its war query.
+    first_host_enemy: Option<(u32, Result<(), String>)>,
+}
+
+fn either(a: Result<bool, String>, b: Result<bool, String>) -> Result<bool, String> {
+    if a == Ok(true) || b == Ok(true) {
+        return Ok(true);
+    }
+    a?;
+    b
 }
 
 impl Index {
@@ -216,7 +220,6 @@ impl Index {
         memo: &Memo,
         frame: &DecodedFrame,
         links: &BTreeMap<u32, u32>,
-        ids: &BTreeMap<u32, u32>,
         ours: u32,
     ) -> Arc<Self> {
         let key = (|| {
@@ -228,13 +231,17 @@ impl Index {
                     .complete::<tables::Divisions>()
                     .map_err(|e| format!("Divisions: {e}"))?,
                 links,
-                ids,
                 ours,
+                frame.hour,
             )
         })();
         let key = match key {
             Ok(key) => key,
-            Err(problem) => return Arc::new(Self::unavailable(problem)),
+            Err(problem) => Key {
+                ours,
+                hour: frame.hour,
+                hosts: Err(problem),
+            },
         };
         memo.get_or_build(frame, key.clone(), |projected| {
             let links: BTreeMap<u32, u32> = projected
@@ -242,10 +249,7 @@ impl Index {
                 .iter()
                 .map(|link| (link.id, link.canonical_slot))
                 .collect();
-            Ok::<_, io::Error>(Arc::new(match Relations::read(projected, &links) {
-                Ok(relations) => Self::new(&links, &relations, &key),
-                Err(table) => Self::unavailable(format!("relations: {table}")),
-            }))
+            Ok::<_, io::Error>(Arc::new(Self::new(projected, &links, &key)))
         })
         .unwrap_or_else(|error| Arc::new(Self::unavailable(error.to_string())))
     }
@@ -257,47 +261,93 @@ impl Index {
         }
     }
 
-    fn new(links: &BTreeMap<u32, u32>, relations: &Relations, key: &Key) -> Self {
-        let ours = key.ours;
-        let mut countries: BTreeMap<_, _> = links
-            .values()
-            .map(|&slot| {
+    fn new(frame: &DecodedFrame, links: &BTreeMap<u32, u32>, key: &Key) -> Self {
+        let viewer = if key.ours == 0 {
+            Ok(0)
+        } else {
+            links
+                .iter()
+                .find(|&(_, &slot)| slot == key.ours)
+                .map(|(&raw, _)| raw)
+                .ok_or_else(|| "viewing country CountryLinks row missing".to_owned())
+        }
+        .and_then(|raw| Owner::new(frame, raw));
+        let families = Families::read(frame, links);
+        let volunteer_problem = key.hosts.as_ref().err().cloned();
+        let mut query_problem = volunteer_problem.clone();
+        let hosts = key.hosts.as_deref().unwrap_or_default();
+        let countries = links
+            .keys()
+            .copied()
+            .chain([0])
+            .map(|raw| {
+                let friend = viewer.as_ref().map_err(Clone::clone).and_then(|viewer| {
+                    visibility::counter_shared(
+                        frame,
+                        links,
+                        viewer,
+                        raw,
+                        families.as_ref().map_err(|reason| *reason),
+                    )
+                });
+                let enemy = viewer
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|viewer| viewer.at_war(raw));
+                let first_host = hosts
+                    .iter()
+                    .find(|&&(host, _)| {
+                        raw == host
+                            || (raw != 0
+                                && host != 0
+                                && canonical(links, raw) == canonical(links, host))
+                    })
+                    .map(|&(_, position)| position);
+                let mut first_host_enemy = None;
+                if !hosts.is_empty() {
+                    let receiver = Owner::new(frame, raw);
+                    for &(host, position) in hosts {
+                        match receiver
+                            .as_ref()
+                            .map_err(Clone::clone)
+                            .and_then(|receiver| receiver.at_war(host))
+                        {
+                            Ok(false) => {}
+                            Ok(true) => {
+                                first_host_enemy = Some((position, Ok(())));
+                                break;
+                            }
+                            Err(reason) => {
+                                first_host_enemy = Some((position, Err(reason)));
+                                break;
+                            }
+                        }
+                    }
+                }
+                for result in [&friend, &enemy] {
+                    if let Err(reason) = result {
+                        query_problem.get_or_insert_with(|| reason.clone());
+                    }
+                }
+                if let Some((_, Err(reason))) = &first_host_enemy {
+                    query_problem.get_or_insert_with(|| reason.clone());
+                }
                 (
-                    slot,
+                    raw,
                     Country {
-                        friend: relations.shared(ours, slot),
-                        enemy: key.positive(ours) && relations.at_war(ours, slot),
-                        ..Country::default()
+                        friend,
+                        enemy,
+                        first_host,
+                        first_host_enemy,
                     },
                 )
             })
             .collect();
-        // Hosts are in list order, so the first position stored is the earliest.
-        for &(host, position) in &key.hosts {
-            countries.entry(host).or_default().first_host = Some(position);
-            for enemy in relations.enemies(host) {
-                // The loop's war test is received by the representative's
-                // logical country: this enemy.
-                if key.positive(enemy) {
-                    countries
-                        .entry(enemy)
-                        .or_default()
-                        .first_host_enemy
-                        .get_or_insert(position);
-                }
-            }
-        }
-        let mut raw: HashMap<_, _> = links
-            .iter()
-            .map(|(&id, slot)| (id, countries.get(slot).copied().unwrap_or_default()))
-            .collect();
-        raw.entry(0).or_insert(Country {
-            friend: ours == 0,
-            ..Default::default()
-        });
         Self {
-            countries: raw,
+            countries,
             problem: None,
+            query_problem,
+            volunteer_problem,
         }
     }
 
@@ -305,6 +355,7 @@ impl Index {
     pub(super) fn problem(&self) -> &str {
         self.problem
             .as_deref()
+            .or(self.query_problem.as_deref())
             .unwrap_or("counter owner missing from CountryLinks")
     }
 
@@ -316,27 +367,40 @@ impl Index {
         if self.problem.is_some() {
             return None;
         }
-        let a = *self.countries.get(&roster)?;
-        let b = if roster == logical {
-            a
-        } else {
-            *self.countries.get(&logical)?
-        };
-        let mut friend = a.friend || b.friend;
-        let mut enemy = a.enemy || b.enemy;
-        // Equality is tested before war on each reference, then either match
-        // breaks. Do not OR all hosts: a prior hostile host can stop a later friend.
-        if let Some(host) = a.first_host
-            && b.first_host_enemy.is_none_or(|war| host <= war)
-        {
-            friend = true;
-        } else if b.first_host_enemy.is_some() {
-            enemy = true;
+        let a = self.countries.get(&roster)?;
+        let b = self.countries.get(&logical)?;
+        let mut friend = either(a.friend.clone(), b.friend.clone());
+        let mut enemy = either(a.enemy.clone(), b.enemy.clone());
+        if friend == Ok(true) {
+            return Some(Side::Friend);
         }
-        // 1418C5AC1 tests friend first, then enemy; hidden type uses the same path.
-        Some(if friend {
+        // Unknown volunteers may set friend even for an already-known enemy.
+        // They cannot erase a known ordinary friend or affect a mission item.
+        if self.volunteer_problem.is_some() {
+            return None;
+        }
+        if let Some(host) = a.first_host
+            && b.first_host_enemy
+                .as_ref()
+                .is_none_or(|(war, _)| host <= *war)
+        {
+            friend = Ok(true);
+        } else if let Some((_, result)) = &b.first_host_enemy {
+            if let Err(reason) = result {
+                if a.first_host.is_some() {
+                    // An earlier unknown war may stop a later friendly host.
+                    friend = either(friend, Err(reason.clone()));
+                }
+                enemy = either(enemy, Err(reason.clone()));
+            } else {
+                enemy = Ok(true);
+            }
+        }
+        // 1418C5AC1 tests friend before enemy. A proved friend never demands
+        // unknown enemy operands; an unknown friend cannot become neutral.
+        Some(if friend.ok()? {
             Side::Friend
-        } else if enemy {
+        } else if enemy.ok()? {
             Side::Enemy
         } else {
             Side::Neutral
@@ -358,15 +422,11 @@ impl Index {
         if self.problem.is_some() {
             return None;
         }
-        let a = *self.countries.get(&roster)?;
-        let b = if roster == logical {
-            a
-        } else {
-            *self.countries.get(&logical)?
-        };
-        Some(if a.enemy || b.enemy {
+        let a = self.countries.get(&roster)?;
+        let b = self.countries.get(&logical)?;
+        Some(if either(a.enemy.clone(), b.enemy.clone()).ok()? {
             Allegiance::Enemy
-        } else if a.friend || b.friend {
+        } else if either(a.friend.clone(), b.friend.clone()).ok()? {
             Allegiance::Allied
         } else {
             Allegiance::Other

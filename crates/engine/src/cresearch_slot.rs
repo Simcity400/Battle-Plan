@@ -35,6 +35,8 @@ pub struct Row {
     /// Nonnegative native i32 ordinal; all bits preserved and checked against the array count.
     pub index: u32,
     pub technology_handle: u32,
+    /// Exact selected template occurrence (140EBFEF0 / 140ED02A0). Zero when idle.
+    pub database_index: i32,
     /// Native technology pointer presence; the pointer itself is not portable identity.
     pub technology_present: u8,
     pub research_speed_raw: i64,
@@ -68,7 +70,25 @@ pub(crate) fn row(
         }
         Some(bytes)
     };
-    decode_raw(base, status, country, &raw, linked.as_ref())
+    let mut row = decode_raw(base, status, country, &raw, linked.as_ref())?;
+    if let Some(bytes) = &linked {
+        let instance = crate::ctechnology::decode_one(base, status, country, bytes)?;
+        let identity = crate::read::<[u8; 8]>(
+            memory,
+            instance
+                .template
+                .checked_add(crate::ctechnology_template::DATABASE_INDEX)
+                .ok_or("technology template address overflow")?,
+        )
+        .ok_or("research slot template identity unreadable")?;
+        row.database_index = i32::from_le_bytes(identity[..4].try_into().unwrap());
+        if row.database_index <= 0
+            || u32::from_le_bytes(identity[4..].try_into().unwrap()) != row.technology_handle
+        {
+            return Err("research slot template identity mismatch");
+        }
+    }
+    Ok(row)
 }
 
 /// Game-thread raw copy with no validation beyond address bounds.
@@ -130,6 +150,7 @@ pub fn decode_raw(
         country,
         index: u32::from_le_bytes(raw.speed_index[8..].try_into().unwrap()),
         technology_handle,
+        database_index: 0,
         technology_present: u8::from(technology != 0),
         research_speed_raw: i64::from_le_bytes(raw.speed_index[..8].try_into().unwrap()),
         banked_days_raw: i64::from_le_bytes(raw.days[..8].try_into().unwrap()),

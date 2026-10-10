@@ -11,8 +11,11 @@ use crate::{
 use engine::allocation::{copy_vec, owned_vec};
 use engine::{Memory, creferenced_division_template as native, walk::Outcome};
 use replay::{
-    frame::TableView,
-    rows::{DivisionTemplateIconRow, DivisionTemplateRow, TableId, TemplateSubunit, tables},
+    frame::{TableInput, TableView},
+    rows::{
+        DivisionTemplateIconRow, DivisionTemplateRow, Recorded, TableId, TemplateDisplayName,
+        TemplateNameValue, TemplateSubunit, tables,
+    },
 };
 
 pub const N: usize = 2;
@@ -54,7 +57,7 @@ impl ModelFailures {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     bytes: usize,
@@ -62,6 +65,7 @@ pub struct Capacities {
     variants: usize,
     icon_rows: usize,
     icon_bytes: usize,
+    name_bytes: usize,
     /// The daily walk's definition memo slots; a full memo only costs reads.
     memo: usize,
     /// The sub-unit database's length, for the hourly walk's two copies.
@@ -70,29 +74,76 @@ pub struct Capacities {
     locals: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 2048,
-            bytes: 128 * 1024,
-            counts: 16 * 1024,
-            variants: 1024,
-            icon_rows: 2048,
-            icon_bytes: 32 * 1024,
-            memo: 1024,
-            database: 1024,
-            locals: 256,
+impl Capacities {
+    /// 1406C3E60 appends to country+0x1b8/count+0x1c4. 140B94FA0 stores
+    /// grouped subunits and model representatives; 140B91170
+    /// reads the literal or fallback name. Empty outputs still visit every
+    /// authenticated roster record and count its independent arena demands.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let daily = native::walk(memory, base, state, &mut [], &mut [], &mut []);
+        let icons = native::walk_icons(
+            memory,
+            base,
+            state,
+            &mut [],
+            &mut [],
+            &mut [],
+            &mut [],
+            native::DefinitionSlots {
+                database: &mut [],
+                globals: &mut [],
+                locals: &mut [],
+            },
+        );
+        let demand = |outcome| match outcome {
+            Outcome::Rows { len } => Ok(len),
+            Outcome::Truncated { len, unread_rows } => len
+                .checked_add(unread_rows as usize)
+                .ok_or("template row demand overflow"),
+            Outcome::Unavailable { reason } => Err(reason),
+        };
+        let rows = demand(daily.outcome)?;
+        let icon_rows = demand(icons.outcome)?;
+        for (capacity, required) in [
+            (&mut self.rows, rows),
+            (&mut self.bytes, daily.required_bytes),
+            (&mut self.memo, daily.required_memo),
+            (&mut self.icon_rows, icon_rows),
+            (&mut self.icon_bytes, icons.required_bytes),
+            (&mut self.name_bytes, daily.required_name_bytes),
+            (&mut self.counts, icons.required_counts),
+            (&mut self.variants, icons.required_variants),
+            (&mut self.database, icons.required_database),
+            (&mut self.locals, icons.required_locals),
+        ] {
+            crate::table_capture::grow_capacity(capacity, required);
         }
+        Ok(())
     }
 }
 
+struct Preacquired {
+    base: usize,
+    state: usize,
+    hour: i32,
+    force: bool,
+    ticks: Option<[u64; N]>,
+}
 pub struct Captured {
+    preacquired: Option<Preacquired>,
     rows: CaptureRows<native::Row>,
     bytes: Arena<u8>,
     counts: Arena<native::SubunitCount>,
     variants: Arena<u64>,
     icon_rows: CaptureRows<native::IconRow>,
     icon_bytes: Arena<u8>,
+    name_bytes: Arena<u8>,
+    sample_hour: Option<i32>,
     memo: Arena<native::MemoSlot>,
     model_failures: ModelFailures,
     database: Arena<usize>,
@@ -118,6 +169,7 @@ impl Captured {
             variants: 0,
             icon_rows: 0,
             icon_bytes: 0,
+            name_bytes: 0,
             memo: 0,
             database: 0,
             locals: 0,
@@ -126,12 +178,15 @@ impl Captured {
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
+            preacquired: None,
             rows: CaptureRows::new(capacity.rows),
             bytes: Arena::new(capacity.bytes),
             counts: Arena::new(capacity.counts),
             variants: Arena::new(capacity.variants),
             icon_rows: CaptureRows::new(capacity.icon_rows),
             icon_bytes: Arena::new(capacity.icon_bytes),
+            name_bytes: Arena::new(capacity.name_bytes),
+            sample_hour: None,
             memo: Arena::new(capacity.memo),
             model_failures: ModelFailures::default(),
             database: Arena::new(capacity.database),
@@ -140,12 +195,15 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
+        self.preacquired = None;
         self.rows.reset();
         self.bytes.reset();
         self.counts.reset();
         self.variants.reset();
         self.icon_rows.reset();
         self.icon_bytes.reset();
+        self.name_bytes.reset();
+        self.sample_hour = None;
         self.memo.reset();
         self.model_failures = ModelFailures::default();
         self.database.reset();
@@ -159,6 +217,7 @@ impl Captured {
             + self.variants.allocated_bytes()
             + self.icon_rows.allocated_bytes()
             + self.icon_bytes.allocated_bytes()
+            + self.name_bytes.allocated_bytes()
             + self.memo.allocated_bytes()
             + self.database.allocated_bytes()
             + self.globals.allocated_bytes()
@@ -171,6 +230,7 @@ impl Captured {
         self.variants.grow(&mut capacity.variants);
         self.icon_rows.grow(&mut capacity.icon_rows);
         self.icon_bytes.grow(&mut capacity.icon_bytes);
+        self.name_bytes.grow(&mut capacity.name_bytes);
         self.memo.grow(&mut capacity.memo);
         let mut globals = capacity.database;
         self.database.grow(&mut capacity.database);
@@ -193,14 +253,95 @@ impl Captured {
         hour: i32,
         force: bool,
     ) -> [u64; N] {
+        if let Some(marker) = &mut self.preacquired {
+            if (marker.base, marker.state, marker.hour, marker.force) == (base, state, hour, force)
+            {
+                return marker.ticks.take().unwrap_or([0; N]);
+            }
+            self.fail_preacquired(
+                base,
+                state,
+                hour,
+                force,
+                "template preacquisition context mismatch",
+            );
+            return [0; N];
+        }
+        self.capture_original(memory, base, state, hour, force)
+    }
+    pub(crate) fn capture_preacquired(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force: bool,
+        journal: &mut engine::raw_country_observations::Journal,
+    ) {
+        let mut ticks = self.capture_original(memory, base, state, hour, force);
+        let _reads = crate::read_accounting::table(TABLES[1]);
+        let begin = qpc();
+        if let Some(names) = self.name_bytes.first.get(..self.name_bytes.len) {
+            for row in self
+                .icon_rows
+                .rows
+                .get(..self.icon_rows.outcome.len())
+                .unwrap_or(&[])
+            {
+                if let Some(display) = row.display_name
+                    && display.literal.len == 0
+                    && let Some(key) = display.fallback_key
+                    && span(names, key).is_some_and(|bytes| !bytes.is_empty())
+                {
+                    journal.demand_tag(memory, row.country);
+                }
+            }
+        } else {
+            journal.refuse("template raw tag demand spans invalid");
+        }
+        ticks[1] = ticks[1].saturating_add(qpc().saturating_sub(begin).max(0) as u64);
+        self.preacquired = Some(Preacquired {
+            base,
+            state,
+            hour,
+            force,
+            ticks: Some(ticks),
+        });
+    }
+    pub(crate) fn fail_preacquired(
+        &mut self,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force: bool,
+        reason: &'static str,
+    ) {
+        self.fail_capture(hour, force, reason);
+        self.preacquired = Some(Preacquired {
+            base,
+            state,
+            hour,
+            force,
+            ticks: Some([0; N]),
+        });
+    }
+    fn capture_original(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        hour: i32,
+        force: bool,
+    ) -> [u64; N] {
         self.reset();
-        // The counter and model inputs every hour. The walk reads no names or
-        // grids beyond the regiment grid of a template without a stored
-        // priority unit.
+        self.sample_hour = Some(hour);
+        // The counter/model and demanded display-name inputs every hour.
+        // Grids beyond the regiment grid of a template without a stored
+        // priority unit are still not read.
         let icons = {
             let _reads = crate::read_accounting::table(TABLES[1]);
             let start = qpc();
-            let walk = native::walk_icons(
+            let walk = native::walk_icons_with_names_growing(
                 memory,
                 base,
                 state,
@@ -213,10 +354,13 @@ impl Captured {
                     globals: &mut self.globals.first,
                     locals: &mut self.locals.first,
                 },
+                &mut self.name_bytes.first,
             );
             self.icon_rows.outcome = walk.outcome;
             self.icon_bytes.len = walk.bytes_len;
             self.icon_bytes.required = walk.required_bytes;
+            self.name_bytes.len = walk.name_bytes_len;
+            self.name_bytes.required = walk.required_name_bytes;
             self.counts.len = walk.counts_len;
             self.counts.required = walk.required_counts;
             self.variants.len = walk.variants_len;
@@ -239,7 +383,7 @@ impl Captured {
             return [0, icons];
         }
         let start = qpc();
-        let first = native::walk(
+        let first = native::walk_growing(
             memory,
             base,
             state,
@@ -261,8 +405,28 @@ impl Captured {
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome, self.icon_rows.outcome]
     }
+    #[cfg(test)]
     pub fn tables(&self) -> [TableView; N] {
-        [self.templates(), self.icons()]
+        self.table_inputs(None).map(|input| match input {
+            TableInput::Sampled(view) => view,
+            _ => unreachable!("template conversion returns sampled views"),
+        })
+    }
+
+    /// The borrowed baseline is the same-branch complete daily table that a
+    /// SKIPPED acquisition carries into this frame. A failed/truncated current
+    /// acquisition never uses it: a fresh name then records a Changed override.
+    pub(crate) fn table_inputs(&self, baseline: Option<&[DivisionTemplateRow]>) -> [TableInput; N] {
+        let dictionary = self.templates();
+        let names = match &dictionary {
+            TableView::Complete(rows) => rows.rows::<tables::DivisionTemplates>(),
+            TableView::Unavailable { reason } if reason == replay::cadence::SKIPPED_REASON => {
+                baseline
+            }
+            _ => None,
+        };
+        let icons = self.icons(names);
+        [TableInput::Sampled(dictionary), TableInput::Sampled(icons)]
     }
 
     fn templates(&self) -> TableView {
@@ -290,7 +454,10 @@ impl Captured {
         })
     }
 
-    fn icons(&self) -> TableView {
+    fn icons(&self, dictionary: Option<&[DivisionTemplateRow]>) -> TableView {
+        let Some(names) = self.name_bytes.first.get(..self.name_bytes.len) else {
+            return unavailable("template display name arena invalid");
+        };
         let outcome = self.icon_rows.outcome;
         let Some(bytes) = self.icon_bytes.first.get(..self.icon_bytes.len) else {
             return unavailable("template icon byte arena invalid");
@@ -340,11 +507,59 @@ impl Captured {
                 )),
                 model_unreadable: u8::from(r.model_failure.is_some()),
                 formation_division_count: replay::rows::Recorded::Value(r.formation_division_count),
+                display_name: name_inputs(r, names, dictionary, self.sample_hour),
             }
         })
     }
 }
 
+/// Exact byte comparison, not a digest or pointer identity. Dictionary rows are
+/// sorted by the existing table conversion. New handles and changed values need
+/// no daily row; overrides make keyframes and direct seeks self-contained.
+fn name_inputs(
+    row: &native::IconRow,
+    bytes: &[u8],
+    dictionary: Option<&[DivisionTemplateRow]>,
+    hour: Option<i32>,
+) -> Recorded<Option<TemplateDisplayName>> {
+    let Some(hour) = hour else {
+        return Recorded::Value(None);
+    };
+    let Some(name) = row.display_name else {
+        return Recorded::Value(None);
+    };
+    let Some(literal) = span(bytes, name.literal) else {
+        return Recorded::Value(None);
+    };
+    let key = match name.fallback_key {
+        Some(range) => match span(bytes, range) {
+            Some(bytes) => Some(bytes),
+            None => return Recorded::Value(None),
+        },
+        None => None,
+    };
+    if literal.is_empty() != key.is_some() {
+        return Recorded::Value(None);
+    }
+    let same = dictionary.and_then(|rows| {
+        rows.binary_search_by_key(&row.template, |row| row.template).ok().map(|index| &rows[index])
+    }).is_some_and(|daily| {
+        daily.name == literal && (!literal.is_empty()
+            || matches!(&daily.name_key, Recorded::Value(bytes) if Some(bytes.as_slice()) == key))
+    });
+    let value = if same {
+        TemplateNameValue::SameAsDivisionTemplates
+    } else {
+        TemplateNameValue::Changed {
+            literal: owned_vec(copy_vec(literal)),
+            fallback_key: key.map(|key| owned_vec(copy_vec(key))),
+        }
+    };
+    Recorded::Value(Some(TemplateDisplayName {
+        sample_hour: hour,
+        value,
+    }))
+}
 fn span<T>(arena: &[T], range: native::Span) -> Option<&[T]> {
     arena.get(range.start..range.start.checked_add(range.len)?)
 }

@@ -26,6 +26,95 @@ thread_local! {
         campaign_id: None, branch: None, load_signal: None, failed_hour: None,
     }) };
     static BORROWED_CONTEXT: Cell<*const Context> = const { Cell::new(std::ptr::null()) };
+    static REQUEST: Cell<Option<(&'static str, usize)>> = const { Cell::new(None) };
+}
+
+static DETAIL_HANDLE: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) struct Details {
+    _file: File,
+}
+impl Drop for Details {
+    fn drop(&mut self) {
+        DETAIL_HANDLE.store(0, Ordering::Release);
+    }
+}
+
+/// Best-effort diagnostic storage prepared before worker admission.
+pub(crate) fn prepare_details(directory: &std::path::Path) -> Option<Details> {
+    let file = File::create(directory.join("collector-failure-detail.json")).ok()?;
+    DETAIL_HANDLE.store(file.as_raw_handle() as usize, Ordering::Release);
+    Some(Details { _file: file })
+}
+
+/// The request is scoped to the allocation, so another thread's terminal
+/// failure cannot inherit this worker's family or requested byte count.
+pub(crate) fn reserve_raw<T>(
+    values: &mut Vec<T>,
+    target: usize,
+    family: &'static str,
+) -> io::Result<()> {
+    struct Restore(Option<(&'static str, usize)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            REQUEST.set(self.0);
+        }
+    }
+    let _request = Restore(REQUEST.replace(Some((
+        family,
+        target.saturating_mul(std::mem::size_of::<T>()),
+    ))));
+    engine::allocation::reserve(values, target.saturating_sub(values.len()))
+}
+
+fn write_details(record: &TerminalWitness) {
+    use std::fmt::Write;
+    let handle = DETAIL_HANDLE.load(Ordering::Acquire);
+    let Some((family, requested_bytes)) = REQUEST.get() else {
+        return;
+    };
+    if handle == 0 {
+        return;
+    }
+    struct Buffer {
+        bytes: [u8; 256],
+        len: usize,
+    }
+    impl std::fmt::Write for Buffer {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            let end = self.len.checked_add(value.len()).ok_or(std::fmt::Error)?;
+            self.bytes
+                .get_mut(self.len..end)
+                .ok_or(std::fmt::Error)?
+                .copy_from_slice(value.as_bytes());
+            self.len = end;
+            Ok(())
+        }
+    }
+    let mut buffer = Buffer {
+        bytes: [0; 256],
+        len: 0,
+    };
+    if writeln!(
+        buffer,
+        "{{\"session\":{},\"process_start_time\":{},\"family\":\"{}\",\"requested_bytes\":{}}}",
+        record.session, record.process_start_time, family, requested_bytes
+    )
+    .is_err()
+    {
+        return;
+    }
+    let mut written = 0;
+    unsafe {
+        WriteFile(
+            handle as _,
+            buffer.bytes.as_ptr(),
+            buffer.len as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        );
+        FlushFileBuffers(handle as _);
+    }
 }
 
 pub(crate) struct Scope(Phase);
@@ -349,6 +438,7 @@ pub(crate) fn fail(phase: Phase, code: Code) {
         drain_complete: false,
     };
     // Only the first-failure winner writes this already committed buffer.
+    write_details(&record);
     let bytes = unsafe { &mut *TERMINAL.buffer.get() };
     record.encode_into(bytes);
     let handle = TERMINAL.handle.load(Ordering::Acquire);
@@ -379,8 +469,7 @@ pub(crate) fn fail(phase: Phase, code: Code) {
 }
 
 pub(crate) fn oom() -> io::Error {
-    fail(PHASE.get(), Code::Reserve);
-    io::Error::from(io::ErrorKind::OutOfMemory)
+    engine::allocation::oom()
 }
 pub(crate) fn install_hooks() {
     engine::allocation::set_hooks(Some(should_fail), Some(failure_hook));
@@ -391,7 +480,7 @@ fn failure_hook() {
 }
 pub(crate) fn observe(error: &io::Error) {
     if engine::allocation::is_allocation_error(error) {
-        failure_hook();
+        let _ = engine::allocation::oom();
     }
 }
 pub(crate) fn native_error(error: &io::Error) {

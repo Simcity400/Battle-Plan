@@ -238,6 +238,242 @@ macro_rules! fixture {
         }
     };
 }
+impl Sample for AttackStats {
+    fn sample(tick: usize) -> Self {
+        Self {
+            river: [Option::<i64>::sample(tick), Option::<i64>::sample(tick + 1)],
+            fort: [
+                Option::<i64>::sample(tick + 2),
+                Option::<i64>::sample(tick + 3),
+            ],
+            snow: Option::<i64>::sample(tick + 4),
+            night: Option::<i64>::sample(tick + 5),
+        }
+    }
+}
+fn attack_terrain_fixture(tick: usize) -> Option<Vec<AttackTerrain>> {
+    if tick.is_multiple_of(4) {
+        None
+    } else {
+        Some(
+            (0..tick % 3)
+                .map(|index| AttackTerrain {
+                    terrain: [1, 256][index],
+                    attack: Option::<i64>::sample(tick + index),
+                })
+                .collect(),
+        )
+    }
+}
+impl Sample for DivisionAttackInputs {
+    fn sample(tick: usize) -> Self {
+        Self {
+            sample_hour: i32::sample(tick),
+            template: match tick % 4 {
+                0 => None,
+                1 => Some(0),
+                _ => Some(
+                    (u64::from(u32::sample(tick).max(1)) << 32)
+                        | u64::from(engine::creferenced_division_template::REFERENCE_TYPE),
+                ),
+            },
+            stats: AttackStats::sample(tick),
+            terrain: attack_terrain_fixture(tick + 1),
+            acclimatization: Option::<i64>::sample(tick + 2),
+        }
+    }
+}
+impl Sample for CommanderAttackInputs {
+    fn sample(tick: usize) -> Self {
+        Self {
+            leader: (u64::from(u32::sample(tick).max(1)) << 32)
+                | u64::from(engine::cunit_leader::REFERENCE_TYPE),
+            fort: Option::<i64>::sample(tick),
+            river: Option::<i64>::sample(tick + 1),
+            snow: Option::<i64>::sample(tick + 2),
+            night: Option::<i64>::sample(tick + 3),
+            // Present commanders occur every third tick, so vary the domain
+            // separately to reach refusal, empty and populated terrain lists.
+            terrain: attack_terrain_fixture(tick / 3),
+        }
+    }
+}
+impl Sample for OrdersGroupAttackInputs {
+    fn sample(tick: usize) -> Self {
+        Self {
+            sample_hour: i32::sample(tick),
+            commander: match tick % 3 {
+                0 => None,
+                1 => Some(None),
+                _ => Some(Some(CommanderAttackInputs::sample(tick))),
+            },
+        }
+    }
+}
+impl Sample for CountryAttackInputs {
+    fn sample(tick: usize) -> Self {
+        Self {
+            sample_hour: i32::sample(tick),
+            land_night_attack: Option::<i64>::sample(tick),
+            land_bunker_effectiveness_factor: Option::<i64>::sample(tick + 1),
+        }
+    }
+}
+impl Sample for WeatherRegionAttackInputs {
+    fn sample(tick: usize) -> Self {
+        Self {
+            sample_hour: i32::sample(tick),
+            attack: Option::<i64>::sample(tick),
+            breakthrough: Option::<i64>::sample(tick + 1),
+        }
+    }
+}
+sample_struct!(WeatherDisplay { width: u32, height: u32, refresh_interval: i64,
+    refresh_identity: u64, edges: Vec<u8> });
+impl Sample for PoliticalRuntimeScalars {
+    fn sample(tick: usize) -> Self {
+        Self {
+            sample_hour: i32::sample(tick),
+            river_small: Option::<i64>::sample(tick),
+            river_large: Option::<i64>::sample(tick + 1),
+            night: Option::<i64>::sample(tick + 2),
+            fort: Option::<i64>::sample(tick + 3),
+            move_strength_threshold: Option::<i64>::sample(tick + 4),
+            move_organisation_threshold: Option::<i64>::sample(tick + 5),
+        }
+    }
+}
+impl Sample for UnitCombatReference {
+    fn sample(tick: usize) -> Self {
+        Self {
+            combat: u64::sample(tick + 1).max(1),
+            kind: ((tick % 5) % 3) as u8,
+        }
+    }
+}
+fn unit_combat_references_fixture(
+    tick: usize,
+    count: u32,
+) -> Recorded<Option<UnitCombatReferences>> {
+    // Retain the old count extrema without allocating an enormous vector.
+    // Refusal is independent of a known empty or complete short reference list.
+    Recorded::Value(if tick.is_multiple_of(4) || count > 2 {
+        None
+    } else {
+        Some(UnitCombatReferences {
+            sample_hour: i32::sample(tick),
+            entries: (0..count as usize)
+                .map(|index| UnitCombatReference::sample(tick + index))
+                .collect(),
+        })
+    })
+}
+impl Sample for DirectedWars {
+    fn sample(tick: usize) -> Self {
+        let matrix_count = [1, 17, 65_536][tick % 3];
+        let receiver_slot = [0, 1, 65_535][tick % 3];
+        let mut cells = match tick % 5 {
+            0 => Vec::new(),
+            1 => vec![WarCell {
+                target_slot: 0,
+                active: true,
+            }],
+            _ => vec![
+                WarCell {
+                    target_slot: 0,
+                    active: false,
+                },
+                WarCell {
+                    target_slot: matrix_count - 1,
+                    active: true,
+                },
+            ],
+        };
+        cells.dedup_by_key(|cell| cell.target_slot);
+        Self {
+            sample_hour: i32::sample(tick),
+            receiver_raw_id: i32::sample(tick),
+            receiver_slot,
+            matrix_count,
+            complete_active_domain: tick.is_multiple_of(2),
+            cells,
+            refused_slots: if matrix_count > 1 && !tick.is_multiple_of(4) {
+                vec![matrix_count / 2]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+}
+impl Sample for TemplateNameValue {
+    fn sample(tick: usize) -> Self {
+        // A different period from Option sampling keeps the equality
+        // certificate reachable inside a present display-name packet.
+        match tick % 5 {
+            0 => Self::SameAsDivisionTemplates,
+            1 => Self::Changed {
+                literal: vec![0, 255],
+                fallback_key: None,
+            },
+            2 => Self::Changed {
+                literal: Vec::new(),
+                fallback_key: Some(Vec::new()),
+            },
+            _ => Self::Changed {
+                literal: Vec::new(),
+                fallback_key: Some(vec![255, 0]),
+            },
+        }
+    }
+}
+sample_struct!(TemplateDisplayName {
+    sample_hour: i32,
+    value: TemplateNameValue
+});
+impl Sample for RawCountryObservations {
+    fn sample(tick: usize) -> Self {
+        let entries = if tick.is_multiple_of(3) {
+            Vec::new()
+        } else {
+            vec![
+                RawCountryObservation {
+                    raw: i32::MIN,
+                    mapping: RawCountryMapping::Refused,
+                    tag: RawCountryTag::Unreached,
+                },
+                RawCountryObservation {
+                    raw: -1,
+                    mapping: RawCountryMapping::Unreached,
+                    tag: RawCountryTag::Refused,
+                },
+                RawCountryObservation {
+                    raw: 0,
+                    mapping: RawCountryMapping::Observed {
+                        canonical_slot: 0,
+                        country_id: 0,
+                    },
+                    tag: RawCountryTag::Bytes(Vec::new()),
+                },
+                RawCountryObservation {
+                    raw: i32::MAX,
+                    mapping: RawCountryMapping::Observed {
+                        canonical_slot: 1,
+                        country_id: u32::MAX,
+                    },
+                    tag: if tick.is_multiple_of(2) {
+                        RawCountryTag::Refused
+                    } else {
+                        RawCountryTag::Bytes(vec![0, 255])
+                    },
+                },
+            ]
+        };
+        Self {
+            sample_hour: i32::sample(tick),
+            entries,
+        }
+    }
+}
 sample_struct!(SettledPeaceAction {
     country: u32, turn: u32, ordinal: u32, token: u32, taker: u32,
     giver: u32, negotiator: u32, status: i32, cost: i32, form: u8,
@@ -368,7 +604,7 @@ fixture!(WarOverviewCountryRow, |key| {country: key as u32}, {major: u8, divisio
 fixture!(WarNameRuleRow, |key| {index: key as u32}, {prefix: Vec<u8>, viewpoint: u32});
 fixture!(FocusRow, |key| {country: key as u32}, {tree: Option<Vec<u8>>, current: Option<Vec<u8>>, continuous: Option<Vec<u8>>, progress: i64, paused: u8, completed_count: i32});
 fixture!(CompletedFocusRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>});
-fixture!(ResearchTechnologyRow, |key| {country: (key >> 32) as u32, technology_handle: key as u32}, {classifier: u32, level: i32, researched: u8, progress_raw: i64, ahead_reduction_years_raw: i64});
+fixture!(ResearchTechnologyRow, |key| {country: (key >> 32) as u32, database_index: key as u32 as i32}, {technology_handle: u32, applied_bonus_count: i32, classifier: u32, level: i32, researched: u8, progress_raw: i64, ahead_reduction_years_raw: i64});
 impl Fixture for ResearchModifierRow {
     fn fixture(key: u128, tick: usize) -> Self {
         Self {
@@ -463,10 +699,10 @@ impl Fixture for CountryStabilityLineRow {
         }
     }
 }
-fixture!(ResearchInputRow, |key| {country: (key >> 32) as u32, index: key as u32}, {technology_handle: u32, technology_present: u8, token: Vec<u8>, classifier: u32, level: i32, progress_raw: i64, cost_raw: i64, cost_scale_raw: i64, cost_debug: u8, research_speed_raw: i64, banked_days_raw: i64, applied_days_raw: i64, ahead_reduction_raw: i64, speed_bonus_raw: i64, bonus_count: u32});
+fixture!(ResearchInputRow, |key| {country: (key >> 32) as u32, index: key as u32}, {technology_handle: u32, technology_present: u8, token: Vec<u8>, classifier: u32, level: i32, progress_raw: i64, cost_raw: i64, cost_scale_raw: i64, cost_debug: u8, research_speed_raw: i64, banked_days_raw: i64, applied_days_raw: i64, ahead_reduction_raw: i64, speed_bonus_raw: i64, bonus_count: u32, database_index: Recorded<i32>});
 fixture!(ResearchAppliedBonusRow, |key| {country: (key >> 64) as u32, index: (key >> 32) as u32, ordinal: key as u32}, {technology_handle: u32, id: i32, resolved: u8, name: Vec<u8>, ahead_reduction_raw: i64, speed_bonus_raw: i64, cost_reduction_raw: Option<i64>});
-fixture!(ResearchSlotRow, |key| {country: (key >> 32) as u32, index: key as u32}, {technology_handle: u32, technology_present: u8, research_speed_raw: i64, banked_days_raw: i64, applied_days_raw: i64});
-fixture!(TechnologyDefinitionRow, |key| {technology_handle: key as u32}, {database_index: i32, year: i32, max_level: i32, research_cost_raw: i64, id: Vec<u8>});
+fixture!(ResearchSlotRow, |key| {country: (key >> 32) as u32, index: key as u32}, {technology_handle: u32, technology_present: u8, research_speed_raw: i64, banked_days_raw: i64, applied_days_raw: i64, database_index: Recorded<i32>});
+fixture!(TechnologyDefinitionRow, |key| {database_index: key as u32 as i32}, {technology_handle: u32, year: i32, max_level: i32, research_cost_raw: i64, id: Vec<u8>});
 fixture!(PoliticsRow, |key| {country: key as u32}, {last_election: i32, election_frequency: i32, elections_allowed: u8, capital: i32, ruling_party: Option<u32>, original_capital: i32});
 fixture!(PoliticalPartyRow, |key| {country: (key >> 32) as u32, id: key as u32}, {popularity: i64, is_ruling: u8, token: Vec<u8>, tag: u32, name_default: u8, name: Vec<u8>, long_name: Vec<u8>});
 fixture!(ActiveIdeaRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>});
@@ -802,7 +1038,14 @@ fixture!(ScriptVariablesRow, |key| {scope_kind: (key >> 32) as u8, scope_id: key
 fixture!(OperationRow, |key| {id: key as u64}, {owner: u32, target: u32, target_province: Option<u32>, definition_token: u32, preparation_current: i64, preparation_required: i64, flag_40: u8, auto_repeat: u8, terminal: u8, start_hour: i32, duration_days: i32, phase_count: u32, assigned_slots: u32, bonus: Recorded<u8>, detected: Recorded<u8>, effect_description: Recorded<Vec<u8>>});
 fixture!(OperationAssignmentRow, |key| {operation: (key >> 32) as u64, ordinal: key as u32}, {operative: u64, selection: u32});
 fixture!(WingEquipmentRow, |key| {wing: (key >> 32) as u64, ordinal: key as u32}, {variant: u64, amount_raw: i64});
-fixture!(AirBaseRow, |key| {id: key as u64}, {state: Option<u32>, province: Option<u32>, host: u64, capacity: i32, kind: i32});
+sample_struct!(AirBaseCountryOccurrence {
+    country: u32,
+    slot: u32
+});
+sample_struct!(AirBaseCarrierInputs { registered_countries: Option<Vec<AirBaseCountryOccurrence>>, host_name: Option<Vec<u8>> });
+sample_struct!(CarrierAirPool { type_index: i32, subunit_index: u32, wing_start: u32, wing_count: u32, current_fuel_raw: Option<i64>, maximum_fuel_raw: Option<i64> });
+sample_struct!(AirBaseRegistrationCarrierInputs { country: u32, fuel_demand_raw: Option<i64>, fuel_allocated_raw: Option<i64>, pools: Option<Vec<CarrierAirPool>> });
+fixture!(AirBaseRow, |key| {id: key as u64}, {state: Option<u32>, province: Option<u32>, host: u64, capacity: i32, kind: i32, carrier: Recorded<Option<AirBaseCarrierInputs>>});
 fixture!(WingCumulativeRow, |key| {id: key as u64}, {accidents: i32, experience: i64});
 fixture!(AirRegionHistoryRow, |key| {country: (key >> 32) as u32, region: key as u32}, {entries: Vec<AirHistoryEntry>});
 fixture!(AirRegionDamageRow, |key| {country: (key >> 32) as u32, region: key as u32}, {entries: Vec<AirDamageEntry>});
@@ -811,7 +1054,7 @@ sample_struct!(AirAcePresentation {gender: u8, pool_index: i32, definition: Opti
 fixture!(AirAceRow, |key| {id: key as u64}, {country: u32, ordinal: u32, aircraft_type_mask: u32, assigned_wing: u64, alive: u8, handled: u8, kill_type: u32, death: Option<AceDeath>, name: Vec<u8>, surname: Vec<u8>, callsign: Vec<u8>, presentation: Recorded<Option<AirAcePresentation>>});
 fixture!(AirStatisticsRow, |key| {country: (key >> 32) as u32, region: key as u32}, {year_slot: u32, year_window_wrapped: u8, channels: [i64;24]});
 fixture!(SunkConvoyRow, |key| {month: (key >> 64) as u32 as i32, killer_country: (key >> 32) as u32, owner_country: key as u32}, {convoys: i32, ordinal: u32});
-fixture!(RailCooldownRow, |key| {province: key as u32}, {cooldown_ticks: i32});
+fixture!(RailCooldownRow, |key| {province: key as u32}, {cooldown_ticks: i32, building: Recorded<Option<RailwayBuildingState>>, selection: Recorded<Option<RailwaySelectionInputs>>, selection_hour: Recorded<Option<i32>>});
 fixture!(RailEdgeRow, |key| {from: (key >> 32) as u32, to: key as u32}, {level: i32});
 fixture!(LandTheatreRow, |key| {id: key as u64}, {owner: u32, ordinal: u32, volunteers_theatre: i32});
 fixture!(LandTheatreGroupRow, |key| {id: key as u64}, {theatre: u64, ordinal: u32, priority: i32, name: Vec<u8>});
@@ -912,10 +1155,10 @@ fixture!(NukeRow, |key| {country: (key >> 32) as u32, nuke_type: key as u32}, {a
 fixture!(RaidCountryRow, |key| {canonical_slot: key as u32}, {country: i32, eligible_types: Vec<u32>, used_types: Vec<u32>});
 fixture!(RaidRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {parent_slot: u32, ordinal: u32, phase: i32, outcome: i32, source: RaidSource, show_for: Vec<u32>, unit: u64, air_wing: u64, travelled: Option<i64>, preparation_hours: i32});
 fixture!(RaidTargetRow, |key| {id: (key >> 32) as u32, reference_type: key as u32}, {scope: RaidScope, raid_type: u32, detected: u8});
-fixture!(NavalBaseRow, |key| {province: key as u32}, {country: u32, level: i32, healthy_level: i32, countries: Vec<u32>, countries_unreadable: bool});
+fixture!(NavalBaseRow, |key| {province: key as u32}, {country: u32, level: i32, healthy_level: i32, countries: Vec<u32>, countries_unreadable: bool, country_tags: Recorded<Option<Vec<Vec<u8>>>>});
 fixture!(PeaceConferenceRow, |key| {id: key as u64}, {ordinal: u32, current_turn: i32, finalized: u8});
-fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8});
-fixture!(WeatherProvinceRow, |key| {id: key as u32}, {snow: i64, permanent_snow: i64, display_snow: u8, display_mud: u8, temperature: Recorded<i64>, raw_mud: Recorded<u8>});
+fixture!(WeatherRegionRow, |key| {id: key as u32}, {max_snow: i64, light_rain: u8, heavy_rain: u8, snow: u8, blizzard: u8, sandstorm: u8, arctic_water: u8, attack: Recorded<WeatherRegionAttackInputs>});
+fixture!(WeatherProvinceRow, |key| {id: key as u32}, {snow: i64, permanent_snow: i64, display_snow: u8, display_mud: u8, temperature: Recorded<i64>, raw_mud: Recorded<u8>, local_hour: Recorded<i32>, night_factor: Recorded<i64>, display: Recorded<Option<WeatherDisplay>>});
 fixture!(OperationTokensRow, |key| {owner: (key >> 32) as u32, target: key as u32}, {tokens: Vec<u32>});
 fixture!(LexicalTokenRow, |key| {token: key as u32}, {literal: Vec<u8>});
 fixture!(OwnedWargoalRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {recipient: u32, goal_type: i32, states: Vec<u32>});
@@ -924,6 +1167,144 @@ fixture!(AvailableAdvisorRow, |key| {country: (key >> 32) as u32, ordinal: key a
 fixture!(TimedIdeaRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>, days: i32});
 fixture!(DecisionRandomItemRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {token: Vec<u8>, count: i32, target: u32});
 fixture!(CapturedOperativeReferenceRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {operative: u64, owner: Option<u32>});
+sample_struct!(TransportTaskForceStats { detection_138: Option<i64>, visibility_148: Option<i64>, visibility_150: Option<i64>, carrier_detection_160: Option<i64> });
+sample_struct!(TransportRadarCounts { signed_count: i32, counts: Option<Vec<i32>> });
+sample_struct!(TransportNavyIntel {
+    owner_raw_id: Option<u32>, owner_slot: Option<u32>, signed_count: Option<i32>, lanes: Option<Vec<i64>>
+});
+sample_struct!(TransportSpottingOwner {
+    owner_slot: u32, owner_raw_id: u32, target_owned_states: Option<i32>,
+    radar: Option<TransportRadarCounts>, navy_intel: Option<TransportNavyIntel>
+});
+sample_struct!(TransportSpottingRegion {
+    region_id: u32, runtime_slot: Option<i32>, signed_province_count: Option<i32>,
+    sampled_province: Option<u32>, weather_detection: Option<Option<i64>>,
+    air_environment: Option<TransportAirEnvironment>
+});
+sample_struct!(TransportSpottingContext {
+    sample_hour: i32, owners_complete: bool, regions_complete: bool,
+    owners: Vec<TransportSpottingOwner>, reserved: Option<TransportSpottingOwner>,
+    regions: Vec<TransportSpottingRegion>
+});
+sample_struct!(TransportAirMission {
+    wing: u64, current_type: Option<u32>, aircraft: Option<i32>, disruption: Option<i64>,
+    detection_13: Option<i64>, detection_14: Option<i64>, normalization: Option<TransportAirNormalization>
+});
+sample_struct!(TransportAirModifiers { direct: [Option<i64>; 2], positive: [Option<u32>; 2], effective: [Option<i64>; 16] });
+sample_struct!(TransportAirCombatModifier { lane: u8, raw: Option<i64> });
+sample_struct!(TransportAirAce {
+    assigned_aircraft: Option<Option<i32>>, modifiers: Option<TransportAirModifiers>,
+    type_modifiers: Option<TransportAirModifiers>, owner_effectiveness: Option<i64>,
+    combat: Option<Vec<TransportAirCombatModifier>>
+});
+sample_struct!(TransportAirEnvironment {
+    weather: [Option<i64>; 2], night_factor: Option<i64>, night: [Option<i64>; 2], target_region: Option<i32>
+});
+sample_struct!(TransportAirNormalization {
+    attack: Option<i64>, defence: Option<i64>, speed: Option<i64>, enabled_missions: u32,
+    wing: Option<TransportAirModifiers>, country: Option<TransportAirModifiers>,
+    ace: Option<Option<TransportAirAce>>, environment: Option<Option<TransportAirEnvironment>>,
+    night_stat: Option<i64>, base_region: Option<i32>, carrier_mission: Option<Option<i32>>
+});
+sample_struct!(TransportRiskShip {
+    ship: Option<u64>, class: Option<u32>, formation_flags: Option<u64>,
+    positive_equipment_flags: Option<u64>, carrier_air_base: Option<Option<u64>>
+});
+sample_struct!(TransportReceiverShips { task_force: u64, count: Option<i32>, ships: Option<Vec<TransportRiskShip>> });
+sample_struct!(TransportRiskShips { sample_hour: i32, receivers: Option<Vec<TransportReceiverShips>> });
+sample_struct!(TransportAirRegion { region: u32, count: Option<i32>, missions: Option<Vec<Option<TransportAirMission>>> });
+sample_struct!(TransportAirCountry {
+    country: Option<u32>, slot: u32, present: bool, regions: Option<Vec<TransportAirRegion>>,
+    factors: Option<Vec<Option<i64>>>
+});
+sample_struct!(TransportAirInputs { sample_hour: i32, countries: Option<Vec<TransportAirCountry>> });
+sample_struct!(TransportReceiverRisk {
+    coordination: Option<i64>, spotting_chance: Option<i64>, night_spotting_chance: Option<i64>, visibility: Option<i64>,
+    speed_base: Option<i64>, speed_modifier: Option<i64>, terrain_class: Option<i32>, stats: Option<TransportTaskForceStats>,
+    roster_owner: Option<u32>, location: Option<u32>, region: Option<u32>, location_controller: Option<u32>,
+    detached_activity: Option<i32>, ship_count: Option<i32>,
+    targeted_spotting_modifier: Option<i64>, actual_terrain_speed: Option<i64>
+});
+impl Sample for TransportMissionInputs {
+    fn sample(tick: usize) -> Self {
+        let handle = (u64::from(u32::sample(tick).max(1)) << 32) | 61;
+        Self {
+            sample_hour: i32::sample(tick),
+            spotting_context: Option::<TransportSpottingContext>::sample(tick),
+            air: Option::<TransportAirInputs>::sample(tick + 1),
+            risk_ships: Option::<TransportRiskShips>::sample(tick + 2),
+            naval_search: match tick % 3 {
+                0 => None,
+                1 => Some(TransportNavalSearch {
+                    width: None,
+                    regions: None,
+                    rules: vec![],
+                }),
+                _ => Some(TransportNavalSearch {
+                    width: Option::<i32>::sample(tick),
+                    regions: Some(vec![
+                        None,
+                        Some(TransportNavalRegion {
+                            position: [i32::sample(tick), i32::sample(tick + 1)],
+                            edges: vec![TransportNavalEdge {
+                                to: u32::sample(tick),
+                                flags: u8::sample(tick),
+                                unrestricted: u8::sample(tick + 1),
+                                rules: vec![None, Some(0), Some(0)],
+                            }],
+                        }),
+                    ]),
+                    rules: vec![Vec::<u8>::sample(tick)],
+                }),
+            },
+            navies: match tick % 3 {
+                0 => None,
+                1 => Some(Vec::new()),
+                _ => Some(vec![
+                    TransportNavy {
+                        access_modes: Some(vec![]),
+                        slot: 0,
+                        present: false,
+                        region_slots: Some(0),
+                        ledgers: Some(Vec::new()),
+                    },
+                    TransportNavy {
+                        access_modes: Some(vec![]),
+                        slot: 1,
+                        present: true,
+                        region_slots: Some(u32::MAX),
+                        ledgers: Some(vec![
+                            TransportLedger {
+                                region: 0,
+                                occurrences: Some(vec![0, handle, handle, 0]),
+                            },
+                            TransportLedger {
+                                region: u32::MAX - 1,
+                                occurrences: None,
+                            },
+                        ]),
+                    },
+                ]),
+            },
+            receivers: match (tick / 3) % 3 {
+                0 => None,
+                1 => Some(Vec::new()),
+                _ => Some(vec![TransportMissionReceiver {
+                    task_force: handle,
+                    mission_owner: Option::<u32>::sample(tick + 6),
+                    logical_owner: Option::<u32>::sample(tick),
+                    in_regions: Option::<u8>::sample(tick + 1),
+                    combat_references: Option::<i32>::sample(tick + 2),
+                    combined_detection: Option::<i64>::sample(tick + 3),
+                    detection_cache: Option::<[i64; 2]>::sample(tick + 4),
+                    received_supply_ratio: Option::<i64>::sample(tick + 5),
+                    risk: Option::<TransportReceiverRisk>::sample(tick + 7),
+                }]),
+            },
+        }
+    }
+}
+
 impl Fixture for ReservedCountryNamingRow {
     fn fixture(_key: u128, tick: usize) -> Self {
         Self {
@@ -941,6 +1322,21 @@ impl Fixture for ReservedCountryNamingRow {
             country_array: Recorded::<Option<Vec<u32>>>::sample(tick + 9),
             owned_state_count: Recorded::<Option<i32>>::sample(tick + 10),
             dynamic_tag_boundary: Recorded::<Option<i32>>::sample(tick + 11),
+            faction: Recorded::<Option<u64>>::sample(tick + 11),
+            movement: Recorded::<Option<CountryNavalMovementInputs>>::sample(tick + 12),
+            land_theatre_count: Recorded::<Option<u32>>::sample(tick + 13),
+            launch_sources: Recorded::<Option<ReservedLaunchSources>>::sample(tick + 14),
+            reverse_visibility: Recorded::<Option<ReservedReverseVisibilityInputs>>::sample(
+                tick + 15,
+            ),
+            country_intel_sample: Recorded::<Option<ReservedCountryIntelSample>>::sample(tick + 16),
+            attack: Recorded::<Option<CountryAttackInputs>>::sample(tick),
+            raw_country_observations: Recorded::Value(if tick.is_multiple_of(5) {
+                None
+            } else {
+                Some(RawCountryObservations::sample(tick))
+            }),
+            transport_mission_inputs: Recorded::<Option<TransportMissionInputs>>::sample(tick),
         }
     }
 }
@@ -986,6 +1382,7 @@ impl Fixture for ConstructionLineOutputRow {
                 hour: i32::sample(tick),
                 cancelled: railway,
             })),
+            count_reset: Recorded::Value(if railway { 0 } else { i64::sample(tick) }),
         }
     }
 }
@@ -998,7 +1395,7 @@ fixture!(VolunteerHostRow, |key| {country: (key >> 32) as u32, position: key as 
 fixture!(TheatreAreaRow, |key| {theatre: (key >> 32) as u64, ordinal: key as u32}, {representative: Option<u32>, provinces: Vec<u32>});
 fixture!(StationedUnitRow, |key| {theatre: (key >> 32) as u64, ordinal: key as u32}, {unit: u64});
 fixture!(UnitIntelRow, |key| {unit: (key >> 32) as u64, ordinal: key as u32}, {viewer: u32, level: i8});
-fixture!(AirBaseRegistrationRow, |key| {base: (key >> 32) as u64, slot: key as u32}, {capacity_raw: i64, wings: Vec<u64>});
+fixture!(AirBaseRegistrationRow, |key| {base: (key >> 32) as u64, slot: key as u32}, {capacity_raw: i64, wings: Vec<u64>, carrier: Recorded<Option<AirBaseRegistrationCarrierInputs>>, transport_planes: Recorded<Option<Vec<Option<i32>>>>});
 fixture!(ProductionLicenseRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {variant: u64});
 fixture!(ProductionLicenseRecordRow, |key| {owner: (key >> 32) as u32, ordinal: key as u32}, {giver: u32, lended_cic: i32, required_cic: i32, start_date: i32, parent: u64, operand_raw: i64, equipment: Vec<u64>});
 fixture!(DeploymentConveyorRow, |key| {handle: key as u64}, {country: u32, ordinal: u32, template: u64, amount: i32, location: u32, priority: u32, role_token: u32, closed: u8, name: Vec<u8>, exile_country: Option<u32>});
@@ -1008,7 +1405,71 @@ fixture!(DeploymentEquipmentRow, |key| {line: (key >> 32) as u64, ordinal: key a
 fixture!(WorldTensionRow, |_key| {}, {total_raw: i64, source_count: i32, country_aggregate_count: i32});
 fixture!(ProvinceNameRow, |key| {province: key as u32}, {name: Vec<u8>});
 fixture!(StateFlagRow, |key| {state: key as u32}, {demilitarized: u8, border_conflict_active: Recorded<u8>, border_conflict_countries: Recorded<Vec<[i32; 2]>>});
-fixture!(ArmyOrderPlanRow, |key| {owner_group: (key >> 32) as u64, instance: key as u32}, {front: u64, front_valid: u8, section: u32, segment_start: i32, segment_end: i32, blitz: u8, withdraw: u8, fallback: u8, virtual_order: u8, has_child: u8, owner_override: u64, assigned_divisions: Vec<u64>, predecessors: Vec<u32>, successors: Vec<u32>, name_prefix: Vec<u8>, name: Vec<u8>, name_first: Vec<u8>, name_second: Vec<u8>, name_unique: Vec<u8>, name_postfix: Vec<u8>});
+sample_struct!(ParadropPreparationTerms { target: u32, country_term: i64, relation_term: Option<i64>, leader_term: Option<i64>, days_term: i64 });
+sample_struct!(ParadropPreparationInputs { progress: i64, terms: Option<ParadropPreparationTerms> });
+sample_struct!(OrderExecutionInputs { route_is_ok: Option<u8>, paradrop: Option<ParadropPreparationInputs> });
+impl Sample for OrderChildFront {
+    fn sample(tick: usize) -> Self {
+        Self {
+            group: (u64::from(u32::sample(tick)) << 32)
+                | u64::from(engine::corders_group::REFERENCE_TYPE),
+            segment_start: i32::sample(tick),
+            segment_end: i32::sample(tick + 1),
+        }
+    }
+}
+impl Sample for OrderChildFrontInputs {
+    fn sample(tick: usize) -> Self {
+        match tick % 7 {
+            0 => Self {
+                area_province_count: 2,
+                ..Default::default()
+            },
+            1 => Self {
+                area_province_count: i32::MAX,
+                ..Default::default()
+            },
+            2 => Self {
+                area_province_count: 3,
+                count: Some(0),
+                group_child_count: None,
+                sections: Some(Vec::new()),
+            },
+            3 => Self {
+                area_province_count: i32::MAX,
+                count: Some(2),
+                group_child_count: None,
+                sections: None,
+            },
+            4 => Self {
+                area_province_count: 3,
+                count: Some(2),
+                group_child_count: Some(-1),
+                sections: None,
+            },
+            5 => Self {
+                area_province_count: 3,
+                count: Some(2),
+                group_child_count: Some(1),
+                sections: Some(vec![OrderChildFront::sample(tick)]),
+            },
+            _ => {
+                let first = OrderChildFront::sample(tick);
+                let second = OrderChildFront {
+                    group: first.group,
+                    ..OrderChildFront::sample(tick + 1)
+                };
+                Self {
+                    area_province_count: i32::MAX,
+                    count: Some(2),
+                    group_child_count: Some(3),
+                    sections: Some(vec![first, second]),
+                }
+            }
+        }
+    }
+}
+fixture!(ArmyOrderPlanRow, |key| {owner_group: (key >> 32) as u64, instance: key as u32}, {front: u64, front_valid: u8, section: u32, segment_start: i32, segment_end: i32, blitz: u8, withdraw: u8, fallback: u8, virtual_order: u8, has_child: u8, owner_override: u64, assigned_divisions: Vec<u64>, predecessors: Vec<u32>, successors: Vec<u32>, name_prefix: Vec<u8>, name: Vec<u8>, name_first: Vec<u8>, name_second: Vec<u8>, name_unique: Vec<u8>, name_postfix: Vec<u8>, child_fronts: Recorded<Option<OrderChildFrontInputs>>, invasion_transports: Recorded<Option<i32>>, execution: Recorded<Option<OrderExecutionInputs>>});
 fixture!(OrdersGroupPlanRow, |key| {group: key as u64}, {red: u32, green: u32, blue: u32, alpha: u32, primary_orders: Vec<u32>, fallback_orders: Vec<u32>, name: Vec<u8>});
 impl Fixture for FrontRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -1244,14 +1705,28 @@ fixture!(NavalCombatShipRow, |key| { combat: (key >> 33) as u64, side: ((key >> 
 fixture!(NavalCombatResultDetailsRow, |key| { result: key as u64 }, { sides: [NavalResultSideDetails;2] });
 // Combat fixture end
 fixture!(TrainInventoryRow, |key| {country: key as u32}, {node_count: u32, allocations: Vec<TrainAllocation>, controller_access: SparseBytes, allocated_trucks: Recorded<Option<i32>>, required_trucks_raw: Recorded<Option<i64>>, required_trains: Recorded<Option<i32>>});
-fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32, graphical_culture_2d: Vec<u8>, subjects: Recorded<Vec<i32>>, original_tag: Recorded<Option<Vec<u8>>>, original_tag_reference: Recorded<Option<i32>>});
+sample_struct!(TransportConvoyCache { valid: u8, raw: Option<i64> });
+sample_struct!(TransportConvoyEntry { variant: Option<u64>, flags: Option<u64>, quantity: i64 });
+sample_struct!(TransportConvoyReservation {
+    priority: i32,
+    quantity: i32
+});
+sample_struct!(TransportConvoyVariant { variant: u64, surface_detection: Option<i64>, submarine_detection: Option<i64>, visibility: Option<i64>, speed: Option<i64> });
+sample_struct!(TransportConvoys { sample_hour: i32, priority: Option<i32>, unreserved: Option<i32>, cache: Option<TransportConvoyCache>, pool: Option<Vec<TransportConvoyEntry>>, reservations: Option<Vec<TransportConvoyReservation>>, first_variant: Option<Option<TransportConvoyVariant>> });
+fixture!(CountryAppearanceRow, |key| {country: key as u32}, {red: u32, green: u32, blue: u32, alpha: u32, cosmetic_tag: Vec<u8>, name_tag: Vec<u8>, leader_ideology: Vec<u8>, overlord: i32, graphical_culture: Vec<u8>, leader_character: Option<u32>, old_name: Option<Vec<u8>>, old_adjective: Option<Vec<u8>>, old_definite_name: Option<Vec<u8>>, ui_red: u32, ui_green: u32, ui_blue: u32, ui_alpha: u32, graphical_culture_2d: Vec<u8>, subjects: Recorded<Vec<i32>>, original_tag: Recorded<Option<Vec<u8>>>, original_tag_reference: Recorded<Option<i32>>, transport_convoys: Recorded<Option<TransportConvoys>>});
 fixture!(ArmyIconInputRow, |key| {division: key as u64}, {separate_counter: u8, alternate_template: u64});
 fixture!(ProvinceUnitOrderRow,|key| {province:key as u32},{mixed:Vec<u64>,naval:Vec<u64>});
 sample_struct!(CharacterPortrait {category:u32,size:u32,is_set:u8,kind:u32,identity:Vec<u8>});
 fixture!(CharacterPortraitRow,|key| {character:key as u32},{portraits:Vec<CharacterPortrait>});
 fixture!(LeaderPortraitRow,|key| {leader:key as u64},{character:u64,portrait_c0:Vec<u8>,portrait_e0:Vec<u8>,portrait_100:Vec<u8>});
-fixture!(TaskForceCounterInputRow, |key| {task_force: key as u64}, {is_in_regions: u8, running_away: u8, engagement_rule: i32, mission_region_count: i32, bombardment_region: u32, repair_parent: u64, detached_activity: i32, repair_last_mission: i32, received_supply_ratio: i64, attached_headquarters: i32});
-fixture!(TaskForceMapMotionRow, |key| {task_force: key as u64}, {target: u32, combat_role: u8, path: Vec<u32>, alternate_path: Vec<u32>});
+sample_struct!(NavalSearcher { reference: Option<u64>, resolves: Option<bool>, roster_owner: Option<u32> });
+sample_struct!(NavalEngagementTarget { reference: u64, resolves: Option<bool> });
+sample_struct!(NavalPortMissionInputs { sample_hour: i32, searching: Option<Vec<NavalSearcher>>, engagement_target: Option<NavalEngagementTarget>, avoided_ship_types: Option<Vec<Option<Vec<u8>>>> });
+sample_struct!(ShipStrikeInputs { light_attack: Option<i64>, heavy_attack: Option<i64>, light_piercing: Option<i64>, torpedo_attack: Option<i64>, torpedo_cooldown_modifier: Option<i64> });
+sample_struct!(HullVariantInputs { definition_index: Option<i32>, module_count: Option<i32>, upgrade_level_sum: Option<i32>, module_priority_sum: Option<i32>, version: Option<u8>, organisation_marker: Option<i32> });
+fixture!(TaskForceCounterInputRow, |key| {task_force: key as u64}, {is_in_regions: u8, running_away: u8, engagement_rule: i32, mission_region_count: i32, bombardment_region: u32, repair_parent: u64, detached_activity: i32, repair_last_mission: i32, received_supply_ratio: i64, attached_headquarters: i32, name: Recorded<Option<Vec<u8>>>, supply: Recorded<Option<UnitSupplyInputs>>, port_mission: Recorded<Option<NavalPortMissionInputs>>});
+sample_struct!(FreshTaskForceCounterEta { sample_hour: i32, base_speed: Option<i64>, speed_modifier: Option<i64>, terrain_class: Option<i32>, modified_range: Option<i64>, exiled: Option<u8>, strategic_redeployment: Option<u8> });
+fixture!(TaskForceMapMotionRow, |key| {task_force: key as u64}, {target: u32, combat_role: u8, path: Vec<u32>, alternate_path: Vec<u32>, movement_numerator: Recorded<Option<i64>>, retreat: Recorded<Option<u8>>, withdrawal: Recorded<Option<u8>>, naval_transfer: Recorded<Option<u8>>, combat_links: Recorded<Option<[u64; 2]>>, fresh: Recorded<Option<FreshTaskForceCounterEta>>});
 fixture!(FloatingHarborDeploymentRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {province: i32, status: u8});
 fixture!(FacilityMapFlagRow, |key| {province: key as u32}, {flag: u8});
 impl Fixture for NavalProvinceCombatRow {
@@ -1275,11 +1750,99 @@ sample_struct!(RailwayGunEtaOperands {
     numerator: i64,
     current_speed: i64
 });
-fixture!(RailwayGunCounterInputRow, |key| {gun: key as u64}, {roster_owner: u32, expeditionary_owner: u32, logical_owner: u32, province: u32, naval_transfer: u8, transfer_action_status: u8, exiled: u8, retreat: u8, strategic_redeployment: u8, reference_entry_count: i32, assignee_group: u64, subunit_token: u32, current_strength: i64, maximum_strength: i64, received_supply_ratio: i64, railway_building_level: Option<i16>, target: u32, combat_role: u8, combat_province: u32, combat_count: u32, attacking: u8, ordinary_path: Vec<u32>, alternate_path: Vec<u32>, name: Recorded<Option<Vec<u8>>>, eta: Recorded<Option<RailwayGunEtaOperands>>, supply: Recorded<Option<UnitSupplyInputs>>});
+sample_struct!(FreshRailwayCounterEta {
+    sample_hour: i32,
+    maximum_speed: Option<i64>,
+    land_supply_factor: Option<i64>,
+    orders_group: Option<u64>
+});
+impl Fixture for RailwayGunCounterInputRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        let combat_count = u32::sample(tick);
+        Self {
+            gun: key as u64,
+            roster_owner: u32::sample(tick),
+            expeditionary_owner: u32::sample(tick),
+            logical_owner: u32::sample(tick),
+            province: u32::sample(tick),
+            naval_transfer: u8::sample(tick),
+            transfer_action_status: u8::sample(tick),
+            exiled: u8::sample(tick),
+            retreat: u8::sample(tick),
+            strategic_redeployment: u8::sample(tick),
+            reference_entry_count: i32::sample(tick),
+            assignee_group: u64::sample(tick),
+            subunit_token: u32::sample(tick),
+            current_strength: i64::sample(tick),
+            maximum_strength: i64::sample(tick),
+            received_supply_ratio: i64::sample(tick),
+            railway_building_level: Option::<i16>::sample(tick),
+            target: u32::sample(tick),
+            combat_role: u8::sample(tick),
+            combat_province: u32::sample(tick),
+            combat_count,
+            attacking: u8::sample(tick),
+            ordinary_path: Vec::<u32>::sample(tick),
+            alternate_path: Vec::<u32>::sample(tick),
+            name: Recorded::<Option<Vec<u8>>>::sample(tick),
+            eta: Recorded::<Option<RailwayGunEtaOperands>>::sample(tick),
+            supply: Recorded::<Option<UnitSupplyInputs>>::sample(tick),
+            withdrawal: Recorded::<Option<u8>>::sample(tick),
+            fresh: Recorded::<Option<FreshRailwayCounterEta>>::sample(tick),
+            combat_references: unit_combat_references_fixture(tick, combat_count),
+            transport: Recorded::sample(tick),
+        }
+    }
+}
 fixture!(AirDailyRosterRow, |key| {country: key as u32}, {eligible: bool});
+impl Sample for UnitTransferInputs {
+    fn sample(tick: usize) -> Self {
+        if tick.is_multiple_of(2) {
+            Self::Absent
+        } else {
+            Self::Present {
+                transfer: u64::sample(tick),
+                status: Option::<i32>::sample(tick),
+                source: Option::<u32>::sample(tick),
+            }
+        }
+    }
+}
+sample_struct!(UnitTransportInputs { sample_hour: i32, weight: Option<i64>,
+    transfer: Option<UnitTransferInputs>, coastal_template: Option<bool> });
 fixture!(FleetCounterInputRow, |key| {fleet: key as u64}, {red: u32, green: u32, blue: u32, alpha: u32, mission_region_count: i32, task_forces: Vec<u64>});
-fixture!(CountryCounterInputRow, |key| {country: key as u32}, {pride_of_the_fleet: u64, owned_state_count: i32, controlled_state_count: i32, first_division: u64, owned_states: Recorded<Option<Vec<u32>>>, controlled_states: Recorded<Option<Vec<u32>>>, core_states: Recorded<Option<Vec<u32>>>, army_leaders: Recorded<Option<Vec<u64>>>, navy_leaders: Recorded<Option<Vec<u64>>>, mio_policies: Recorded<Option<Vec<u32>>>, neighbors: Recorded<Option<Vec<u32>>>});
-fixture!(OrdersGroupCounterInputRow, |key| {group: key as u64}, {withdrawing: u8, hq_distance: Recorded<Option<i32>>, leader_enroute_days: Recorded<Option<i32>>, border_war_presence: Recorded<Option<u8>>, invasion_source_distance: Recorded<Option<i32>>});
+impl Fixture for CountryCounterInputRow {
+    fn fixture(key: u128, tick: usize) -> Self {
+        let country = key as u32;
+        let mut directed_wars = Option::<DirectedWars>::sample(tick);
+        if let Some(packet) = &mut directed_wars {
+            packet.receiver_raw_id = country as i32;
+        }
+        Self {
+            country,
+            pride_of_the_fleet: u64::sample(tick),
+            owned_state_count: i32::sample(tick),
+            controlled_state_count: i32::sample(tick),
+            first_division: u64::sample(tick),
+            owned_states: Recorded::<Option<Vec<u32>>>::sample(tick),
+            controlled_states: Recorded::<Option<Vec<u32>>>::sample(tick),
+            core_states: Recorded::<Option<Vec<u32>>>::sample(tick),
+            army_leaders: Recorded::<Option<Vec<u64>>>::sample(tick),
+            navy_leaders: Recorded::<Option<Vec<u64>>>::sample(tick),
+            mio_policies: Recorded::<Option<Vec<u32>>>::sample(tick),
+            neighbors: Recorded::<Option<Vec<u32>>>::sample(tick),
+            co_belligerents: Recorded::<Option<Vec<u32>>>::sample(tick),
+            zero_war: Recorded::<Option<[u8; 2]>>::sample(tick),
+            movement: Recorded::<Option<CountryMovementInputs>>::sample(tick),
+            zero_subject: Recorded::<Option<ZeroSubjectInputs>>::sample(tick),
+            pride_name: Recorded::<Option<Vec<u8>>>::sample(tick),
+            forward_visibility: Recorded::<Option<ReverseZeroVisibilityInputs>>::sample(tick),
+            attack: Recorded::<CountryAttackInputs>::sample(tick),
+            directed_wars: Recorded::Value(directed_wars),
+        }
+    }
+}
+fixture!(OrdersGroupCounterInputRow, |key| {group: key as u64}, {withdrawing: u8, hq_distance: Recorded<Option<i32>>, leader_enroute_days: Recorded<Option<i32>>, border_war_presence: Recorded<Option<u8>>, invasion_source_distance: Recorded<Option<i32>>, attack: Recorded<OrdersGroupAttackInputs>});
 fixture!(LeaderPortraitPathRow, |key| {leader: key as u64}, {country: u32, tag_reference: u32, tag: Vec<u8>});
 impl Fixture for ShipModelRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -1290,6 +1853,9 @@ impl Fixture for ShipModelRow {
             fallback_sprite: Vec::<u8>::sample(tick + 1),
             model_number: i32::sample(tick),
             formation_flags: u64::sample(tick),
+            subunit_index: Recorded::<Option<i32>>::sample(tick),
+            strike: Recorded::<Option<ShipStrikeInputs>>::sample(tick),
+            hull_variant: Recorded::<Option<HullVariantInputs>>::sample(tick),
             counter: Some(ShipCounterInputs {
                 roster_ordinal: tick as u32,
                 maximum_strength: i64::sample(tick),
@@ -1300,7 +1866,7 @@ impl Fixture for ShipModelRow {
     }
 }
 fixture!(LocalPlayerRow, |_key| {}, {country: u32, observer_country: u32});
-fixture!(SimulationFeatureRow, |_key| {}, {dlc_mask: u32, human_ai: u8, weather_suspend: Recorded<Option<[u8; 2]>>, instant_decisions: Recorded<Option<u8>>});
+fixture!(SimulationFeatureRow, |_key| {}, {dlc_mask: u32, human_ai: u8, weather_suspend: Recorded<Option<[u8; 2]>>, instant_decisions: Recorded<Option<u8>>, runtime_scalars: Recorded<PoliticalRuntimeScalars>});
 fixture!(RaidPlayerAllowedTypeRow, |key| {country: key as u32}, {allowed: Vec<u32>});
 impl Fixture for ModifierDefinitionRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -1321,8 +1887,11 @@ impl Fixture for ModifierDefinitionRow {
 }
 fixture!(CountryVisibilityRow, |key| {country: key as u32}, {unit_modifier: i64});
 fixture!(StateVisibilityRow, |key| {state: key as u32}, {country: u32, network_modifier: i64});
-fixture!(RelationLinkRow, |key| {country: (key >> 32) as u32, target_index: key as u32}, {links: u8});
-fixture!(CountryWarRow, |key| {country: key as u32}, {can_occupy_non_war: u8, enemies_read: u8, enemies: Vec<u32>});
+sample_struct!(TransportSubjectAccess { sample_hour: i32, complete_owner: bool,
+    target_raw: Option<u32>, subject: Option<ZeroSubjectInputs> });
+fixture!(RelationLinkRow, |key| {country: (key >> 32) as u32, target_index: key as u32},
+    {links: u8, transport_subject: Recorded<Option<TransportSubjectAccess>>});
+fixture!(CountryWarRow, |key| {country: key as u32}, {can_occupy_non_war: u8, enemies_read: u8, enemies: Vec<u32>, ordered: Recorded<Option<OrderedEnemyInputs>>});
 fixture!(NavalRegionAccessRow, |key| {country: (key >> 32) as u32, region: key as u32}, {mode: u8});
 fixture!(BorderConflictRow, |key| {province: key as u32}, {groups: Vec<u64>});
 fixture!(RaidTargetStatusRow, |key| {ordinal: key as u32}, {valid: u8, scope: RaidScope, detected: Vec<u8>});
@@ -1388,14 +1957,14 @@ fixture!(FactionTheatreRow, |key| {faction: (key >> 32) as u64, ordinal: key as 
 fixture!(AirRegionalMissionRow, |key| {wing: key as u64}, {ordinal: u32});
 fixture!(AirCountryRelationRow, |key| {country: (key >> 34) as u32, kind: ((key >> 32) & 3) as u8, ordinal: key as u32}, {other: u32});
 fixture!(AirReferenceWitnessRow, |key| {handle: key as u64}, {base_kind: Option<i32>, state: Option<u32>, province: Option<u32>, host: Option<u64>, host_owner: Option<u32>, host_without_task_force: bool});
-fixture!(AirMissionInputRow, |key| {wing: key as u64}, {coverage_raw: i64, reassignment_penalty_raw: i64, last_target_province: i32, reached_count: i32, reached_provinces: Vec<u32>, definition_map_flags: u64});
+fixture!(AirMissionInputRow, |key| {wing: key as u64}, {coverage_raw: i64, reassignment_penalty_raw: i64, last_target_province: i32, reached_count: i32, reached_provinces: Vec<u32>, definition_map_flags: u64, cas_ratio_raw: Recorded<Option<i64>>});
 fixture!(AirSortieBaseCountryRow, |key| {base: (key >> 32) as u64, country: key as u32}, {capacity_raw: i64, supply_raw: i64, fuel_demand_raw: Option<i64>, fuel_allocated_raw: Option<i64>});
 fixture!(AirSortieModifierRow, |key| {scope: (key >> 64) as u8, subject: (key >> 32) as u32, region: key as u32}, {raw: i64});
 fixture!(AirSortieSpecialBaseRow, |key| {base: key as u64}, {rocket_slots: Option<i32>, carrier_stance: Option<i32>, leader_modifier_raw: i64, task_force_combats: Option<i32>, task_force_region: Option<u32>});
 fixture!(AirSortieModifierMetadataRow, |_key| {}, {flags: u32, feature_selector: u32, callback_kind: u8});
 fixture!(NavalMineLevelRow, |key| {country: (key >> 32) as u32, region: key as u32}, {raw_mines: i64});
 fixture!(AirNavalPatrolCombatRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {province: u32, region: u32});
-fixture!(AirNavalPatrolHistoryRow, |key| {country: (key >> 64) as u32, region: (key >> 32) as u32, index: key as u32}, {enemy_ships_sunk_raw: i64, our_fighters_lost_raw: i64});
+fixture!(AirNavalPatrolHistoryRow, |key| {country: (key >> 64) as u32, region: (key >> 32) as u32, index: key as u32}, {enemy_ships_sunk_raw: i64, our_fighters_lost_raw: i64, scenario_channels: Recorded<Option<[i64; 7]>>});
 fn strategic_action_fixture(tick: usize) -> StrategicRedeploymentInputs {
     match tick % 7 {
         0 => StrategicRedeploymentInputs {
@@ -1423,6 +1992,146 @@ fn strategic_action_fixture(tick: usize) -> StrategicRedeploymentInputs {
     }
 }
 
+impl Sample for TerrainSpeed {
+    fn sample(tick: usize) -> Self {
+        Self {
+            terrain: [1, 256, i32::MAX][tick % 3],
+            modifier: i64::sample(tick),
+        }
+    }
+}
+impl Sample for StrategicRedeploymentInputs {
+    fn sample(tick: usize) -> Self {
+        strategic_action_fixture(tick)
+    }
+}
+sample_struct!(FreshNormalEta {
+    speed_modifier: i64, speed_base: i64, speed_org: Option<i64>,
+    speed_fuel: Option<i64>, fort_penalty: i64, snow_penalty: i64,
+    river_adjustment: i64, river_leader: i64, terrain_speed: Vec<TerrainSpeed>
+});
+sample_struct!(FreshCounterEta {
+    sample_hour: i32, current_speed: Option<i64>, normal: Option<FreshNormalEta>,
+    rail: Option<StrategicRedeploymentInputs>
+});
+sample_struct!(ControllerRiverSpeed { target_slot: u32, modifier: Option<i64> });
+sample_struct!(RegionTransportSpeed { region: u32, speed: Option<i64> });
+impl Sample for ZeroSubjectInputs {
+    fn sample(tick: usize) -> Self {
+        match tick % 5 {
+            0 => Self::default(),
+            1 => Self {
+                relation_type: Some(0x380a),
+                parties: None,
+            },
+            2 => Self {
+                relation_type: Some(0x30d1),
+                parties: Some([Some(0), None]),
+            },
+            3 => Self {
+                relation_type: Some(0x30d1),
+                parties: Some([None, Some(0)]),
+            },
+            _ => Self {
+                relation_type: Some(0x30d1),
+                parties: Some([Some(u32::sample(tick).max(1)), Some(u32::sample(tick + 1))]),
+            },
+        }
+    }
+}
+impl Sample for CountryMovementInputs {
+    fn sample(tick: usize) -> Self {
+        let mut river = Option::<Vec<ControllerRiverSpeed>>::sample(tick);
+        let mut transport = Option::<Vec<RegionTransportSpeed>>::sample(tick + 1);
+        if let Some(entries) = &mut river {
+            entries.sort_unstable_by_key(|entry| entry.target_slot);
+        }
+        if let Some(entries) = &mut transport {
+            entries.sort_unstable_by_key(|entry| entry.region);
+        }
+        Self {
+            sample_hour: i32::sample(tick),
+            river,
+            transport,
+            naval: Option::<NavalPathInputs>::sample(tick + 2),
+            theatre: Option::<TheatreControllerAreas>::sample(tick + 3),
+        }
+    }
+}
+sample_struct!(NavalPathInputs { navy_slot: u32, present: bool, foreign_navy_slots: Option<Vec<u32>>, supply_hubs: Option<Vec<u32>> });
+sample_struct!(LaunchNavalBase {
+    base_province: u32,
+    country: u32
+});
+impl Sample for LaunchNavalBases {
+    fn sample(tick: usize) -> Self {
+        match tick % 3 {
+            0 => Self::Unavailable,
+            1 => Self::NativeNull,
+            _ => Self::Bases(Vec::<LaunchNavalBase>::sample(tick)),
+        }
+    }
+}
+sample_struct!(ReservedLaunchSources { sample_hour: i32, naval_bases: LaunchNavalBases, owned_states: Option<Vec<u32>> });
+sample_struct!(ReverseZeroVisibilityInputs { target: Option<u32>, war: Option<[u8; 2]>, subject: Option<ZeroSubjectInputs>, military_access: Option<u8> });
+sample_struct!(ReservedReverseVisibilityInputs { sample_hour: i32, cells: Vec<Option<ReverseZeroVisibilityInputs>> });
+impl Sample for ReservedCountryIntelSample {
+    fn sample(tick: usize) -> Self {
+        Self {
+            sample_hour: i32::sample(tick),
+            vector_count: match tick % 3 {
+                0 => 0,
+                1 => 1,
+                _ => i32::MAX as u32,
+            },
+        }
+    }
+}
+sample_struct!(PhysicalNavyNearestCache { slot: u32, present: bool, nearest_bases: Option<Vec<Option<u32>>> });
+impl Sample for TheatreControllerAreas {
+    fn sample(tick: usize) -> Self {
+        let mut provinces = Vec::<u32>::sample(tick);
+        provinces.retain(|&id| id != 0);
+        provinces.sort_unstable();
+        provinces.dedup();
+        Self {
+            provinces,
+            null_controller_area: bool::sample(tick),
+        }
+    }
+}
+impl Sample for CountryNavalMovementInputs {
+    fn sample(tick: usize) -> Self {
+        let mut nearest_caches = Option::<Vec<PhysicalNavyNearestCache>>::sample(tick);
+        if let Some(entries) = &mut nearest_caches {
+            entries.sort_unstable_by_key(|entry| entry.slot);
+            entries.dedup_by_key(|entry| entry.slot);
+        }
+        Self {
+            sample_hour: i32::sample(tick),
+            nearest_caches,
+            reserved_theatre: Option::<TheatreControllerAreas>::sample(tick + 1),
+        }
+    }
+}
+sample_struct!(RailwayBuildingHealth { level: i16, healthy: i16, partial: Option<i64> });
+sample_struct!(RailwayBuildingState { building: Option<RailwayBuildingHealth> });
+sample_struct!(ProvinceAreaInputs { sample_hour: i32, controller: u32, owner: Option<u32>, node: Option<SelectedAreaNode> });
+sample_struct!(SelectedAreaNode { first_land: Option<u32>, nonsea_index: Option<i32>, nonsea_count: Option<u32>, land_count: Option<i32>, neighbours: Option<Vec<u32>> });
+sample_struct!(SelectedUnitInputs { sample_hour: i32, exiled: Option<u8>, commander: Option<bool>, retreat: [Option<i64>; 2] });
+sample_struct!(OrderedEnemyInputs { sample_hour: i32, entries: Vec<u32> });
+
+sample_struct!(RailwaySelectionInputs { levels: Option<Vec<i32>>, pair_count: Option<i32>, building_level: Option<Option<i16>> });
+
+sample_struct!(ParadropTransportModifiers {
+    country_term: i64,
+    commander_term: Option<i64>
+});
+sample_struct!(DivisionOrderTransportInputs {
+    naval_weight: Option<i64>,
+    paradrop_eligible: Option<u8>,
+    paradrop_modifiers: Option<ParadropTransportModifiers>
+});
 impl Fixture for DivisionMovementRow {
     fn fixture(key: u128, tick: usize) -> Self {
         let reached = !tick.is_multiple_of(8);
@@ -1442,6 +2151,13 @@ impl Fixture for DivisionMovementRow {
             combat_role: u8::sample(tick),
             combat_province: u32::sample(tick),
             map_entity: u8::sample(tick),
+            withdrawal: Recorded::sample(tick),
+            movement_priority: Recorded::sample(tick),
+            order_transport: Recorded::sample(tick),
+            fresh: Recorded::<Option<FreshCounterEta>>::sample(tick),
+            combat_references: unit_combat_references_fixture(tick, u32::sample(tick)),
+            transport: Recorded::sample(tick),
+            selected: Recorded::<Option<SelectedUnitInputs>>::sample(tick),
             strategic_action: if reached {
                 crate::rows::Recorded::Value(StrategicAction::Available(strategic_action_fixture(
                     tick,
@@ -1481,7 +2197,7 @@ sample_struct!(AttritionModifierSource {
     scale: i64
 });
 sample_struct!(ArmyAttritionInputs { province: Option<Option<u32>>, upkeep: Option<i64>, terrain: Option<Option<AttritionTerrain>>, state: Option<Option<i64>>, supply: Option<AttritionSupply>, country_upkeep_modifier: Option<i64>, moving_state: Option<Option<i64>>, weather: Option<Option<AttritionWeather>>, training: Option<bool>, training_attrition: Option<Option<i64>>, border: Option<Option<AttritionBorder>>, country_attrition_modifier: Option<i64>, sources: [Option<Option<AttritionModifierSource>>; engine::carmy_attrition::SOURCE_COUNT] });
-fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: u8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Recorded<Option<[i64; 3]>>, naming: Recorded<Option<NameOperands>>, supply_grace_maximum: Recorded<i64>, supply_grace_remaining: Recorded<i64>, country_ordinal: Recorded<Option<u32>>, invalid_orders_reason: Recorded<Option<i32>>, supply: Recorded<Option<UnitSupplyInputs>>, attrition_inputs: Recorded<ArmyAttritionInputs>, dig_in_factor: Recorded<Option<i64>>, name: Recorded<Option<Vec<u8>>>});
+fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: u8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Recorded<Option<[i64; 3]>>, naming: Recorded<Option<NameOperands>>, supply_grace_maximum: Recorded<i64>, supply_grace_remaining: Recorded<i64>, country_ordinal: Recorded<Option<u32>>, invalid_orders_reason: Recorded<Option<i32>>, supply: Recorded<Option<UnitSupplyInputs>>, attrition_inputs: Recorded<ArmyAttritionInputs>, dig_in_factor: Recorded<Option<i64>>, name: Recorded<Option<Vec<u8>>>, attack: Recorded<DivisionAttackInputs>});
 impl Fixture for DivisionEtaInputsRow {
     fn fixture(key: u128, tick: usize) -> Self {
         // Leg vectors must stay aligned, so they cannot be sampled apart.
@@ -1533,7 +2249,7 @@ sample_struct!(TemplateSubunit {
     count: i32
 });
 fixture!(DivisionTemplateRow, |key| {template: key as u64}, {owner: u32, name: Vec<u8>, unit_type: i32, name_key: Recorded<Vec<u8>>});
-fixture!(DivisionTemplateIconRow, |key| {template: key as u64}, {priority_unit: u32, priority_unit_name: Vec<u8>, custom_icon: i32, custom_icon_nato: u8, representative: u32, representative_local: u8, subunits: Vec<TemplateSubunit>, country: i32, foreign_country: i32, model_category: Option<u64>, model_entity: Vec<u8>, excluded_variants: Vec<u64>, model_unreadable: u8, formation_division_count: Recorded<Option<i32>>});
+fixture!(DivisionTemplateIconRow, |key| {template: key as u64}, {priority_unit: u32, priority_unit_name: Vec<u8>, custom_icon: i32, custom_icon_nato: u8, representative: u32, representative_local: u8, subunits: Vec<TemplateSubunit>, country: i32, foreign_country: i32, model_category: Option<u64>, model_entity: Vec<u8>, excluded_variants: Vec<u64>, model_unreadable: u8, formation_division_count: Recorded<Option<i32>>, display_name: Recorded<Option<TemplateDisplayName>>});
 fixture!(LandCombatProgressRow, |key| {combat: key as u64}, {attacker_progress: i64, defender_progress: i64, direction_attacker: u64, direction_province: u32, attacker_manpower_loss:Recorded<i32>, defender_manpower_loss:Recorded<i32>, attacker_equipment_losses:Recorded<Vec<LandEquipmentLoss>>, defender_equipment_losses:Recorded<Vec<LandEquipmentLoss>>});
 fixture!(ThreatSourceRow, |key| {ordinal: key as u32}, {country: u32, second_country: u32, current_raw: i64, final_raw: i64, daily_raw: i64, date: i32, reason: Vec<u8>});
 fixture!(ThreatCountryAggregateRow, |key| {country_slot: key as u32}, {total_raw: i64});
@@ -2506,7 +3222,9 @@ fn round_trip<T: RowCodec + Debug + PartialEq>(row: &T) -> usize {
 fn equipment_spending_keeps_old_delivery_prefix_and_independent_optional_suffixes() {
     let table = crate::rows::TableId::ProductionLineOutput;
     assert_eq!(
-        table.last_change().fields(table, crate::FORMAT_VERSION - 1),
+        table
+            .last_change()
+            .fields(table, crate::rows::compatibility::WIDGET_CAPTURE_FORMAT - 1),
         9
     );
     assert!(
@@ -2604,6 +3322,55 @@ fn construction_completion_appends_without_changing_old_output_prefixes() {
     }
 }
 
+#[test]
+fn oracle_witness_suffixes_preserve_the_readable_historical_prefixes() {
+    let construction = ConstructionLineOutputRow {
+        line: 7,
+        count_reset: Recorded::Value(2),
+        ..Default::default()
+    };
+    let naval = NavalBaseRow {
+        province: 7,
+        countries: vec![5, 8, 5],
+        country_tags: Recorded::Value(Some(vec![b"A".to_vec(), b"B".to_vec(), b"A".to_vec()])),
+        ..Default::default()
+    };
+    round_trip(&construction);
+    round_trip(&naval);
+    let mut bytes = Vec::new();
+    construction.encode_fields(&mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    for kind in &ConstructionLineOutputRow::SCHEMA[..14] {
+        kind.decode(&mut input).unwrap();
+    }
+    let prefix = bytes.len() - input.remaining();
+    let mut input = Decoder::new(&bytes[..prefix]);
+    input.format = crate::FORMAT_VERSION - 1;
+    input.recorded_fields = FormatVersion::read(input.format)
+        .unwrap()
+        .fields(TableId::ConstructionLineOutput);
+    let historical = ConstructionLineOutputRow::decode_fields(7, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(historical.completion, construction.completion);
+    assert_eq!(historical.count_reset, Recorded::NotRecorded);
+    bytes.clear();
+    naval.encode_fields(&mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    for kind in &NavalBaseRow::SCHEMA[..5] {
+        kind.decode(&mut input).unwrap();
+    }
+    let prefix = bytes.len() - input.remaining();
+    let mut input = Decoder::new(&bytes[..prefix]);
+    input.format = crate::FORMAT_VERSION - 1;
+    input.recorded_fields = FormatVersion::read(input.format)
+        .unwrap()
+        .fields(TableId::NavalBases);
+    let historical = NavalBaseRow::decode_fields(7, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(historical.countries, naval.countries);
+    assert_eq!(historical.country_tags, Recorded::NotRecorded);
+}
+
 /// The whole native list is recorded, far past the former 16-entry cap.
 #[test]
 fn naval_base_country_lists_keep_twenty_thousand_entries_in_native_order() {
@@ -2614,6 +3381,7 @@ fn naval_base_country_lists_keep_twenty_thousand_entries_in_native_order() {
         healthy_level: 9,
         countries: (0..20_000_u32).rev().map(|index| index * 3 + 1).collect(),
         countries_unreadable: false,
+        country_tags: Recorded::Value(None),
     };
     round_trip(&previous);
     let mut next = previous.clone();
@@ -2875,6 +3643,7 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
         subjects: Recorded::Value(vec![7, -1]),
         original_tag: Recorded::Value(Some(b"GER".to_vec())),
         original_tag_reference: Recorded::Value(Some(i32::MAX)),
+        transport_convoys: Recorded::Value(None),
     };
     let mut bytes = Vec::new();
     encode_row(&previous, 0, &mut bytes).unwrap();
@@ -2943,6 +3712,9 @@ fn country_appearance_preserves_float_bits_and_literal_tag_transitions() {
 fn ship_models_preserve_full_flags_and_counter_inputs() {
     let row = ShipModelRow {
         formation_flags: u64::MAX,
+        subunit_index: Recorded::Value(None),
+        strike: Recorded::Value(None),
+        hull_variant: Recorded::Value(None),
         counter: Some(ShipCounterInputs {
             roster_ordinal: 7,
             definition_valid: 255,
@@ -2960,6 +3732,140 @@ fn ship_models_preserve_full_flags_and_counter_inputs() {
         decode_row::<ShipModelRow>(0, &mut Decoder::new(&bytes)).unwrap(),
         row
     );
+}
+
+#[test]
+fn ship_subunit_index_preserves_zero_refusal_and_signed_suffix_deltas() {
+    let baseline = ShipModelRow {
+        subunit_index: Recorded::Value(None),
+        ..ShipModelRow::fixture(u64::MAX as u128, 4)
+    };
+    for value in [None, Some(i32::MIN), Some(-1), Some(0), Some(i32::MAX)] {
+        let next = ShipModelRow {
+            subunit_index: Recorded::Value(value),
+            ..baseline.clone()
+        };
+        round_trip(&next);
+        if value.is_none() {
+            assert!(next.delta(Some(&baseline)).unwrap().is_none());
+            continue;
+        }
+        let delta = next.delta(Some(&baseline)).unwrap().unwrap();
+        assert_eq!(delta.mask, 1 << 6);
+        let mut bytes = Vec::new();
+        encode_delta(TableId::ShipModels, &delta, 0, &mut bytes).unwrap();
+        let mut input = Decoder::new(&bytes);
+        let decoded = decode_delta(TableId::ShipModels, 0, &mut input).unwrap();
+        input.finish().unwrap();
+        assert_eq!(decoded.apply(Some(baseline.clone())).unwrap(), next);
+        let cleared = baseline.delta(Some(&next)).unwrap().unwrap();
+        assert_eq!(cleared.mask, 1 << 6);
+        assert_eq!(cleared.apply(Some(next)).unwrap(), baseline);
+    }
+    let historical = ShipModelRow {
+        subunit_index: Recorded::NotRecorded,
+        ..baseline
+    };
+    assert_eq!(historical.not_recorded_fields(), 1 << 6);
+    assert!(encode_row(&historical, 0, &mut Vec::new()).is_err());
+}
+
+#[test]
+fn naval_port_packet_preserves_ordered_unknowns_and_raw_bytes_in_suffix_delta() {
+    let baseline = TaskForceCounterInputRow {
+        port_mission: Recorded::Value(None),
+        ..TaskForceCounterInputRow::fixture(u64::MAX as u128, 4)
+    };
+    let packet = NavalPortMissionInputs {
+        sample_hour: i32::MIN,
+        searching: Some(vec![
+            NavalSearcher {
+                reference: Some(u64::MAX),
+                resolves: Some(true),
+                roster_owner: Some(0),
+            },
+            NavalSearcher::default(),
+            NavalSearcher {
+                reference: Some(0),
+                resolves: Some(false),
+                roster_owner: None,
+            },
+        ]),
+        engagement_target: Some(NavalEngagementTarget {
+            reference: 1 << 63,
+            resolves: None,
+        }),
+        avoided_ship_types: Some(vec![Some(vec![0xff, 0, b'A']), None, Some(Vec::new())]),
+    };
+    let next = TaskForceCounterInputRow {
+        port_mission: Recorded::Value(Some(packet)),
+        ..baseline.clone()
+    };
+    round_trip(&next);
+    let delta = next.delta(Some(&baseline)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 12);
+    let mut bytes = Vec::new();
+    encode_delta(TableId::TaskForceCounterInputs, &delta, 0, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    let decoded = decode_delta(TableId::TaskForceCounterInputs, 0, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.apply(Some(baseline.clone())).unwrap(), next);
+    let cleared = baseline.delta(Some(&next)).unwrap().unwrap();
+    assert_eq!(cleared.mask, 1 << 12);
+    assert_eq!(cleared.apply(Some(next)).unwrap(), baseline);
+}
+
+#[test]
+fn current_ship_suffixes_keep_independent_missing_scalars_and_signed_bits() {
+    let baseline = ShipModelRow {
+        strike: Recorded::Value(None),
+        hull_variant: Recorded::Value(None),
+        ..ShipModelRow::fixture(u64::MAX as u128, 4)
+    };
+    let strike = ShipStrikeInputs {
+        light_attack: Some(i64::MIN),
+        heavy_attack: None,
+        light_piercing: Some(0),
+        torpedo_attack: Some(i64::MAX),
+        torpedo_cooldown_modifier: Some(-1),
+    };
+    let variant = HullVariantInputs {
+        definition_index: Some(-1),
+        module_count: Some(i32::MAX),
+        upgrade_level_sum: Some(i32::MIN),
+        module_priority_sum: None,
+        version: Some(u8::MAX),
+        organisation_marker: Some(-1),
+    };
+    for next in [
+        ShipModelRow {
+            strike: Recorded::Value(Some(strike)),
+            ..baseline.clone()
+        },
+        ShipModelRow {
+            hull_variant: Recorded::Value(Some(variant)),
+            ..baseline.clone()
+        },
+    ] {
+        round_trip(&next);
+        let delta = next.delta(Some(&baseline)).unwrap().unwrap();
+        assert_eq!(
+            delta.mask,
+            if next.strike != baseline.strike {
+                1 << 7
+            } else {
+                1 << 8
+            }
+        );
+        let mut bytes = Vec::new();
+        encode_delta(TableId::ShipModels, &delta, 0, &mut bytes).unwrap();
+        let mut input = Decoder::new(&bytes);
+        let decoded = decode_delta(TableId::ShipModels, 0, &mut input).unwrap();
+        input.finish().unwrap();
+        assert_eq!(decoded.apply(Some(baseline.clone())).unwrap(), next);
+        let cleared = baseline.delta(Some(&next)).unwrap().unwrap();
+        assert_eq!(cleared.apply(Some(next)).unwrap(), baseline);
+    }
 }
 
 #[test]
@@ -3229,7 +4135,9 @@ fn ace_presentation_suffix_keeps_previous_roster_bytes_and_explicit_absence() {
         ..Default::default()
     };
     let table = TableId::AirAces;
-    let previous = crate::format::FormatVersion::read(crate::FORMAT_VERSION - 1).unwrap();
+    let previous =
+        crate::format::FormatVersion::read(crate::rows::compatibility::GAME_SCORE_FORMAT - 1)
+            .unwrap();
     assert!(previous.table_refusal(table).is_none());
     assert_eq!(previous.fields(table), 11);
     let bytes = TableRows::AirAces(vec![row.clone()]).fixture_prefix(previous.fields(table));
@@ -3598,6 +4506,473 @@ fn every_extended_table_round_trips_extremes_nested_records_and_deltas() {
 }
 
 #[test]
+fn political_runtime_fixtures_admit_current_hours_and_exact_domains() {
+    let mut saw_display_certificate = false;
+    let mut saw_display_literal = false;
+    let mut saw_display_empty_fallback = false;
+    let mut saw_display_fallback = false;
+    let mut saw_refused_commander = false;
+    let mut saw_null_commander = false;
+    let mut saw_commander = false;
+    let mut saw_commander_terrain_domains = [false; 3];
+    let mut saw_combat_kinds = [false; 3];
+    let mut saw_empty_combat_references = false;
+    let mut saw_empty_war_domains = [false; 2];
+    let mut saw_independent_reserved_refusal = false;
+    for tick in 0..=12 {
+        let hour = i32::sample(tick);
+        for key in [0, u32::MAX as u128] {
+            let row = CountryCounterInputRow::fixture(key, tick);
+            let attack = row.attack.require("CountryCounterInputs.attack").unwrap();
+            assert_eq!(attack.sample_hour, hour);
+            if let Recorded::Value(Some(packet)) = &row.directed_wars {
+                packet
+                    .admit(hour, row.country as i32, packet.receiver_slot)
+                    .unwrap();
+                if packet.cells.is_empty() {
+                    saw_empty_war_domains[usize::from(packet.complete_active_domain)] = true;
+                }
+            }
+            if let Recorded::Value(Some(packet)) = &row.movement {
+                assert_eq!(packet.sample_hour, attack.sample_hour);
+            }
+        }
+        let status = DivisionStatusRow::fixture(u64::MAX as u128, tick);
+        let attack = status.attack.require("DivisionStatus.attack").unwrap();
+        assert_eq!(attack.sample_hour, hour);
+        attack.check().unwrap();
+        status.check_key_fields().unwrap();
+
+        let movement = DivisionMovementRow::fixture(u64::MAX as u128, tick);
+        if let Recorded::Value(Some(packet)) = &movement.combat_references {
+            assert!(packet.valid_at(hour, movement.combat_count));
+            saw_empty_combat_references |= packet.entries.is_empty();
+            for entry in &packet.entries {
+                saw_combat_kinds[entry.kind as usize] = true;
+            }
+            if let Recorded::Value(Some(fresh)) = &movement.fresh {
+                assert_eq!(packet.sample_hour, fresh.sample_hour);
+            }
+        }
+        movement.check_key_fields().unwrap();
+        let gun = RailwayGunCounterInputRow::fixture(u64::MAX as u128, tick);
+        if let Recorded::Value(Some(packet)) = &gun.combat_references {
+            assert!(packet.valid_at(hour, gun.combat_count));
+            if let Recorded::Value(Some(fresh)) = &gun.fresh {
+                assert_eq!(packet.sample_hour, fresh.sample_hour);
+            }
+        }
+        gun.check_key_fields().unwrap();
+
+        let group = OrdersGroupCounterInputRow::fixture(u64::MAX as u128, tick);
+        let attack = group
+            .attack
+            .require("OrdersGroupCounterInputs.attack")
+            .unwrap();
+        assert_eq!(attack.sample_hour, hour);
+        attack.check().unwrap();
+        match &attack.commander {
+            None => saw_refused_commander = true,
+            Some(None) => saw_null_commander = true,
+            Some(Some(commander)) => {
+                saw_commander = true;
+                let domain = match &commander.terrain {
+                    None => 0,
+                    Some(values) if values.is_empty() => 1,
+                    Some(_) => 2,
+                };
+                saw_commander_terrain_domains[domain] = true;
+            }
+        }
+
+        let icon = DivisionTemplateIconRow::fixture(u64::MAX as u128, tick);
+        if let Recorded::Value(Some(packet)) = &icon.display_name {
+            assert_eq!(packet.sample_hour, hour);
+            match &packet.value {
+                TemplateNameValue::SameAsDivisionTemplates => saw_display_certificate = true,
+                TemplateNameValue::Changed {
+                    literal,
+                    fallback_key,
+                } => {
+                    if !literal.is_empty() {
+                        saw_display_literal = true;
+                    } else if fallback_key.as_ref().unwrap().is_empty() {
+                        saw_display_empty_fallback = true;
+                    } else {
+                        saw_display_fallback = true;
+                    }
+                }
+            }
+            let daily = DivisionTemplateRow::fixture(icon.template as u128, tick);
+            icon.display_name_inputs(hour, Some(&daily)).unwrap();
+        }
+
+        let reserved = ReservedCountryNamingRow::fixture(0, tick);
+        if let Recorded::Value(Some(packet)) = &reserved.attack {
+            assert_eq!(packet.sample_hour, hour);
+        }
+        if let Recorded::Value(Some(packet)) = &reserved.raw_country_observations {
+            assert_eq!(packet.sample_hour, hour);
+            packet.check().unwrap();
+            for entry in &packet.entries {
+                assert_eq!(packet.entry(hour, entry.raw).unwrap(), entry);
+            }
+        }
+        saw_independent_reserved_refusal |= matches!(&reserved.attack, Recorded::Value(None))
+            != matches!(&reserved.raw_country_observations, Recorded::Value(None));
+        reserved.check_key_fields().unwrap();
+
+        let weather = WeatherRegionRow::fixture(u32::MAX as u128, tick);
+        assert_eq!(
+            weather
+                .attack
+                .require("WeatherRegions.attack")
+                .unwrap()
+                .sample_hour,
+            hour
+        );
+        let features = SimulationFeatureRow::fixture(0, tick);
+        assert_eq!(
+            features
+                .runtime_scalars
+                .require("SimulationFeatures.runtime_scalars")
+                .unwrap()
+                .sample_hour,
+            hour
+        );
+    }
+    assert!(
+        saw_display_certificate
+            && saw_display_literal
+            && saw_display_empty_fallback
+            && saw_display_fallback
+    );
+    assert!(saw_refused_commander && saw_null_commander && saw_commander);
+    assert!(saw_commander_terrain_domains.into_iter().all(|seen| seen));
+    assert!(saw_combat_kinds.into_iter().all(|seen| seen) && saw_empty_combat_references);
+    assert!(saw_empty_war_domains.into_iter().all(|seen| seen));
+    assert!(saw_independent_reserved_refusal);
+}
+
+#[test]
+fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
+    fn suffix<T: RowCodec + Debug>(table: TableId, index: usize, old: &T, next: &T) {
+        round_trip(old);
+        round_trip(next);
+        for (previous, row) in [(old, next), (next, old)] {
+            let delta = row.delta(Some(previous)).unwrap().unwrap();
+            assert_eq!(delta.mask, 1_u64 << index, "{table:?}");
+            let mut bytes = Vec::new();
+            encode_delta(table, &delta, 0, &mut bytes).unwrap();
+            let mut input = Decoder::new(&bytes);
+            let decoded = decode_delta(table, 0, &mut input).unwrap();
+            input.finish().unwrap();
+            assert_eq!(decoded.apply(Some(previous.clone())).unwrap(), *row);
+        }
+    }
+    let old = DivisionStatusRow::fixture(u64::MAX as u128, 1);
+    let mut next = old.clone();
+    next.attack
+        .require_mut("DivisionStatus.attack")
+        .unwrap()
+        .stats
+        .night = Some(0);
+    suffix(TableId::DivisionStatus, 26, &old, &next);
+
+    let old = DivisionMovementRow::fixture(u64::MAX as u128, 1);
+    let mut next = old.clone();
+    next.combat_references
+        .require_mut("DivisionMovement.combat_references")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .entries[0]
+        .kind = 2;
+    suffix(TableId::DivisionMovement, 19, &old, &next);
+    let mut next = old.clone();
+    next.transport = Recorded::Value(Some(UnitTransportInputs {
+        sample_hour: i32::MIN,
+        weight: Some(i64::MAX),
+        transfer: Some(UnitTransferInputs::Absent),
+        coastal_template: Some(false),
+    }));
+    suffix(TableId::DivisionMovement, 21, &old, &next);
+    let old = RailwayGunCounterInputRow::fixture(u64::MAX as u128, 1);
+    let mut next = old.clone();
+    next.combat_references
+        .require_mut("RailwayGunCounterInputs.combat_references")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .entries[0]
+        .kind = 2;
+    suffix(TableId::RailwayGunCounterInputs, 28, &old, &next);
+    let mut next = old.clone();
+    next.transport = Recorded::Value(Some(UnitTransportInputs {
+        sample_hour: i32::MAX,
+        weight: Some(i64::MIN),
+        transfer: Some(UnitTransferInputs::Present {
+            transfer: u64::MAX,
+            status: Some(i32::MIN),
+            source: None,
+        }),
+        coastal_template: None,
+    }));
+    suffix(TableId::RailwayGunCounterInputs, 29, &old, &next);
+
+    let old = CountryCounterInputRow::fixture(0, 0);
+    let mut next = old.clone();
+    next.attack
+        .require_mut("CountryCounterInputs.attack")
+        .unwrap()
+        .land_night_attack = Some(0);
+    suffix(TableId::CountryCounterInputs, 17, &old, &next);
+    let mut directed_wars = DirectedWars::sample(0);
+    directed_wars.receiver_raw_id = old.country as i32;
+    let next = CountryCounterInputRow {
+        directed_wars: Recorded::Value(Some(directed_wars)),
+        ..old.clone()
+    };
+    suffix(TableId::CountryCounterInputs, 18, &old, &next);
+
+    let old = OrdersGroupCounterInputRow::fixture(u64::MAX as u128, 1);
+    let mut next = old.clone();
+    next.attack
+        .require_mut("OrdersGroupCounterInputs.attack")
+        .unwrap()
+        .commander = Some(Some(CommanderAttackInputs::sample(1)));
+    suffix(TableId::OrdersGroupCounterInputs, 5, &old, &next);
+    let old = DivisionTemplateIconRow::fixture(u64::MAX as u128, 1);
+    let mut next = old.clone();
+    next.display_name
+        .require_mut("DivisionTemplateIcons.display_name")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .value = TemplateNameValue::SameAsDivisionTemplates;
+    suffix(TableId::DivisionTemplateIcons, 14, &old, &next);
+
+    let old = ReservedCountryNamingRow::fixture(0, 0);
+    let next = ReservedCountryNamingRow {
+        attack: Recorded::Value(Some(CountryAttackInputs::sample(0))),
+        ..old.clone()
+    };
+    suffix(TableId::ReservedCountryNaming, 20, &old, &next);
+    let next = ReservedCountryNamingRow {
+        raw_country_observations: Recorded::Value(Some(RawCountryObservations::sample(0))),
+        ..old.clone()
+    };
+    suffix(TableId::ReservedCountryNaming, 21, &old, &next);
+    let next = ReservedCountryNamingRow {
+        transport_mission_inputs: Recorded::Value(Some(TransportMissionInputs::sample(2))),
+        ..old.clone()
+    };
+    suffix(TableId::ReservedCountryNaming, 22, &old, &next);
+
+    let old = WeatherRegionRow::fixture(u32::MAX as u128, 0);
+    let mut next = old.clone();
+    next.attack
+        .require_mut("WeatherRegions.attack")
+        .unwrap()
+        .attack = Some(0);
+    suffix(TableId::WeatherRegions, 7, &old, &next);
+    let old = SimulationFeatureRow::fixture(0, 0);
+    let mut next = old.clone();
+    next.runtime_scalars
+        .require_mut("SimulationFeatures.runtime_scalars")
+        .unwrap()
+        .move_strength_threshold = Some(0);
+    suffix(TableId::SimulationFeatures, 4, &old, &next);
+}
+
+#[test]
+fn division_movement_style_numeric_schema_round_trips_extremes_and_refusals() {
+    let baseline = DivisionMovementRow {
+        withdrawal: Recorded::Value(None),
+        movement_priority: Recorded::Value(None),
+        ..DivisionMovementRow::fixture(u64::MAX as u128, 4)
+    };
+    for priority in [None, Some(0), Some(-1), Some(i32::MIN), Some(i32::MAX)] {
+        for withdrawal in [None, Some(0xfe)] {
+            let row = DivisionMovementRow {
+                withdrawal: Recorded::Value(withdrawal),
+                movement_priority: Recorded::Value(priority),
+                ..baseline.clone()
+            };
+            round_trip(&row);
+        }
+    }
+    let next = DivisionMovementRow {
+        movement_priority: Recorded::Value(Some(i32::MIN)),
+        ..baseline.clone()
+    };
+    let delta = next.delta(Some(&baseline)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 16);
+    let mut bytes = Vec::new();
+    encode_delta(TableId::DivisionMovement, &delta, 0, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    let decoded = decode_delta(TableId::DivisionMovement, 0, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.apply(Some(baseline.clone())).unwrap(), next);
+
+    // Historical absence remains distinct from a current field-local refusal;
+    // the current writer must not turn absent historical fields into None.
+    let legacy = DivisionMovementRow {
+        withdrawal: Recorded::NotRecorded,
+        movement_priority: Recorded::NotRecorded,
+        ..baseline
+    };
+    assert_eq!(legacy.not_recorded_fields(), (1 << 15) | (1 << 16));
+    assert!(encode_row(&legacy, 0, &mut Vec::new()).is_err());
+}
+
+#[test]
+fn task_force_motion_numeric_schema_round_trips_extremes_and_independent_refusals() {
+    let baseline = TaskForceMapMotionRow {
+        movement_numerator: Recorded::Value(None),
+        retreat: Recorded::Value(None),
+        withdrawal: Recorded::Value(None),
+        naval_transfer: Recorded::Value(None),
+        combat_links: Recorded::Value(Some([0; 2])),
+        ..TaskForceMapMotionRow::fixture(u64::MAX as u128, 4)
+    };
+    for (numerator, retreat, withdrawal, transfer) in [
+        (None, None, Some(0xfe), Some(1)),
+        (Some(0), Some(0), None, Some(1)),
+        (Some(-1), Some(0xfe), Some(0), None),
+        (Some(i64::MIN), None, None, None),
+        (Some(i64::MAX), Some(u8::MAX), Some(u8::MAX), Some(0)),
+    ] {
+        round_trip(&TaskForceMapMotionRow {
+            movement_numerator: Recorded::Value(numerator),
+            retreat: Recorded::Value(retreat),
+            withdrawal: Recorded::Value(withdrawal),
+            naval_transfer: Recorded::Value(transfer),
+            ..baseline.clone()
+        });
+    }
+    let next = TaskForceMapMotionRow {
+        movement_numerator: Recorded::Value(Some(i64::MIN)),
+        ..baseline.clone()
+    };
+    let delta = next.delta(Some(&baseline)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 4);
+    let mut bytes = Vec::new();
+    encode_delta(TableId::TaskForceMapMotion, &delta, 0, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    let decoded = decode_delta(TableId::TaskForceMapMotion, 0, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.apply(Some(baseline.clone())).unwrap(), next);
+
+    let legacy = TaskForceMapMotionRow {
+        movement_numerator: Recorded::NotRecorded,
+        retreat: Recorded::NotRecorded,
+        withdrawal: Recorded::NotRecorded,
+        naval_transfer: Recorded::NotRecorded,
+        combat_links: Recorded::NotRecorded,
+        ..baseline
+    };
+    assert_eq!(
+        legacy.not_recorded_fields(),
+        (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8)
+    );
+    assert!(encode_row(&legacy, 0, &mut Vec::new()).is_err());
+}
+
+#[test]
+fn task_force_combat_links_round_trip_raw_pairs_refusals_and_independent_delta() {
+    let baseline = TaskForceMapMotionRow {
+        combat_links: Recorded::Value(Some([0; 2])),
+        ..TaskForceMapMotionRow::fixture(u64::MAX as u128, 4)
+    };
+    for value in [
+        None,
+        Some([0; 2]),
+        Some([u64::MAX, 0]),
+        Some([u64::MAX, u64::MAX]),
+        Some([1, 1 << 63]),
+    ] {
+        round_trip(&TaskForceMapMotionRow {
+            combat_links: Recorded::Value(value),
+            ..baseline.clone()
+        });
+    }
+    let next = TaskForceMapMotionRow {
+        combat_links: Recorded::Value(Some([u64::MAX, 1 << 63])),
+        ..baseline.clone()
+    };
+    let delta = next.delta(Some(&baseline)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 8);
+    let mut bytes = Vec::new();
+    encode_delta(TableId::TaskForceMapMotion, &delta, 0, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    let decoded = decode_delta(TableId::TaskForceMapMotion, 0, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.apply(Some(baseline.clone())).unwrap(), next);
+    let legacy = TaskForceMapMotionRow {
+        combat_links: Recorded::NotRecorded,
+        ..baseline
+    };
+    assert_eq!(legacy.not_recorded_fields(), 1 << 8);
+    assert!(encode_row(&legacy, 0, &mut Vec::new()).is_err());
+}
+
+#[test]
+fn task_force_fresh_eta_round_trips_components_and_changes_only_suffix() {
+    let baseline = TaskForceMapMotionRow {
+        fresh: Recorded::Value(None),
+        ..TaskForceMapMotionRow::fixture(u64::MAX as u128, 4)
+    };
+    let full = FreshTaskForceCounterEta {
+        sample_hour: i32::MIN,
+        base_speed: Some(i64::MIN),
+        speed_modifier: Some(i64::MAX),
+        terrain_class: Some(i32::MIN),
+        modified_range: Some(-1),
+        exiled: Some(0xfe),
+        strategic_redeployment: Some(u8::MAX),
+    };
+    let missing = FreshTaskForceCounterEta {
+        sample_hour: i32::MAX,
+        ..Default::default()
+    };
+    for packet in [
+        None,
+        Some(full),
+        Some(missing),
+        Some(FreshTaskForceCounterEta {
+            base_speed: None,
+            speed_modifier: Some(0),
+            modified_range: Some(i64::MAX),
+            ..full
+        }),
+    ] {
+        round_trip(&TaskForceMapMotionRow {
+            fresh: Recorded::Value(packet),
+            ..baseline.clone()
+        });
+    }
+    let next = TaskForceMapMotionRow {
+        fresh: Recorded::Value(Some(full)),
+        ..baseline.clone()
+    };
+    let delta = next.delta(Some(&baseline)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 9);
+    let mut bytes = Vec::new();
+    encode_delta(TableId::TaskForceMapMotion, &delta, 0, &mut bytes).unwrap();
+    let mut input = Decoder::new(&bytes);
+    let decoded = decode_delta(TableId::TaskForceMapMotion, 0, &mut input).unwrap();
+    input.finish().unwrap();
+    assert_eq!(decoded.apply(Some(baseline.clone())).unwrap(), next);
+    let historical = TaskForceMapMotionRow {
+        fresh: Recorded::NotRecorded,
+        ..baseline
+    };
+    assert_eq!(historical.not_recorded_fields(), 1 << 9);
+    assert!(encode_row(&historical, 0, &mut Vec::new()).is_err());
+}
+
+#[test]
 fn land_companions_round_trip_extremes_nested_records_and_deltas() {
     check_table::<DivisionLandInputsRow>(TableId::DivisionLandInputs);
     check_table::<LandCombatResultsRow>(TableId::LandCombatResults);
@@ -3740,14 +5115,21 @@ fn strategic_action_codec_measures_incremental_payload_bytes() {
             .unwrap(),
         6
     );
-    let base = DivisionMovementRow::fixture(9, 4);
+    let base = DivisionMovementRow {
+        transport: Recorded::Value(None),
+        ..DivisionMovementRow::fixture(9, 4)
+    };
     let baseline = DivisionMovementRow {
         strategic_redeployment: 0,
         strategic_action: crate::rows::Recorded::Value(absent),
         ..base.clone()
     };
     let baseline_bytes = round_trip(&baseline);
-    assert_eq!(baseline_bytes, 63);
+    // Withdrawal and transport each add an opaque length and absence tag;
+    // native optional i32 priority adds one tag. Strategic action is unchanged.
+    // Fresh ETA, combat references, selected routes and transport each add
+    // an opaque length and absence tag.
+    assert_eq!(baseline_bytes, 74 + 5 + 5 + 5 + 5);
     assert!(baseline.delta(Some(&baseline)).unwrap().is_none());
     for (tick, expected) in [
         (0, 15),
@@ -3766,6 +5148,171 @@ fn strategic_action_codec_measures_incremental_payload_bytes() {
         };
         assert_eq!(round_trip(&row) - baseline_bytes, expected - 5);
     }
+}
+
+fn selected_route_suffix<T: RowCodec + Debug>(table: TableId, index: usize, old: &T, next: &T) {
+    round_trip(old);
+    round_trip(next);
+    for (previous, row) in [(old, next), (next, old)] {
+        let delta = row.delta(Some(previous)).unwrap().unwrap();
+        assert_eq!(delta.mask, 1_u64 << index, "{table:?}");
+        let mut bytes = Vec::new();
+        encode_delta(table, &delta, 0, &mut bytes).unwrap();
+        let mut input = Decoder::new(&bytes);
+        let decoded = decode_delta(table, 0, &mut input).unwrap();
+        input.finish().unwrap();
+        assert_eq!(decoded.apply(Some(previous.clone())).unwrap(), *row);
+    }
+}
+
+#[test]
+fn selected_routes_area_codec_keeps_d0_d8_independent_and_graph_refusals_distinct() {
+    let base = ProvinceRow {
+        id: 17,
+        controller: 701,
+        owner: 702,
+        selected_areas: Some(ProvinceAreaInputs {
+            sample_hour: i32::MIN,
+            controller: 17,
+            owner: Some(29),
+            node: Some(SelectedAreaNode {
+                first_land: Some(u32::MAX),
+                nonsea_index: Some(-1),
+                nonsea_count: Some(u32::MAX),
+                land_count: Some(i32::MIN),
+                neighbours: Some(vec![29, 29, 0, u32::MAX]),
+            }),
+        })
+        .into(),
+        ..Default::default()
+    };
+    for change in 0..10 {
+        let mut next = base.clone();
+        let packet = next
+            .selected_areas
+            .require_mut("selected areas")
+            .unwrap()
+            .as_mut()
+            .unwrap();
+        match change {
+            0 => packet.sample_hour = i32::MAX,
+            1 => packet.controller = 0,
+            2 => packet.owner = Some(0),
+            3 => packet.owner = None,
+            4 => packet.node = None,
+            5 => packet.node.as_mut().unwrap().first_land = None,
+            6 => packet.node.as_mut().unwrap().nonsea_index = None,
+            7 => packet.node.as_mut().unwrap().nonsea_count = None,
+            8 => packet.node.as_mut().unwrap().land_count = None,
+            9 => packet.node.as_mut().unwrap().neighbours = None,
+            _ => unreachable!(),
+        }
+        selected_route_suffix(TableId::Provinces, 8, &base, &next);
+    }
+    for neighbours in [Some(Vec::new()), Some(vec![29, 0, 29, u32::MAX])] {
+        let mut next = base.clone();
+        next.selected_areas
+            .require_mut("selected areas")
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .node
+            .as_mut()
+            .unwrap()
+            .neighbours = neighbours;
+        selected_route_suffix(TableId::Provinces, 8, &base, &next);
+    }
+    let refused = ProvinceRow {
+        selected_areas: None.into(),
+        ..base.clone()
+    };
+    selected_route_suffix(TableId::Provinces, 8, &base, &refused);
+}
+
+#[test]
+fn selected_routes_unit_codec_keeps_raw_exile_and_independent_current_retreat_keys() {
+    let base = DivisionMovementRow {
+        division: u64::MAX,
+        source: 17,
+        selected: Some(SelectedUnitInputs {
+            sample_hour: i32::MAX,
+            exiled: Some(0xfe),
+            commander: Some(true),
+            retreat: [Some(i64::MIN), Some(i64::MAX)],
+        })
+        .into(),
+        ..Default::default()
+    };
+    for change in 0..9 {
+        let mut next = base.clone();
+        let packet = next
+            .selected
+            .require_mut("selected unit")
+            .unwrap()
+            .as_mut()
+            .unwrap();
+        match change {
+            0 => packet.sample_hour = i32::MIN,
+            1 => packet.exiled = Some(0),
+            2 => packet.exiled = Some(1),
+            3 => packet.exiled = Some(u8::MAX),
+            4 => packet.exiled = None,
+            5 => packet.commander = None,
+            6 => {
+                packet.commander = Some(false);
+                packet.retreat = [Some(0), Some(0)];
+            }
+            7 => packet.retreat[0] = None,
+            8 => packet.retreat[1] = None,
+            _ => unreachable!(),
+        }
+        selected_route_suffix(TableId::DivisionMovement, 20, &base, &next);
+    }
+    let refused = DivisionMovementRow {
+        selected: None.into(),
+        ..base.clone()
+    };
+    selected_route_suffix(TableId::DivisionMovement, 20, &base, &refused);
+}
+
+#[test]
+fn selected_routes_enemy_codec_preserves_occurrence_order_separately_from_legacy_sets() {
+    let base = CountryWarRow {
+        country: 777,
+        can_occupy_non_war: 0xfe,
+        enemies_read: 1,
+        enemies: vec![11, 29],
+        ordered: Some(OrderedEnemyInputs {
+            sample_hour: i32::MIN,
+            entries: vec![29, 0, 11, 29, u32::MAX],
+        })
+        .into(),
+    };
+    for entries in [Vec::new(), vec![11, 29], vec![29, 11, 0, 29, u32::MAX]] {
+        let next = CountryWarRow {
+            ordered: Some(OrderedEnemyInputs {
+                sample_hour: i32::MIN,
+                entries,
+            })
+            .into(),
+            ..base.clone()
+        };
+        selected_route_suffix(TableId::CountryWars, 3, &base, &next);
+        assert_eq!(next.enemies, base.enemies);
+    }
+    let mut next = base.clone();
+    next.ordered
+        .require_mut("ordered enemies")
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .sample_hour = i32::MAX;
+    selected_route_suffix(TableId::CountryWars, 3, &base, &next);
+    let refused = CountryWarRow {
+        ordered: None.into(),
+        ..base.clone()
+    };
+    selected_route_suffix(TableId::CountryWars, 3, &base, &refused);
 }
 
 fixture!(AgencyUpgradeLevelRow, |key| {country: (key >> 32) as u32, ordinal: key as u32}, {definition_pointer: u64, branch_pointer: u64, upgrade_token: Option<u32>, branch_token: Option<u32>, level: i32, identity_status: u8});
@@ -3899,4 +5446,255 @@ fn land_casualty_hourly_deltas_keep_unchanged_pools_and_clear_empty_ones() {
             assert!(decoded.complete::<tables::LandCombatProgress>().is_err());
         }
     }
+}
+
+#[test]
+fn technology_occurrences_roundtrip_delta_and_refuse_duplicate_indexes() {
+    use crate::frame::{DecodedFrame, FrameDecoder, FrameEncoder, TableView};
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    for hour in 0..3 {
+        let technologies: Vec<_> = (1..=2)
+            .map(|database_index| ResearchTechnologyRow {
+                country: 7,
+                database_index,
+                technology_handle: 0xffff_fffe,
+                level: database_index,
+                progress_raw: i64::from(hour * database_index),
+                ..Default::default()
+            })
+            .collect();
+        let definitions: Vec<_> = (1..=2)
+            .map(|database_index| TechnologyDefinitionRow {
+                database_index,
+                technology_handle: 0xffff_fffe,
+                id: b"repeat".to_vec(),
+                year: 1936 + database_index,
+                ..Default::default()
+            })
+            .collect();
+        let mut tables = std::array::from_fn(|_| {
+            TableView::Unavailable {
+                reason: "fixture omitted".into(),
+            }
+            .into()
+        });
+        tables[TableId::ResearchTechnologies.index()] =
+            TableView::Complete(TableRows::ResearchTechnologies(technologies.clone())).into();
+        tables[TableId::TechnologyDefinitions.index()] =
+            TableView::Complete(TableRows::TechnologyDefinitions(definitions.clone())).into();
+        let frame = encoder
+            .encode(
+                DecodedFrame {
+                    branch: 1,
+                    hour,
+                    tables,
+                    metrics: Default::default(),
+                },
+                false,
+            )
+            .unwrap();
+        let decoded = decoder.advance(&frame).unwrap();
+        assert_eq!(
+            decoded.complete::<tables::ResearchTechnologies>().unwrap(),
+            technologies
+        );
+        assert_eq!(
+            decoded.complete::<tables::TechnologyDefinitions>().unwrap(),
+            definitions
+        );
+    }
+    let duplicate = ResearchTechnologyRow {
+        country: 7,
+        database_index: 1,
+        technology_handle: 9,
+        ..Default::default()
+    };
+    let mut tables = std::array::from_fn(|_| {
+        TableView::Unavailable {
+            reason: "fixture omitted".into(),
+        }
+        .into()
+    });
+    tables[TableId::ResearchTechnologies.index()] =
+        TableView::Complete(TableRows::ResearchTechnologies(vec![
+            duplicate.clone(),
+            duplicate,
+        ]))
+        .into();
+    assert!(
+        encoder
+            .encode(
+                DecodedFrame {
+                    branch: 1,
+                    hour: 3,
+                    tables,
+                    metrics: Default::default()
+                },
+                false
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn research_occurrence_suffix_keeps_historical_slot_and_input_prefixes() {
+    let input = ResearchInputRow {
+        country: 7,
+        index: 2,
+        technology_handle: 0xffff_fffe,
+        progress_raw: 123,
+        database_index: Recorded::Value(9),
+        ..Default::default()
+    };
+    let slot = ResearchSlotRow {
+        country: 7,
+        index: 2,
+        technology_handle: 0xffff_fffe,
+        research_speed_raw: 456,
+        database_index: Recorded::Value(9),
+        ..Default::default()
+    };
+    let prefix = |schema: &[Kind], count: usize, bytes: &[u8]| {
+        let mut decoder = Decoder::new(bytes);
+        for field in &schema[..count] {
+            field.decode(&mut decoder).unwrap();
+        }
+        bytes.len() - decoder.remaining()
+    };
+    let mut bytes = Vec::new();
+    input.encode_fields(&mut bytes).unwrap();
+    let end = prefix(ResearchInputRow::SCHEMA, 15, &bytes);
+    let mut decoder = Decoder::new(&bytes[..end]);
+    decoder.recorded_fields = 15;
+    let historical = ResearchInputRow::decode_fields(input.key(), &mut decoder).unwrap();
+    decoder.finish().unwrap();
+    assert_eq!(historical.progress_raw, 123);
+    assert_eq!(historical.database_index, Recorded::NotRecorded);
+    bytes.clear();
+    slot.encode_fields(&mut bytes).unwrap();
+    let end = prefix(ResearchSlotRow::SCHEMA, 5, &bytes);
+    let mut decoder = Decoder::new(&bytes[..end]);
+    decoder.recorded_fields = 5;
+    let historical = ResearchSlotRow::decode_fields(slot.key(), &mut decoder).unwrap();
+    decoder.finish().unwrap();
+    assert_eq!(historical.research_speed_raw, 456);
+    assert_eq!(historical.database_index, Recorded::NotRecorded);
+}
+
+#[test]
+fn historical_research_frame_skips_changed_snapshots_and_keeps_other_tables() {
+    use crate::{codec::put_string, format::FormatVersion, frame::Frame};
+    let format = FormatVersion::read(crate::rows::compatibility::WIDGET_CAPTURE_FORMAT).unwrap();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&1_u64.to_le_bytes());
+    bytes.extend_from_slice(&10_i32.to_le_bytes());
+    bytes.push(1);
+    bytes.extend_from_slice(&0_u64.to_le_bytes());
+    for table in TableId::ALL {
+        if table.last_change().present(format.version()) {
+            bytes.extend_from_slice(&0_u64.to_le_bytes());
+        }
+    }
+    bytes.extend_from_slice(&[0; 16]);
+    for table in TableId::ALL {
+        if !table.last_change().present(format.version()) {
+            continue;
+        }
+        let row = match table {
+            TableId::Clock => {
+                let row = ClockRow {
+                    hour: 10,
+                    ..Default::default()
+                };
+                let mut fields = Vec::new();
+                row.encode_fields(&mut fields).unwrap();
+                Some((row.key(), fields, ClockRow::SCHEMA, ClockRow::SCHEMA.len()))
+            }
+            TableId::ResearchTechnologies => {
+                let row = ResearchTechnologyRow {
+                    country: 7,
+                    technology_handle: 99,
+                    ..Default::default()
+                };
+                let mut fields = Vec::new();
+                row.encode_fields(&mut fields).unwrap();
+                Some((
+                    (7_u128 << 32) | 99,
+                    fields,
+                    ResearchTechnologyRow::SCHEMA,
+                    5,
+                ))
+            }
+            TableId::TechnologyDefinitions => {
+                // The old index payload has the same scalar framing as today's handle.
+                let row = TechnologyDefinitionRow {
+                    technology_handle: 3,
+                    id: b"repeat".to_vec(),
+                    ..Default::default()
+                };
+                let mut fields = Vec::new();
+                row.encode_fields(&mut fields).unwrap();
+                Some((99, fields, TechnologyDefinitionRow::SCHEMA, 5))
+            }
+            TableId::ResearchSlots => {
+                let row = ResearchSlotRow {
+                    country: 7,
+                    technology_handle: 99,
+                    database_index: Recorded::Value(3),
+                    ..Default::default()
+                };
+                let mut fields = Vec::new();
+                row.encode_fields(&mut fields).unwrap();
+                Some((row.key(), fields, ResearchSlotRow::SCHEMA, 5))
+            }
+            TableId::ResearchInputs => {
+                let row = ResearchInputRow {
+                    country: 7,
+                    technology_handle: 99,
+                    database_index: Recorded::Value(3),
+                    ..Default::default()
+                };
+                let mut fields = Vec::new();
+                row.encode_fields(&mut fields).unwrap();
+                Some((row.key(), fields, ResearchInputRow::SCHEMA, 15))
+            }
+            _ => None,
+        };
+        if let Some((key, fields, schema, count)) = row {
+            bytes.push(0);
+            bytes.extend_from_slice(&1_u32.to_le_bytes());
+            table.encode_key(key, 0, &mut bytes).unwrap();
+            let mut input = Decoder::new(&fields);
+            for kind in &schema[..count] {
+                kind.decode(&mut input).unwrap();
+            }
+            bytes.extend_from_slice(&fields[..fields.len() - input.remaining()]);
+        } else {
+            bytes.push(4);
+            put_string(&mut bytes, "fixture omitted").unwrap();
+        }
+    }
+    let mut input = Decoder::new(&bytes);
+    let frame = Frame::decode_version(&mut input, None, format).unwrap();
+    input.finish().unwrap();
+    let mut decoder = crate::frame::FrameDecoder::new();
+    let decoded = decoder.advance(&frame).unwrap();
+    assert_eq!(decoded.complete::<tables::Clock>().unwrap()[0].hour, 10);
+    for table in [
+        TableId::ResearchTechnologies,
+        TableId::TechnologyDefinitions,
+    ] {
+        assert!(
+            matches!(&*decoded.tables[table.index()], crate::frame::TableView::Unavailable { reason } if reason.contains(&format!("{table:?}")))
+        );
+    }
+    assert_eq!(
+        decoded.complete::<tables::ResearchSlots>().unwrap()[0].database_index,
+        Recorded::NotRecorded
+    );
+    assert_eq!(
+        decoded.complete::<tables::ResearchInputs>().unwrap()[0].database_index,
+        Recorded::NotRecorded
+    );
 }

@@ -40,7 +40,7 @@ pub const TABLES: [TableId; N] = [TableId::NavalCombatResultDetails];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("retained naval result detail census", 0, &[0])];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     results: usize,
     ships: usize,
@@ -52,19 +52,123 @@ pub struct Capacities {
     commanders: usize,
     commander_timed_traits: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            results: 128,
-            ships: 2048,
-            planes: 256,
-            air: 2048,
-            hits: 4096,
-            sources: 1024,
-            terms: 4096,
-            commanders: 32,
-            commander_timed_traits: 0,
+
+impl Capacities {
+    /// 140CD2A60/140CD6600 retain each side's ship and plane vectors;
+    /// 141962920/28E0/28A0 and 14196A2A0/260/220 transfer their hit lists.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let mut demand = [0usize; 9];
+        let mut add = |lane: usize, count: usize| {
+            demand[lane] = demand[lane]
+                .checked_add(count)
+                .ok_or("naval result storage demand overflow")?;
+            Ok::<_, &'static str>(())
+        };
+        result::visit_sources(memory, base, state, |source| {
+            add(0, 1)?;
+            for offset in [result::FIRST_SIDE, result::SECOND_SIDE] {
+                let side_pointer = source
+                    .pointer
+                    .checked_add(offset)
+                    .ok_or("naval result storage side overflow")?;
+                for air in [false, true] {
+                    side::visit_entries(memory, base, side_pointer, air, |_, entry| {
+                        add(if air { 2 } else { 1 }, 1)?;
+                        for (index, offset) in (if air {
+                            [0x40, 0x58, 0x70]
+                        } else {
+                            [0xd8, 0xf0, 0x108]
+                        })
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let at = entry
+                                .checked_add(offset)
+                                .ok_or("naval result hit demand overflow")?;
+                            let array = engine::cpdx_array::Array::read(memory, at, 8)
+                                .ok_or("naval result hit demand invalid")?;
+                            add(if index == 0 { 4 } else { 3 }, array.count as usize)?;
+                        }
+                        Ok(())
+                    })?;
+                }
+                let field = |offset: usize| -> Result<u64, &'static str> {
+                    engine::read(
+                        memory,
+                        side_pointer
+                            .checked_add(offset)
+                            .ok_or("naval result storage address overflow")?,
+                    )
+                    .ok_or("naval result storage field unreadable")
+                };
+                let leader = field(0x50)?;
+                let hq_leader = field(0x58)?;
+                let mut hq_present = false;
+                for handle in [leader, hq_leader] {
+                    if handle == 0 {
+                        continue;
+                    }
+                    add(7, 1)?;
+                    if let Some(commander) =
+                        engine::creference_registry::resolve(memory, base, handle)?
+                    {
+                        hq_present |= handle == hq_leader;
+                        let timed = engine::cpdx_array::Array::read(
+                            memory,
+                            commander
+                                .checked_add(engine::cunit_leader::TIMED_TRAIT_DATA)
+                                .ok_or("naval result commander demand overflow")?,
+                            engine::cunit_leader::TIMED_TRAIT_STRIDE,
+                        )
+                        .ok_or("naval result commander timed trait demand invalid")?;
+                        add(8, timed.count as usize)?;
+                    }
+                }
+                if hq_present {
+                    let begin = usize::try_from(field(0x60)?)
+                        .map_err(|_| "naval result HQ demand overflow")?;
+                    let end = usize::try_from(field(0x68)?)
+                        .map_err(|_| "naval result HQ demand overflow")?;
+                    let bytes = end
+                        .checked_sub(begin)
+                        .ok_or("naval result HQ demand reversed")?;
+                    if bytes % 8 != 0 || (bytes != 0 && begin == 0) {
+                        return Err("naval result HQ demand invalid");
+                    }
+                    for index in 0..bytes / 8 {
+                        let wrapper = engine::read::<u64>(memory, begin + index * 8)
+                            .ok_or("naval result HQ demand wrapper unreadable")?
+                            as usize;
+                        let [sources, terms] = influence::influence_demand(memory, base, wrapper)?;
+                        add(5, sources)?;
+                        add(6, terms)?;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        for (capacity, count) in [
+            &mut self.results,
+            &mut self.ships,
+            &mut self.planes,
+            &mut self.air,
+            &mut self.hits,
+            &mut self.sources,
+            &mut self.terms,
+            &mut self.commanders,
+            &mut self.commander_timed_traits,
+        ]
+        .into_iter()
+        .zip(demand)
+        {
+            grow_capacity(capacity, count);
         }
+        Ok(())
     }
 }
 #[derive(Default, Clone, PartialEq, Eq)]
@@ -148,6 +252,24 @@ impl Captured {
     pub fn allocated_bytes(&self) -> usize {
         self.results.allocated_bytes()
             + self
+                .ships
+                .first
+                .iter()
+                .map(ship::DetailsRow::allocated_bytes)
+                .sum::<usize>()
+            + self
+                .planes
+                .first
+                .iter()
+                .map(plane::DetailsRow::allocated_bytes)
+                .sum::<usize>()
+            + self
+                .hits
+                .first
+                .iter()
+                .map(naval_combat_hit::Row::allocated_bytes)
+                .sum::<usize>()
+            + self
                 .results
                 .rows
                 .iter()
@@ -165,24 +287,23 @@ impl Captured {
             + self.commander_keys.capacity() * (size_of::<(u64, usize)>() + 1)
     }
     pub fn grow(&mut self, c: &mut Capacities) {
-        // Ordinary can grow owned storage during its original native walk.
-        // Carry actual allocations forward to the other reusable frames.
-        c.results = c.results.max(self.results.rows.capacity());
-        c.ships = c.ships.max(self.ships.first.capacity());
-        c.planes = c.planes.max(self.planes.first.capacity());
-        c.air = c.air.max(self.air.first.capacity());
-        c.hits = c.hits.max(self.hits.first.capacity());
-        c.sources = c.sources.max(self.sources.first.capacity());
-        c.terms = c.terms.max(self.terms.first.capacity());
-        c.commanders = c.commanders.max(self.commanders.first.capacity());
+        // Carry successfully observed rows and arena lengths to reusable frames.
+        c.results = c.results.max(self.results.outcome.len());
+        c.ships = c.ships.max(self.ships.len);
+        c.planes = c.planes.max(self.planes.len);
+        c.air = c.air.max(self.air.len);
+        c.hits = c.hits.max(self.hits.len);
+        c.sources = c.sources.max(self.sources.len);
+        c.terms = c.terms.max(self.terms.len);
+        c.commanders = c.commanders.max(self.commanders.len);
         c.commander_timed_traits = c
             .commander_timed_traits
-            .max(self.commander_timed_traits.first.capacity());
+            .max(self.commander_timed_traits.len);
         self.commander_timed_traits
             .grow(&mut c.commander_timed_traits);
         self.results.grow(&mut c.results);
         // All owned arenas grow from readable entries in the original pass;
-        // copy their allocations without trusting a failed payload's count.
+        // carry their used lengths without trusting a failed payload's count.
         if self.ships.first.len() < c.ships
             && resize_default(&mut self.ships.first, c.ships).is_err()
         {
@@ -1150,5 +1271,68 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn cold_defaults_and_live_headers_capture_first_and_later_country_sized_results() {
+        const STATE: usize = 0x100;
+        const POINTERS: usize = 0x1000;
+        const OBJECTS: usize = 0x10_0000;
+        const BASE: usize = 0x1_4000_0000;
+        let mut c = Capacities::default();
+        let mut captured = Captured::with_capacities(&c);
+        assert_eq!(captured.allocated_bytes(), 0);
+        for count in [1500usize, 5000, 8193] {
+            let mut bytes = vec![0; OBJECTS + count * 0x200];
+            let put = |bytes: &mut [u8], at: usize, value: u64| {
+                bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+            };
+            put(
+                &mut bytes,
+                STATE + engine::cgame_state::NAVAL_COMBAT_RESULTS,
+                POINTERS as u64,
+            );
+            put(
+                &mut bytes,
+                STATE + engine::cgame_state::NAVAL_COMBAT_RESULTS + 8,
+                ((count as u64) << 32) | count as u64,
+            );
+            for index in 0..count {
+                let body = OBJECTS + index * 0x200;
+                put(&mut bytes, POINTERS + index * 8, body as u64);
+                put(&mut bytes, body, (BASE + result::VTABLE_RVA) as u64);
+                put(&mut bytes, body + 8, ((index as u64 + 1) << 32) | 4713);
+                for offset in [result::FIRST_SIDE, result::SECOND_SIDE] {
+                    put(&mut bytes, body + offset, (BASE + side::VTABLE_RVA) as u64);
+                }
+            }
+            let memory = engine::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            c.presize(&memory, BASE, STATE).unwrap();
+            assert!(c.results >= count);
+            captured.reset();
+            captured.capture(&memory, BASE, STATE);
+            assert_eq!(captured.outcomes(), [Outcome::Rows { len: count }]);
+            assert!(
+                captured.results.rows[..count]
+                    .iter()
+                    .enumerate()
+                    .all(|(index, row)| row.result == ((index as u64 + 1) << 32) | 4713)
+            );
+        }
+        let floor = c;
+        assert!(
+            c.presize(
+                &engine::memory::SliceMemory {
+                    base: 0,
+                    bytes: &[]
+                },
+                BASE,
+                STATE
+            )
+            .is_err()
+        );
+        assert!(c == floor);
     }
 }

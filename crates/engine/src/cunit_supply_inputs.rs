@@ -1,4 +1,4 @@
-//! Stored supply-footer operands shared by authenticated divisions and railway guns.
+//! Stored supply-footer operands shared by authenticated divisions, railway guns and task forces.
 //!
 //! `CUnitCounterItem::tooltip_builder@1418C00D0` appends `1418BDBA0` for the
 //! low-supply child, after the source owner's shared-vision gate (`1406F3A90`).
@@ -95,6 +95,7 @@ pub enum Failure {
     InvalidOrigins,
     OriginsCapacity { required: usize },
     OriginsChanged,
+    Allocation,
 }
 
 impl Failure {
@@ -104,6 +105,7 @@ impl Failure {
             Self::InvalidOrigins => "unit supply origin header invalid",
             Self::OriginsCapacity { .. } => "unit supply origin arena too small",
             Self::OriginsChanged => "unit supply origin header changed",
+            Self::Allocation => "unit supply origin allocation failed",
         }
     }
 }
@@ -147,6 +149,14 @@ pub fn capture(
     pointer: usize,
     origins: &mut [Origin],
 ) -> Result<Inputs, Failure> {
+    capture_buffer(memory, pointer, crate::walk::Buffer::Fixed(origins))
+}
+
+pub fn capture_buffer(
+    memory: &impl Memory,
+    pointer: usize,
+    origins: crate::walk::Buffer<'_, Origin>,
+) -> Result<Inputs, Failure> {
     let mut packed = [0; INPUT_BYTES];
     if pointer == 0
         || memory.copy_records(
@@ -185,12 +195,15 @@ pub fn capture(
 fn capture_origins(
     memory: &impl Memory,
     pointer: usize,
-    origins: &mut [Origin],
+    mut origins: crate::walk::Buffer<'_, Origin>,
 ) -> Result<usize, Failure> {
     let address = pointer.checked_add(ORIGINS).ok_or(Failure::Unreadable)?;
     let header = read::<[u8; 16]>(memory, address).ok_or(Failure::Unreadable)?;
     let array = Array::from_header(header, ORIGIN_STRIDE).ok_or(Failure::InvalidOrigins)?;
     let count = array.count as usize;
+    // 1419F7530 retains every native ordered origin; grow from the original
+    // header before its payload, preserving the later consistency witness.
+    origins.ensure(count).map_err(|_| Failure::Allocation)?;
     if count > origins.len() {
         return Err(Failure::OriginsCapacity { required: count });
     }

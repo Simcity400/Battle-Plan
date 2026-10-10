@@ -105,7 +105,7 @@ impl World {
     /// A CModifier at `address` with sorted entries and a display string.
     fn modifier(&mut self, address: usize, entries: &[(u32, i64)], display: &[u8]) {
         let data = ENTRIES + self.entries;
-        self.entries += 0x200;
+        self.entries += 0x200.max(entries.len() * modifier_entry::STRIDE);
         for (index, (key, value)) in entries.iter().enumerate() {
             self.u32(data + index * 16, *key);
             self.u32(data + index * 16 + 4, 0);
@@ -371,11 +371,14 @@ fn context_reads_defines_tension_language_and_statics() {
     assert_eq!(context.defines[0], 1_000);
     assert_eq!(context.defines[DEFINES - 1], 1_011);
     assert_eq!(context.world_tension_raw, 12_345);
-    assert_eq!(context.language.as_bytes(), b"l_english");
+    assert_eq!(context.language.as_slice(), b"l_english");
     // A null language root is the getter's null result, not a failure.
     let mut w = world();
     w.u64(BASE + localization_root_layout::SINGLETON_RVA, 0);
-    assert_eq!(Context::read(&w, BASE, GS, keys()).unwrap().language.len, 0);
+    assert_eq!(
+        Context::read(&w, BASE, GS, keys()).unwrap().language.len(),
+        0
+    );
     // A bound static with another vtable is refused.
     let mut w = world();
     w.vtable(AT_WAR, cmodifier::VTABLE_RVA);
@@ -745,4 +748,185 @@ fn defensive_wars_and_hosted_counterparts_follow_the_engine_predicates() {
     let walked = walk(&w, 16);
     walked.result.unwrap();
     assert!(!walked.input.at_war && !walked.input.offensive_war && walked.input.defensive_war);
+}
+
+#[test]
+fn growing_stability_storage_captures_five_thousand_modifier_children() {
+    let mut w = world();
+    const POINTERS: usize = 0x1000_0000;
+    const OBJECTS: usize = 0x2000_0000;
+    const COUNT: usize = 5_000;
+    let display = b"A mod-defined stability modifier with a retained display name beyond the old per-country text estimate";
+    w.entries = 0x3000_0000 - ENTRIES;
+    w.heap = 0x4000_0000 - HEAP;
+    w.array(C1 + MODIFIER_CHILDREN, POINTERS, COUNT as u32);
+    for index in 0..COUNT {
+        let child = OBJECTS + index * 0x100;
+        w.u64(POINTERS + index * 8, child as u64);
+        w.vtable(child, cmodifier::VTABLE_RVA);
+        w.modifier(
+            child,
+            &[
+                (STABILITY_KEY, 100),
+                (WAR_SUPPORT_KEY, 200),
+                (COMMAND_KEY, 300),
+            ],
+            display,
+        );
+    }
+    let countries = ccountry::Reader::new(&w, BASE, GS).unwrap();
+    let country = countries.at(1).unwrap().unwrap();
+    let context = Context::read(&w, BASE, GS, keys()).unwrap();
+    let mut scratch = Scratch::vacant();
+    let mut input = InputRow::default();
+    let required = walk_country(
+        &w,
+        BASE,
+        &countries,
+        country,
+        &context,
+        &mut scratch,
+        &mut input,
+        &mut [],
+        &mut [],
+    )
+    .unwrap();
+    assert_eq!(
+        required.lines,
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: (COUNT * 3) as u32
+        }
+    );
+    assert_eq!(required.required_bytes, COUNT * display.len());
+    let mut lines = Vec::new();
+    let mut bytes = Vec::new();
+    let captured = walk_country_growing(
+        &w,
+        BASE,
+        &countries,
+        country,
+        &context,
+        &mut scratch,
+        &mut input,
+        &mut lines,
+        &mut bytes,
+        0,
+        0,
+    )
+    .unwrap();
+    assert_eq!(input.children, COUNT as u32);
+    assert_eq!(captured.lines, Outcome::Rows { len: COUNT * 3 });
+    assert_eq!(captured.bytes_len, required.required_bytes);
+    for (index, rows) in lines[..COUNT * 3].chunks_exact(3).enumerate() {
+        assert!(
+            rows.iter()
+                .all(|row| row.line == index as u32 && row.kind == Kind::Unpaired)
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.key, row.value))
+                .collect::<Vec<_>>(),
+            [
+                (STABILITY_KEY, 100),
+                (WAR_SUPPORT_KEY, 200),
+                (COMMAND_KEY, 300)
+            ]
+        );
+        for row in rows {
+            assert_eq!(
+                &bytes[row.text.start..row.text.start + row.text.len],
+                display
+            );
+        }
+    }
+    assert!(scratch.children.len() >= COUNT);
+}
+
+#[test]
+fn long_display_names_pair_only_after_exact_payload_comparison() {
+    let mut w = world();
+    let display = vec![b'X'; 8_197];
+    w.string(LEADER + LEADER_MODIFIER + cmodifier::DISPLAY_NAME, &display);
+    w.string(CHILD + 0x100 + cmodifier::DISPLAY_NAME, &display);
+    let walked = walk(&w, 16);
+    assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 7 });
+    assert_eq!(walked.lines[1].kind, Kind::CountryLeader);
+    // Even a forced digest collision cannot replace exact comparison.
+    let address = LEADER + LEADER_MODIFIER + cmodifier::DISPLAY_NAME;
+    let header = read::<[u8; 32]>(&w, address).unwrap();
+    let (len, digest) = display_digest(&w, address, header).unwrap();
+    let child_entries = Array::read(&w, CHILD + 0x100 + cmodifier::ACCUMULATOR, 16).unwrap();
+    let source_entries =
+        Array::read(&w, LEADER + LEADER_MODIFIER + cmodifier::ACCUMULATOR, 16).unwrap();
+    let source_signature = signature(&w, source_entries, |_, _| {}).unwrap();
+    let child_address = CHILD + 0x100 + cmodifier::DISPLAY_NAME;
+    let mut different = display.clone();
+    different[8_192] = b'Y';
+    w.string(child_address, &different);
+    assert!(
+        !matches(
+            &w,
+            &[],
+            &Child {
+                entries: child_entries,
+                signature: source_signature,
+                display: (child_address, digest),
+                ..Default::default()
+            },
+            &Candidate {
+                content: Content::Entries(source_entries),
+                signature: source_signature,
+                display: Some((address, len, digest)),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn native_interception_ring_has_no_collector_population_cap() {
+    let mut w = world();
+    const SLOTS: usize = 0x6000_0000;
+    const COUNT: u32 = 5_000;
+    w.u64(RING_OBJECT + RING_DATA, SLOTS as u64);
+    w.u32(RING_OBJECT + RING_SIZE, COUNT);
+    w.u32(RING_OBJECT + RING_SIZE + 4, COUNT);
+    for slot in 0..COUNT as usize {
+        w.u64(SLOTS + slot * 8, RING_ROW as u64);
+    }
+    assert_eq!(interception(&w, C1), Ok(i64::from(COUNT) * 777));
+}
+
+#[test]
+fn active_language_preserves_the_native_string_without_a_size_cap() {
+    let mut w = world();
+    let language = vec![b'L'; 4_097];
+    w.string(LANGUAGE, &language);
+    assert_eq!(
+        Context::read(&w, BASE, GS, keys()).unwrap().language,
+        language
+    );
+}
+
+#[test]
+fn scaled_static_pairing_has_no_nonzero_key_population_cap() {
+    let mut w = world();
+    const SCALED: usize = 0x6100_0000;
+    let source: Vec<_> = (1..=128).map(|key| (key, 1_i64)).collect();
+    let child: Vec<_> = (1..=128).map(|key| (key, 7_i64)).collect();
+    w.entries = 0x6200_0000 - ENTRIES;
+    w.u64(DATABASE + 0x78, SCALED as u64);
+    w.vtable(SCALED, cstatic_modifier::VTABLE_RVA);
+    w.modifier(SCALED, &source, b"Scaled static");
+    w.string(SCALED + STATIC_NAME, b"scaled_static");
+    w.children(&[(&child, b"Scaled static")]);
+    let walked = walk(&w, 16);
+    assert_eq!(walked.result.unwrap().lines, Outcome::Rows { len: 3 });
+    assert!(
+        walked.lines[..3]
+            .iter()
+            .all(|row| row.kind == Kind::StaticScaled && row.value == 7)
+    );
 }

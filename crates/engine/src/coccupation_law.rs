@@ -80,13 +80,17 @@ pub(crate) fn literal(
 
 /// Shared preallocated arena for default and state-override law tokens.
 pub(crate) struct Names<'a> {
-    bytes: &'a mut [u8],
+    bytes: crate::walk::Buffer<'a, u8>,
     pub len: usize,
     pub required: usize,
 }
 
 impl<'a> Names<'a> {
+    #[cfg(test)]
     pub fn new(bytes: &'a mut [u8]) -> Self {
+        Self::new_buffer(crate::walk::Buffer::Fixed(bytes))
+    }
+    pub fn new_buffer(bytes: crate::walk::Buffer<'a, u8>) -> Self {
         Self {
             bytes,
             len: 0,
@@ -104,6 +108,7 @@ impl<'a> Names<'a> {
             .required
             .checked_add(value.len)
             .ok_or("occupation law arena size overflow")?;
+        self.bytes.ensure(self.required)?;
         if !row_fits || value.len > self.bytes.len() - self.len {
             return Ok(None);
         }

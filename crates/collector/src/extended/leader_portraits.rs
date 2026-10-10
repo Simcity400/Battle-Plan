@@ -15,23 +15,32 @@ pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LeaderPortraits];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     sources: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 8192,
-            sources: 16384,
-        }
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+    ) -> Result<(), &'static str> {
+        // 140BDFD90 selects at most one leader per orders root.
+        let count = crate::country_scale::table_demand::rows(engine::corders_group::walk_roots(
+            memory,
+            base,
+            &mut [],
+        ))?;
+        crate::table_capture::grow_capacity(&mut self.rows, count);
+        crate::table_capture::grow_capacity(&mut self.sources, count);
+        Ok(())
     }
 }
 
 pub struct Captured {
-    rows: CaptureRows<cunit_leader::PortraitRow>,
+    rows: CaptureRows<cunit_leader::PortraitRow<engine::capture_text::Owned>>,
     // Reused only by the adjacent path walk; storage grows off-thread.
     sources: CaptureRows<(u64, usize)>,
 }
@@ -61,7 +70,15 @@ impl Captured {
         self.sources.reset();
     }
     pub fn allocated_bytes(&self) -> usize {
-        self.rows.allocated_bytes() + self.sources.allocated_bytes()
+        self.rows.allocated_bytes()
+            + self.sources.allocated_bytes()
+            + self
+                .rows
+                .rows
+                .iter()
+                .flat_map(|row| &row.strings)
+                .map(engine::capture_text::Owned::allocated_bytes)
+                .sum::<usize>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         self.rows.grow(&mut capacity.rows);
@@ -80,7 +97,7 @@ impl Captured {
         if let Outcome::Rows { len } = outcome
             && let Some(roots) = roots.get(..len)
         {
-            let acquired = cunit_leader::walk_hq_portraits(
+            let acquired = cunit_leader::walk_hq_portraits_growing(
                 memory,
                 base,
                 roots,
@@ -230,6 +247,7 @@ mod tests {
         capture.rows.rows[0].leader = u64::MAX;
         capture.rows.rows[0].character = 99;
         for (index, string) in capture.rows.rows[0].strings.iter_mut().enumerate() {
+            string.bytes.resize(3, 0);
             string.bytes[..3].copy_from_slice(&[0xff, 0, index as u8]);
             string.len = 3;
         }
@@ -257,9 +275,9 @@ mod tests {
             capture.table_inputs(Some(&mut projection))[0],
             TableInput::ComparedEqual(_)
         ));
-        let original = capture.rows.rows[0];
+        let original = capture.rows.rows[0].clone();
         for field in 0..4 {
-            capture.rows.rows[0] = original;
+            capture.rows.rows[0] = original.clone();
             if field == 3 {
                 capture.rows.rows[0].character ^= 1;
             } else {
@@ -276,13 +294,13 @@ mod tests {
             };
             assert_eq!(TableView::Complete(rows), expected);
         }
-        capture.rows.rows[0] = original;
+        capture.rows.rows[0] = original.clone();
         capture.rows.rows[0].strings[1].len = 0;
         assert!(matches!(
             capture.table_inputs(Some(&mut projection))[0],
             TableInput::ComparedChanges { .. }
         ));
-        capture.rows.rows[0] = original;
+        capture.rows.rows[0] = original.clone();
         capture.rows.rows[0].leader -= 1;
         assert!(matches!(
             capture.table_inputs(Some(&mut projection))[0],

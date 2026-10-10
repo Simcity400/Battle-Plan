@@ -20,6 +20,13 @@ pub struct Captured {
     rows: CaptureRows<CountryExperienceGainRow>,
 }
 impl Captured {
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&0)
+    }
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        self.rows.fail(Outcome::Unavailable { reason });
+    }
+
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(*capacity),

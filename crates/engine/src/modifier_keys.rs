@@ -29,6 +29,16 @@ keys! {
     AIR_RANGE_FACTOR = 0x5;
     /// Register@14058AB21 (token global 0x1427bff80).
     AIR_STRATEGIC_BOMBER_BOMBING_FACTOR = 0xa;
+    /// Register@1405890B8; F69BC0's current superiority mission branch.
+    AIR_SUPERIORITY_EFFICIENCY = 0xb;
+    /// Register@140589902; F69BC0's current interception mission branch.
+    AIR_INTERCEPT_EFFICIENCY = 0xd;
+    /// Register@1405CA4F4; preparation getter141016930 type4.
+    AIR_INVASION_PREPARATION = 0xe;
+    /// Register@140589D27; F69BC0's current close-air-support mission branch.
+    AIR_CAS_EFFICIENCY = 0xf;
+    /// Register@14058A14C; F69BC0's current naval mission branch.
+    AIR_NAV_EFFICIENCY = 0x10;
     /// Register@1405d3603 (token global 0x1427c00d0).
     NAVAL_COORDINATION = 0x19;
     /// Register@1405cad3e (token global 0x1427c00e0).
@@ -69,6 +79,8 @@ keys! {
     HEAT_ATTRITION_FACTOR = 0x53;
     /// Register@1405b40b6 (token global 0x1427c0228).
     UNIT_UPKEEP_ATTRITION_FACTOR = 0x54;
+    /// Register@1405CEF8E; D58670 and F95500.
+    SPOTTING_CHANCE = 0x55;
     /// Register@1405D0447; selected by escape chance 14195C7D0.
     NAVAL_RETREAT_SPEED_AFTER_INITIAL_COMBAT = 0x59;
     /// Register@1405d086c (token global 0x1427bfce8).
@@ -81,6 +93,8 @@ keys! {
     CONVOY_RETREAT_SPEED = 0x5d;
     /// Register@1405aa75d (token global 0x1427bff08).
     OUT_OF_SUPPLY_FACTOR = 0x5e;
+    /// Register@14058B1E0; F48230's direct attack and type-positive scans.
+    AIR_ATTACK_FACTOR = 0x6f;
     /// Register@14058B36B (token global 0x1427bffa8).
     AIR_DEFENCE_FACTOR = 0x70;
     /// Register@14058BBB5 (token global 0x1427bffac).
@@ -105,6 +119,8 @@ keys! {
     POWER_BALANCE_DAILY = 0x98;
     /// Register@140562747 (token global 0x1427c0528).
     POWER_BALANCE_WEEKLY = 0x99;
+    /// Register@140599E1D; selected attack WeatherRegion getter14129F040.
+    ARMY_ATTACK_FACTOR = 0xad;
     /// Register@14057BD59; switch retention140E53EC0.
     LINE_CHANGE_PRODUCTION_EFFICIENCY_FACTOR = 0xa5;
     /// Register@140578778; powered fraction1415B7D10.
@@ -145,6 +161,8 @@ keys! {
     EQUIPMENT_CONVERSION_SPEED = 0xdc;
     /// Register@14056c4b9 (token global 0x1427c0678).
     LAND_REINFORCE_RATE = 0xfb;
+    /// Register@1405A480A; selected attack own-country getter14129F040.
+    LAND_NIGHT_ATTACK = 0x103;
     /// Register@14058F196 (token global 0x1427c00e8).
     AIR_STRATEGIC_BOMBER_NIGHT_PENALTY = 0x104;
     /// Register@14058FE05 (token global 0x1427c00ec).
@@ -153,6 +171,8 @@ keys! {
     AIR_WEATHER_PENALTY = 0x106;
     /// Register@14058f855 (token global 0x1427bfcd8).
     NAVAL_NIGHT_ATTACK = 0x107;
+    /// Register@14058FC7A; F95500.
+    NIGHT_SPOTTING_CHANCE = 0x108;
     /// Register@14059022A (token global 0x1427c049c).
     AIR_CARRIER_NIGHT_PENALTY_REDUCTION_FACTOR = 0x10d;
     /// Register@1405c8c16 (token global 0x1427c0690).
@@ -167,10 +187,16 @@ keys! {
     RIVER_CROSSING_FACTOR = 0x16c;
     /// Register@140592e36 (token global 0x1427c064c).
     RIVER_CROSSING_FACTOR_AGAINST = 0x16d;
+    /// Register@1405BEAA3; transport weight getter140BEE920.
+    PARATROOPER_WEIGHT_FACTOR = 0x171;
     /// Register@1405aab82 (token global 0x1427c0218).
     SPECIAL_FORCES_OUT_OF_SUPPLY_FACTOR = 0x17f;
     /// Register@1405c0fe4 (token global 0x1427bfc1c).
     NAVAL_INVASION_PREP_DAYS = 0x184;
+    /// Register@1405C1409; preparation getter141016930 type4.
+    AIR_INVASION_PREP_DAYS = 0x185;
+    /// Register@1405D67BF; D5AD50/D5B000.
+    NAVY_VISIBILITY = 0x19f;
     /// Register@140598d89 (token global 0x1427c02a8).
     NAVAL_MINES_EFFECT_REDUCTION = 0x1a7;
     /// Register@1405d4272 (token global 0x1427bfc78).
@@ -187,6 +213,8 @@ keys! {
     NAVAL_DEFENSE_FACTOR = 0x1b8;
     /// Register@1405d88e7 (token global 0x1427c02e8).
     NAVAL_CRITICAL_EFFECT_FACTOR = 0x1bb;
+    /// Register@1405DDBCB; F95500 reads the current relation accumulator.
+    SPOTTING_CHANCE_AGAINST = 0x1c5;
     /// Register@1405c5a5a (token global 0x1427c05c4).
     NAVY_CAPITAL_SHIP_ATTACK_FACTOR_AGAINST = 0x1c8;
     /// Register@1405c5e7f (token global 0x1427c05c8).
@@ -207,6 +235,8 @@ keys! {
     NAVAL_HAS_POTF_IN_COMBAT_ATTACK = 0x1d1;
     /// Register@1405db67e (token global 0x1427c0314).
     NAVAL_HAS_POTF_IN_COMBAT_DEFENSE = 0x1d2;
+    /// Register@1405AB7F1; selected attack WeatherRegion getter14129F040.
+    BREAKTHROUGH_FACTOR = 0x1dd;
     /// Register@140581462; refit output141922160.
     REFIT_SPEED = 0x1d5;
     /// Register@1405accaa (token global 0x1427c03e0).
@@ -237,6 +267,8 @@ keys! {
     INITIATIVE_FACTOR = 0x250;
     /// Register@1405cca41 (token global 0x1427c0518).
     ACE_EFFECTIVENESS_FACTOR = 0x25a;
+    /// Register@1405B939A; selected attack country/state getter14067C770.
+    LAND_BUNKER_EFFECTIVENESS_FACTOR = 0x272;
     /// Register@1405fbc77 (token global 0x1427c0660).
     SCIENTIST_RESEARCH_BONUS_FACTOR = 0x27a;
     /// Register@1405DCB37; built-in underway_replenishment_range.

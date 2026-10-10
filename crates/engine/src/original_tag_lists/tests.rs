@@ -136,6 +136,46 @@ fn capture_preserves_every_bucket_raw_word_order_and_repeated_occurrence() {
 }
 
 #[test]
+fn worker_lists_grow_original_5000_country_and_later_mod_members_before_payload() {
+    let mut buckets = Vec::new();
+    let mut members = Vec::new();
+    for (count, per_bucket) in [(5_001, 3), (12_001, 7)] {
+        const HEADERS: usize = 0x4000;
+        const PAYLOAD: usize = 0x100000;
+        let mut bytes = vec![0; PAYLOAD + count * per_bucket * 4];
+        put_header(&mut bytes, STATE + BUCKETS, HEADERS, count as u32);
+        for index in 0..count {
+            put_header(
+                &mut bytes,
+                HEADERS + index * crate::cpdx_array::STRIDE,
+                PAYLOAD + index * per_bucket * 4,
+                per_bucket as u32,
+            );
+            for n in 0..per_bucket {
+                let at = PAYLOAD + (index * per_bucket + n) * 4;
+                bytes[at..at + 4].copy_from_slice(&(index as u32).to_le_bytes());
+            }
+        }
+        let result = capture_growing(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            STATE,
+            &mut buckets,
+            &mut members,
+        );
+        assert_eq!(result.len, Ok(count));
+        assert_eq!(result.demand.members, count * per_bucket);
+        assert_eq!(
+            &members[(count - 1) * per_bucket..count * per_bucket],
+            vec![(count - 1) as u32; per_bucket]
+        );
+        controls_cleared(&buckets[..count]);
+    }
+}
+
+#[test]
 fn either_short_arena_counts_all_headers_without_reading_any_payload() {
     let bytes = fixture();
     for (bucket_capacity, member_capacity, expected) in [

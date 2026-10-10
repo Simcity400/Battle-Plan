@@ -53,7 +53,7 @@ fn advisor_templates_and_idea_notes_share_one_read() {
     )
     .unwrap();
     let content = scripted.effects().unwrap();
-    let warning = "1 ideas are defined more than once; the last definition in load order is used.";
+    let warning = "1 ideas share a lexer token; the first database entry is used (140A337D0).";
     assert_eq!(
         content.notes.iter().filter(|note| *note == warning).count(),
         1

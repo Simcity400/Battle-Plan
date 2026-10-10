@@ -92,6 +92,7 @@ fn facility_threshold_is_strict_and_first_program_controls_project_text() {
             recorded_language: &loc.language,
             scripted_content: &Err("no scripted content in this test".into()),
             ours: 0,
+            nato: false,
             countries: installed_content::country_names::CountryNames::read(&frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),
@@ -191,6 +192,7 @@ fn raid_tooltip_regression_facility_project_uses_country_narrative_and_scripted_
                 recorded_language: "german",
                 scripted_content: &scripted,
                 ours: 1,
+                nato: false,
                 countries: installed_content::country_names::CountryNames::read(&frame, &loc),
                 flag_exists: &|_| true,
                 scripted: Default::default(),
@@ -249,6 +251,7 @@ fn captive_uses_original_leader_name_without_character_identity() {
         recorded_language: &loc.language,
         scripted_content: &Err("no scripted content in this test".into()),
         ours: 0,
+        nato: false,
         flag_exists: &|_| true,
         scripted: Default::default(),
         countries: installed_content::country_names::CountryNames::read(&frame, &loc),
@@ -273,6 +276,17 @@ fn captive_uses_original_leader_name_without_character_identity() {
 }
 /// Scripted text content with `MAX_SCRIPTED_LOC_RECURSION` alone.
 fn scripted_content() -> dashboard::scripted_text::ScriptedContent {
+    let (scripted, root) = scripted_content_with_files(&[]);
+    std::fs::remove_dir_all(root).unwrap();
+    scripted
+}
+
+fn scripted_content_with_files(
+    files: &[(&str, &str)],
+) -> (
+    dashboard::scripted_text::ScriptedContent,
+    std::path::PathBuf,
+) {
     let root = std::env::temp_dir().join(format!(
         "hoi4_viewer_raid_scripted_{}_{:?}",
         std::process::id(),
@@ -286,6 +300,11 @@ fn scripted_content() -> dashboard::scripted_text::ScriptedContent {
         "NDefines = { NGame = { MAX_SCRIPTED_LOC_RECURSION = 30 } }",
     )
     .unwrap();
+    for (relative, contents) in files {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
     let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
     let content = installed_content::content::ResolvedContent {
         layers,
@@ -296,8 +315,79 @@ fn scripted_content() -> dashboard::scripted_text::ScriptedContent {
         String::new(),
     )
     .unwrap();
-    std::fs::remove_dir_all(&root).unwrap();
-    scripted
+    (scripted, root)
+}
+
+#[test]
+fn raid_custom_trigger_nested_effect_icons_follow_the_viewer_nato_toggle() {
+    use super::super::super::tests::put;
+    let (scripted, root) = scripted_content_with_files(&[
+        ("common/units/test.txt", "sub_units={syn_unit={}}"),
+        (
+            "common/bop/test.txt",
+            "balance={range={id=active on_activate={add_unit_bonus={syn_unit={}}}}}",
+        ),
+        (
+            "common/scripted_localisation/test.txt",
+            "entry={name=IconEntry text={localization_key=ICON_BODY}}",
+        ),
+    ]);
+    let scripted = Ok(scripted);
+    let assets = assets();
+    let mut frame = positive_frame();
+    put::<tables::PowerBalances>(
+        &mut frame,
+        vec![replay::rows::PowerBalanceRow {
+            balance: b"balance".to_vec(),
+            active_range: b"active".to_vec(),
+            ..Default::default()
+        }],
+    );
+    put::<tables::PowerBalanceMembers>(
+        &mut frame,
+        vec![replay::rows::PowerBalanceMemberRow {
+            country: 10,
+            ..Default::default()
+        }],
+    );
+    let world = World::new(&frame, assets.facts()).unwrap();
+    let loc: Localisation = [
+        ("ICON_TOOLTIP", "[IconEntry]"),
+        ("ICON_BODY", "[ROOT.GetActiveRangeActivationEffect]"),
+        ("PROGRESS_SECTION_ACTIVATION_EFFECT", "Activate:\n$DESC$"),
+        ("SUBUNIT_BONUS_HEADER", "$ICON$$NAME$"),
+        ("syn_unit", "Unit"),
+        ("TRIGGER_FULLFILLED_PREFIX", "+"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.into(), value.into()))
+    .collect();
+    for nato in [false, true, false] {
+        let context = Context {
+            assets: &assets,
+            world: &world,
+            loc: &loc,
+            recorded_language: &loc.language,
+            scripted_content: &scripted,
+            ours: 2,
+            nato,
+            countries: installed_content::country_names::CountryNames::read(&frame, &loc),
+            flag_exists: &|_| true,
+            scripted: Default::default(),
+        };
+        let lines = context.trigger_text(
+            &triggers("custom_trigger_tooltip={tooltip=ICON_TOOLTIP always=yes}"),
+            Scopes::of(Scope::Country(2)),
+            "test",
+        );
+        assert_eq!(lines.len(), 1);
+        let icon_frame = if nato { 2 } else { 1 };
+        assert_eq!(
+            lines[0].1.as_ref().unwrap(),
+            &format!("+Activate:\n\u{13}GFX_syn_unit_icon_small|{icon_frame} Unit\n")
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
 }
 fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
     let assets = assets();
@@ -312,6 +402,8 @@ fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
         ("TRIGGER_OR_STARTS", "either"),
         ("TRIGGER_AND_STARTS", "both"),
         ("custom", "custom text"),
+        ("custom_lf", "custom text\n"),
+        ("custom_blank", "custom text\n\n"),
         (
             "scoped",
             "[ROOT.GetTag]/[FROM.GetID]/[THIS.GetTag]/[PREV.GetTag]",
@@ -329,6 +421,7 @@ fn with_context(run: impl FnOnce(&Context<'_, '_>)) {
         recorded_language: &loc.language,
         scripted_content: &scripted,
         ours: 2,
+        nato: false,
         countries: installed_content::country_names::CountryNames::read(&frame, &loc),
         flag_exists: &|_| true,
         scripted: Default::default(),
@@ -366,6 +459,14 @@ fn trigger_inversion_indentation_custom_override_and_named_unsupported_leaf() {
 ")
         );
         assert!(text[1].1.as_ref().unwrap_err().contains("unsupported"));
+        let terminated = context.trigger_text(
+            &triggers("custom_trigger_tooltip={tooltip=custom_lf always=no} custom_trigger_tooltip={tooltip=custom_blank always=yes}"),
+            scope,
+            "test",
+        );
+        assert_eq!(terminated.len(), 2);
+        assert_eq!(terminated[0].1.as_deref(), Ok("-custom text\n"));
+        assert_eq!(terminated[1].1.as_deref(), Ok("+custom text\n\n"));
     });
 }
 
@@ -426,6 +527,7 @@ fn raid_tooltip_regression_special_project_requirement_uses_native_name_and_inve
         recorded_language: &loc.language,
         scripted_content: &Err("no scripted content in this test".into()),
         ours: 0,
+        nato: false,
         countries: installed_content::country_names::CountryNames::read(&frame, &loc),
         flag_exists: &|_| true,
         scripted: Default::default(),
@@ -609,6 +711,7 @@ fn state_name_uses_the_stored_owner_name_in_the_recording_language_only() {
         recorded_language: &loc.language,
         scripted_content: &Err("no scripted content in this test".into()),
         ours: 0,
+        nato: false,
         countries: installed_content::country_names::CountryNames::read(&frame, &loc),
         flag_exists: &|_| true,
         scripted: Default::default(),
@@ -737,6 +840,7 @@ fn hover_build_cost() {
             recorded_language: &loc.language,
             scripted_content: &Err("no scripted content in this test".into()),
             ours: 0,
+            nato: false,
             flag_exists: &|_| true,
             scripted: Default::default(),
             countries: installed_content::country_names::CountryNames::read(&frame, &loc),
@@ -795,6 +899,7 @@ fn raid_target_names_refuse_unknown_owners_and_preserve_recorded_null_states() {
             recorded_language: &loc.language,
             scripted_content: &Err("no scripted content in this test".into()),
             ours: 0,
+            nato: false,
             countries: installed_content::country_names::CountryNames::read(&frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),

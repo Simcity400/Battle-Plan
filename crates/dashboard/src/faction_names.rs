@@ -58,17 +58,12 @@ pub(crate) fn name(
         .get(token)?
         .ok_or_else(|| format!("Faction template {token:?} is not in the recorded content"))?;
     if bound.is_empty() {
-        return Err(format!("Faction template {token:?} has no bound name"));
+        // 14238F0BA..14238F0D6 returns a valid empty string for zero entries.
+        return Ok(String::new());
     }
-    let name = bound_name(bound, localisation, token_of)
-        .map_err(|why| format!("Faction template {token:?}: {why}"))?;
-    if name.is_empty() {
-        Err(format!(
-            "Faction template {token:?} resolves to an empty name"
-        ))
-    } else {
-        Ok(name)
-    }
+    // 14238F14B..14238F16D accepts the string variant without a length guard.
+    bound_name(bound, localisation, token_of)
+        .map_err(|why| format!("Faction template {token:?}: {why}"))
 }
 
 /// Each folded lexer name to its one token, or why it names none.
@@ -281,12 +276,13 @@ mod tests {
     }
 
     #[test]
-    fn faction_names_keep_native_token_formatter_and_empty_refusals() {
+    fn faction_names_keep_native_token_formatter_refusals_and_known_empty_names() {
         let db = loaded_templates(
             "token={name=token:17} formatted={name=country|target} \
-             empty={name={ignored=value}} missing={name={localization_key=ROOT ID=token:absent}}",
+             empty={name={ignored=value}} omitted={} localised_empty={name=EMPTY_NAME} \
+             missing={name={localization_key=ROOT ID=token:absent}}",
         );
-        let loc = loaded("l_english:\n ROOT:0 \"Pact $ID$\"\n");
+        let loc = loaded("l_english:\n ROOT:0 \"Pact $ID$\"\n EMPTY_NAME:0 \"\"\n");
         let resolved = |token| {
             name(b"", Ok(Some(token)), Ok(&db), &loc, "english", |_| {
                 Ok(Some(99))
@@ -302,7 +298,15 @@ mod tests {
                 .unwrap_err()
                 .contains("formatter country")
         );
-        assert!(resolved("empty").unwrap_err().contains("has no bound name"));
+        for template in ["empty", "omitted", "localised_empty"] {
+            assert_eq!(
+                name(b"", Ok(Some(template)), Ok(&db), &loc, "english", |_| {
+                    panic!("this name must not read bound token arguments")
+                }),
+                Ok(String::new()),
+                "{template}",
+            );
+        }
         assert!(
             name(b"", Ok(Some("missing")), Ok(&db), &loc, "english", |_| Ok(
                 None

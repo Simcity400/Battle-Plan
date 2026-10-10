@@ -1291,6 +1291,7 @@ fn native_units_admission_and_named_refusals() {
                     country: 200,
                     target_index: 1,
                     links: RelationLinkRow::MILITARY_ACCESS,
+                    transport_subject: Default::default(),
                 }]
             } else {
                 vec![]

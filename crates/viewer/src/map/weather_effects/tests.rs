@@ -1,4 +1,22 @@
 use super::*;
+
+#[test]
+fn weather_parent_acceptance_is_a_fresh_ordered_prefix_with_plane_contact() {
+    let outside = [[0., 0., 0., 2.]; 4];
+    let contact = [[0., 0., 0., 1.]; 4];
+    let views = vec![([0.; 3], outside), ([0.; 3], contact), ([0.; 3], outside)];
+    assert_eq!(parent_admission([0.; 3], 1., &views), 0b110);
+    //The previous call does not leave a stamp in a later frame.
+    assert_eq!(parent_admission([0.; 3], 1., &[([0.; 3], outside); 3]), 0);
+    assert_eq!(
+        parent_admission([0.; 3], -1., &[([0.; 3], [[0.; 4]; 4])]),
+        0
+    );
+    assert_eq!(
+        parent_admission([f32::MAX, 0., 0.], 1., &[([0.; 3], contact)]),
+        0
+    );
+}
 use crate::map::presentation::Continuity;
 
 #[test]
@@ -21,7 +39,10 @@ fn native_tiles_consume_two_hashes_and_survive_particle_motion() {
 
 #[test]
 fn descriptor_selection_preserves_small_fallback_and_native_draw_count() {
-    let empty_pair = || [Vec::new(), Vec::new()];
+    let empty_pair = || WeatherPair {
+        members: [Vec::new(), Vec::new()],
+        radii: [None; 2],
+    };
     let systems = BTreeMap::from([
         ((0, false), vec![empty_pair(), empty_pair(), empty_pair()]),
         ((0, true), vec![empty_pair()]),
@@ -312,6 +333,7 @@ pub(super) fn activation_test_emitter() -> Emitter {
         scale: 1.0,
         page: 0,
         registration: 0,
+        actor: 0,
         radius: scalar(0.0),
         sphere_pitch: scalar(0.0),
         sphere_yaw: scalar(0.0),

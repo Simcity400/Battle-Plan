@@ -148,7 +148,7 @@ mod tests {
         let faction = |id, icon: &[u8], theatres| save::Faction {
             advisor_slots: Vec::new(),
             id,
-            name: Vec::new(),
+            name: None,
             members: Vec::new(),
             icon: Some(icon.to_vec()),
             template: None,

@@ -668,7 +668,7 @@ pub(crate) fn check_content(
         attribute_names(kind, Some(&content.catalogue));
     }
     for effects in content.leaders.traits.iter() {
-        let info = trait_info(&effects.name, Some(&content.catalogue));
+        let info = trait_info(&effects.name, Some(&content));
         if let Some(reason) = info.missing {
             findings.push(Finding::new(Kind::Refused, &effects.name, reason));
         }
@@ -1872,7 +1872,7 @@ fn scan(
         }
     }
     for token in token_list {
-        let info = trait_info(&token, content.map(|content| content.catalogue.as_ref()));
+        let info = trait_info(&token, content);
         if let Some(reason) = &info.missing {
             refusals.note(reason.clone(), token);
         }
@@ -2015,23 +2015,28 @@ impl Cache {
     }
 }
 
-fn trait_info(token: &str, content: Option<&Catalogue>) -> LeaderTraitInfo {
+fn trait_info(token: &str, content: Option<&Content>) -> LeaderTraitInfo {
     let (name, icon, missing) = content
         .map(|content| {
-            let name = content.localised(token, View::Plain);
-            let sprite_name = format!("GFX_trait_{token}");
+            let catalogue = &content.catalogue;
+            let name = catalogue.localised(token, View::Plain);
+            // The assignment tree admits every defined trait (141D011A0), then
+            // CButtonStandard::SetSpriteByName@1422BBD90 constructs it through
+            // 142222AD0: an absent name retries the stack's fallback drawable.
             let asset = content
-                .sprites
-                .find(&sprite_name)
+                .leaders
+                .traits
+                .assignment_sprite(token)
                 .map_err(crate::invalid)
-                .and_then(|sprite| {
-                    sprite.ok_or_else(|| crate::invalid(format!("Missing sprite {sprite_name}")))
+                .and_then(|name| {
+                    name.ok_or_else(|| crate::invalid(format!("Trait {token} is not registered")))
                 })
+                .and_then(|name| catalogue::created_gui_sprite(&catalogue.sprites, &name))
                 .and_then(|sprite| {
                     catalogue::sprite_frame_png(
-                        &content.content.layers,
+                        &catalogue.content.layers,
                         sprite,
-                        *content
+                        *catalogue
                             .gui_decode
                             .as_ref()
                             .map_err(|why| crate::invalid(why.clone()))?,

@@ -4,6 +4,36 @@ use installed_content::{
     map::{CountryColors, ProvinceDefinition},
 };
 
+#[test]
+fn faction_hover_color_uses_the_content_index_and_refuses_missing_quads() {
+    let defines = installed_content::defines::Defines::new().unwrap();
+    defines
+        .load(
+            "fixture",
+            br#"NDefines = {
+        NMapMode = { FACTION_THEATER_HIGHLIGHT_COLOR_INDEX = 1 },
+        NGraphics = { BORDER_COLOR_CUSTOM_HIGHLIGHTS = {
+            0.1, 0.2, 0.3, 0.4, 0.7, 0.6, 0.5, 0.9
+        } }
+    }"#,
+        )
+        .unwrap();
+    assert_eq!(
+        faction_highlight_color(&defines).unwrap(),
+        [0.7, 0.6, 0.5, 0.9]
+    );
+    for index in [-1, 2, 246] {
+        defines
+            .load(
+                "fixture index",
+                format!("NDefines.NMapMode.FACTION_THEATER_HIGHLIGHT_COLOR_INDEX = {index}")
+                    .as_bytes(),
+            )
+            .unwrap();
+        assert!(faction_highlight_color(&defines).is_err());
+    }
+}
+
 /// Six provinces: 1 and 2 land, 3 impassable land, 4 and 5 sea in different regions, 6 sea with
 /// 4.
 fn map() -> MapData {
@@ -172,6 +202,7 @@ fn regions() -> Regions {
         state_of: vec![0, 7, 7, 8, 9, 0],
         country_colors: Default::default(),
         warnings: Vec::new(),
+        strategic_attributes: Default::default(),
     }
 }
 

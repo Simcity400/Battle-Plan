@@ -16,6 +16,13 @@ pub struct Config {
     /// screen. The desktop host keeps its own and sends it to the viewer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_scale: Option<f32>,
+    /// Standalone viewer-local day/night display. An absent choice enables it;
+    /// embedded maps use the persisted campaign/widget graphics preferences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub day_night: Option<bool>,
+    /// Standalone viewer-local allied-plan choice. Absent keeps it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_allied_plans: Option<bool>,
     /// Whether the standalone viewer shows its technical stats and data
     /// limitations over the map. Off unless the user turns it on; the desktop
     /// host keeps its own choice and sends it to the viewer.
@@ -43,16 +50,18 @@ impl Config {
         }
     }
 
-    /// Stores the folders. The saved diagnostics choice is kept as it is on
-    /// disk; only [`Config::save_diagnostics`] changes it.
+    /// Stores the folders, keeping the saved standalone display choices.
     pub fn save(&self) -> io::Result<()> {
         self.resolve_options()?;
         self.save_at(&Self::path()?)
     }
 
     fn save_at(&self, path: &Path) -> io::Result<()> {
+        let stored = Self::load_from(path).unwrap_or_default();
         let config = Self {
-            diagnostics: Self::load_from(path).is_ok_and(|stored| stored.diagnostics),
+            diagnostics: stored.diagnostics,
+            day_night: stored.day_night,
+            show_allied_plans: stored.show_allied_plans,
             ..self.clone()
         };
         fs::write(path, serde_json::to_vec_pretty(&config)?)
@@ -81,6 +90,25 @@ impl Config {
         fs::write(Self::path()?, serde_json::to_vec_pretty(&config)?)
     }
 
+    /// Stores only the day/night choice, preserving the saved folders and scale.
+    pub fn save_day_night(enabled: bool) -> io::Result<()> {
+        Self::save_day_night_at(&Self::path()?, enabled)
+    }
+
+    fn save_day_night_at(path: &Path, enabled: bool) -> io::Result<()> {
+        let mut config = Self::load_from(path)?;
+        config.day_night = Some(enabled);
+        fs::write(path, serde_json::to_vec_pretty(&config)?)
+    }
+
+    /// Stores only allied-plan visibility, preserving folders and other choices.
+    pub fn save_allied_plans(enabled: bool) -> io::Result<()> {
+        let path = Self::path()?;
+        let mut config = Self::load_from(&path)?;
+        config.show_allied_plans = Some(enabled);
+        fs::write(path, serde_json::to_vec_pretty(&config)?)
+    }
+
     pub fn resolve_options(&self) -> io::Result<ResolveOptions> {
         if !self.game_dir.join("hoi4.exe").is_file() || !self.user_dir.is_dir() {
             return Err(invalid(
@@ -104,6 +132,35 @@ impl Config {
 mod tests {
     use super::Config;
     use std::path::Path;
+
+    #[test]
+    fn day_night_choice_survives_folder_saves_and_old_files_enable_it() {
+        let folder =
+            std::env::temp_dir().join(format!("hoi4-day-night-config-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("viewer.json");
+        std::fs::write(&path, br#"{"game_dir":"G","user_dir":"U","ui_scale":1.25}"#).unwrap();
+        assert!(Config::load_from(&path).unwrap().day_night.unwrap_or(true));
+        Config::save_day_night_at(&path, false).unwrap();
+        let changed = Config::load_from(&path).unwrap();
+        assert_eq!(changed.ui_scale, Some(1.25));
+        assert_eq!(changed.game_dir, Path::new("G"));
+        assert_eq!(changed.user_dir, Path::new("U"));
+        let stale = Config {
+            game_dir: "G2".into(),
+            user_dir: "U2".into(),
+            ..Default::default()
+        };
+        stale.save_at(&path).unwrap();
+        let saved = Config::load_from(&path).unwrap();
+        assert_eq!(saved.day_night, Some(false));
+        assert_eq!(saved.user_dir, Path::new("U2"));
+        Config::save_day_night_at(&path, true).unwrap();
+        let saved = Config::load_from(&path).unwrap();
+        assert_eq!(saved.day_night, Some(true));
+        assert_eq!(saved.game_dir, Path::new("G2"));
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
 
     #[test]
     fn saving_folders_keeps_the_diagnostics_choice_and_the_choice_keeps_folders() {

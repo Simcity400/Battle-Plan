@@ -154,6 +154,82 @@ pub struct Buffers<'a> {
     pub archetype_required: usize,
 }
 
+pub struct GrowingBuffers<'a> {
+    pub countries: &'a mut Vec<Country>,
+    pub country_len: usize,
+    pub country_required: usize,
+    pub lines: &'a mut Vec<Line>,
+    pub line_len: usize,
+    pub line_required: usize,
+    pub efficiencies: &'a mut Vec<i64>,
+    pub efficiency_len: usize,
+    pub efficiency_required: usize,
+    pub requests: &'a mut Vec<Request>,
+    pub request_len: usize,
+    pub request_required: usize,
+    pub archetypes: &'a mut Vec<usize>,
+    pub archetype_required: usize,
+}
+
+pub struct BuffersBuffer<'a> {
+    pub countries: crate::walk::Buffer<'a, Country>,
+    pub country_len: usize,
+    pub country_required: usize,
+    pub lines: crate::walk::Buffer<'a, Line>,
+    pub line_len: usize,
+    pub line_required: usize,
+    pub efficiencies: crate::walk::Buffer<'a, i64>,
+    pub efficiency_len: usize,
+    pub efficiency_required: usize,
+    pub requests: crate::walk::Buffer<'a, Request>,
+    pub request_len: usize,
+    pub request_required: usize,
+    pub archetypes: crate::walk::Buffer<'a, usize>,
+    pub archetype_required: usize,
+}
+
+impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
+    fn from(value: Buffers<'a>) -> Self {
+        Self {
+            countries: crate::walk::Buffer::Fixed(value.countries),
+            country_len: value.country_len,
+            country_required: value.country_required,
+            lines: crate::walk::Buffer::Fixed(value.lines),
+            line_len: value.line_len,
+            line_required: value.line_required,
+            efficiencies: crate::walk::Buffer::Fixed(value.efficiencies),
+            efficiency_len: value.efficiency_len,
+            efficiency_required: value.efficiency_required,
+            requests: crate::walk::Buffer::Fixed(value.requests),
+            request_len: value.request_len,
+            request_required: value.request_required,
+            archetypes: crate::walk::Buffer::Fixed(value.archetypes),
+            archetype_required: value.archetype_required,
+        }
+    }
+}
+
+impl<'a> From<GrowingBuffers<'a>> for BuffersBuffer<'a> {
+    fn from(value: GrowingBuffers<'a>) -> Self {
+        Self {
+            countries: crate::walk::Buffer::Growing(value.countries),
+            country_len: value.country_len,
+            country_required: value.country_required,
+            lines: crate::walk::Buffer::Growing(value.lines),
+            line_len: value.line_len,
+            line_required: value.line_required,
+            efficiencies: crate::walk::Buffer::Growing(value.efficiencies),
+            efficiency_len: value.efficiency_len,
+            efficiency_required: value.efficiency_required,
+            requests: crate::walk::Buffer::Growing(value.requests),
+            request_len: value.request_len,
+            request_required: value.request_required,
+            archetypes: crate::walk::Buffer::Growing(value.archetypes),
+            archetype_required: value.archetype_required,
+        }
+    }
+}
+
 fn at(pointer: usize, offset: usize) -> Result<usize, &'static str> {
     pointer
         .checked_add(offset)
@@ -193,7 +269,7 @@ fn naval(
     memory: &impl Memory,
     base: usize,
     mut pointer: usize,
-    out: &mut Buffers<'_>,
+    out: &mut BuffersBuffer<'_>,
 ) -> Result<bool, &'static str> {
     use crate::cequipment_type as ty;
     let mut depth = 0;
@@ -205,6 +281,11 @@ fn naval(
             return Err("production modifier equipment type vtable mismatch");
         }
         out.archetype_required = out.archetype_required.max(depth + 1);
+        out.archetypes.ensure(
+            depth
+                .checked_add(1)
+                .ok_or("production modifier archetype depth overflow")?,
+        )?;
         let Some(slot) = out.archetypes.get_mut(depth) else {
             return Err("production modifier archetype scratch capacity exceeded");
         };
@@ -301,6 +382,78 @@ pub fn capture(
     context: &mut Option<Context>,
     out: &mut Buffers<'_>,
 ) -> Result<(), &'static str> {
+    let mut buffer = BuffersBuffer {
+        countries: crate::walk::Buffer::Fixed(&mut *out.countries),
+        country_len: out.country_len,
+        country_required: out.country_required,
+        lines: crate::walk::Buffer::Fixed(&mut *out.lines),
+        line_len: out.line_len,
+        line_required: out.line_required,
+        efficiencies: crate::walk::Buffer::Fixed(&mut *out.efficiencies),
+        efficiency_len: out.efficiency_len,
+        efficiency_required: out.efficiency_required,
+        requests: crate::walk::Buffer::Fixed(&mut *out.requests),
+        request_len: out.request_len,
+        request_required: out.request_required,
+        archetypes: crate::walk::Buffer::Fixed(&mut *out.archetypes),
+        archetype_required: out.archetype_required,
+    };
+    let result = capture_buffer(memory, base, state, context, &mut buffer);
+    out.country_len = buffer.country_len;
+    out.country_required = buffer.country_required;
+    out.line_len = buffer.line_len;
+    out.line_required = buffer.line_required;
+    out.efficiency_len = buffer.efficiency_len;
+    out.efficiency_required = buffer.efficiency_required;
+    out.request_len = buffer.request_len;
+    out.request_required = buffer.request_required;
+    out.archetype_required = buffer.archetype_required;
+    result
+}
+
+pub fn capture_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    context: &mut Option<Context>,
+    out: &mut GrowingBuffers<'_>,
+) -> Result<(), &'static str> {
+    let mut buffer = BuffersBuffer {
+        countries: crate::walk::Buffer::Growing(&mut *out.countries),
+        country_len: out.country_len,
+        country_required: out.country_required,
+        lines: crate::walk::Buffer::Growing(&mut *out.lines),
+        line_len: out.line_len,
+        line_required: out.line_required,
+        efficiencies: crate::walk::Buffer::Growing(&mut *out.efficiencies),
+        efficiency_len: out.efficiency_len,
+        efficiency_required: out.efficiency_required,
+        requests: crate::walk::Buffer::Growing(&mut *out.requests),
+        request_len: out.request_len,
+        request_required: out.request_required,
+        archetypes: crate::walk::Buffer::Growing(&mut *out.archetypes),
+        archetype_required: out.archetype_required,
+    };
+    let result = capture_buffer(memory, base, state, context, &mut buffer);
+    out.country_len = buffer.country_len;
+    out.country_required = buffer.country_required;
+    out.line_len = buffer.line_len;
+    out.line_required = buffer.line_required;
+    out.efficiency_len = buffer.efficiency_len;
+    out.efficiency_required = buffer.efficiency_required;
+    out.request_len = buffer.request_len;
+    out.request_required = buffer.request_required;
+    out.archetype_required = buffer.archetype_required;
+    result
+}
+
+fn capture_buffer(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    context: &mut Option<Context>,
+    out: &mut BuffersBuffer<'_>,
+) -> Result<(), &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
     for slot in 1..countries.count() {
         let Some(country) = countries.at(slot)? else {
@@ -319,6 +472,7 @@ pub fn capture(
         let context = context.as_ref().expect("nonempty production context");
         let accumulator = at(country.pointer, ccountry::MODIFIER_ACCUMULATOR)?;
         add(&mut out.country_required, 1)?;
+        out.countries.ensure(out.country_required)?;
         if let Some(row) = out.countries.get_mut(out.country_len) {
             *row = Country {
                 country: country.id,
@@ -329,12 +483,14 @@ pub fn capture(
         }
         for key in KEYS {
             add(&mut out.request_required, 1)?;
+            out.requests.ensure(out.request_required)?;
             if let Some(request) = out.requests.get_mut(out.request_len) {
                 *request = Request { accumulator, key };
                 out.request_len += 1;
             }
         }
         add(&mut out.line_required, roster.count as usize)?;
+        out.lines.ensure(out.line_required)?;
         for ordinal in 0..roster.count {
             let pointer = roster
                 .element(ordinal, 8)
@@ -366,6 +522,7 @@ pub fn capture(
                 .ok_or("production modifier factory efficiencies unreadable or invalid")?;
             let start = out.efficiency_len;
             add(&mut out.efficiency_required, factory.count as usize)?;
+            out.efficiencies.ensure(out.efficiency_required)?;
             if factory.count as usize > out.efficiencies.len().saturating_sub(start) {
                 continue;
             }

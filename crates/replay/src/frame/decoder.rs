@@ -52,7 +52,9 @@ impl FrameDecoder {
             && frame.tables.iter().any(|update| {
                 !matches!(
                     update,
-                    TableUpdate::Snapshot(_) | TableUpdate::Unavailable { .. }
+                    TableUpdate::Snapshot(_)
+                        | TableUpdate::Unavailable { .. }
+                        | TableUpdate::Incompatible { .. }
                 )
             })
         {
@@ -88,7 +90,17 @@ impl FrameDecoder {
                 previous[index].take(),
                 frame.hour,
             ) {
-                Ok(view) => view,
+                Ok(mut view) => {
+                    // The collector exports zero timing for skipped tables
+                    // (sampling::exported_table_ticks). Equality may encode a
+                    // successful acquisition as Unchanged; completeness and
+                    // this table's own timing, not the wire update, witness it.
+                    if matches!(*view, TableView::Complete(_)) && frame.metrics.table_ns[index] != 0
+                    {
+                        view.1 = Some(frame.hour);
+                    }
+                    view
+                }
                 Err(error) => TableView::Unavailable {
                     reason: error.to_string(),
                 }
@@ -130,7 +142,7 @@ fn apply_table(
             }
             .into())
         }
-        TableUpdate::Unavailable { reason } => {
+        TableUpdate::Unavailable { reason } | TableUpdate::Incompatible { reason, .. } => {
             if reason.is_empty() {
                 return Err(invalid("unavailable table needs a reason"));
             }
@@ -168,7 +180,7 @@ fn apply_table(
                 Ok(TableView::Complete(rows).into())
             } else {
                 // This private baseline already passed full row validation. Only
-                // the clock's relation to the new enclosing hour can have changed.
+                // the singleton's relation to the new enclosing hour can have changed.
                 let TableView::Complete(previous_rows) = &*previous_view else {
                     unreachable!("only complete tables become baselines");
                 };

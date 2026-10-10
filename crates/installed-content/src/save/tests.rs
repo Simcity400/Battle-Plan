@@ -1,6 +1,19 @@
 use super::*;
 
 #[test]
+fn faction_name_preserves_omitted_and_emitted_empty_keys() {
+    for (field, expected) in [
+        ("", None),
+        ("name=\"\"", Some(b"".as_slice())),
+        ("name=Custom", Some(b"Custom".as_slice())),
+    ] {
+        let doc = parser::parse(format!("id={{id=1 type=8}} {field}").as_bytes()).unwrap();
+        let faction = parse_faction(&doc.items).unwrap();
+        assert_eq!(faction.name.as_deref(), expected);
+    }
+}
+
+#[test]
 fn game_score_saved_rosters_keep_writer_order_and_empty_countries() {
     let saved = parse(br#"HOI4txt
 date=1930.1.1.1 game_unique_id=c version=b game_unique_seed=0 debug_current_ref_id=1 unit=2 order_index=3 front_index=4 theatre_index=5 theater_group_index=6 military_deployment_line_index=7 military_deployment_conveyor_index=8 equipment_variant_index=9 country_leader_index=10 navy_id=11 land_combat_id=12 multiplayer_random_count=-13
@@ -1197,7 +1210,7 @@ faction={id={id=0 type=88} members={} name="" color={ 81 78 74 } is_color_overri
     assert_eq!(save.factions.len(), 3);
     let faction = &save.factions[&full];
     assert_eq!(faction.id, full);
-    assert!(faction.name.is_empty());
+    assert!(faction.name.is_none());
     assert_eq!(
         faction.members,
         [b"SOV".to_vec(), b"GER".to_vec(), b"D01".to_vec()]
@@ -1206,9 +1219,9 @@ faction={id={id=0 type=88} members={} name="" color={ 81 78 74 } is_color_overri
     let colored = &save.factions[&88];
     assert_eq!(colored.color.as_deref(), Some(&[81, 78, 74][..]));
     assert_eq!(colored.color_overridden, Some(false));
-    assert_eq!(no_members.name, b"Literal name");
+    assert_eq!(no_members.name.as_deref(), Some(b"Literal name".as_slice()));
     assert!(no_members.members.is_empty());
-    assert!(save.factions[&88].name.is_empty());
+    assert_eq!(save.factions[&88].name.as_deref(), Some(b"".as_slice()));
     assert!(save.factions[&88].members.is_empty());
     assert!(faction.icon.is_none() && faction.theatres.is_empty());
     assert_eq!(
@@ -1393,7 +1406,7 @@ orders_group={id={type=53 id=1} name="Army 1" field_marshal_group=no motorizatio
  fallback={instance_id=2 type=2}
  virtual_fallback={instance_id=3 type=-1}}
 field_marshal_group={id={type=53 id=2} name="Army Group 1" motorization_level=0 field_marshal_group=yes orders_group={id=1 type=53}
- order_instance={instance_id=2 type=3 invasion_source=4}}
+ order_instance={instance_id=2 type=3 invasion_source=4 convoys={convoys=0 total=0}}}
 }}}}
 "#).unwrap();
     assert_eq!(saved.army_orders.len(), 4);
@@ -1415,7 +1428,7 @@ field_marshal_group={id={type=53 id=2} name="Army Group 1" motorization_level=0 
 #[test]
 fn air_wings_preserve_pool_and_override_countries_and_required_mission_fields() {
     let saved = diplomacy_save("", "strategic_air={GER={air_wing_pool={
-        id={id=1 type=70} air_base={id=2 type=63}
+        id={id=1 type=70} definition=fixture_plane air_base={id=2 type=63}
         air_wings={id={id=3 type=54} count=-1 tag=--- experience=0 equipment={allow_zero_entries=no} mission={type=-2147483648}}
         air_wings={id={id=4 type=54} count=100 tag=SOV experience=0 equipment={allow_zero_entries=no} mission={type=2 effective_planes_count=57 strategic_region=5 region_change_penalty=0.90001 active=yes}}
     }}}").unwrap();
@@ -1435,17 +1448,17 @@ fn air_wings_preserve_pool_and_override_countries_and_required_mission_fields() 
     // The order runs across a country's pools and restarts per country.
     let saved = diplomacy_save("", "strategic_air={
         GER={
-            air_wing_pool={id={id=1 type=70} air_base={id=2 type=63}
+            air_wing_pool={id={id=1 type=70} definition=fixture_plane air_base={id=2 type=63}
                 air_wings={id={id=9 type=54} count=1 tag=GER experience=0 equipment={allow_zero_entries=no} mission={type=0}}}
-            air_wing_pool={id={id=5 type=70} air_base={id=6 type=63}
+            air_wing_pool={id={id=5 type=70} definition=fixture_plane air_base={id=6 type=63}
                 air_wings={id={id=3 type=54} count=1 tag=GER experience=0 equipment={allow_zero_entries=no} mission={type=0}}}
         }
-        SOV={air_wing_pool={id={id=7 type=70} air_base={id=8 type=63}
+        SOV={air_wing_pool={id={id=7 type=70} definition=fixture_plane air_base={id=8 type=63}
             air_wings={id={id=4 type=54} count=1 tag=SOV experience=0 equipment={allow_zero_entries=no} mission={type=0}}}}
     }").unwrap();
     let ordinal = |id: u64| saved.air_wings[&((id << 32) | 54)].pool_ordinal;
     assert_eq!((ordinal(9), ordinal(3), ordinal(4)), (0, 1, 0));
-    let body = "strategic_air={GER={air_wing_pool={id={id=1 type=70} air_base={id=2 type=63} air_wings={id={id=3 type=54} count=1 tag=GER experience=0 equipment={allow_zero_entries=no} mission={type=0}}}}}";
+    let body = "strategic_air={GER={air_wing_pool={id={id=1 type=70} definition=fixture_plane air_base={id=2 type=63} air_wings={id={id=3 type=54} count=1 tag=GER experience=0 equipment={allow_zero_entries=no} mission={type=0}}}}}";
     assert!(diplomacy_save("", body).is_ok());
     for fragment in [
         body.replace("count=1", ""),
@@ -1472,7 +1485,7 @@ fn stored_air_wing_save_names_preserve_empty_missing_and_literal_text() {
         ),
     ] {
         let body = format!(
-            "strategic_air={{GER={{air_wing_pool={{id={{id=1 type=70}} air_base={{id=2 type=63}} air_wings={{id={{id=3 type=54}} count=1 tag=GER experience=0 equipment={{allow_zero_entries=no}} mission={{type=0}} {field}}}}}}}}}"
+            "strategic_air={{GER={{air_wing_pool={{id={{id=1 type=70}} definition=fixture_plane air_base={{id=2 type=63}} air_wings={{id={{id=3 type=54}} count=1 tag=GER experience=0 equipment={{allow_zero_entries=no}} mission={{type=0}} {field}}}}}}}}}"
         );
         let saved = diplomacy_save("", &body).unwrap();
         assert_eq!(

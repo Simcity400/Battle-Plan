@@ -1222,16 +1222,16 @@ fn resolve_names(
         let mut names = BTreeMap::new();
         for (id, definition) in regions.regions {
             match catalogue::localised(&loc, &definition.name_key, catalogue::View::Plain) {
-                Ok(name) if !name.is_empty() && name != definition.name_key => {
+                // GetName@140E0EB10 returns the template text without a
+                // success gate: empty text survives, and 142230940 copies
+                // a missing localisation key rather than a region-id label.
+                Ok(name) => {
                     names.insert(id, name);
                 }
-                result => {
+                Err(reason) => {
                     warnings.push(format!(
                         "Region {id} name {} is unavailable: {}",
-                        definition.name_key,
-                        result
-                            .err()
-                            .unwrap_or_else(|| "localisation is absent".into())
+                        definition.name_key, reason
                     ));
                     names.insert(id, format!("Region {id}"));
                 }

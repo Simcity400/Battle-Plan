@@ -17,13 +17,14 @@ pub const TABLES: [TableId; N] = [TableId::StateFlags];
 // Metadata is emitted once by the combined States/StateFlags source group.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { rows: 2048 }
+
+impl Capacities {
+    pub(crate) fn raise_for_states(&mut self, states: usize) {
+        self.rows = self.rows.max(states);
     }
 }
 
@@ -34,6 +35,7 @@ pub struct Captured {
     source: Outcome,
     required: usize,
     acquired_ticks: Option<u64>,
+    source_failure: Option<&'static str>,
 }
 
 impl Default for Captured {
@@ -47,6 +49,7 @@ impl Default for Captured {
             source: super::MISSING,
             required: 0,
             acquired_ticks: None,
+            source_failure: None,
         }
     }
 }
@@ -66,6 +69,7 @@ impl Captured {
             source: super::MISSING,
             required: 0,
             acquired_ticks: None,
+            source_failure: None,
         }
     }
     pub fn reset(&mut self) {
@@ -74,6 +78,7 @@ impl Captured {
         self.source = super::MISSING;
         self.required = 0;
         self.acquired_ticks = None;
+        self.source_failure = None;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
@@ -97,7 +102,29 @@ impl Captured {
         self.seen = self.seen.saturating_add(1);
         self.required = self.required.max(self.seen);
     }
+    /// States is worker-only; retain each original mandatory census occurrence
+    /// before native execution resumes, including a cold empty frame.
+    pub(crate) fn visit_growing(&mut self, source: cstate::Source) {
+        if self.source_failure.is_none() {
+            match self
+                .seen
+                .checked_add(1)
+                .ok_or("state visitor demand overflow")
+                .and_then(|required| {
+                    engine::walk::Buffer::Growing(&mut self.first).ensure(required)
+                }) {
+                Ok(_) => {}
+                Err(reason) => self.source_failure = Some(reason),
+            }
+        }
+        self.visit(source);
+    }
+
     pub fn finish(&mut self, outcome: Outcome) {
+        if let Some(reason) = self.source_failure {
+            self.source = Outcome::Unavailable { reason };
+            return;
+        }
         let capacity = self.first.len();
         self.source = match outcome {
             Outcome::Unavailable { .. } => outcome,
@@ -119,6 +146,12 @@ impl Captured {
                 }
             }
         };
+    }
+
+    /// Only the prefix certified by the completed mandatory States walk.
+    /// A visited source preceding a failed mandatory field is not admitted.
+    pub(crate) fn completed_sources(&self) -> (&[cstate::Source], Outcome, usize) {
+        (&self.first[..self.source.len()], self.source, self.required)
     }
 
     /// Accepted census failure preserves storage and growth demand.
@@ -143,7 +176,20 @@ impl Captured {
     }
 
     /// Runs on the existing States worker, where active tree storage may grow.
-    pub(crate) fn acquire_owned(&mut self, memory: &impl Memory, base: usize, state: usize) {
+    pub(crate) fn acquire_owned(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        growing: bool,
+    ) {
+        if growing
+            && let Err(reason) =
+                engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(self.source.len())
+        {
+            self.fail_sources(reason);
+            return;
+        }
         self.acquired_ticks = Some(self.acquire(memory, base, state)[0]);
     }
 
@@ -471,6 +517,7 @@ mod tests {
                 },
                 names: crate::acquisition_states::Names::take(&mut vec![0; 64]),
                 visitor,
+                inputs: crate::acquisition_states::Inputs::with_capacity(core_capacity).unwrap(),
             };
             let report = request.run(&memory);
             assert_eq!(request.visitor.required, 2);
@@ -594,6 +641,11 @@ mod tests {
     #[test]
     fn state_flags_successful_states_restore_preserves_timing_and_storage() {
         let mut frame = crate::sampling::Captured::new();
+        frame.states = vec![cstate::Row::default(); 1];
+        frame.state_inputs = crate::acquisition_states::Inputs::with_capacity(1).unwrap();
+        frame
+            .extended
+            .restore_state_visitor(Captured::with_capacities(&Capacities { rows: 1 }));
         let bytes = memory();
         let memory = Movement(SliceMemory {
             base: 0,
@@ -624,5 +676,72 @@ mod tests {
                 .all(|source| source.pointer == 0)
         );
         frame.restore_states_request(request, restored, None);
+    }
+
+    struct FlagPopulation(usize);
+    impl Memory for FlagPopulation {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            const POINTERS: usize = 0x100_000;
+            const OBJECTS: usize = 0x1000_0000;
+            for (offset, byte) in output.iter_mut().enumerate() {
+                let at = address + offset;
+                let root = STATE + cgame_state::STATES;
+                *byte = if (root..root + 16).contains(&at) {
+                    let mut header = [0u8; 16];
+                    header[..8].copy_from_slice(&(POINTERS as u64).to_le_bytes());
+                    header[8..12].copy_from_slice(&(self.0 as u32 + 1).to_le_bytes());
+                    header[12..].copy_from_slice(&(self.0 as u32 + 1).to_le_bytes());
+                    header[at - root]
+                } else if (POINTERS..POINTERS + (self.0 + 1) * 8).contains(&at) {
+                    let slot = (at - POINTERS) / 8;
+                    let pointer = if slot == 0 {
+                        0
+                    } else {
+                        OBJECTS + slot * 0x1000
+                    };
+                    (pointer as u64).to_le_bytes()[(at - POINTERS) % 8]
+                } else if (OBJECTS + 0x1000..OBJECTS + (self.0 + 1) * 0x1000).contains(&at) {
+                    let slot = (at - OBJECTS) / 0x1000;
+                    let within = (at - OBJECTS) % 0x1000;
+                    if within < 8 {
+                        (cstate::VTABLE_RVA as u64).to_le_bytes()[within]
+                    } else if (cstate::ID..cstate::ID + 4).contains(&within) {
+                        (slot as u32).to_le_bytes()[within - cstate::ID]
+                    } else if within == cstate::DEMILITARIZED {
+                        (slot % 2) as u8
+                    } else {
+                        0
+                    }
+                } else {
+                    return false;
+                };
+            }
+            true
+        }
+    }
+
+    #[test]
+    fn states_worker_retains_full_census_before_first_and_later_flags_publication() {
+        let mut captured = Captured::default();
+        for count in [5_000, 11_000] {
+            captured.reset();
+            for id in 1..=count {
+                captured.visit_growing(cstate::Source {
+                    pointer: 0x1000_0000 + id * 0x1000,
+                    id: id as u32,
+                });
+            }
+            captured.finish(Outcome::Rows { len: count });
+            assert_eq!(captured.completed_sources().1, Outcome::Rows { len: count });
+            captured.acquire_owned(&FlagPopulation(count), 0, STATE, true);
+            assert_eq!(captured.outcomes(), [Outcome::Rows { len: count }]);
+            assert_eq!(captured.rows().unwrap()[count - 1].state, count as u32);
+            assert!(
+                captured
+                    .first
+                    .iter()
+                    .all(|source| *source == cstate::Source::default())
+            );
+        }
     }
 }

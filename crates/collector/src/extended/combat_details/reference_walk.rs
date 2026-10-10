@@ -33,6 +33,8 @@ impl Destination<'_> {
         let bound =
             (source.attackers.count as usize).saturating_add(source.defenders.count as usize);
         grow_vec(self.divisions, self.progress[1].required + bound);
+        self.reserve_commander_keys(self.progress[1].required.saturating_add(bound));
+        grow_vec(self.sides, self.progress[2].required.saturating_add(2));
         // A side's committed and reserve lists are subsets of its full
         // participants, so the larger census count bounds the role scratch.
         grow_vec(
@@ -112,9 +114,8 @@ impl Destination<'_> {
                             // past its admitted length; the reader grows it on
                             // this worker, one successfully read term at a time.
                             let transport_start = self.reinforcement_progress[3].len;
-                            // Exile tags go straight into the preallocated arena
-                            // past its admitted length; an overflow is counted
-                            // for the spool's growth, never allocated here.
+                            // Exile tags reserve their original list counts
+                            // before their payloads, just like the shared walk.
                             let exile_start = self.exile_progress.len;
                             // Nothing carries over from another division: its
                             // sources or the country reader. The naming memo is
@@ -132,7 +133,10 @@ impl Destination<'_> {
                                 DivisionOutputs {
                                     name_groups: self.name_groups,
                                     names: &mut self.names,
-                                    exile_tags: &mut self.exile_tags[exile_start..],
+                                    exile_tags: engine::walk::Buffer::GrowingFrom(
+                                        self.exile_tags,
+                                        exile_start,
+                                    ),
                                     transport_terms: self.transport_terms,
                                     transport_start,
                                 },
@@ -216,13 +220,13 @@ impl Destination<'_> {
         self.forget_shares();
         let at = self.detail_used;
         let roster = self.arenas[0].len;
-        let mut arenas = cland_combat::DetailArenas::new(
-            &mut self.rosters[roster..],
-            &mut self.air_counts[at.air..],
-            &mut self.detail_text[at.text..],
-            &mut self.commander_traits[at.traits..],
-            &mut self.timed_traits[at.timed..],
-            &mut self.learning_traits[at.learning..],
+        let mut arenas = cland_combat::DetailArenas::with_buffers(
+            engine::walk::Buffer::GrowingFrom(self.rosters, roster),
+            engine::walk::Buffer::GrowingFrom(self.air_counts, at.air),
+            engine::walk::Buffer::GrowingFrom(self.detail_text, at.text),
+            engine::walk::Buffer::GrowingFrom(self.commander_traits, at.traits),
+            engine::walk::Buffer::GrowingFrom(self.timed_traits, at.timed),
+            engine::walk::Buffer::GrowingFrom(self.learning_traits, at.learning),
         );
         let result = cland_combat::read_details(
             memory,
@@ -260,7 +264,7 @@ impl Destination<'_> {
                 }
                 // A detail whose lists did not all fit is never published;
                 // its demand grows the arenas for the next hour.
-                if self.progress[0].len == self.details.len() || !complete {
+                if !grow_vec(self.details, self.progress[0].len + 1) || !complete {
                     return;
                 }
                 let text = at.text;

@@ -48,6 +48,23 @@ pub fn read_country_sets(
     max_len: usize,
     tags: &mut [u32],
 ) -> Result<(CountrySetsRow, usize), CountrySetError> {
+    read_country_sets_buffer(
+        memory,
+        base,
+        source,
+        max_len,
+        crate::walk::Buffer::Fixed(tags),
+    )
+}
+
+/// 1413CC0D0's four list counts reserve the complete worker arena before nodes.
+pub fn read_country_sets_buffer(
+    memory: &impl Memory,
+    base: usize,
+    source: Source,
+    max_len: usize,
+    mut tags: crate::walk::Buffer<'_, u32>,
+) -> Result<(CountrySetsRow, usize), CountrySetError> {
     let reader = Reader {
         memory,
         base,
@@ -96,7 +113,7 @@ pub fn read_country_sets(
         *header = (head, tail, count);
     }
     let required: usize = headers.iter().map(|header| header.2).sum();
-    if required > tags.len() {
+    if !tags.ensure(required)? {
         return Err(CountrySetError::Truncated { required });
     }
     let mut used = 0;

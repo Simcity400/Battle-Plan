@@ -112,16 +112,23 @@ fn researched(sample: &mut DecodedFrame, level: i32, fresh: bool) {
     *sample.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(vec![
             ResearchTechnologyRow {
+                database_index: 5,
                 country: 100_000,
                 technology_handle: 5,
                 level,
                 researched: u8::from(level > 0),
+                classifier: if level > 0 {
+                    engine::ctechnology::CLASSIFIER_COMPLETED
+                } else {
+                    0
+                },
                 ..Default::default()
             },
         ]));
     *sample.tables[TableId::TechnologyDefinitions.index()] =
         TableView::Complete(TableRows::TechnologyDefinitions(vec![
             TechnologyDefinitionRow {
+                database_index: 5,
                 technology_handle: 5,
                 id: b"mod_tech".to_vec(),
                 ..Default::default()

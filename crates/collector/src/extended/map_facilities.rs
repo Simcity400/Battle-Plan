@@ -19,18 +19,35 @@ pub const TABLES: [TableId; N] = [
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     deployments: usize,
     facilities: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            deployments: 256,
-            facilities: 256,
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let deployments = crate::country_scale::table_demand::rows(
+            ccountry_supply_system::walk_floating_harbor_deployments(memory, base, state, &mut []),
+        );
+        let facilities = crate::country_scale::table_demand::rows(special_facility_flags::walk(
+            memory,
+            base,
+            state,
+            &mut [],
+        ));
+        if let Ok(count) = deployments {
+            crate::country_scale::raise(&mut self.deployments, count);
         }
+        if let Ok(count) = facilities {
+            crate::country_scale::raise(&mut self.facilities, count);
+        }
+        deployments.and(facilities).map(|_| ())
     }
 }
 
@@ -73,7 +90,7 @@ impl Captured {
         let begin = qpc();
         self.deployments.outcome = {
             let _reads = crate::read_accounting::table(TABLES[0]);
-            ccountry_supply_system::walk_floating_harbor_deployments(
+            ccountry_supply_system::walk_floating_harbor_deployments_growing(
                 memory,
                 base,
                 state,
@@ -83,7 +100,7 @@ impl Captured {
         let middle = qpc();
         self.facilities.outcome = {
             let _reads = crate::read_accounting::table(TABLES[1]);
-            special_facility_flags::walk(memory, base, state, &mut self.facilities.rows)
+            special_facility_flags::walk_growing(memory, base, state, &mut self.facilities.rows)
         };
         [
             middle.saturating_sub(begin).max(0) as u64,

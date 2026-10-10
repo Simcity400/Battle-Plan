@@ -136,6 +136,22 @@ baseDaysRaw: string | null, progressRaw: string, };
 export type ResearchHistory = { coverage: Array<ResearchCoverage>, slots: Array<ResearchSlotHistory>, };
 export type MapGraphics = {
 /**
+ * Viewer-local allied battle plans; no recorded client selection or toggle.
+ */
+showAlliedPlans: boolean,
+/**
+ * Viewer-local world target size; CMapRenderingOptions+0x19 defaults true.
+ */
+fullResolution: boolean,
+/**
+ * Viewer-local day/night display; never copied from the recording's UI state.
+ */
+dayNight: boolean,
+/**
+ * Embedded viewer-local NATO icons; missing legacy choices inherit their parent.
+ */
+natoCounters: boolean | null,
+/**
  * CMapRenderingOptions+0x18; ctor1401F9640 defaults true.
  */
 highGfxShaders: boolean,

@@ -758,7 +758,7 @@ pub fn prepare_payload_pools(game_score: bool) -> PayloadPools {
         }
         release_projects_job(ProjectsJob::new());
         release_lexical_job(LexicalJob::new());
-        release_divisions_job(DivisionsJob::new());
+        release_divisions_job(DivisionsJob::new_worker());
         release_focus_job(FocusJob::new());
         release_air_wing_job(AirWingJob::with_game_score(game_score));
         release_air_stats_job(AirStatsJob::new());
@@ -853,7 +853,7 @@ pub fn enqueue(shared: &Shared, job: DecodeJob) -> Option<DecodeJob> {
             crate::naval_result_sources::lost_drain();
             crate::air_losses::lost_drain();
             crate::building_bombing::lost_drain();
-            crate::land_events::fail();
+            crate::land_events::fail("land frame decode queue full");
             DROPS.fetch_add(1, Ordering::Relaxed);
             Some(job)
         }
@@ -897,7 +897,7 @@ fn decode_loop() {
 fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
     let _phase = crate::allocation::enter(crate::allocation::Phase::Decode);
     let frame = unsafe { &*shared.frames[job.index].load(Ordering::Acquire) };
-    if let Some(clock) = frame.clock {
+    if let Some(clock) = frame.clock.as_ref() {
         crate::allocation::set_context(crate::allocation::Context {
             campaign_id: clock.campaign_id.as_bytes().try_into().ok(),
             load_signal: Some(clock.play_session_started_at),
@@ -986,17 +986,36 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     if let Some(payload) = job.capitulation_payload.take() {
         release_capitulation_job(payload);
     }
-    if crate::allocation::failed() {
-        // The lease never becomes ready after a failed decode or recycle.
-        shared.completed[job.index].store(0, Ordering::Release);
-        return;
-    }
-    // This worker owns one frame and hence one spare queue slot.
-    while shared.ready.push(job.index).is_err() {
+    publish_ready(
+        &shared.ready,
+        job.index,
+        &shared.completed[job.index],
+        job.game_elapsed,
+        crate::allocation::failed,
+    );
+    crate::allocation::attempted_hour(None);
+}
+
+fn publish_ready(
+    ready: &ArrayQueue<usize>,
+    index: usize,
+    completed: &std::sync::atomic::AtomicI64,
+    elapsed: i64,
+    mut failed: impl FnMut() -> bool,
+) -> bool {
+    // Failure can stop the spool between admission and a full-queue handoff.
+    // It can no longer return a slot; let teardown join this worker.
+    loop {
+        if failed() {
+            completed.store(0, Ordering::Release);
+            return false;
+        }
+        if ready.push(index).is_ok() {
+            completed.store(elapsed.max(1), Ordering::Release);
+            return true;
+        }
         std::thread::yield_now();
     }
-    shared.completed[job.index].store(job.game_elapsed.max(1), Ordering::Release);
-    crate::allocation::attempted_hour(None);
 }
 
 #[cfg(test)]
@@ -1120,6 +1139,7 @@ fn fail_missing_payloads(frame: &mut sampling::Captured, job: &DecodeJob) {
             .extended
             .naval_pilot()
             .fail_naval_capture(MISSING_PAYLOAD_REASON);
+        frame.extended.install_reserved_land_certificate();
     }
     if job.players_refresh && job.players_payload.is_none() {
         frame.map.fail_players_capture(MISSING_PAYLOAD_REASON);
@@ -1383,12 +1403,9 @@ fn process_job(shared: &Shared, job: &mut DecodeJob, air_bases_memo: &mut AirBas
     {
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 9];
-        crate::extended::naval_history::decode_naval_payload(
-            frame.extended.naval_pilot(),
-            shared.base,
-            payload,
-            &mut decode_ticks,
-        );
+        frame
+            .extended
+            .decode_naval_payload(shared.base, payload, &mut decode_ticks);
         for (total, ticks) in NAVAL_DECODE_NS.iter().zip(decode_ticks) {
             if ticks != 0 {
                 total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
@@ -1672,7 +1689,7 @@ pub fn detach_drain() -> Result<(), &'static str> {
         crate::naval_result_sources::lost_drain();
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
-        crate::land_events::fail();
+        crate::land_events::fail("land decode worker panicked");
         error = Some("decode worker panicked; its in-flight frame may be incomplete");
     }
     WORKER_ID.store(0, Ordering::Release);
@@ -1696,7 +1713,7 @@ pub fn detach_drain() -> Result<(), &'static str> {
         crate::naval_result_sources::lost_drain();
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
-        crate::land_events::fail();
+        crate::land_events::fail("land decode detach drain panicked");
         error = Some("decode detach drain panicked; queued frames remain incomplete");
     }
     STOP.store(false, Ordering::Release);
@@ -2009,6 +2026,7 @@ impl Calibration {
             "read_plans": crate::raw::read_plan_diagnostics(),
             "raw_memory": crate::raw_memory::diagnostics(),
 
+            "carrier_capture": crate::extended::air::carrier_capture_status(),
             "air_bases_memo": {
                 "hits": AIR_BASES_MEMO[0].load(Ordering::Relaxed),
                 "misses": AIR_BASES_MEMO[1].load(Ordering::Relaxed),
@@ -2227,3 +2245,11 @@ pub(crate) fn reset_calibration_for_test() {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::{
+    presize_and_acquire_carrier_jobs_for_test, retire_and_reacquire_two_carrier_jobs_for_test,
+};
+
+#[cfg(test)]
+mod order_group_loan_tests;

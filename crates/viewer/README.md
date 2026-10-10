@@ -15,7 +15,7 @@ Native map, playback and image-export process. It resolves a recording's content
 | Dynamic hover | [province_tooltips/](src/map/province_tooltips/mod.rs), [counter_tooltips.rs](src/map/counter_tooltips.rs), [raid guide](src/map/raids/tooltips/README.md), [combat guide](src/combat/README.md) |
 | History, diagnostics and checks | [engaged_index.rs](src/engaged_index.rs), [tables.rs](src/map/tables.rs), [profiling.rs](src/profiling.rs), [corpus/](src/corpus/mod.rs) |
 
-[installed-content](../installed-content/README.md) owns content/asset interpretation; [replay](../replay/README.md) owns compatibility; [dashboard](../dashboard/README.md) owns sources/products/protocol; [desktop](../desktop/README.md) owns host/process lifecycle. Native evidence stays beside code.
+[installed-content](../installed-content/README.md) owns content/asset interpretation; [replay](../replay/README.md) owns compatibility; [dashboard](../dashboard/README.md) owns sources/products/protocol; [desktop](../desktop/README.md) owns host/process lifecycle. Native evidence stays beside code. Equipment graphic-pool inputs preserve an absent archetype separately from a real empty equipment name.
 
 ## Use and export
 
@@ -63,7 +63,7 @@ Raid offers keep their rolling cursor/content batch size, stale targets during p
 
 Preserve native camera, traversal/ties, assets, sampling/mips/colour spaces, constants, states and draw order. Never fit brightness/grading to hide missing terms. Content supplies map dimensions. Bitmap rows run down; world Z is `height - 1 - row`; height offsets/rounding/clamping belong to each caller.
 
-Do not interpolate hourly simulation. Moving division counters/figures stand at the settled route point; progress drives selected-unit arrows, which the viewer has no selection to draw. Movement shares content geometry; unavailable routes fall back to the province with a warning. A seed alone cannot recover runtime history.
+Do not interpolate hourly simulation. Moving division counters/figures stand at the settled route point; progress drives arrows for the viewer's locally selected units. Movement shares content geometry; unavailable routes fall back to the province with a warning. A seed alone cannot recover runtime history.
 
 The scene is HDR: world names precede post-processing; screen labels/counters are overlays. Water samples a single-sample underwater target. Finish world passes per wrap view; underwater precedes current shadows and reads their previous target. Preserve [scene formats](src/map/scene.rs)/[pass dependencies](src/map/scene_passes.rs): isolated failures skip dependent outputs/count once; interleaved-chain errors prevent submission/invalidate post caches.
 
@@ -75,11 +75,15 @@ Bind native slots/nulls, stage buffers/physical allocations, byte offsets, layou
 
 Decode/globals share client `force_pow2_textures`. File textures retain padding/block extent/mips; generated textures retain size. Font UVs use loaded page extent. Preserve native precision/[colour spaces](../installed-content/README.md#asset-contracts). Adapters own arrow modes/labels, regular-before-alternate queues, tree visibility/ties and particle rings/order. Meshless actors still run state/attachment/particle/light events; retain producer-selected states/clocks and count unsupported events/audio.
 
+Counter type atlases pack complete loaded strips. Each plain sprite retains its horizontal or vertical frame grid, loaded dimensions, native block rounding and fractional UV boundaries; drawable and hover geometry use that sprite's operands. Other sprite kinds are withheld with named, counted geometry refusals.
+
 ### Political fill and devices
 
 Fill uses recorded controllers; ownership/control/vision/fog remain distinct. Derive selected-country fog from simulation. Recorded perspective follows LocalPlayer/observer selection; unresolved references use the diagnosed lowest-slot fallback, never guessed participants.
 
 [political_gpu.rs](src/map/political_gpu.rs) diffs worker-built tables against displayed state after skips/seeks; unchanged frames dispatch nothing. Loaders warm shared content/device static data. Equal fills share states; distinct fills use a bounded reusable pool. Claim/reuse/pool under the registry lock across loader/UI/dropper threads. Copy only recomputed scratch cells; reject storage-limit updates before mutation. Preserve native scan/early-exit/coastal/truncation rules and content search extents.
+
+Political naval FX consumes the recorded native sorted supremacy cache, with control and gaining-side bytes derived for the viewing country. Timed acquisition certifies its native midnight cache epoch; unknown or crossed epochs withhold affected regions with named counts. Equal-current top/second candidates require identical output. Family precedes directed war; gaining neutral rows read the directed naval-blockade pointer from complete relation tuples, with Country0 refusal at that reached operand. Terrain minimums, thresholds and shader artwork resolve through the recorded content stack.
 
 No production CPU fallback. [render::choose_adapter](src/render.rs) selects qualifying hardware at `WGPU_POWER_PREF`, then WARP/lavapipe with notice, equally for windows/widgets/dumps. Unsupported devices/dimensions return `UnsupportedPoliticalCompute`. Share one device per process; serialize GPU harness device creation to avoid concurrent WARP faults.
 
@@ -95,13 +99,19 @@ Producers own text/values, clipped geometry owns hits, and [ToolTip](src/combat/
 
 Cache by content/frame/perspective/vision/settings. Raid text coalesces off-thread with same-icon carry. Use shared typed localisation/scripted-text evaluators. Acquire inline sprites from all loaded/runtime-selected text; absent declared artwork refuses layout. Count occurrences, keeping independent fragments.
 
-Province text covers the default political callback only, with fog-gated buildings and potentially empty stateless sea/lakes. [Picking](src/map/province_pick.rs) uses native ray/height cells, not terrain triangles. Fixed-point time/night require known-unsuspended weather state; never recompute held values. Other map modes/selection additions need inputs. Ordinary maps keep carrier wing stacks empty and draw only the viewer's battle plans.
+Faction-pin highlights reuse the displayed hour's political regions and demilitarised zone. The [highlight lane](src/app/faction_highlight.rs) queues border plans on the hour builders and installs only results matching the current hour, perspective, border identity and hovered regions. Clearing or changing hover restores the prepared ordinary plans while the new highlight is pending.
+
+Province text covers the default political callback only, with fog-gated buildings and potentially empty stateless sea/lakes. [Picking](src/map/province_pick.rs) uses native ray/height cells, not terrain triangles. Fixed-point time/night require known-unsuspended weather state; never recompute held values. Other map modes/selection additions need inputs. Ordinary maps keep carrier wing stacks empty. Battle plans include the viewing country and, when the local Allied battle plans option is enabled, native admitted allied occurrences. Unit selection stays local: owned-counter clicks select, Shift-click toggles and Escape clears; branch or viewing-country changes clear it. Complete censuses retire missing handles while unavailable censuses retain selection. Selected province text uses current-hour route operands through [selected movement](src/map/raids/reach/selected_common.rs), with named refusals for missing inputs.
+
+Snow/mud display takes retained edges and refresh operands from the recorded native boundary. Dirty refreshes preserve the previous plane and advance a local fade on presentation frames, including paused playback. Seeks, step backs, branch/perspective changes and gaps rebind the target snapshot; forward playback, camera and fog changes preserve phase. Historical absence and read refusal remain named gaps.
+
+[Selected transport](src/map/raids/reach/selected_transport.rs) joins authenticated current-hour convoy, unit, access and sea-search inputs. Its [nested graph](src/map/raids/reach/selected_transport_graph.rs) demands spotting and damage lazily, preserving failure order, repeated selections, each weight and independent output buffers. Missing reached risk operands refuse the result; they never become zero. Railway callers retain their own early returns and append laws.
 
 ## Fidelity limits
 
 - Terrain deliberately uses a uniform full-resolution grid, differing from native distant-coast LOD.
 - Map text uses configured game language. Stored localised bytes without keys require recording-language agreement; proven literals follow the shared stored-text rule.
-- Division ETA uses valid carried operands within the approved five-hour span and stored route. Native counter path-cache estimates are unrecorded: division destination lines count the limit, railway-gun destinations are withheld. Counter hovers append no date. Future/expired provenance refuses.
+- Legacy stored-route ETA permits the approved five-hour operand span; future/expired provenance refuses. Current division, railway-gun and task-force counter arrival lines use fresh current-hour route queries. The native client counter cache remains unrecorded and can lag a fresh query. Counter hovers append no date.
 - Cursor-zero counter columns can differ from the client's ordering/mixed-country flags. Preserve recorded members and native first/last representative rules.
 - Engagement keeps native lag through the shared index. Pending/ambiguous history stays diagnosed; recorded naval bytes settle only the recording player's view. Naval windows refresh only while engaged and otherwise retain compatible earlier contents. Unseen frames use view/index history, then land authored/naval binding initial values with counted reasons; fallback establishes no history.
 - Ambient RNG/phase, particles, retained-target initial contents, some placement/selection producers and shadow projection remain reconstructed/unavailable. Warm-up/settling does not recover a captured game instant; consult producer refusals.
@@ -110,7 +120,7 @@ Province text covers the default political callback only, with fog-gated buildin
 
 Preferences resolve HOI4 -> global -> campaign -> widget. Preserve inheritance markers separately from resolved values; null cosmetics inherit independently. Read game settings on source-open/settings jobs, never per frame; failures keep last values with diagnostics. Verify recorded artwork before overlaying explicitly selected compatible cosmetics in ordered precedence.
 
-Switches gate existing draws/shadow casters, preserving counters, interactions and terrain weather. MSAA covers world/post/overlays; sample changes retire scenes, retaining compatible content/cameras. Quality selects authored textures; cache by recording, ordered cosmetics and quality. VSync updates the root surface. River/water/reflection choose native techniques; full-map-resolution/gamma lack verified implementations.
+Switches gate existing draws/shadow casters, preserving counters, interactions and terrain weather. MSAA covers world/post/overlays; sample changes retire scenes, retaining compatible content/cameras. Quality selects authored textures; cache by recording, ordered cosmetics and quality. VSync updates the root surface. River/water/reflection choose native techniques; full map resolution renders the world at full size or truncating half dimensions with the compiled restore pass; matched visual/runtime validation remains separate. Gamma lacks a verified implementation. Day/night is a local display choice: disabling it fixes virtual lights while simulation time and province clocks remain authoritative. NATO choice also governs technology, carrier and nested scripted unit icons.
 
 Widgets keep independent perspective/fog and export by view ID; missing/loading views refuse. Simple draw switches retain assets; artwork changes reload affected maps.
 

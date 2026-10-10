@@ -133,6 +133,60 @@ fn capture(image: &MemoryImage, rows: &mut Vec<Row>, geometry: &mut Vec<u32>) ->
 }
 
 #[test]
+fn invasion_allocation_authenticates_the_subscriber_and_reuses_the_plan_prefix() {
+    let mut image = MemoryImage::default();
+    image.order(FIRST, 1, TYPE_INVASION);
+    image.u64(FIRST + 8, (BASE + INVASION_SUBSCRIBER_VTABLE_RVA) as u64);
+    for count in [0_i32, -3, i32::MIN, i32::MAX] {
+        image.u32(FIRST + INVASION_TRANSPORTS, count as u32);
+        let mut bytes = [0_u8; PLAN_STRIDE];
+        let mut complete = [false];
+        gather_records(&image, &[FIRST], &PLAN_LAYOUT, &mut bytes, &mut complete);
+        assert_eq!(complete, [true]);
+        let record = Gathered::row(&PLAN_LAYOUT, &PLAN_MAP, &bytes, &complete, 0);
+        image.1.borrow_mut().clear();
+        assert_eq!(
+            invasion_transports(&image, BASE, FIRST, record),
+            Some(count)
+        );
+        assert!(
+            image.1.borrow().is_empty(),
+            "count is already in the gathered prefix"
+        );
+        assert_eq!(
+            invasion_transports(&image, BASE, FIRST, Gathered::NONE),
+            Some(count)
+        );
+        assert_eq!(
+            *image.1.borrow(),
+            vec![(FIRST + 8, 8), (FIRST + INVASION_TRANSPORTS, 4)]
+        );
+    }
+    image.u64(FIRST + 8, 0);
+    image.1.borrow_mut().clear();
+    assert_eq!(
+        invasion_transports(&image, BASE, FIRST, Gathered::NONE),
+        None
+    );
+    assert_eq!(*image.1.borrow(), vec![(FIRST + 8, 8)]);
+    image.u64(FIRST + 8, (BASE + INVASION_SUBSCRIBER_VTABLE_RVA) as u64);
+    image
+        .0
+        .get_mut(&FIRST)
+        .unwrap()
+        .truncate(INVASION_TRANSPORTS);
+    image.1.borrow_mut().clear();
+    assert_eq!(
+        invasion_transports(&image, BASE, FIRST, Gathered::NONE),
+        None
+    );
+    assert_eq!(
+        *image.1.borrow(),
+        vec![(FIRST + 8, 8), (FIRST + INVASION_TRANSPORTS, 4)]
+    );
+}
+
+#[test]
 fn native_geometry_counts_grow_only_after_readable_batches() {
     for offset in [PATH_DATA, TARGET_STATE_DATA] {
         let mut image = fixture();
@@ -1813,6 +1867,67 @@ fn plan_fixture() -> (MemoryImage, [usize; 2]) {
     );
     image.u32(GROUP + corders_group::COLOUR, 0x7fc0_1234);
     (image, [unique.len(), group_name.len()])
+}
+
+#[test]
+fn original_assigned_host_lane_has_no_reads_and_shortage_preserves_core_plans() {
+    let (image, _) = plan_fixture();
+    let mut groups = [corders_group::Root::default(); 8];
+    let mut visits = vec![Visit::default(); 16];
+    let census = walk(
+        &image,
+        BASE,
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut groups,
+        &mut visits,
+    );
+    let run = |mut hosts: Option<&mut AssignedSources>| {
+        image.1.borrow_mut().clear();
+        let (mut rows, mut assigned, mut links, mut names) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let report = walk_plans_ordered_with_sources(
+            &image,
+            BASE,
+            &groups[..census.root_outcome.len()],
+            &visits,
+            &SuccessorLists::default(),
+            census.outcome,
+            &mut rows,
+            &mut assigned,
+            &mut links,
+            &mut names,
+            &mut Vec::new(),
+            hosts.as_deref_mut(),
+        );
+        (
+            report.outcome,
+            rows,
+            assigned,
+            links,
+            names,
+            image.1.borrow().clone(),
+        )
+    };
+    let baseline = run(None);
+    let mut complete = AssignedSources::try_with_capacity(3).unwrap();
+    assert_eq!(run(Some(&mut complete)), baseline);
+    assert_eq!(complete.pointers(), &[PLAN_UNIT; 3]);
+    assert_eq!(complete.outcome(), Outcome::Rows { len: 3 });
+    let mut short = AssignedSources::try_with_capacity(1).unwrap();
+    assert_eq!(run(Some(&mut short)), baseline);
+    assert_eq!(short.pointers(), &[PLAN_UNIT]);
+    assert_eq!(short.required(), 3);
+    assert!(matches!(short.outcome(), Outcome::Unavailable { .. }));
+    short.fail("worker unwind");
+    assert_eq!(short.used(), 1);
+    assert_eq!(short.required(), 3);
+    assert_eq!(
+        short.outcome(),
+        Outcome::Unavailable {
+            reason: "worker unwind"
+        }
+    );
 }
 
 /// Gathered records give the per-field walk's rows, arenas and first

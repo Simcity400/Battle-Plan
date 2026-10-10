@@ -38,8 +38,8 @@ const LAYOUT: RecordLayout<'static> = match RecordLayout::new(&FIELDS, ROW) {
 };
 
 /// The roster job gathers these fields once on role hours, after its roster
-/// pass, from the occurrences of its complete portrait census. Storage follows
-/// the live roster: a longer roster is not published and grows off-thread.
+/// pass, from the occurrences of its complete portrait census. Worker storage
+/// grows from the original roster before this census can be published.
 #[derive(Debug)]
 pub(crate) struct RoleCensus {
     pointers: Vec<usize>,
@@ -54,6 +54,15 @@ pub(crate) struct RoleCensus {
 /// acquired. Role jobs size their visit lists from it: a pass visits at most
 /// every occurrence.
 static LIVE_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static LIVE_HINT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub(super) fn remember_roster(count: usize) {
+    LIVE_HINT.fetch_max(count, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(super) fn initial_len() -> usize {
+    live_len().max(LIVE_HINT.load(std::sync::atomic::Ordering::Relaxed))
+}
 
 /// Occurrences in the live roster, as last observed; 0 before the first
 /// role census.
@@ -62,9 +71,6 @@ pub(crate) fn live_len() -> usize {
 }
 
 impl RoleCensus {
-    /// Starting capacity only; the first capture contained about 13,000 characters.
-    pub const INITIAL_CAPACITY: usize = 16_384;
-
     pub fn new(capacity: usize) -> Self {
         Self {
             pointers: owned_vec(vec(capacity)),
@@ -118,18 +124,22 @@ impl RoleCensus {
     /// Gather every occurrence's fields in one guarded call. `census` must be
     /// complete and freshly certified for `scope` in this callback; the
     /// census is admitted only when every field of every occurrence copied.
-    pub fn acquire(
+    pub(super) fn acquire_with_growth(
         &mut self,
         memory: &impl Memory,
         scope: (usize, usize),
         census: &[PortraitIdentity],
         historical: usize,
+        growing: bool,
     ) -> bool {
         self.scope = scope;
         self.complete = false;
         self.required = census.len();
         LIVE_LEN.store(census.len(), std::sync::atomic::Ordering::Relaxed);
         self.historical = historical;
+        if growing {
+            self.grow();
+        }
         if census.len() > self.fits() || historical > census.len() {
             return false;
         }

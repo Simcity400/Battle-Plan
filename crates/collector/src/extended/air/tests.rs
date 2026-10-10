@@ -67,9 +67,497 @@ fn patrol_combats_truncate_and_refuse_short_scratch() {
 
 use super::*;
 
+impl Capacities {
+    pub(crate) fn fixture() -> Self {
+        Self {
+            rows: [
+                8192, 2048, 4096, 8192, 16_384, 1024, 2048, 4096, 1024, 64, 64,
+            ],
+            ace_names: 65_536,
+            wings: 8192,
+            sorties: air_sorties::Capacities {
+                missions: 4096,
+                reached: 65_536,
+                rows: 2048,
+                keys: 8192,
+                hosts: 256,
+            },
+            scores: ScoreCapacities {
+                rows: 4096,
+                regions: 0,
+                countries: 0,
+            },
+            transport: [0; 5],
+        }
+    }
+}
+
+impl AirStatsJob {
+    pub(crate) fn fixture() -> Self {
+        Self {
+            log: RawLog::new(1 << 16, 4 << 20),
+            ..Self::default()
+        }
+    }
+}
+
+impl AirHistoryJob {
+    pub(crate) fn fixture() -> Self {
+        let mut job = Self {
+            history: vec![Default::default(); 8192],
+            damage: vec![Default::default(); 16_384],
+            ..Self::default()
+        };
+        job.update_capacity_charge();
+        job
+    }
+}
+
+impl AirBasesJob {
+    pub(crate) fn fixture() -> Self {
+        let mut job = Self {
+            log: RawLog::new(1 << 17, 8 << 20),
+            census: Vec::with_capacity(1024),
+            seen_links: Vec::with_capacity(1024),
+            seen_link_index: vec![usize::MAX; 1024],
+            ..Self::default()
+        };
+        job.carrier.presize(cair_base::CarrierDemand {
+            bases: 2048,
+            registrations: 2048,
+            raw_spans: 4096,
+            raw_bytes: 256 << 10,
+            ..Default::default()
+        });
+        job.update_capacity_charge();
+        job
+    }
+}
+
+impl AirWingJob {
+    pub(crate) fn fixture() -> Self {
+        let mut job = Self {
+            names: vec![0; 65_536],
+            map_rows: vec![Default::default(); 8192],
+            transport: cair_wing::transport_operands::Scratch::owned(8192),
+            sources: vec![Default::default(); 8192],
+            identities: vec![Default::default(); 8192],
+            equipment: vec![Default::default(); 8192],
+            cumulative: vec![Default::default(); 4096],
+            memberships: vec![Default::default(); 8192],
+            ..Self::default()
+        };
+        job.update_capacity_charge();
+        job
+    }
+}
+
+#[test]
+fn growing_air_raw_jobs_and_decode_publish_complete_mod_populations_from_cold_storage() {
+    let capacity = Capacities {
+        rows: [0; SIZED],
+        ace_names: 0,
+        ..Default::default()
+    };
+    let mut captured = Captured::with_capacities(&capacity);
+    let mut stats = AirStatsJob {
+        log: RawLog::new(0, 0),
+        ..Default::default()
+    };
+    let mut bases = AirBasesJob {
+        log: RawLog::new(0, 0),
+        ..Default::default()
+    };
+    let mut history = AirHistoryJob::default();
+    for count in [5_000_usize, 12_000] {
+        let bytes = stats_test_kit::mod_fixture(count);
+        let report = copy_air_stats_refresh_growing(
+            &stats_test_kit::memory(&bytes),
+            AirStatsCopyContext {
+                base: stats_test_kit::BASE,
+                game_state: stats_test_kit::GAME_STATE,
+                hour: 0,
+                force_full: true,
+            },
+            &mut stats,
+        );
+        assert!(report.raw_ok);
+        captured.statistics.rows.truncate(0);
+        decode_air_stats_payload(&mut captured, stats_test_kit::BASE, &stats, &mut [0]);
+        assert_eq!(captured.statistics.outcome, Outcome::Rows { len: count });
+
+        let bytes = air_bases_test_kit::mod_fixture(count);
+        let report = copy_air_bases_refresh_growing(
+            &air_bases_test_kit::memory(&bytes),
+            AirBasesCopyContext {
+                base: air_bases_test_kit::BASE,
+                game_state: air_bases_test_kit::GAME_STATE,
+                hour: 0,
+                force_full: true,
+                transport_admission: Default::default(),
+            },
+            &mut bases,
+        );
+        assert!(report.raw_ok);
+        captured.bases.rows.truncate(0);
+        captured.aces.rows.truncate(0);
+        captured.names.first.truncate(0);
+        captured.decode_air_bases_payload(air_bases_test_kit::BASE, &bases, &mut [0; 3]);
+        assert_eq!(captured.bases.outcome, Outcome::Rows { len: count + 2 });
+        assert_eq!(captured.aces.outcome, Outcome::Rows { len: count });
+        assert_eq!(captured.names.len, captured.names.required);
+
+        let bytes = air_history_test_kit::mod_fixture(count);
+        let mut direct_history = Vec::new();
+        let mut direct_damage = Vec::new();
+        let direct = cair_region_combat_data::walk_world_growing(
+            &air_history_test_kit::memory(&bytes),
+            air_history_test_kit::BASE,
+            air_history_test_kit::GAME_STATE,
+            &mut direct_history,
+            &mut direct_damage,
+        );
+        let report = copy_air_history_refresh_growing(
+            &air_history_test_kit::memory(&bytes),
+            AirHistoryCopyContext {
+                base: air_history_test_kit::BASE,
+                game_state: air_history_test_kit::GAME_STATE,
+                hour: 0,
+                force_full: true,
+                history_limit: 0,
+                damage_limit: 0,
+            },
+            &mut history,
+        );
+        assert!(report.raw_ok);
+        captured.history.rows.truncate(0);
+        captured.damage.rows.truncate(0);
+        captured.decode_air_history_payload(&history, &mut [0; 2]);
+        assert_eq!(captured.history.outcome, direct.records);
+        assert_eq!(captured.damage.outcome, direct.damage);
+        assert_eq!(
+            &captured.history.rows[..direct.records.len()],
+            &direct_history[..direct.records.len()]
+        );
+        assert_eq!(
+            &captured.damage.rows[..direct.damage.len()],
+            &direct_damage[..direct.damage.len()]
+        );
+        assert_eq!(captured.history.outcome, Outcome::Rows { len: count + 1 });
+    }
+}
+
+#[test]
+fn worker_air_growth_hands_off_complete_mod_rosters_at_5000_countries() {
+    use crate::{map_capture::MapCaptured, unit_scale_tests::fixture};
+    const WINGS: usize = 12_000;
+    let world = fixture::build(fixture::Shape {
+        countries: 5000,
+        divisions: 0,
+        wings: WINGS,
+        planes: WINGS,
+        ships: 0,
+    });
+    let memory = world.live();
+    let mut job = AirWingJob::new();
+    job.map_rows.resize(1, Default::default());
+    job.sources.resize(1, Default::default());
+    job.identities.resize(1, Default::default());
+    job.names.resize(1, 0);
+    let hour = (0..24)
+        .find(|&hour| {
+            !replay::cadence::should_walk(TableId::WingCumulative, hour, false)
+                && !replay::cadence::should_walk(TableId::AirTheatreMembers, hour, false)
+        })
+        .unwrap();
+    let report = copy_air_refresh_growing(
+        &memory,
+        AirWingCopyContext {
+            base: world.base,
+            game_state: world.state,
+            hour,
+            force_full: false,
+            limits: [1, 0, 0],
+            naval_limit: 0,
+            game_score: false,
+        },
+        &mut job,
+    );
+    assert!(report.raw_ok);
+    assert_eq!(job.map_outcome, Outcome::Rows { len: WINGS });
+    assert_eq!(job.source_outcome, Outcome::Rows { len: WINGS });
+    assert_eq!(job.identity_outcome, Outcome::Rows { len: WINGS });
+    assert_eq!((job.names_len, job.name_failures), (WINGS * 4, 0));
+
+    let mut map = MapCaptured::new();
+    map.air_wings.rows.truncate(1);
+    map.air_wing_names.truncate(1);
+    let capacity = Capacities {
+        wings: 1,
+        ..Default::default()
+    };
+    let mut captured = Captured::with_capacities(&capacity);
+    let old_rows = map.air_wings.rows.as_ptr();
+    let old_names = map.air_wing_names.as_ptr();
+    let old_identities = captured.identities.first.as_ptr();
+    let owned_rows = job.map_rows.as_ptr();
+    let owned_names = job.names.as_ptr();
+    let owned_identities = job.identities.as_ptr();
+    map.install_owned_air(&mut job);
+    captured.install_owned_mission_identities(&mut job);
+    assert_eq!(map.air_wings.rows.as_ptr(), owned_rows);
+    assert_eq!(map.air_wing_names.as_ptr(), owned_names);
+    assert_eq!(captured.identities.first.as_ptr(), owned_identities);
+    assert_eq!(job.map_rows.as_ptr(), old_rows);
+    assert_eq!(job.names.as_ptr(), old_names);
+    assert_eq!(job.identities.as_ptr(), old_identities);
+    assert_eq!(map.air_wings.outcome, Outcome::Rows { len: WINGS });
+    assert_eq!(captured.identity_outcome, Outcome::Rows { len: WINGS });
+    assert_eq!(map.air_wing_names_len, WINGS * 4);
+    assert!(
+        map.air_wings.rows[..WINGS]
+            .iter()
+            .enumerate()
+            .all(|(ordinal, row)| row.name == Some((ordinal * 4, 4)))
+    );
+}
+
+#[test]
+fn worker_wing_extensions_and_decode_follow_first_hour_live_demand() {
+    use crate::unit_scale_tests::fixture;
+    const WINGS: usize = 12_000;
+    let world = fixture::build(fixture::Shape {
+        countries: 5000,
+        divisions: 0,
+        wings: WINGS,
+        planes: WINGS,
+        ships: 0,
+    });
+    let mut job = AirWingJob::new();
+    job.equipment.truncate(1);
+    job.cumulative.truncate(1);
+    let report = copy_air_refresh_growing(
+        &world.live(),
+        AirWingCopyContext {
+            base: world.base,
+            game_state: world.state,
+            hour: 0,
+            force_full: true,
+            limits: [1; 3],
+            naval_limit: 0,
+            game_score: false,
+        },
+        &mut job,
+    );
+    assert!(report.raw_ok);
+    assert_eq!(job.equipment_outcome, Outcome::Rows { len: WINGS });
+    assert_eq!(job.cumulative_outcome, Outcome::Rows { len: WINGS });
+    assert_eq!(job.required[1..], [WINGS; 2]);
+    assert_eq!(job.naval_outcome, Outcome::Rows { len: WINGS });
+    assert_eq!(job.naval_membership_outcome, Outcome::Rows { len: WINGS });
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    captured.equipment.rows.truncate(1);
+    captured.cumulative.rows.truncate(1);
+    decode_air_payload(&mut captured, &job, &mut [0; 2]);
+    assert_eq!(captured.equipment.outcome, Outcome::Rows { len: WINGS });
+    assert_eq!(captured.cumulative.outcome, Outcome::Rows { len: WINGS });
+    assert_eq!(captured.equipment.rows[..WINGS], job.equipment[..WINGS]);
+    assert_eq!(captured.cumulative.rows[..WINGS], job.cumulative[..WINGS]);
+}
+
+#[test]
+fn zero_hint_wing_worker_publishes_first_and_later_populations_for_5000_countries() {
+    use crate::unit_scale_tests::fixture;
+
+    let mut job = AirWingJob::default();
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    for (hour, count) in [5_000, 12_000].into_iter().enumerate() {
+        let world = fixture::build(fixture::Shape {
+            countries: 5_000,
+            divisions: 0,
+            wings: count,
+            planes: count,
+            ships: 0,
+        });
+        let report = copy_air_refresh_growing(
+            &world.live(),
+            AirWingCopyContext {
+                base: world.base,
+                game_state: world.state,
+                hour: hour as i32,
+                force_full: true,
+                limits: [0; 3],
+                naval_limit: 0,
+                game_score: false,
+            },
+            &mut job,
+        );
+        assert!(report.raw_ok);
+        let complete = Outcome::Rows { len: count };
+        assert_eq!(job.map_outcome, complete);
+        assert_eq!(job.source_outcome, complete);
+        assert_eq!(job.identity_outcome, complete);
+        assert_eq!(job.equipment_outcome, complete);
+        assert_eq!(job.cumulative_outcome, complete);
+        assert_eq!(job.naval_outcome, complete);
+        assert_eq!(job.naval_membership_outcome, complete);
+        assert_eq!((job.names_len, job.name_failures), (count * 4, 0));
+        decode_air_payload(&mut captured, &job, &mut [0; 2]);
+        assert_eq!(captured.equipment.outcome, complete);
+        assert_eq!(captured.cumulative.outcome, complete);
+        assert_eq!(captured.equipment.rows[..count], job.equipment[..count]);
+        assert_eq!(captured.cumulative.rows[..count], job.cumulative[..count]);
+        // The next loan has no frame grants even after its owned vectors were handed off.
+        let mut map = crate::map_capture::MapCaptured::new();
+        map.install_owned_air(&mut job);
+        captured.install_owned_mission_identities(&mut job);
+        assert_eq!(map.air_wings.outcome, complete);
+        assert_eq!(captured.identity_outcome, complete);
+    }
+}
+
+#[test]
+fn zero_hint_wing_growth_preserves_fixed_original_read_order_and_first_faults() {
+    use super::wing_test_kit as kit;
+    struct Observed<'a> {
+        inner: engine::memory::SliceMemory<'a>,
+        fault: Option<(usize, usize)>,
+        failed: std::cell::Cell<bool>,
+        calls: std::cell::RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Observed<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let request = (address, output.len());
+            self.calls.borrow_mut().push(request);
+            if self.fault == Some(request) && !self.failed.replace(true) {
+                return false;
+            }
+            self.inner.copy(address, output)
+        }
+    }
+    let bytes = kit::fixture();
+    let context = AirWingCopyContext {
+        base: kit::BASE,
+        game_state: kit::GAME_STATE,
+        hour: 0,
+        force_full: true,
+        limits: [8192, 8192, 4096],
+        naval_limit: 8192,
+        game_score: false,
+    };
+    let baseline = Observed {
+        inner: kit::memory(&bytes),
+        fault: None,
+        failed: Default::default(),
+        calls: Default::default(),
+    };
+    assert!(copy_air_refresh(&baseline, context, &mut AirWingJob::fixture()).raw_ok);
+    let requests: std::collections::BTreeSet<_> = baseline.calls.into_inner().into_iter().collect();
+    for fault in std::iter::once(None).chain(requests.into_iter().map(Some)) {
+        let fixed_memory = Observed {
+            inner: kit::memory(&bytes),
+            fault,
+            failed: Default::default(),
+            calls: Default::default(),
+        };
+        let growing_memory = Observed {
+            inner: kit::memory(&bytes),
+            fault,
+            failed: Default::default(),
+            calls: Default::default(),
+        };
+        let mut fixed = AirWingJob::fixture();
+        let mut growing = AirWingJob::default();
+        let fixed_report = copy_air_refresh(&fixed_memory, context, &mut fixed);
+        let growing_report = copy_air_refresh_growing(
+            &growing_memory,
+            AirWingCopyContext {
+                limits: [0; 3],
+                naval_limit: 0,
+                ..context
+            },
+            &mut growing,
+        );
+        assert_eq!(
+            growing_report.raw_ok, fixed_report.raw_ok,
+            "fault {fault:?}"
+        );
+        assert_eq!(growing.map_outcome, fixed.map_outcome, "fault {fault:?}");
+        assert_eq!(
+            growing.source_outcome, fixed.source_outcome,
+            "fault {fault:?}"
+        );
+        assert_eq!(
+            growing.naval_outcome, fixed.naval_outcome,
+            "fault {fault:?}"
+        );
+        assert_eq!(
+            growing.equipment_outcome, fixed.equipment_outcome,
+            "fault {fault:?}"
+        );
+        assert_eq!(
+            growing.cumulative_outcome, fixed.cumulative_outcome,
+            "fault {fault:?}"
+        );
+        assert_eq!(
+            growing_memory.calls.borrow().as_slice(),
+            fixed_memory.calls.borrow().as_slice(),
+            "fault {fault:?}"
+        );
+        assert_eq!(growing_memory.failed.get(), fault.is_some());
+    }
+}
+
+#[test]
+fn yearly_statistics_original_capacities_survive_cold_and_later_owned_decode() {
+    use super::stats_test_kit as kit;
+    let mut job = AirStatsJob::default();
+    let mut captured = Captured::with_capacities(&Capacities::default());
+    for (count, capacity) in [(5_000, 7), (12_000, 97)] {
+        let mut bytes = kit::mod_fixture(count);
+        kit::set_yearly_capacity(&mut bytes, capacity);
+        let memory = kit::memory(&bytes);
+        assert!(
+            copy_air_stats_refresh_growing(
+                &memory,
+                AirStatsCopyContext {
+                    base: kit::BASE,
+                    game_state: kit::GAME_STATE,
+                    hour: 0,
+                    force_full: true,
+                },
+                &mut job,
+            )
+            .raw_ok
+        );
+        decode_air_stats_payload(&mut captured, kit::BASE, &job, &mut [0]);
+        assert_eq!(captured.statistics.outcome, Outcome::Rows { len: count });
+        assert!(
+            captured.statistics.rows[..count]
+                .iter()
+                .enumerate()
+                .all(|(region, row)| {
+                    row.region == region as u32
+                        && row.country == 2
+                        && row.year_slot == capacity - 1
+                        && row.year_window_wrapped == 1
+                        && row.channels
+                            == cloop_history::air_stats::CHANNELS
+                                .map(|channel| 1_000 + channel as i64)
+                })
+        );
+        let mut direct = Vec::new();
+        assert_eq!(
+            cloop_history::walk_growing(&memory, kit::BASE, kit::GAME_STATE, &mut direct),
+            captured.statistics.outcome
+        );
+        assert_eq!(captured.statistics.rows[..count], direct[..count]);
+    }
+}
+
 #[test]
 fn registration_failures_name_the_country_and_region_and_do_not_survive_reset() {
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&Capacities::fixture());
     let reason = "active mission region vector missing or invalid";
     captured.registrations.outcome = Outcome::Unavailable { reason };
     captured.registration_failure = cair_regional_mission::FailureContext {
@@ -113,14 +601,36 @@ fn air_bases_job_capacity_accounting_tracks_all_vectors_through_growth_clear_and
         vector_bytes(&job.census)
             + vector_bytes(&job.seen_links)
             + vector_bytes(&job.seen_link_index)
+            + job.carrier.bytes()
     };
     let initial = LOCAL.snapshot().current.auxiliary_vectors;
     assert_eq!(initial, expected(&job));
+    // Growth responds to observed pressure; an idle job keeps its storage.
+    job.grow();
+    assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, initial);
+    job.required_census = job.census.capacity() + 1;
+    job.required_links = job.seen_links.capacity() + 1;
+    job.carrier.required_index = 3;
+    job.carrier.demand = engine::cair_base::CarrierDemand {
+        bases: 3,
+        registrations: 3,
+        pools: 3,
+        countries: 3,
+        name_bytes: 3,
+        indexed: 3,
+        resolved: 3,
+        country_terms: 3,
+        aces: 3,
+        forecasts: 3,
+        ..Default::default()
+    };
+    assert!(job.grow_for_next());
     job.grow();
     let grown = LOCAL.snapshot().current.auxiliary_vectors;
     assert!(grown > initial);
     assert_eq!(grown, expected(&job));
     assert_eq!(job.seen_link_index.len(), job.seen_links.capacity());
+    assert!(!job.grow_for_next());
     job.seen_link_index[0] = 0;
     job.seen_links.push((1, 1));
     job.clear();
@@ -142,9 +652,68 @@ fn small() -> (Capacities, Captured) {
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
+        transport: [0; 5],
     };
     let captured = Captured::with_capacities(&capacity);
     (capacity, captured)
+}
+
+#[test]
+fn live_transport_headers_admit_all_regions_on_the_first_air_capture() {
+    use engine::{
+        cair_regional_mission::TransportObserver, cpdx_array::Array,
+        cstrategic_air::SlotObservation,
+    };
+    let mut capacity = Capacities::default();
+    capacity.raise_for_transport([5001, 15000, 0, 0, 0]);
+    let mut captured = Captured::with_capacities(&capacity);
+    captured.transport.set_hour(7);
+    let memory = engine::memory::SliceMemory {
+        base: 0,
+        bytes: &[],
+    };
+    let mut observer = captured.transport.observer(
+        &memory,
+        0,
+        0,
+        Err("unreached regions"),
+        Err("unreached modifiers"),
+    );
+    observer.slot(SlotObservation::Domain(5001));
+    observer.slot(SlotObservation::Slot {
+        slot: 0,
+        root: None,
+    });
+    for slot in 1..=5000 {
+        observer.slot(SlotObservation::Slot {
+            slot,
+            root: Some(engine::cstrategic_air::Root {
+                address: 0x1000,
+                country: slot,
+                canonical_slot: slot,
+            }),
+        });
+        observer.root(
+            slot,
+            0x1000,
+            Ok(Array {
+                data: 0x2000,
+                count: 3,
+            }),
+        );
+        for region in 0..3 {
+            observer.region(slot, region, Ok(Array::default()));
+        }
+    }
+    captured.transport.finish(Outcome::Rows { len: 0 });
+    let packet = captured.transport.packet(7).unwrap().unwrap();
+    let countries = packet.countries.unwrap();
+    assert_eq!(countries.len(), 5001);
+    assert!(countries[1..].iter().all(|country| {
+        country.regions.as_ref().is_some_and(|regions| {
+            regions.len() == 3 && regions.iter().all(|region| region.missions == Some(vec![]))
+        })
+    }));
 }
 
 fn complete<S: TableSchema>(table: &TableView) -> &[S::Row] {
@@ -472,7 +1041,7 @@ fn wing_daily_private_fields_and_capacities_do_not_gate_hourly_equipment() {
         }
     }
     let bytes = kit::fixture();
-    let mut job = AirWingJob::new();
+    let mut job = AirWingJob::fixture();
     for hour in 0..24 {
         let cumulative = hour == 16;
         let theatres = hour == 13;
@@ -532,6 +1101,7 @@ fn wing_daily_private_fields_and_capacities_do_not_gate_hourly_equipment() {
             wings: 8192,
             sorties: Default::default(),
             scores: Default::default(),
+            transport: [0; 5],
         });
         decode_air_payload(&mut captured, &job, &mut [0; WING_PACK_N]);
         assert_eq!(captured.equipment.outcome, job.equipment_outcome);
@@ -554,7 +1124,7 @@ fn daily_statistics_and_history_skip_reads_and_capacity_preflight() {
     }
     let mut stats = AirStatsJob::default();
     let mut history = AirHistoryJob::default();
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&Capacities::fixture());
     for hour in 0..24 {
         captured.prepare_hour(hour, false);
         if hour != 5 {
@@ -655,6 +1225,7 @@ fn wing_truncation_matrix_matches_direct_with_same_caps() {
             wings: 8192,
             sorties: Default::default(),
             scores: Default::default(),
+            transport: [0; 5],
         };
         let direct = kit::direct_with(&memory, &capacity);
         let (split, report, _) = kit::split_with(&memory, &capacity);
@@ -671,6 +1242,7 @@ fn wing_truncation_matrix_matches_direct_with_same_caps() {
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
+        transport: [0; 5],
     };
     let (split, _, _) = kit::split_with(&memory, &capacity);
     assert_eq!(split.equipment_outcome, Outcome::Rows { len: 3 });
@@ -772,7 +1344,7 @@ fn shared_wing_map_caps_do_not_bound_extension_or_membership_censuses() {
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
     for map_limit in [0, 1, 2] {
-        let mut first = super::AirWingJob::new();
+        let mut first = super::AirWingJob::fixture();
         let context = super::AirWingCopyContext {
             hour: 0,
             force_full: true,
@@ -811,7 +1383,7 @@ fn shared_wing_naval_cap_keeps_tail_leaf_failure_local() {
     // independently bounded map and extension census.
     bytes[0x34000..0x34008].fill(0);
     let memory = kit::memory(&bytes);
-    let mut first = super::AirWingJob::new();
+    let mut first = super::AirWingJob::fixture();
     let context = super::AirWingCopyContext {
         hour: 0,
         force_full: true,
@@ -842,7 +1414,7 @@ fn stats_split_copy_matches_direct_walk() {
     use engine::memory::{CountedMemory, ReadCounts};
     let bytes = kit::fixture();
     let memory = kit::memory(&bytes);
-    let capacities = Capacities::default();
+    let capacities = Capacities::fixture();
     let direct = kit::direct(&memory, &capacities);
     let memory = CountedMemory::new(memory);
     let capture = read_accounting::Capture::new();
@@ -923,6 +1495,7 @@ fn stats_truncation_matrix_matches_direct_with_same_caps() {
             wings: 8192,
             sorties: Default::default(),
             scores: Default::default(),
+            transport: [0; 5],
         };
         let direct = kit::direct(&memory, &capacities);
         let (split, report, _) = kit::split(&memory, &capacities);
@@ -935,6 +1508,7 @@ fn stats_truncation_matrix_matches_direct_with_same_caps() {
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
+        transport: [0; 5],
     };
     let (split, _, _) = kit::split(&memory, &capacities);
     assert_eq!(split.outcome, Outcome::Rows { len: 2 });
@@ -991,7 +1565,7 @@ fn stats_copy_sizes_cover_documented_read_set() {
         base: kit::BASE,
         game_state: kit::GAME_STATE,
     };
-    let mut job = super::AirStatsJob::new();
+    let mut job = super::AirStatsJob::fixture();
     let report = super::copy_air_stats_refresh(&memory, ctx, &mut job);
     assert!(report.raw_ok);
     let sizes = memory.sizes.borrow().clone();
@@ -1169,6 +1743,8 @@ fn air_bases_split_copy_matches_direct_walk_on_fault_matrix() {
         kit::CONT1 + engine::ccountry_air_container::COUNTRY,
         kit::POOL0,
         kit::W0,
+        kit::W0 + engine::cair_wing::POOL,
+        kit::W1 + engine::cair_wing::POOL + 7,
         // Aces-private spans: only aces blocks.
         kit::C0 + engine::ccountry::ACES,
         kit::A0,
@@ -1246,18 +1822,37 @@ fn air_bases_registration_demand_counts_duplicate_occurrences_and_empty_rows() {
             2
         );
         assert_eq!(split.regs.wings.len(), 12);
+        assert_eq!(
+            split.regs.wings,
+            [
+                kit::WING_HANDLE_0,
+                kit::WING_HANDLE_1,
+                kit::WING_HANDLE_0,
+                kit::WING_HANDLE_0,
+                kit::WING_HANDLE_1,
+                kit::WING_HANDLE_0,
+            ]
+            .repeat(2)
+        );
         job.clear();
         assert_eq!(job.registration_demand, None);
     }
     // An invalid repeated wing still refuses the table even though the
     // original acquisition already saw the container and pool counts.
-    kit::put64(&mut bytes, kit::W0 + cair_wing::REFERENCE_TYPE, 0);
-    let memory = kit::memory(&bytes);
-    let direct = kit::collect_typed(&memory, [8; SIZED], 256, 0, 0);
-    let (split, _, job) = kit::collect_split(&memory, [8; SIZED], 256, 0, 0);
-    assert!(matches!(split.regs.outcome, Outcome::Unavailable { .. }));
-    assert_eq!(job.registration_demand, None);
-    kit::assert_matches_direct(&split, &direct);
+    for (address, value) in [
+        (kit::W0 + cair_wing::REFERENCE_TYPE, 0),
+        (kit::W0 + cair_wing::POOL, 0),
+        (kit::W0 + cair_wing::POOL, kit::POOL0 as u64 + 0x100),
+    ] {
+        let mut invalid = bytes.clone();
+        kit::put64(&mut invalid, address, value);
+        let memory = kit::memory(&invalid);
+        let direct = kit::collect_typed(&memory, [8; SIZED], 256, 0, 0);
+        let (split, _, job) = kit::collect_split(&memory, [8; SIZED], 256, 0, 0);
+        assert!(matches!(split.regs.outcome, Outcome::Unavailable { .. }));
+        assert_eq!(job.registration_demand, None);
+        kit::assert_matches_direct(&split, &direct);
+    }
 }
 
 #[test]
@@ -1669,8 +2264,8 @@ fn air_bases_link_index_keeps_the_complete_capture_read_trace() {
         inner: kit::memory(&bytes),
         calls: Default::default(),
     };
-    let mut indexed = AirBasesJob::new();
-    let mut linear = AirBasesJob::new();
+    let mut indexed = AirBasesJob::fixture();
+    let mut linear = AirBasesJob::fixture();
     linear.seen_link_index.clear();
     for _ in 0..2 {
         copy_air_bases_pass(
@@ -1732,10 +2327,13 @@ fn air_bases_staging_overflow_falls_back_to_typed_walk() {
         force_full: true,
         base: kit::BASE,
         game_state: kit::GAME_STATE,
+        transport_admission: Default::default(),
     };
     let mut tiny = AirBasesJob {
         log: crate::raw::RawLog::new(1, 1),
+        carrier: super::carrier::Job::default(),
         game_state: 0,
+        transport_context: None,
         registration_demand: None,
         aces_active: false,
         census: Vec::new(),
@@ -1858,8 +2456,9 @@ fn air_bases_census_grows_once_to_five_thousand_countries() {
         force_full: false,
         base: 0,
         game_state: GAME,
+        transport_admission: Default::default(),
     };
-    let mut job = AirBasesJob::new();
+    let mut job = AirBasesJob::fixture();
     assert!(job.census.capacity() < COUNTRIES as usize - 1);
     let report = copy_air_bases_refresh(&memory, ctx, &mut job);
     assert!(!report.raw_ok, "the initial census store overflows");
@@ -1873,10 +2472,10 @@ fn air_bases_census_grows_once_to_five_thousand_countries() {
     assert_eq!(job.seen_link_index.len(), job.seen_links.capacity());
     let report = copy_air_bases_refresh(&memory, ctx, &mut job);
     assert!(report.raw_ok);
-    assert!(!job.grow_for_next());
+    super::air_bases_test_kit::assert_no_mandatory_growth(&job);
 
     let rows = COUNTRIES as usize;
-    let mut air = Captured::with_capacities(&Capacities::default());
+    let mut air = Captured::with_capacities(&Capacities::fixture());
     let mut ticks = [0; AIR_BASES_N];
     air.decode_air_bases_payload(0, &job, &mut ticks);
     let mut bases = vec![cair_base::Row::default(); 4];
@@ -1924,37 +2523,21 @@ fn kit_memory(bytes: &[u8]) -> engine::memory::SliceMemory<'_> {
 }
 
 #[test]
-fn air_bases_pools_cover_appendix_worst_case() {
-    // Worst-case caps proof: the steady-state pools exceed a
-    // conservative span/byte estimate built from the appendix census
-    // (396 bases, 5,148 registrations, 57 aces, 439 countries), so live
-    // refreshes never take the overflow fallback in steady state.
-    use super::AirBasesJob;
-    let job = AirBasesJob::new();
-    // Census: 2 headers + 439 slots x (pointer, vtable, id, 3 links,
-    // canonical pointer). Vectors: manager + vtable + 4 headers + ~500
-    // element pointers + identities. Bases detail: ~500 x 6 field spans.
-    // Registrations: 5,148 rows x (container pointer, vtable, country,
-    // link, pools header) + pools/blocks/headers + ~10k wing takes.
-    // Aces: 439 roster headers + 57 x ~13 object/name spans.
-    let spans =
-        2 + 439 * 7 + 6 + 500 * 2 + 500 * 6 + 5_148 * 5 + 5_148 * 3 + 10_000 + 439 + 57 * 13;
-    assert!(
-        job.log.spans.capacity() >= spans,
-        "span cap {} < worst case {spans}",
-        job.log.spans.capacity()
-    );
-    // Bytes: census words + identities + host blocks + container/pool
-    // headers + wing identities + ace objects and names, with headroom.
-    let bytes = 439 * 64 + 500 * 48 + 500 * 64 + 5_148 * 64 + 10_000 * 40 + 57 * 512;
-    assert!(
-        job.log.bytes.capacity() >= bytes,
-        "byte cap {} < worst case {bytes}",
-        job.log.bytes.capacity()
-    );
-    assert!(job.census.capacity() >= 439);
-    assert!(job.seen_links.capacity() >= 439);
-    assert_eq!(job.seen_link_index.len(), job.seen_links.capacity());
+fn air_raw_job_constructors_wait_for_live_demand() {
+    let bases = AirBasesJob::new();
+    assert_eq!(bases.log.spans.capacity(), 0);
+    assert_eq!(bases.log.bytes.capacity(), 0);
+    let stats = AirStatsJob::new();
+    assert_eq!(stats.log.spans.capacity(), 0);
+    assert_eq!(stats.log.bytes.capacity(), 0);
+    let wing = AirWingJob::new();
+    assert!(wing.map_rows.is_empty());
+    assert!(wing.sources.is_empty());
+    assert!(wing.identities.is_empty());
+    assert!(wing.equipment.is_empty());
+    assert!(wing.cumulative.is_empty());
+    assert!(wing.memberships.is_empty());
+    assert!(wing.naval_memberships.is_empty());
 }
 
 #[test]
@@ -2170,10 +2753,10 @@ fn air_history_staging_overflow_falls_back_to_typed_walk() {
 }
 
 #[test]
-fn air_history_pools_cover_appendix_worst_case() {
+fn air_history_constructor_waits_for_original_headers() {
     let job = AirHistoryJob::new();
-    assert!(job.history.len() >= 1_341);
-    assert!(job.damage.len() >= 500);
+    assert!(job.history.is_empty());
+    assert!(job.damage.is_empty());
 }
 
 #[test]
@@ -2229,7 +2812,7 @@ fn air_history_seed_covers_full_country_by_region_null_pointer_census() {
             512,
         );
     }
-    let mut job = AirHistoryJob::new();
+    let mut job = AirHistoryJob::fixture();
     acquire_air_history_pass(
         &mut job,
         &kit::memory(&bytes),
@@ -2289,7 +2872,7 @@ fn air_history_preflights_both_buffers_before_source_reads() {
         }
     }
     for short_history in [false, true] {
-        let mut job = AirHistoryJob::new();
+        let mut job = AirHistoryJob::fixture();
         if short_history {
             job.history.clear();
         } else {
@@ -2346,7 +2929,7 @@ fn air_history_owned_walk_preserves_exact_read_order_and_fault_prefix_without_re
         };
         let expected = kit::direct(&memory);
         let calls = std::mem::take(&mut *memory.calls.borrow_mut());
-        let mut job = AirHistoryJob::new();
+        let mut job = AirHistoryJob::fixture();
         acquire_air_history_pass(&mut job, &memory, kit::BASE, kit::GAME_STATE, 8192, 16_384);
         assert!(job.acquired);
         assert_eq!(job.history_result, expected.history_outcome);
@@ -2360,7 +2943,7 @@ fn air_history_worker_installs_only_admitted_owned_prefix_before_recycle() {
     use super::air_history_test_kit as kit;
     let bytes = kit::fixture();
     let (_, _, mut job) = kit::split(&kit::memory(&bytes));
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&Capacities::fixture());
     captured.history.rows[4].planes = 123;
     job.history[4].planes = 456;
     captured.decode_air_history_payload(&job, &mut [0; 2]);
@@ -2399,4 +2982,66 @@ fn air_history_capacity_charge_follows_owned_payload_growth() {
     assert_eq!(LOCAL.snapshot().current, capacity);
     drop(job);
     assert_eq!(LOCAL.snapshot().current, Default::default());
+}
+
+#[test]
+fn scenario_history_regions_do_not_depend_on_a_naval_combat_census() {
+    let wings = [
+        WingIdentity {
+            wing: 1,
+            region: Some(9),
+            ..Default::default()
+        },
+        WingIdentity {
+            wing: 2,
+            region: Some(3),
+            ..Default::default()
+        },
+    ];
+    let registrations = [
+        cair_regional_mission::Row {
+            wing: 1,
+            ordinal: 0,
+        },
+        cair_regional_mission::Row {
+            wing: 2,
+            ordinal: 0,
+        },
+    ];
+    let mut handles = [0; 4];
+    let count = scenario_history_regions(
+        &wings,
+        Some(&registrations),
+        Err("naval census unavailable"),
+        &mut handles,
+    )
+    .unwrap();
+    assert_eq!(&handles[..count], &[3, 9]);
+    handles[2..].copy_from_slice(&[5, 9]);
+    let count = scenario_history_regions(
+        &wings,
+        Some(&registrations),
+        Ok((Outcome::Rows { len: 0 }, (2, 2))),
+        &mut handles,
+    )
+    .unwrap();
+    assert_eq!(&handles[..count], &[3, 5, 9]);
+    assert!(
+        scenario_history_regions(
+            &wings,
+            None,
+            Ok((Outcome::Rows { len: 0 }, (0, 0))),
+            &mut handles
+        )
+        .is_err()
+    );
+    assert!(
+        scenario_history_regions(
+            &wings,
+            Some(&registrations),
+            Ok((Outcome::Rows { len: 0 }, (0, 2))),
+            &mut handles[..2]
+        )
+        .is_err()
+    );
 }

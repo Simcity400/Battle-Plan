@@ -88,7 +88,10 @@ pub fn word_demand(memory: &impl Memory, base: usize, state: usize) -> Result<us
                     .ok_or("destroyed combat address overflow")?;
                 let combats = Array::read(memory, combats_at, 8)
                     .ok_or("destroyed division combat header invalid")?;
-                add(destruction_words(combats))
+                add(destruction_words(combats))?;
+                // 140C7A1E1 -> 140CCC7F0 supplies the selected killer in
+                // a separate collector observation for this native entry.
+                add(4)
             },
         )?;
         if Array::read(memory, roster_at, 8) != Some(divisions) {
@@ -472,6 +475,9 @@ pub const FINALIZE_SENTINEL: [u8; 16] = [
 ];
 /// Sole caller 140C7A1E1 is the destruction routine 140C79E70. Arguments are
 /// old province,new province,dying army,equipment pool,selected killer army.
+/// Deletion is deferred until 140C7A301 -> 1401D6FE0. Hourly 140C78A90
+/// continues into movement 140BF0300 -> 140BF2890 after its destruction;
+/// preserve each invocation even when the dying army handle repeats.
 pub const DESTROY_RVA: usize = 0xccc7f0;
 /// Destruction entry, before leader XP 140C05400 and history 1414344F0 can
 /// run effects 140C0E400/141434770/141438E90. Snapshot the original country
@@ -978,7 +984,7 @@ mod tests {
         }
         assert_eq!(
             word_demand(&world.memory(), world.module, world.game_state()),
-            Ok(50_000)
+            Ok(70_000)
         );
         // A live combat-reference roster can grow without adding a country.
         let roster =
@@ -988,7 +994,7 @@ mod tests {
         world.array(army + cunit::COMBAT_REFERENCE_DATA, combats, 5);
         assert_eq!(
             word_demand(&world.memory(), world.module, world.game_state()),
-            Ok(50_005)
+            Ok(70_005)
         );
     }
     #[test]

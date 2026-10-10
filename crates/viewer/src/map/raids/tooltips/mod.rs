@@ -38,6 +38,9 @@ pub struct Hit {
     pub origin: [f32; 2],
     pub size: [f32; 2],
     pub key: Key,
+    pub layer: u64,
+    /// Unsupported native hit shapes block lower windows without dispatching observers.
+    pub supported: bool,
 }
 impl Hit {
     pub fn contains(&self, point: [f32; 2]) -> bool {
@@ -95,11 +98,15 @@ mod basics {
                 origin: [1., 2.],
                 size: [8., 9.],
                 key: key(1),
+                layer: 0,
+                supported: true,
             },
             Hit {
                 origin: [3., 4.],
                 size: [8., 9.],
                 key: key(2),
+                layer: 0,
+                supported: true,
             },
         ];
         assert_eq!(

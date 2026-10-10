@@ -52,13 +52,25 @@ pub struct Capacities {
 impl Default for Capacities {
     fn default() -> Self {
         Self {
-            walk: native::Capacity::default(),
-            core_links: 16_384,
+            walk: native::Capacity::zero(),
+            core_links: 0,
         }
     }
 }
 
 impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+    ) -> Result<(), &'static str> {
+        let (walk, core_links) = native::demand(memory, base, game_state)?;
+        self.walk.raise(&walk);
+        self.core_links = self.core_links.max(core_links);
+        Ok(())
+    }
+
     /// Presize the per-country buffers from the country registry, so a large
     /// mod's first hour is not truncated. Never lowers a capacity.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
@@ -201,8 +213,8 @@ impl Captured {
         &self.countries
     }
 
-    /// Without the families' owner stores (the inline fallback): a full read
-    /// of every owner.
+    /// Fixture fixed-storage read without the families' owner stores.
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -217,6 +229,7 @@ impl Captured {
     /// Scan the state and country censuses into `stores` with a constant
     /// print, then read this hour's owner slice and every new or unpublished
     /// owner.
+    #[cfg(test)]
     pub(crate) fn capture_sliced(
         &mut self,
         memory: &impl Memory,
@@ -225,6 +238,33 @@ impl Captured {
         hour: i32,
         force_full: bool,
         stores: Option<Stores<'_>>,
+    ) -> [u64; N] {
+        self.capture_sliced_with(memory, base, game_state, hour, force_full, stores, false)
+    }
+
+    /// Worker-only: continue each original walk in its owned growing storage.
+    pub(crate) fn capture_sliced_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        stores: Option<Stores<'_>>,
+    ) -> [u64; N] {
+        self.capture_sliced_with(memory, base, game_state, hour, force_full, stores, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_sliced_with(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        stores: Option<Stores<'_>>,
+        growing: bool,
     ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         self.reset();
@@ -277,7 +317,11 @@ impl Captured {
             states: &|state| states.contains(state),
             countries: &|country| countries.contains(country),
         };
-        let walk = native::walk(memory, base, game_state, &mut self.buffers, select);
+        let walk = if growing {
+            native::walk_growing(memory, base, game_state, &mut self.buffers, select)
+        } else {
+            native::walk(memory, base, game_state, &mut self.buffers, select)
+        };
         let [inputs, resources, modifiers, overrides] = walk.outcomes;
         self.token_bytes = walk.token_bytes;
         let walked = qpc().saturating_sub(started).max(0) as u64;
@@ -301,6 +345,16 @@ impl Captured {
                     },
                 }
             }
+            Ok(()) if growing => native::state_cores_growing(
+                memory,
+                base,
+                game_state,
+                &self.census,
+                &|state| states.contains(state),
+                &mut self.cores,
+                &mut self.core_links,
+                &mut self.core_required,
+            ),
             Ok(()) => native::state_cores(
                 memory,
                 base,

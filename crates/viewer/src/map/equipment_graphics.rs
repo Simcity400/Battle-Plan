@@ -10,6 +10,7 @@ use installed_content::parser::Item;
 use std::collections::BTreeMap;
 
 /// Per-hour memo view; native selects anew on every lookup (1409F1540).
+#[derive(Clone, Copy)]
 pub struct Limits<'a> {
     evaluate: &'a dyn Fn(&[Item], dashboard::triggers::Scopes) -> dashboard::triggers::Eval,
     values: &'a LimitValues,

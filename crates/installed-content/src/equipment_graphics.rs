@@ -64,10 +64,13 @@ fn insert(candidates: &mut Vec<Candidate>, candidate: Candidate, after_equal: bo
 /// Callers must establish complete simulation inputs before constructing this.
 #[derive(Clone, Copy, Debug)]
 pub struct Context<'a> {
+    /// A real equipment NAME, including an authored empty name (1409E5170).
     pub equipment: &'a str,
-    pub archetype: &'a str,
-    /// Family equipment key and its archetype, if different from equipment.
-    pub family: Option<(&'a str, &'a str)>,
+    /// None for the native null object; Some("") is a real empty NAME.
+    /// Their cached hashes differ (140C82B50, 140BBA1B0, data 1427C79D0).
+    pub archetype: Option<&'a str>,
+    /// Family equipment key and its optional archetype, if different from equipment.
+    pub family: Option<(&'a str, Option<&'a str>)>,
     pub subunit: Option<&'a str>,
     /// Ruling ideology group of the variant owner, not its leader's subtype.
     pub ideology: Option<&'a str>,
@@ -569,6 +572,26 @@ impl Content {
         Ok(candidates)
     }
 
+    /// `GetAircraftGraphicalEquipmentOverride@1409F7070`: collect context,
+    /// equipment and family pools, stably sort descending model weight
+    /// (`1409F52D0/1409F54C0`), then scan each +0xB0 list backwards. This
+    /// selector returns the first declared name directly; it does not insert
+    /// or deduplicate legacy candidates. A refused declaration still exists.
+    pub fn aircraft_override(
+        &self,
+        context: &Context<'_>,
+        limits: &impl PoolLimits,
+        declared: impl Fn(&str) -> bool,
+    ) -> Result<Option<String>, String> {
+        let mut pools = self.matching(context, limits, |pool| !pool.models.is_empty())?;
+        pools.sort_by_key(|pool| std::cmp::Reverse(pool.weight()));
+        Ok(pools
+            .into_iter()
+            .flat_map(|pool| pool.models.iter().rev())
+            .find(|name| declared(name))
+            .cloned())
+    }
+
     /// pools matching `context` that have icons and no `sub_units` filter (the
     /// context's `subunit` should be `None`), stably sorted by `icons_weight` (or
     /// `weight` when that is zero), highest first; each pool's icons tried last to
@@ -620,7 +643,10 @@ impl Content {
                     continue;
                 };
                 // Native deliberately repeats this visit when keys coincide.
-                for name in [equipment, archetype] {
+                // A null object's NAME carries hash -1 (140C82B50,
+                // data 1427C79D0), while a real empty NAME hashes to
+                // 0x811C9DC5 (140BBA1B0); only the latter can match.
+                for name in [Some(equipment), archetype].into_iter().flatten() {
                     let Some(pools) = definitions.get(&name.to_ascii_lowercase()) else {
                         continue;
                     };
@@ -748,7 +774,7 @@ mod tests {
     fn context<'a>(country: Option<&'a str>, factions: &'a [String]) -> Context<'a> {
         Context {
             equipment: "tank_1",
-            archetype: "tank",
+            archetype: Some("tank"),
             family: None,
             subunit: Some("light_armor"),
             ideology: Some("fascism"),
@@ -757,6 +783,108 @@ mod tests {
             faction_tags: factions,
             capital_continent: Some("Europe"),
         }
+    }
+
+    #[test]
+    fn aircraft_override_keeps_pool_visit_ties_and_reverse_strings() {
+        let names = Names {
+            countries: ["AAA".to_owned()].into(),
+            continents: ["europe".to_owned()].into(),
+        };
+        let pools = Content::from_texts(
+            &[br#"
+            AAA = {
+                plane_1 = {
+                    pool = { models = { shared country_first } }
+                    pool = { models = { country_last_a country_last_b } }
+                }
+                plane = { pool = { models = { country_archetype } } }
+            }
+            FACTION_BBB = {
+                plane_1 = { pool = { models = { faction } } }
+                family_1 = { pool = { models = { family_faction } } }
+            }
+            europe = { plane_1 = { pool = { models = { continent } } } }
+            default = {
+                plane_1 = { pool = { models_weight = 3 models = { highest } } }
+                plane = { pool = { models = { default_archetype shared } } }
+                family_1 = { pool = { models = { family_default } } }
+            }
+        "#],
+            &names,
+        )
+        .unwrap();
+        let factions = ["BBB".to_owned()];
+        let context = Context {
+            equipment: "plane_1",
+            archetype: Some("plane"),
+            family: Some(("family_1", Some("family"))),
+            subunit: None,
+            ideology: None,
+            culture: None,
+            country: Some("AAA"),
+            faction_tags: &factions,
+            capital_continent: Some("Europe"),
+        };
+        let visited = std::cell::RefCell::new(Vec::new());
+        assert_eq!(
+            pools.aircraft_override(&context, &|_: &str| Some(true), |name| {
+                visited.borrow_mut().push(name.to_owned());
+                false
+            }),
+            Ok(None)
+        );
+        // Collection precedes selection, weights are stable, strings run
+        // backwards, and this selector does not deduplicate repeated names.
+        assert_eq!(
+            *visited.borrow(),
+            [
+                "highest",
+                "country_last_b",
+                "country_last_a",
+                "country_first",
+                "shared",
+                "country_archetype",
+                "faction",
+                "continent",
+                "shared",
+                "default_archetype",
+                "family_faction",
+                "family_default"
+            ]
+        );
+        assert_eq!(
+            pools.aircraft_override(&context, &|_: &str| Some(true), |name| {
+                ["country_last_a", "country_first", "family_default"].contains(&name)
+            }),
+            Ok(Some("country_last_a".to_owned()))
+        );
+    }
+
+    #[test]
+    fn aircraft_override_refuses_unknown_relevant_limits_before_selecting() {
+        let pools = content(
+            br#"default = { tank = {
+            pool = { models_weight = 3 models = { declared } }
+            pool = { models = { unknown } limit = { has_dlc = unresolved } }
+            pool = { sub_units = { other } models = { irrelevant } limit = { tag = GER } }
+            pool = { icons = { irrelevant_icon } limit = { tag = GER } }
+        } }"#,
+        )
+        .unwrap();
+        let error = pools
+            .aircraft_override(&context(None, &[]), &|_: &str| None, |_| {
+                panic!("all relevant pool limits are decided before any entity lookup")
+            })
+            .unwrap_err();
+        assert!(error.contains("graphic_db/a.txt"));
+        assert!(error.contains("DLC availability is unknown for unresolved"));
+        assert_eq!(
+            pools.aircraft_override(&context(None, &[]), &|_: &str| Some(false), |name| {
+                name == "declared"
+            }),
+            Ok(Some("declared".to_owned()))
+        );
     }
 
     #[test]
@@ -1041,6 +1169,53 @@ mod tests {
                 .lookup(&context(None, &[]), |_| Some(true), |_| true)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn null_equipment_names_do_not_match_authored_empty_pools() {
+        let pools = content(
+            br#"default = {
+                "" = { pool = { weight = 9 models = { null_model } icons = { null_icon } } }
+                tank_1 = { pool = { models = { own_model } icons = { own_icon } } }
+            }"#,
+        )
+        .unwrap();
+        let mut null_archetype = context(None, &[]);
+        null_archetype.archetype = None;
+        null_archetype.subunit = None;
+        assert_eq!(
+            pools.lookup_icon(&null_archetype, |_| Some(true), |_| true),
+            Ok(Some("own_icon".to_owned()))
+        );
+        let models = pools
+            .lookup(&null_archetype, |_| Some(true), |_| true)
+            .unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.entity.as_str())
+                .collect::<Vec<_>>(),
+            ["own_model"]
+        );
+        // A real empty archetype and a real empty family name retain their
+        // authored hash (1409E5170 -> 140BBA1B0 -> 140C82D60/140BBA180).
+        null_archetype.archetype = Some("");
+        assert_eq!(
+            pools.lookup_icon(&null_archetype, |_| Some(true), |_| true),
+            Ok(Some("null_icon".to_owned()))
+        );
+        null_archetype.archetype = None;
+        null_archetype.family = Some(("", None));
+        assert_eq!(
+            pools.lookup_icon(&null_archetype, |_| Some(true), |_| true),
+            Ok(Some("null_icon".to_owned()))
+        );
+        null_archetype.family = None;
+        null_archetype.equipment = "";
+        assert_eq!(
+            pools.lookup_icon(&null_archetype, |_| Some(true), |_| true),
+            Ok(Some("null_icon".to_owned()))
         );
     }
 }

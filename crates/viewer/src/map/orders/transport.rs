@@ -54,46 +54,13 @@ fn wrap_x(reference: i64, x: &mut i64, width: i64) {
     }
 }
 
-/// `rail_arrow_geometry_builder@141251430`'s point cap: past `0x1FFF` controls
-/// it adds nothing.
-const POINT_CAP: usize = 0x1FFF;
-
 /// `14123EB20`: the paradrop's stored controls from the source and target
 /// centroids (fixed5). The first builder call pushes the source twice; the
 /// second splits the segment into steps of the builder's threshold length,
 /// or replaces the last control with the target when the segment is shorter.
 pub fn paradrop_controls(source: Point, mut target: Point, width: i64) -> Vec<Point> {
     wrap_x(source[0], &mut target[0], width);
-    let mut controls = vec![source, source];
-    // The second call, at `c = 2`: `min(c * 1e10 / 4e6, 100000) * 0x490C0 /
-    // 100000 + 800`, squared fixed5 pixels.
-    let count = controls.len() as i64;
-    let threshold = (count * 10_000_000_000 / 4_000_000).min(SCALE) * 0x490C0 / SCALE + 800;
-    let squared = |from: Point| {
-        let (dx, dz) = (target[0] - from[0], target[1] - from[1]);
-        dx.wrapping_mul(dx) / SCALE + dz.wrapping_mul(dz) / SCALE
-    };
-    let last = controls[controls.len() - 1];
-    if squared(controls[controls.len() - 2]) > threshold {
-        let steps = ((squared(last) as f32 / SCALE as f32).sqrt()
-            / (threshold as f32 / SCALE as f32).sqrt()) as i64;
-        let steps = steps.max(1);
-        let step = [
-            (target[0] - last[0]).wrapping_mul(SCALE) / (steps * SCALE),
-            (target[1] - last[1]).wrapping_mul(SCALE) / (steps * SCALE),
-        ];
-        for k in 1..steps {
-            if controls.len() > POINT_CAP - 1 {
-                break;
-            }
-            controls.push([last[0] + k * step[0], last[1] + k * step[1]]);
-        }
-        controls.push(target);
-    } else {
-        let end = controls.len() - 1;
-        controls[end] = target;
-    }
-    controls
+    super::submit::controls(&[source, target], None)
 }
 
 /// `paradrop_height_callback@14123FD20`'s inputs, fixed once per arrow.
@@ -124,7 +91,14 @@ impl Lift {
         let (first, last) = (controls[0], controls[controls.len() - 1]);
         let (dx, dz) = (first[0] - last[0], first[1] - last[1]);
         let squared = dx.wrapping_mul(dx).wrapping_add(dz.wrapping_mul(dz));
-        let length = (squared.max(0).isqrt() as i32) as f32 / SCALE as f32;
+        // `1424E6E90` skips its square-root loop for signed values <= 1,
+        // then narrows the result to signed32 even after fixed5 overflow.
+        let root = if squared > 1 {
+            squared.isqrt()
+        } else {
+            squared
+        };
+        let length = (root as i32) as f32 / SCALE as f32;
         let wrap = |x: f32| {
             if x >= width {
                 x - width
@@ -153,6 +127,12 @@ impl Lift {
         self.from
             + (self.to - self.from) * t
             + (t * f32::from_bits(0x4049_0FDB)).sin() * self.amplitude
+    }
+
+    /// `141255D70` passes stored-control indices, including the two head
+    /// samples, rather than a fraction of the ribbon's spatial length.
+    pub fn at_control(&self, index: usize, count: usize, has_head: bool) -> f32 {
+        self.at(index as f32 / (count + if has_head { 2 } else { 0 }) as f32)
     }
 }
 
@@ -245,5 +225,29 @@ mod tests {
         let short = Lift::new(&[[0, 0], [10 * SCALE, 0]], W as f32, 0.1, 5.0, &height).unwrap();
         assert!((short.amplitude - 1.0).abs() < 1e-6);
         assert_eq!(Lift::new(&[[0, 0]], W as f32, 0.1, 5.0, &height), None);
+    }
+
+    #[test]
+    fn wrapped_negative_length_preserves_native_signed32_narrowing() {
+        let lift = Lift::new(
+            &[[0, 0], [3_i64 << 30, 12_345]],
+            90_000.0,
+            1.0,
+            f32::MAX,
+            &|_, _| 0.0,
+        )
+        .unwrap();
+        // The wrapped signed64 squared sum is negative. Native skips sqrt
+        // and its low signed32 word is 12345^2, not a clamped zero.
+        assert_eq!(lift.amplitude, 152_399_025_i32 as f32 / SCALE as f32);
+    }
+
+    #[test]
+    fn coincident_ends_have_no_arc_and_keep_the_terrain_height() {
+        let lift = Lift::new(&[[0, 0], [0, 0]], W as f32, 0.1, 5.0, &|_, _| 3.0).unwrap();
+        assert_eq!(lift.amplitude, 0.0);
+        for index in 0..=4 {
+            assert_eq!(lift.at_control(index, 2, true), 3.0);
+        }
     }
 }

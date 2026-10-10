@@ -74,6 +74,38 @@ pub fn walk(
     groups: &mut [Row],
     members: &mut [MemberRow],
 ) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Fixed(groups),
+        crate::walk::Buffer::Fixed(members),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    groups: &mut Vec<Row>,
+    members: &mut Vec<MemberRow>,
+) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(groups),
+        crate::walk::Buffer::Growing(members),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut groups: crate::walk::Buffer<'_, Row>,
+    mut members: crate::walk::Buffer<'_, MemberRow>,
+) -> Walk {
     let result = (|| {
         let array = game_state
             .checked_add(cgame_state::TECH_SHARING_GROUPS)
@@ -85,9 +117,10 @@ pub fn walk(
                 members: Outcome::Rows { len: 0 },
             });
         }
+        groups.ensure(array.count as usize)?;
         let countries = ccountry::Reader::new(memory, base, game_state)?;
         let mut group_len = 0;
-        let mut member_len = 0;
+        let mut member_len = 0_usize;
         let mut group_omitted = 0_u32;
         let mut member_omitted = 0_u32;
         for index in 0..array.count {
@@ -111,6 +144,11 @@ pub fn walk(
             } else {
                 group_omitted += 1;
             }
+            members.ensure(
+                member_len
+                    .checked_add(header.members.count as usize)
+                    .ok_or("technology-sharing member demand overflow")?,
+            )?;
             for ordinal in 0..header.members.count {
                 if member_len == members.len() {
                     member_omitted = member_omitted
@@ -262,6 +300,85 @@ mod tests {
             memory.put(pointer + ccountry::ID, &id.to_le_bytes());
         }
         memory
+    }
+
+    #[test]
+    fn worker_grows_groups_and_nested_members_at_5000_unchanged_countries() {
+        let mut memory = fixture();
+        memory.array(GAME + cgame_state::COUNTRIES, 0x30000, 5_001);
+        memory.array(GAME + cgame_state::COUNTRY_LINKS, 0x40000, 5_001);
+        memory.put(0x30000, &0_u64.to_le_bytes());
+        memory.put(0x40000, &0_u32.to_le_bytes());
+        for id in 1..=5_000 {
+            let pointer = 0x50000 + id * 0x30;
+            memory.put(0x30000 + id * 8, &(pointer as u64).to_le_bytes());
+            memory.put(0x40000 + id * 4, &(id as u32).to_le_bytes());
+            memory.put(
+                pointer,
+                &((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+            );
+            memory.put(pointer + ccountry::ID, &(id as u32).to_le_bytes());
+        }
+        let mut groups = Vec::new();
+        let mut members = Vec::new();
+        let first = walk_growing(&memory, BASE, GAME, &mut groups, &mut members);
+        assert_eq!(first.groups, Outcome::Rows { len: 1 });
+        assert_eq!(first.members, Outcome::Rows { len: 2 });
+        let roster = 0x90000;
+        let country_data = 0xa0000;
+        let bonus_data = 0xb0000;
+        memory.array(GAME + cgame_state::TECH_SHARING_GROUPS, roster, 5_000);
+        for index in 0..5_000 {
+            memory.put(country_data + index * 4, &(index as u32 + 1).to_le_bytes());
+            memory.put(
+                bonus_data + index * 8,
+                &(i64::MIN + index as i64).to_le_bytes(),
+            );
+        }
+        for index in 0..5_000 {
+            let group = 0x100000 + index * 0x100;
+            memory.put(roster as usize + index * 8, &(group as u64).to_le_bytes());
+            memory.put(group, &((BASE + VTABLE_RVA) as u64).to_le_bytes());
+            memory.put(group + ID_TOKEN, &(index as u32 + 1).to_le_bytes());
+            memory.put(group + BASE_BONUS, &(-(index as i64)).to_le_bytes());
+            let (start, count) = if index == 4_999 {
+                (0, 5_000)
+            } else {
+                (index, 1)
+            };
+            memory.array(group + MEMBERS, (country_data + start * 4) as u64, count);
+            memory.array(group + BONUSES, (bonus_data + start * 8) as u64, count);
+        }
+        let fixed = walk(&memory, BASE, GAME, &mut groups[..1], &mut members[..2]);
+        assert_eq!(
+            fixed.groups,
+            Outcome::Truncated {
+                len: 1,
+                unread_rows: 4_999
+            }
+        );
+        assert_eq!(
+            fixed.members,
+            Outcome::Truncated {
+                len: 2,
+                unread_rows: 9_997
+            }
+        );
+        let later = walk_growing(&memory, BASE, GAME, &mut groups, &mut members);
+        assert_eq!(later.groups, Outcome::Rows { len: 5_000 });
+        assert_eq!(later.members, Outcome::Rows { len: 9_999 });
+        for (index, row) in groups[..5_000].iter().enumerate() {
+            assert_eq!(row.id, index as u32 + 1);
+            assert_eq!(row.base_bonus, -(index as i64));
+            assert_eq!(row.member_count, if index == 4_999 { 5_000 } else { 1 });
+        }
+        for (ordinal, row) in members[4_999..9_999].iter().enumerate() {
+            assert_eq!(
+                (row.group, row.ordinal, row.country),
+                (5_000, ordinal as u32, ordinal as u32 + 1)
+            );
+            assert_eq!(row.bonus, i64::MIN + ordinal as i64);
+        }
     }
 
     #[test]

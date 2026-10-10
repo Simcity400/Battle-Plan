@@ -638,6 +638,7 @@ mod tests {
             recorded_language: &loc.language,
             scripted_content: &Err("no scripted content in this test".into()),
             ours: 2,
+            nato: false,
             countries: installed_content::country_names::CountryNames::read(frame, &loc),
             flag_exists: &|_| true,
             scripted: Default::default(),

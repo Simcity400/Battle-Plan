@@ -11,7 +11,7 @@ use crate::{
 };
 use engine::{
     Memory,
-    allocation::{copy_vec, owned_vec, vec},
+    allocation::{copy_vec, owned_vec},
     army_upgrade_request_row, carmy_manpower_values, carmy_upgrades_requests,
     carmy_upgrades_status, ccountry, cdeployment_status, cequipment_production_license,
     cequipment_production_line, cequipment_upgrades_instance, cequipment_variant,
@@ -71,7 +71,7 @@ pub struct Sources<'a, T> {
     pub outcome: Outcome,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],
     pub definition_bytes: usize,
@@ -80,18 +80,123 @@ pub struct Capacities {
     pub license_handles: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: [
-                2048, 8192, 32768, 4096, 8192, 4096, 8192, 2048, 8192, 2048, 8192, 2048, 2048,
-                8192, 16384, 32768, 1024,
-            ],
-            definition_bytes: 128 * 1024,
-            conveyor_name_bytes: 128 * 1024,
-            line_custom_name_bytes: 16 * 1024,
-            license_handles: 4096,
+impl Capacities {
+    /// Advisory attach/refresh demand. CArmy::serialize@140C80E00 reaches the
+    /// embedded pool and army-owned requests; 1414FE120 walks every request
+    /// and delivery, including groups absent from the active country registry.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let required = |outcome| match outcome {
+            Outcome::Rows { len } => Ok(len),
+            Outcome::Truncated { len, unread_rows } => len
+                .checked_add(unread_rows as usize)
+                .ok_or("production sizing row demand overflow"),
+            Outcome::Unavailable { reason } => Err(reason),
+        };
+        for (index, outcome) in [
+            (
+                0,
+                cproduction_status::walk_lines(memory, base, state, &mut []),
+            ),
+            (
+                1,
+                cequipment_variant_pool::walk_stockpiles(memory, base, state, &mut []),
+            ),
+            (
+                11,
+                cproduction_status::walk_licenses(memory, base, state, &mut []),
+            ),
+        ] {
+            crate::table_capture::grow_capacity(&mut self.rows[index], required(outcome)?);
         }
+        let licenses =
+            cproduction_status::walk_license_records(memory, base, state, &mut [], &mut []);
+        crate::table_capture::grow_capacity(&mut self.rows[16], required(licenses.outcome)?);
+        let countries = ccountry::Reader::new(memory, base, state)?;
+        let mut demand = [0_usize; 5];
+        for slot in 1..countries.count() {
+            let Some(country) = countries.at(slot)? else {
+                continue;
+            };
+            let roster = country
+                .pointer
+                .checked_add(ccountry::DIVISIONS)
+                .and_then(|at| Array::read(memory, at, 8))
+                .ok_or("division detail sizing roster unreadable or invalid")?;
+            engine::cpdx_array::pointers(
+                memory,
+                roster,
+                "division detail sizing pointer unreadable",
+                |_, pointer| {
+                    if pointer == 0 {
+                        return Ok(());
+                    }
+                    let at = |offset| {
+                        pointer
+                            .checked_add(offset)
+                            .ok_or("division detail sizing address overflow")
+                    };
+                    if engine::read::<u64>(memory, pointer)
+                        != base
+                            .checked_add(engine::carmy::VTABLE_RVA)
+                            .map(|value| value as u64)
+                        || engine::read::<u64>(memory, at(engine::carmy::SECONDARY_BASE)?)
+                            != base
+                                .checked_add(engine::carmy::SECONDARY_VTABLE_RVA)
+                                .map(|value| value as u64)
+                    {
+                        return Err("division detail sizing army identity invalid");
+                    }
+                    let division = engine::read::<u64>(memory, at(engine::cunit::HANDLE)?)
+                        .filter(|value| *value != 0)
+                        .ok_or("division detail sizing handle unreadable or null")?;
+                    let source = [cequipment_variant_pool::DivisionSource {
+                        pointer,
+                        division,
+                        country: country.id,
+                        template: 0,
+                    }];
+                    let equipment =
+                        cequipment_variant_pool::walk_divisions(memory, base, &source, &mut []);
+                    let upgrades = carmy_upgrades_status::walk(
+                        memory,
+                        base,
+                        &source,
+                        &mut [],
+                        &mut [],
+                        &mut [],
+                        &mut [],
+                    );
+                    for (total, outcome) in demand.iter_mut().zip([
+                        equipment,
+                        upgrades.groups,
+                        upgrades.requests,
+                        upgrades.deliveries,
+                        upgrades.produced,
+                    ]) {
+                        let rows = match outcome {
+                            Outcome::Rows { len } => len,
+                            Outcome::Truncated { len, unread_rows } => len
+                                .checked_add(unread_rows as usize)
+                                .ok_or("division detail sizing overflow")?,
+                            Outcome::Unavailable { reason } => return Err(reason),
+                        };
+                        *total = total
+                            .checked_add(rows)
+                            .ok_or("division detail sizing overflow")?;
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+        for (index, rows) in [2, 7, 8, 9, 10].into_iter().zip(demand) {
+            self.rows[index] = self.rows[index].max(rows);
+        }
+        Ok(())
     }
 }
 
@@ -142,17 +247,15 @@ impl Variants {
     }
 
     fn grow(&mut self, capacities: &mut Capacities) {
-        capacities.rows[3] = capacities.rows[3].max(self.definitions.rows.capacity());
+        capacities.rows[3] = capacities.rows[3].max(self.definitions.outcome.len());
         self.definitions.grow(&mut capacities.rows[3]);
-        capacities.rows[4] = capacities.rows[4].max(self.modules.rows.capacity());
+        capacities.rows[4] = capacities.rows[4].max(self.modules.outcome.len());
         self.modules.grow(&mut capacities.rows[4]);
-        capacities.rows[5] = capacities.rows[5].max(self.stats.rows.capacity());
+        capacities.rows[5] = capacities.rows[5].max(self.stats.outcome.len());
         self.stats.grow(&mut capacities.rows[5]);
-        capacities.rows[6] = capacities.rows[6].max(self.upgrades.rows.capacity());
+        capacities.rows[6] = capacities.rows[6].max(self.upgrades.outcome.len());
         self.upgrades.grow(&mut capacities.rows[6]);
-        capacities.definition_bytes = capacities
-            .definition_bytes
-            .max(self.definition_bytes.first.capacity());
+        capacities.definition_bytes = capacities.definition_bytes.max(self.definition_bytes.len);
         self.definition_bytes.grow(&mut capacities.definition_bytes);
     }
 
@@ -258,6 +361,30 @@ pub struct Captured {
 }
 
 impl Captured {
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities {
+            rows: [0; N],
+            definition_bytes: 0,
+            conveyor_name_bytes: 0,
+            line_custom_name_bytes: 0,
+            license_handles: 0,
+        })
+    }
+
+    pub(crate) fn fail_final_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        if replay::cadence::should_walk(TableId::ProductionLines, hour, force_full) {
+            self.fail_production_rest_capture(reason);
+        }
+        if replay::cadence::should_walk(TableId::DivisionEquipment, hour, force_full) {
+            let outcome = Outcome::Unavailable { reason };
+            self.division_equipment.fail(outcome);
+            self.groups.fail(outcome);
+            self.requests.fail(outcome);
+            self.deliveries.fail(outcome);
+            self.produced.fail(outcome);
+        }
+    }
+
     pub(crate) fn take_variants(&mut self) -> Variants {
         std::mem::replace(&mut self.variants, Variants::vacant())
     }
@@ -336,7 +463,7 @@ impl Captured {
         self.lines.grow(&mut capacities.rows[0]);
         self.stockpiles.grow(&mut capacities.rows[1]);
         self.division_equipment.grow(&mut capacities.rows[2]);
-        capacities.rows[7] = capacities.rows[7].max(self.groups.rows.capacity());
+        capacities.rows[7] = capacities.rows[7].max(self.groups.outcome.len());
         self.groups.grow(&mut capacities.rows[7]);
         self.requests.grow(&mut capacities.rows[8]);
         self.deliveries.grow(&mut capacities.rows[9]);
@@ -369,6 +496,36 @@ impl Captured {
         hour: i32,
         force_full: bool,
     ) -> [u64; N] {
+        self.acquire_buffers(memory, base, game_state, divisions, hour, force_full, true)
+    }
+
+    #[cfg(test)]
+    pub(super) fn acquire_fixed(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        divisions: Sources<'_, cequipment_variant_pool::DivisionSource>,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        self.acquire_buffers(memory, base, game_state, divisions, hour, force_full, false)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The fixed reference and worker use identical native readers"
+    )]
+    fn acquire_buffers(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        divisions: Sources<'_, cequipment_variant_pool::DivisionSource>,
+        hour: i32,
+        force_full: bool,
+        growing: bool,
+    ) -> [u64; N] {
         let mut ticks = [0; N];
         let rest_active = replay::cadence::should_walk(TableId::ProductionLines, hour, force_full);
         let divisions_active =
@@ -395,13 +552,23 @@ impl Captured {
             let mut reads = read_accounting::table(TABLES[0]);
             let begin = qpc();
             capture_rows(&mut self.lines, |rows| {
-                cproduction_status::walk_lines(memory, base, game_state, rows)
+                cproduction_status::walk_lines_buffer(
+                    memory,
+                    base,
+                    game_state,
+                    engine::walk::Buffer::for_worker(rows, growing),
+                )
             });
             ticks[0] = elapsed(begin);
             reads.select(TABLES[1]);
             let begin = qpc();
             capture_rows(&mut self.stockpiles, |rows| {
-                cequipment_variant_pool::walk_stockpiles(memory, base, game_state, rows)
+                cequipment_variant_pool::walk_stockpiles_buffer(
+                    memory,
+                    base,
+                    game_state,
+                    engine::walk::Buffer::for_worker(rows, growing),
+                )
             });
             ticks[1] = elapsed(begin);
         }
@@ -410,6 +577,12 @@ impl Captured {
             let begin = qpc();
             let source = complete_source(divisions.rows, divisions.outcome);
             self.division_equipment.outcome = match source {
+                Ok(source) if growing => cequipment_variant_pool::walk_divisions_growing(
+                    memory,
+                    base,
+                    source,
+                    &mut self.division_equipment.rows,
+                ),
                 Ok(source) => cequipment_variant_pool::walk_divisions(
                     memory,
                     base,
@@ -422,6 +595,15 @@ impl Captured {
             reads.select(TABLES[7]);
             let begin = qpc();
             let result = match source {
+                Ok(source) if growing => carmy_upgrades_status::walk_growing(
+                    memory,
+                    base,
+                    source,
+                    &mut self.groups.rows,
+                    &mut self.requests.rows,
+                    &mut self.deliveries.rows,
+                    &mut self.produced.rows,
+                ),
                 Ok(source) => carmy_upgrades_status::walk(
                     memory,
                     base,
@@ -443,14 +625,19 @@ impl Captured {
             let mut reads = read_accounting::table(TABLES[11]);
             let begin = qpc();
             capture_rows(&mut self.licenses, |rows| {
-                cproduction_status::walk_licenses(memory, base, game_state, rows)
+                cproduction_status::walk_licenses_buffer(
+                    memory,
+                    base,
+                    game_state,
+                    engine::walk::Buffer::for_worker(rows, growing),
+                )
             });
-            let records = cproduction_status::walk_license_records(
+            let records = cproduction_status::walk_license_records_buffer(
                 memory,
                 base,
                 game_state,
-                &mut self.license_records.rows,
-                &mut self.license_handles.first,
+                engine::walk::Buffer::for_worker(&mut self.license_records.rows, growing),
+                engine::walk::Buffer::for_worker(&mut self.license_handles.first, growing),
             );
             self.license_records.outcome = records.outcome;
             self.license_handles.len = records.handles_len;
@@ -458,7 +645,7 @@ impl Captured {
             ticks[11] = elapsed(begin);
             reads.select(TABLES[12]);
             let begin = qpc();
-            let deployment = self.deployment(memory, base, game_state);
+            let deployment = self.deployment(memory, base, game_state, growing);
             self.conveyors.outcome = deployment.conveyors;
             self.deployment_lines.outcome = deployment.lines;
             self.deployment_manpower.outcome = deployment.manpower;
@@ -478,17 +665,18 @@ impl Captured {
         memory: &impl Memory,
         base: usize,
         game_state: usize,
+        growing: bool,
     ) -> cdeployment_status::Outcomes {
-        cdeployment_status::walk(
+        cdeployment_status::walk_buffer(
             memory,
             base,
             game_state,
-            &mut self.conveyors.rows,
-            &mut self.deployment_lines.rows,
-            &mut self.deployment_manpower.rows,
-            &mut self.deployment_equipment.rows,
-            &mut self.conveyor_name_bytes.first,
-            &mut self.line_custom_name_bytes.first,
+            engine::walk::Buffer::for_worker(&mut self.conveyors.rows, growing),
+            engine::walk::Buffer::for_worker(&mut self.deployment_lines.rows, growing),
+            engine::walk::Buffer::for_worker(&mut self.deployment_manpower.rows, growing),
+            engine::walk::Buffer::for_worker(&mut self.deployment_equipment.rows, growing),
+            engine::walk::Buffer::for_worker(&mut self.conveyor_name_bytes.first, growing),
+            engine::walk::Buffer::for_worker(&mut self.line_custom_name_bytes.first, growing),
         )
     }
 
@@ -506,42 +694,80 @@ impl Captured {
     ) {
         let started = qpc();
         let recorded = crate::raw::Recorded::build(&job.log);
-        self.lines.outcome =
-            cproduction_status::walk_lines(&recorded, base, game_state, &mut self.lines.rows);
-        decode_ticks[0] += elapsed(started);
-        let started = qpc();
-        self.stockpiles.outcome = cequipment_variant_pool::walk_stockpiles(
+        self.lines.outcome = cproduction_status::walk_lines_buffer(
             &recorded,
             base,
             game_state,
-            &mut self.stockpiles.rows,
+            engine::walk::Buffer::for_worker(&mut self.lines.rows, job.log.worker_growth_enabled()),
+        );
+        decode_ticks[0] += elapsed(started);
+        let started = qpc();
+        self.stockpiles.outcome = cequipment_variant_pool::walk_stockpiles_buffer(
+            &recorded,
+            base,
+            game_state,
+            engine::walk::Buffer::for_worker(
+                &mut self.stockpiles.rows,
+                job.log.worker_growth_enabled(),
+            ),
         );
         decode_ticks[1] += elapsed(started);
         let started = qpc();
-        self.licenses.outcome =
-            cproduction_status::walk_licenses(&recorded, base, game_state, &mut self.licenses.rows);
-        let result = cproduction_status::walk_license_records(
+        self.licenses.outcome = cproduction_status::walk_licenses_buffer(
             &recorded,
             base,
             game_state,
-            &mut self.license_records.rows,
-            &mut self.license_handles.first,
+            engine::walk::Buffer::for_worker(
+                &mut self.licenses.rows,
+                job.log.worker_growth_enabled(),
+            ),
+        );
+        let result = cproduction_status::walk_license_records_buffer(
+            &recorded,
+            base,
+            game_state,
+            engine::walk::Buffer::for_worker(
+                &mut self.license_records.rows,
+                job.log.worker_growth_enabled(),
+            ),
+            engine::walk::Buffer::for_worker(
+                &mut self.license_handles.first,
+                job.log.worker_growth_enabled(),
+            ),
         );
         self.license_records.outcome = result.outcome;
         self.license_handles.len = result.handles_len;
         self.license_handles.required = result.required_handles;
         decode_ticks[2] += elapsed(started);
         let started = qpc();
-        let walked = cdeployment_status::walk(
+        let walked = cdeployment_status::walk_buffer(
             &recorded,
             base,
             game_state,
-            &mut self.conveyors.rows,
-            &mut self.deployment_lines.rows,
-            &mut self.deployment_manpower.rows,
-            &mut self.deployment_equipment.rows,
-            &mut self.conveyor_name_bytes.first,
-            &mut self.line_custom_name_bytes.first,
+            engine::walk::Buffer::for_worker(
+                &mut self.conveyors.rows,
+                job.log.worker_growth_enabled(),
+            ),
+            engine::walk::Buffer::for_worker(
+                &mut self.deployment_lines.rows,
+                job.log.worker_growth_enabled(),
+            ),
+            engine::walk::Buffer::for_worker(
+                &mut self.deployment_manpower.rows,
+                job.log.worker_growth_enabled(),
+            ),
+            engine::walk::Buffer::for_worker(
+                &mut self.deployment_equipment.rows,
+                job.log.worker_growth_enabled(),
+            ),
+            engine::walk::Buffer::for_worker(
+                &mut self.conveyor_name_bytes.first,
+                job.log.worker_growth_enabled(),
+            ),
+            engine::walk::Buffer::for_worker(
+                &mut self.line_custom_name_bytes.first,
+                job.log.worker_growth_enabled(),
+            ),
         );
         self.conveyors.outcome = walked.conveyors;
         self.deployment_lines.outcome = walked.lines;
@@ -557,9 +783,11 @@ impl Captured {
 }
 
 mod rest;
+#[cfg(test)]
+pub(crate) use rest::copy_production_rest_refresh;
 pub(crate) use rest::{
     ProductionRestCopyContext, ProductionRestCopyReport, ProductionRestJob,
-    copy_production_rest_refresh,
+    copy_production_rest_refresh_growing,
 };
 
 impl Captured {
@@ -910,7 +1138,7 @@ pub(crate) fn complete_source<T>(source: &[T], outcome: Outcome) -> Result<&[T],
     }
 }
 
-fn capture_rows<R>(rows: &mut CaptureRows<R>, mut walk: impl FnMut(&mut [R]) -> Outcome) {
+fn capture_rows<R>(rows: &mut CaptureRows<R>, mut walk: impl FnMut(&mut Vec<R>) -> Outcome) {
     rows.outcome = walk(&mut rows.rows);
 }
 

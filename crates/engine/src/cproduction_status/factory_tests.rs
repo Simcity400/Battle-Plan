@@ -304,3 +304,113 @@ fn a_country_table_without_countries_is_unavailable() {
         unavailable("country table has no readable countries")
     );
 }
+
+fn population(count: usize) -> Vec<u8> {
+    let pointer_data = 0x3000;
+    let link_data = pointer_data + (count + 1) * 8;
+    let country_data = (link_data + (count + 1) * 4).next_multiple_of(16);
+    let country_stride = (ccountry::PRODUCTION_STATUS + 8).next_multiple_of(16);
+    let status_data = country_data + count * country_stride;
+    let status_stride = 0x500;
+    let mut bytes = vec![0; status_data + count * status_stride - MEMORY_BASE];
+    for (at, data) in [
+        (cgame_state::COUNTRIES, pointer_data),
+        (cgame_state::COUNTRY_LINKS, link_data),
+    ] {
+        put(&mut bytes, MEMORY_BASE + at, &(data as u64).to_le_bytes());
+        put(
+            &mut bytes,
+            MEMORY_BASE + at + 8,
+            &((count + 1) as u32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            MEMORY_BASE + at + 12,
+            &((count + 1) as u32).to_le_bytes(),
+        );
+    }
+    for index in 0..count {
+        let slot = index + 1;
+        let country = country_data + index * country_stride;
+        let status = status_data + index * status_stride;
+        put(
+            &mut bytes,
+            pointer_data + slot * 8,
+            &(country as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            link_data + slot * 4,
+            &(slot as u32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            country,
+            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            country + ccountry::ID,
+            &(slot as u32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            country + ccountry::PRODUCTION_STATUS,
+            &(status as u64).to_le_bytes(),
+        );
+        write_status(
+            &mut bytes,
+            status,
+            country,
+            expected_row(index, slot as u32),
+        );
+    }
+    bytes
+}
+
+#[test]
+fn worker_factories_first_and_later_censuses_publish_all_five_thousand_countries() {
+    let mut rows = Vec::new();
+    for count in [1_500, 5_000] {
+        let bytes = population(count);
+        let memory = SliceMemory {
+            base: MEMORY_BASE,
+            bytes: &bytes,
+        };
+        assert!(matches!(
+            walk_factories(&memory, 0, MEMORY_BASE, &mut [FactoryRow::default(); 1]),
+            Outcome::Truncated { .. }
+        ));
+        assert_eq!(
+            walk_factories_growing(&memory, 0, MEMORY_BASE, &mut rows),
+            Outcome::Rows { len: count }
+        );
+        for (index, row) in rows[..count].iter().enumerate() {
+            assert_eq!(*row, expected_row(index, index as u32 + 1));
+        }
+    }
+}
+
+#[test]
+fn growing_factory_storage_does_not_hide_an_original_status_fault() {
+    let mut bytes = fixture();
+    put(
+        &mut bytes,
+        0x5000 + ccountry::PRODUCTION_STATUS,
+        &UNMAPPED.to_le_bytes(),
+    );
+    assert_eq!(
+        walk_factories_growing(
+            &SliceMemory {
+                base: MEMORY_BASE,
+                bytes: &bytes
+            },
+            0,
+            MEMORY_BASE,
+            &mut Vec::new()
+        ),
+        Outcome::Unavailable {
+            reason: "production status vtable mismatch"
+        }
+    );
+}

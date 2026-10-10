@@ -417,13 +417,40 @@ mod tests {
     fn definition(handle: u32, year: i32) -> crate::rows::TechnologyDefinitionRow {
         crate::rows::TechnologyDefinitionRow {
             technology_handle: handle,
+            database_index: handle as i32,
             year,
             ..Default::default()
         }
     }
 
     #[test]
-    fn keyed_definitions_replace_returned_handles_and_keep_the_rest() {
+    fn equal_handle_definitions_refresh_only_the_returned_occurrence() {
+        let first = crate::rows::TechnologyDefinitionRow {
+            database_index: 1,
+            technology_handle: 7,
+            year: 1936,
+            ..Default::default()
+        };
+        let second = crate::rows::TechnologyDefinitionRow {
+            database_index: 2,
+            technology_handle: 7,
+            year: 1940,
+            ..Default::default()
+        };
+        let updated = crate::rows::TechnologyDefinitionRow {
+            year: 1944,
+            ..second.clone()
+        };
+        let old = TableRows::TechnologyDefinitions(vec![first.clone(), second]);
+        let fresh = TableRows::TechnologyDefinitions(vec![updated.clone()]);
+        assert_eq!(
+            merge_slice(&old, fresh, |_| false, |_| false).unwrap(),
+            TableRows::TechnologyDefinitions(vec![first, updated])
+        );
+    }
+
+    #[test]
+    fn keyed_definitions_replace_returned_occurrences_and_keep_the_rest() {
         let previous = TableRows::TechnologyDefinitions(vec![
             definition(1, 1936),
             definition(3, 1936),

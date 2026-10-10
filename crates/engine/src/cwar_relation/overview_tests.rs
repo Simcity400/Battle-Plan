@@ -714,3 +714,81 @@ fn discovery_capacity_overflow_is_a_checked_error() {
     assert_eq!(cache.pointers.len(), 5_000);
     assert_eq!(cache.types.len(), 20_000);
 }
+
+#[test]
+fn growing_overview_covers_first_and_later_mod_demand_at_5000_countries() {
+    let mut world = fixture(5_000);
+    let mut owned = Vec::new();
+    let mut goals = Vec::new();
+    let mut scores = Vec::new();
+    let mut cache = DiscoveryCache::new(0, 0);
+    let expected = |owned, goals| {
+        [
+            Outcome::Rows { len: owned },
+            Outcome::Rows { len: goals },
+            Outcome::Rows { len: 5_000 },
+        ]
+    };
+    assert_eq!(
+        walk_cached_growing(
+            &world.memory(),
+            0,
+            world.game_state(),
+            &mut owned,
+            &mut goals,
+            &mut scores,
+            &mut cache
+        ),
+        expected(5_000, 10_000)
+    );
+    // Country count stays unchanged; the original first owned relation gains
+    // a mod-sized goal list, and new relations grow both endpoint rosters.
+    let root = read::<u64>(
+        &world.memory(),
+        world.object(1) + ccountry::DIPLOMACY_STATUS,
+    )
+    .unwrap() as usize;
+    let old = array(&world.memory(), root, cdiplomacy_status::OWNED_RELATIONS, 8).unwrap();
+    let relation = element(&world.memory(), old, 0).unwrap();
+    let handles = world.alloc(20_000 * 8);
+    world.array(relation + super::super::GOALS[0], handles, 20_000);
+    let vector = world.alloc(4_999 * 8);
+    world.u64(vector, relation as u64);
+    for other in 3..=5_000 {
+        let relation = world.alloc(0x1b0);
+        world.u64(relation, super::super::VTABLE_RVA as u64);
+        world.u32(relation + crelation::TYPE_ID, super::super::TYPE);
+        world.u32(relation + crelation::FIRST_COUNTRY, 1);
+        world.u32(relation + crelation::SECOND_COUNTRY, other);
+        world.put(relation + crelation::RETIRED, &[3]);
+        world.u64(vector + (other as usize - 2) * 8, relation as u64);
+        let root = read::<u64>(
+            &world.memory(),
+            world.object(other) + ccountry::DIPLOMACY_STATUS,
+        )
+        .unwrap() as usize;
+        let old = array(&world.memory(), root, cdiplomacy_status::OWNED_RELATIONS, 8).unwrap();
+        let old_relation = element(&world.memory(), old, 0).unwrap();
+        let pair = world.alloc(16);
+        world.u64(pair, old_relation as u64);
+        world.u64(pair + 8, relation as u64);
+        world.array(root + cdiplomacy_status::OWNED_RELATIONS, pair, 2);
+    }
+    world.array(root + cdiplomacy_status::OWNED_RELATIONS, vector, 4_999);
+    assert_eq!(
+        walk_cached_growing(
+            &world.memory(),
+            0,
+            world.game_state(),
+            &mut owned,
+            &mut goals,
+            &mut scores,
+            &mut cache
+        ),
+        expected(14_996, 49_996)
+    );
+    assert_eq!(goals[19_999].ordinal, 19_999);
+    assert!(cache.pointers.len() >= 14_996);
+    assert!(cache.next_rows.len() >= 14_996);
+    assert!(cache.reachable.len() >= 5_001);
+}

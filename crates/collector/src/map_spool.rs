@@ -374,6 +374,14 @@ fn air_wings(
         attached_orders_group: row.attached_orders_group,
         pool_ordinal: row.pool_ordinal,
         name: replay::rows::Recorded::Value(None),
+        strategic_bombing_raw: row.strategic_bombing_raw.into(),
+        pool_subunit: row.pool_subunit.into(),
+        raid_reference: replay::rows::Recorded::Value(row.raid_reference.map(|value| {
+            replay::rows::AirWingRaidReference {
+                raw: value.raw,
+                resolves: value.resolves,
+            }
+        })),
     };
     project_table::<tables::AirWings, _>(
         projection,
@@ -397,6 +405,16 @@ fn air_wings(
                 && row.eligibility_limit == previous.eligibility_limit
                 && row.attached_orders_group == previous.attached_orders_group
                 && row.pool_ordinal == previous.pool_ordinal
+                && previous.strategic_bombing_raw
+                    == replay::rows::Recorded::Value(row.strategic_bombing_raw)
+                && previous.pool_subunit == replay::rows::Recorded::Value(row.pool_subunit)
+                && previous.raid_reference
+                    == replay::rows::Recorded::Value(row.raid_reference.map(|value| {
+                        replay::rows::AirWingRaidReference {
+                            raw: value.raw,
+                            resolves: value.resolves,
+                        }
+                    }))
                 && matches!(&previous.name, replay::rows::Recorded::Value(value) if value.as_deref() == name(row))
         },
         |row| AirWingRow {
@@ -548,13 +566,14 @@ mod tests {
             if hour == 2 {
                 captured.player_names[0] ^= 1;
                 captured.orders.geometry[0] ^= 1;
+                captured.air_wings.rows[0].strategic_bombing_raw = Some(0);
             }
             let current = table_inputs(
                 &captured,
                 Some(&mut Projection::new(&encoder, 1, hour, false, &mut scratch)),
             );
             for (index, table) in current.iter().enumerate() {
-                let reused = hour == 1 || (hour == 2 && !matches!(index, 0 | 9));
+                let reused = hour == 1 || (hour == 2 && !matches!(index, 0 | 8 | 9));
                 assert_eq!(
                     matches!(table, TableInput::ComparedEqual(_)),
                     reused,
@@ -711,6 +730,12 @@ mod tests {
                 eligibility_limit: i32::MAX,
                 attached_orders_group: Some(u64::MAX),
                 name: None,
+                strategic_bombing_raw: Some(i64::MIN),
+                pool_subunit: Some(u32::MAX),
+                raid_reference: Some(cair_wing::transport_operands::RaidReference {
+                    raw: u64::MAX,
+                    resolves: false,
+                }),
             }],
         );
         set(
@@ -818,6 +843,14 @@ mod tests {
                 eligibility_limit: i32::MAX,
                 attached_orders_group: Some(u64::MAX),
                 name: replay::rows::Recorded::Value(None),
+                strategic_bombing_raw: replay::rows::Recorded::Value(Some(i64::MIN)),
+                pool_subunit: replay::rows::Recorded::Value(Some(u32::MAX)),
+                raid_reference: replay::rows::Recorded::Value(Some(
+                    replay::rows::AirWingRaidReference {
+                        raw: u64::MAX,
+                        resolves: false,
+                    },
+                )),
             }]),
             TableRows::ArmyOrders(vec![ArmyOrderRow {
                 owner_group: u64::MAX,

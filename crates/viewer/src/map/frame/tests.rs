@@ -23,6 +23,29 @@ fn the_reference_hour_reproduces_the_report_sun_and_moon() {
 }
 
 #[test]
+fn disabling_the_display_cycle_fixes_lights_without_changing_the_hour() {
+    let map = MapSize::TEST;
+    let defines = MapDefines::test();
+    let active = DayNight::at_hour(REFERENCE_HOUR);
+    let off = active.with_cycle(false);
+    assert_eq!(off.strength, 0.0);
+    assert_eq!(off.hour_sun_dir(), active.hour_sun_dir());
+    assert_eq!(off.sun_position(map, &defines), [2816.0, 600.0, 848.0]);
+    assert_eq!(off.moon_position(map, &defines), [0.0, 600.0, 1448.0]);
+    let later = DayNight::at_hour(REFERENCE_HOUR + 12).with_cycle(false);
+    assert_ne!(later.hour_fraction, off.hour_fraction);
+    assert_eq!(
+        later.sun_position(map, &defines),
+        off.sun_position(map, &defines)
+    );
+    assert_eq!(
+        later.moon_position(map, &defines),
+        off.moon_position(map, &defines)
+    );
+    assert_eq!(off.with_cycle(true), active);
+}
+
+#[test]
 fn the_hour_fraction_wraps_the_way_the_engine_does() {
     assert_eq!(hour_fraction(0), 0.0);
     assert_eq!(hour_fraction(43_800_000), 0.0);

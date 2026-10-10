@@ -336,11 +336,24 @@ fn a_report_without_differences_prints_no_difference_section() {
     assert!(Report::default().difference_lines().is_empty());
 }
 
+// Reporting fixtures contain only the gaps under test, independent of the
+// shared save fixture's historical fields and future row suffixes.
+fn field_gap_frame() -> DecodedFrame {
+    DecodedFrame {
+        branch: 1,
+        hour: 10,
+        metrics: Default::default(),
+        tables: std::array::from_fn(|index| {
+            TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+        }),
+    }
+}
+
 #[test]
 fn compatibility_field_limitations_aggregate_counts_without_duplicate_subjects() {
     use replay::rows::{Recorded, WeatherProvinceRow};
 
-    let (mut frame, ..) = tests::fixture();
+    let mut frame = field_gap_frame();
     let rows: Vec<_> = (0..13_413)
         .map(|id| WeatherProvinceRow {
             id,
@@ -391,7 +404,7 @@ fn compatibility_nested_field_limitations_are_counted_after_table_aggregation() 
         NavalCombatResultDetailsRow, NavalCommanderInputs, Recorded,
     };
 
-    let (mut frame, ..) = tests::fixture();
+    let mut frame = field_gap_frame();
     let old_commander = NavalCommanderInputs {
         timed_traits: Recorded::NotRecorded,
         ..Default::default()

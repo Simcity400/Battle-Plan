@@ -166,6 +166,137 @@ fn render(data: &Aggregate, name: impl FnMut(i32) -> Result<String, String>) -> 
 }
 
 #[test]
+fn ordinary_supply_footer_uses_title_and_skips_dangling_refs_before_last_disruption() {
+    use crate::map::{counters::CounterControl, test_frame, test_put as put};
+    use replay::rows::{DivisionRow, DivisionStatusRow, RailwayGunCounterInputRow};
+    let first = UnitSupplyInputs {
+        asked: 100_000,
+        received: 50_000,
+        disruption: 90_000,
+        origins: Some(vec![]),
+        ..Default::default()
+    };
+    let last = UnitSupplyInputs {
+        asked: 200_000,
+        received: 150_000,
+        disruption: 1_501,
+        origins: Some(vec![]),
+        ..Default::default()
+    };
+    let mut frame = test_frame(0);
+    put(
+        &mut frame,
+        TableRows::Divisions(
+            [1, 2]
+                .into_iter()
+                .map(|id| DivisionRow {
+                    id,
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    put(
+        &mut frame,
+        TableRows::DivisionStatus(
+            [first.clone(), last.clone()]
+                .into_iter()
+                .enumerate()
+                .map(|(index, supply)| DivisionStatusRow {
+                    division: index as u64 + 1,
+                    supply: Recorded::Value(Some(supply)),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    put(
+        &mut frame,
+        TableRows::RailwayGunCounterInputs(
+            [first, last]
+                .into_iter()
+                .enumerate()
+                .map(|(index, supply)| RailwayGunCounterInputRow {
+                    gun: index as u64 + 1,
+                    supply: Recorded::Value(Some(supply)),
+                    ..Default::default()
+                })
+                .collect(),
+        ),
+    );
+    let dangling = (1_u64 << 32) | 1;
+    let build = |frame: &DecodedFrame, railway_gun, members: &[u64]| {
+        with_frame_context(frame, &loc(), |context| {
+            let input = CounterHover {
+                control: CounterControl::Supply,
+                authored: None,
+                rect: [0.0; 4],
+                remaining: None,
+                ours: true,
+                coarse: false,
+                hidden: false,
+                railway_gun,
+                members: members.to_vec().into(),
+                timing: Arc::from([]),
+            };
+            let mut out = Tooltip {
+                title: "header".into(),
+                body: "arrival 2h\n".into(),
+                ..Default::default()
+            };
+            append(context, &input, &mut out);
+            out
+        })
+    };
+    for railway_gun in [false, true] {
+        let baseline = build(&frame, railway_gun, &[1, 2]);
+        assert_eq!(baseline.body, "arrival 2h\n");
+        assert!(
+            baseline
+                .title
+                .starts_with("header\n\nneeded 3.00\n\nreceived 2.00")
+        );
+        assert!(baseline.title.ends_with("  disruption 0.02\n"));
+        assert!(baseline.refused.is_empty());
+        for members in [&[1, dangling, 2][..], &[1, 2, dangling][..]] {
+            assert_eq!(build(&frame, railway_gun, members), baseline);
+        }
+        assert!(
+            build(&frame, railway_gun, &[1, dangling, 2, 2])
+                .title
+                .contains("needed 5.00")
+        );
+        let mut unreadable = frame.clone();
+        if let TableView::Complete(TableRows::DivisionStatus(rows)) =
+            &mut *unreadable.tables[TableId::DivisionStatus.index()]
+        {
+            rows[0].supply = Recorded::Value(None);
+        }
+        if let TableView::Complete(TableRows::RailwayGunCounterInputs(rows)) =
+            &mut *unreadable.tables[TableId::RailwayGunCounterInputs.index()]
+        {
+            rows[0].supply = Recorded::Value(None);
+        }
+        let partial = build(&unreadable, railway_gun, &[1, dangling, 2, dangling]);
+        assert_eq!(partial.title, "header\n\n  disruption 0.02\n");
+        assert_eq!(partial.body, "arrival 2h\n");
+        assert_eq!(partial.refused.values().sum::<usize>(), 1);
+        let table = if railway_gun {
+            TableId::RailwayGunCounterInputs
+        } else {
+            TableId::Divisions
+        };
+        *unreadable.tables[table.index()] = TableView::Unavailable {
+            reason: "fixture incomplete unit census".into(),
+        };
+        let unknown = build(&unreadable, railway_gun, &[1, dangling, 2]);
+        assert_eq!(unknown.title, "header");
+        assert_eq!(unknown.body, "arrival 2h\n");
+        assert_eq!(unknown.refused.values().sum::<usize>(), 1);
+    }
+}
+
+#[test]
 fn unreadable_earlier_supply_pack_keeps_only_the_known_last_member_disruption() {
     let last = UnitSupplyInputs {
         disruption: 1_501,

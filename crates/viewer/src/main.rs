@@ -45,7 +45,7 @@ use std::{
 
 const USAGE: &str = "viewer [replay.battleplan] [--game-dir <directory>] [--user-dir <directory>]\nviewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>\nviewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>\nviewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]\nOptions: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division's counter stands at its settled route point all hour, as the game draws it
-         --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --counter-colors allegiance|country --nato-counters on|off, the game's counter\n           options (default: the user folder's settings.txt)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --diagnostics shows technical stats and data limitations for this run; F3 or the\n        header's Diagnostics checkbox toggles and saves them (off by default)\n        --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise, the entity animation and the map-icon windows' GUI clock\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --settle <seconds>, play that many seconds before the frame so entity events\n             (damaged fire and smoke) and particles are under way; renders at the clock plus it\n           --building-camera <x,z,height>, repeatable: earlier views whose map buildings the frame keeps\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with interface rectangles\n             (device pixels at --ui-scale 1), sprite frames and text\n           --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel\n             (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
+         --allow-unverified-content\n         --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off\n         --perspective <TAG>|recorded, the viewing country (default recorded)\n         --fog on|off, the game's fog-of-war switch (default on)\n         --allied-plans on|off, viewer-local allied battle-plan visibility\n         --counter-colors allegiance|country --nato-counters on|off, the game's counter\n           options (default: the user folder's settings.txt)\n         --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result\nWindow: --diagnostics shows technical stats and data limitations for this run; F3 or the\n        header's Diagnostics checkbox toggles and saves them (off by default)\n        --out names where F12 saves the map target at its native size; --window-dump opens\n        the window, renders one frame through the windowed path at --width/--height and\n        --camera, writes it and exits\n        --animation-time <seconds> --animation-step <seconds> --window-frames <1..1000>\n        sample a deterministic sequence; default is one frame at time zero\nDump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, zero in a dump:\n             the fog-of-war noise, the entity animation and the map-icon windows' GUI clock\n           --map-time <seconds>, the map scene's own second clock: the selection\n             pulse, the river flow and the waves\n           --settle <seconds>, play that many seconds before the frame so entity events\n             (damaged fire and smoke) and particles are under way; renders at the clock plus it\n           --building-camera <x,z,height>, repeatable: earlier views whose map buildings the frame keeps\n           --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states\n           --debug-borders, the game's console toggle: no gradient fill and no border strips\n           --no-water, a verification aid that skips the water plane as the game's debug_water does\n           --no-trees, a verification aid that skips the canopy as the game's debug_trees does\n           --layers <names>, comma-separated passes to OMIT: counters,labels,trees,borders,gradient,\n             rivers,weather,orders,models,sprawl,buildings,rails\n             labels include VP/capital sprites; counters include bases/combat; borders include straits;\n             rails include trains/bridges; weather omits particles only, preserving terrain snow/mud\n           --counters-json <out.json>, submitted plates with interface rectangles\n             (device pixels at --ui-scale 1), sprite frames and text\n           --ui-scale <0.5..3>, --dump and --window-dump: device pixels per map-interface pixel\n             (counters, icons, labels, combat window); default 1.0, the game's frame at gui_scale 1\nCompare: --exclude-game-ui --exclude <x,y,w,h> --regions <cols>x<rows> --json <out.json>
          --upscale <factor> --dim <factor>";
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -166,6 +166,8 @@ struct Options {
     /// that country; `--fog off` is the game's `fow` console switch. See
     /// `map::perspective`.
     perspective: map::perspective::Choice,
+    /// Viewer-local allied-plan switch for the window and headless comparisons.
+    allied_plans: Option<bool>,
     camera: Option<map::camera::Placement>,
     /// `--dump --building-camera <x,z,height>`, repeatable: cameras the map
     /// visited before this frame, in order. Map buildings keep what those views
@@ -424,6 +426,7 @@ impl Options {
                     | "--building-camera"
                     | "--perspective"
                     | "--fog"
+                    | "--allied-plans"
                     | "--counter-colors"
                     | "--nato-counters"
                     | "--animation-time"
@@ -504,6 +507,13 @@ impl Options {
                         }
                         "--fog" => {
                             options.perspective.fog = map::perspective::Choice::parse_fog(&value)?
+                        }
+                        "--allied-plans" => {
+                            options.allied_plans = Some(match value.trim() {
+                                value if value.eq_ignore_ascii_case("on") => true,
+                                value if value.eq_ignore_ascii_case("off") => false,
+                                _ => return Err(invalid("--allied-plans takes on or off")),
+                            });
                         }
                         "--counter-colors" => {
                             options.counter_colors = Some(match value.trim() {
@@ -858,7 +868,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {line}");
         }
         // political fill
-        let layers = political::build(&document.map, document.frame()?)?;
+        let layers = political::build_with_naval(
+            &document.map,
+            document.frame()?,
+            document.hour()?.naval_fill(&options.perspective)?,
+        )?;
         let mut omitted = options.layers;
         omitted.borders |= options.debug_borders;
         omitted.gradient |= options.debug_borders;
@@ -883,7 +897,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("{line}");
         }
         // orders: the recorded player's battle plan
-        let order_field = document.order_field(&options.perspective)?;
+        let show_allied = options
+            .allied_plans
+            .unwrap_or(config.show_allied_plans.unwrap_or(false));
+        let order_field = if show_allied {
+            document.order_field_with_allied(&options.perspective, true)?
+        } else {
+            document.order_field(&options.perspective)?
+        };
         // Printed before the dump's fallible steps so a failed dump keeps them.
         let mut warnings = document.warnings.clone();
         warnings.extend(layers.warnings().iter().cloned());
@@ -958,6 +979,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     map::ui_scale::extent(options.size, ui_scale),
                     &options.perspective,
                     None,
+                    options.counter_settings(document.game_counters).nato,
                     false,
                     options.presentation_time,
                     true,
@@ -1053,7 +1075,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Request {
                 size: options.size,
                 camera,
-                day_night: DayNight::at_hour(hour),
+                day_night: DayNight::at_hour(hour).with_cycle(config.day_night.unwrap_or(true)),
                 // `vGlobalTime`: zero unless `--presentation-time` names one, so
                 // a headless dump is deterministic either way.
                 animation_time: options.presentation_time,
@@ -1089,15 +1111,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Warning: {warning}");
         }
         let frame = document.frame()?;
-        let tooltips = counter_report.land_hovers.iter().map(|hover| {
-            map::counter_tooltips::build(
-                &document.content,
-                frame,
-                hover,
-                &counter_report.perspective,
-                options.counter_settings(document.game_counters).nato,
-            )
-        });
+        let batch = map::counter_tooltips::Batch::new(
+            &document.content,
+            frame,
+            &counter_report.perspective,
+            options.counter_settings(document.game_counters).nato,
+        );
+        let tooltips = counter_report
+            .land_hovers
+            .iter()
+            .map(|hover| batch.build(hover))
+            .chain(
+                counter_report
+                    .task_force_hovers
+                    .iter()
+                    .filter(|hover| hover.supported)
+                    .map(|hover| batch.build_task_force(hover)),
+            );
+        let tooltips = tooltips.chain(
+            counter_report
+                .task_force_port_hovers
+                .iter()
+                .filter(|hover| hover.supported && hover.has_tooltip())
+                .map(|hover| batch.build_task_force_port(hover)),
+        );
         let tooltip_refused = map::counter_tooltips::count_refusals(tooltips);
         for warning in app::tooltip_warning_lines(&tooltip_refused) {
             eprintln!("Warning: {warning}");

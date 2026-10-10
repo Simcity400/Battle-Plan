@@ -67,6 +67,16 @@ pub(crate) fn read_hits(
         counts[lane] += array.count as usize;
         *header = array;
     }
+    buffers.plane_air_hits.ensure(
+        buffers.plane_hit_lengths[0]
+            .checked_add(counts[0])
+            .ok_or("naval plane hit length overflow")?,
+    )?;
+    buffers.plane_naval_hits.ensure(
+        buffers.plane_hit_lengths[1]
+            .checked_add(counts[1])
+            .ok_or("naval plane hit length overflow")?,
+    )?;
     let capacity = [buffers.plane_air_hits.len(), buffers.plane_naval_hits.len()];
     let mut fits = true;
     for lane in 0..2 {
@@ -84,7 +94,7 @@ pub(crate) fn read_hits(
         memory,
         arrays[0],
         8,
-        EntryOutput::Slice(buffers.plane_naval_hits),
+        EntryOutput::Slice(&mut buffers.plane_naval_hits),
         &mut buffers.plane_hit_lengths[1],
         |p| crate::naval_combat_hit::read(memory, base, p),
         true,
@@ -94,7 +104,7 @@ pub(crate) fn read_hits(
             memory,
             array,
             8,
-            EntryOutput::Slice(buffers.plane_air_hits),
+            EntryOutput::Slice(&mut buffers.plane_air_hits),
             &mut buffers.plane_hit_lengths[0],
             |p| crate::naval_combat_air_hit::read(memory, base, p),
             true,
@@ -104,6 +114,7 @@ pub(crate) fn read_hits(
 }
 
 #[allow(clippy::too_many_arguments)] // Two caller-owned spans, each with its length and demand.
+#[cfg(test)]
 pub(crate) fn read(
     memory: &impl Memory,
     base: usize,
@@ -113,6 +124,33 @@ pub(crate) fn read(
     wing_types_len: &mut usize,
     wing_types_required: &mut usize,
     plane_wings: &mut [u64],
+    plane_wings_len: &mut usize,
+    plane_wings_required: &mut usize,
+) -> Result<Row, &'static str> {
+    read_buffer(
+        memory,
+        base,
+        pointer,
+        group,
+        crate::walk::Buffer::Fixed(wing_types),
+        wing_types_len,
+        wing_types_required,
+        crate::walk::Buffer::Fixed(plane_wings),
+        plane_wings_len,
+        plane_wings_required,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // Two caller-owned spans, each with its length and demand.
+pub(crate) fn read_buffer(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    group: usize,
+    mut wing_types: crate::walk::Buffer<'_, u32>,
+    wing_types_len: &mut usize,
+    wing_types_required: &mut usize,
+    mut plane_wings: crate::walk::Buffer<'_, u64>,
     plane_wings_len: &mut usize,
     plane_wings_required: &mut usize,
 ) -> Result<Row, &'static str> {
@@ -175,6 +213,7 @@ pub(crate) fn read(
             .checked_add(array.count as usize)
             .ok_or("naval plane wing arena length overflow")?;
         *plane_wings_required = (*plane_wings_required).max(end);
+        plane_wings.ensure(end)?;
         let output = plane_wings
             .get_mut(start..end)
             .ok_or("naval plane wing arena capacity exceeded")?;
@@ -197,6 +236,7 @@ pub(crate) fn read(
         .checked_add(count)
         .ok_or("naval air wing type arena length overflow")?;
     *wing_types_required = (*wing_types_required).max(end);
+    wing_types.ensure(end)?;
     let output = wing_types
         .get_mut(start..end)
         .ok_or("naval air wing type arena capacity exceeded")?;
@@ -277,52 +317,52 @@ mod presentation_cache_tests {
             naval_hits: &mut Vec::new(),
             lengths: [0; 3],
             required: [0; 3],
-            planes: &mut [],
+            planes: crate::walk::Buffer::Fixed(&mut []),
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: &mut [],
-            plane_naval_hits: &mut [],
+            plane_air_hits: crate::walk::Buffer::Fixed(&mut []),
+            plane_naval_hits: crate::walk::Buffer::Fixed(&mut []),
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: &mut [],
+            plane_kills: crate::walk::Buffer::Fixed(&mut []),
             plane_kills_len: 0,
             plane_kills_required: 0,
             weapon_sources: &mut Vec::new(),
             weapon_terms: &mut Vec::new(),
             weapon_lengths: [0; 2],
             weapon_required: [0; 2],
-            commander_inputs: &mut [],
+            commander_inputs: crate::walk::Buffer::Fixed(&mut []),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut Vec::new(),
             commander_timed_traits_len: 0,
-            side_units: &mut [],
+            side_units: crate::walk::Buffer::Fixed(&mut []),
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut Vec::new(),
             summary_countries_len: 0,
-            custom_sea: &mut [],
+            custom_sea: crate::walk::Buffer::Fixed(&mut []),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: &mut [],
+            damage_sources: crate::walk::Buffer::Fixed(&mut []),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: &mut [],
+            wing_types: crate::walk::Buffer::Fixed(&mut []),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: &mut [],
+            plane_wings: crate::walk::Buffer::Fixed(&mut []),
             plane_wings_len: 0,
             plane_wings_required: 0,
         };
-        let mut row = read(
+        let mut row = read_buffer(
             &memory,
             0,
             ENTRY,
             0,
-            buffers.wing_types,
+            buffers.wing_types.suffix(0),
             &mut buffers.wing_types_len,
             &mut buffers.wing_types_required,
-            buffers.plane_wings,
+            buffers.plane_wings.suffix(0),
             &mut buffers.plane_wings_len,
             &mut buffers.plane_wings_required,
         )
@@ -350,10 +390,72 @@ mod presentation_cache_tests {
         for entry in memory.0[DATA..].chunks_exact_mut(8) {
             entry.copy_from_slice(&(HIT as u64).to_le_bytes());
         }
-        let mut hits = vec![crate::naval_combat_hit::Row::default(); COUNT];
-        buffers.plane_naval_hits = &mut hits;
+        let mut hits = Vec::new();
+        buffers.plane_naval_hits = crate::walk::Buffer::Growing(&mut hits);
         read_hits(&memory, 0, ENTRY, &mut row, &mut buffers).unwrap();
         assert_eq!(row.naval_hits, [0, COUNT]);
         assert_eq!(buffers.plane_naval_hits[COUNT - 1].damage, i64::MIN);
+    }
+    #[test]
+    fn original_wing_headers_grow_both_arenas_past_country_and_mod_sized_populations() {
+        const PLANE: usize = 0x100;
+        const DATA: usize = 0x1000;
+        let (mut types, mut wings) = (Vec::new(), Vec::new());
+        for count in [1500usize, 5000, 8193] {
+            let mut bytes = vec![0; DATA + count * 16];
+            bytes[PLANE..PLANE + 8].copy_from_slice(&(VTABLE_RVA as u64).to_le_bytes());
+            for (offset, first) in [(0x28, DATA), (0x40, DATA + count * 8)] {
+                bytes[PLANE + offset..PLANE + offset + 8]
+                    .copy_from_slice(&(first as u64).to_le_bytes());
+                bytes[PLANE + offset + 8..PLANE + offset + 16]
+                    .copy_from_slice(&(((count as u64) << 32) | count as u64).to_le_bytes());
+            }
+            for index in 0..count {
+                bytes[DATA + index * 8..DATA + index * 8 + 8]
+                    .copy_from_slice(&(index as u64 + 1).to_le_bytes());
+            }
+            let memory = crate::memory::SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            };
+            let row = read_buffer(
+                &memory,
+                0,
+                PLANE,
+                0,
+                crate::walk::Buffer::Growing(&mut types),
+                &mut 0,
+                &mut 0,
+                crate::walk::Buffer::Growing(&mut wings),
+                &mut 0,
+                &mut 0,
+            )
+            .unwrap();
+            assert_eq!(row.wings, [[0, count], [count, count]]);
+            assert_eq!(row.wing_types, [0, count]);
+            assert_eq!(&types[..count], vec![u32::MAX; count]);
+            assert!(
+                wings[..count]
+                    .iter()
+                    .enumerate()
+                    .all(|(index, &value)| value == index as u64 + 1)
+            );
+            assert!(wings[count..2 * count].iter().all(|&value| value == 0));
+            assert!(
+                read(
+                    &memory,
+                    0,
+                    PLANE,
+                    0,
+                    &mut [],
+                    &mut 0,
+                    &mut 0,
+                    &mut [],
+                    &mut 0,
+                    &mut 0
+                )
+                .is_err()
+            );
+        }
     }
 }

@@ -143,6 +143,63 @@ fn fixture() -> Vec<u8> {
     bytes
 }
 
+#[test]
+fn reserved_header_failure_keeps_first_observation_without_a_gather_retry() {
+    struct FirstFault<'a> {
+        memory: SliceMemory<'a>,
+        attempts: std::cell::Cell<usize>,
+    }
+    impl Memory for FirstFault<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == LAND + OWNER {
+                self.attempts.set(self.attempts.get() + 1);
+                if self.attempts.get() == 1 {
+                    return false;
+                }
+            }
+            self.memory.copy(address, output)
+        }
+    }
+    let mut bytes = fixture();
+    put(
+        &mut bytes,
+        COUNTRY_POINTER + ccountry::ID,
+        0_u32.to_le_bytes(),
+    );
+    put(&mut bytes, LAND + OWNER, 0_u32.to_le_bytes());
+    let memory = FirstFault {
+        memory: SliceMemory {
+            base: MEMORY,
+            bytes: &bytes,
+        },
+        attempts: std::cell::Cell::new(0),
+    };
+    let root = ccountry::Country {
+        pointer: COUNTRY_POINTER,
+        canonical_slot: 0,
+        id: 0,
+    };
+    let mut output = [Row::default(); 1];
+    let mut callbacks = 0;
+    let walk = walk_reserved_land_headers(&memory, MODULE, Ok(root), &mut output, |_, _| {
+        callbacks += 1;
+        Ok(())
+    });
+    assert_eq!(walk.len, Err("reserved land theatre header unreadable"));
+    assert_eq!(walk.native_count, Some(1));
+    assert_eq!((memory.attempts.get(), callbacks), (1, 0));
+    assert_eq!(output, [Row::default(); 1]);
+    array(&mut bytes, COUNTRY_POINTER + ccountry::THEATRES, 0, 0);
+    let memory = SliceMemory {
+        base: MEMORY,
+        bytes: &bytes,
+    };
+    let empty = walk_reserved_land_headers(&memory, MODULE, Ok(root), &mut [], |_, _| {
+        panic!("fresh empty theatre vector must not demand unrelated OOB")
+    });
+    assert_eq!((empty.len, empty.native_count), (Ok(0), Some(0)));
+}
+
 #[derive(Default)]
 struct Captured {
     land: [Row; 2],
@@ -829,4 +886,230 @@ fn stationed_identity_and_header_faults_refuse_by_name() {
             reason: "controller area province vector unreadable or invalid"
         }
     );
+}
+
+#[derive(Default)]
+struct GrowingTables {
+    land: Vec<Row>,
+    land_groups: Vec<ctheater_group::Row>,
+    land_members: Vec<ctheater_group::MemberRow>,
+    air: Vec<cair_theatre::Row>,
+    air_groups: Vec<cair_group::Row>,
+    air_members: Vec<cair_group::MemberRow>,
+    names: Vec<u8>,
+}
+impl GrowingTables {
+    fn capture(&mut self, memory: &impl Memory) -> Walk {
+        walk_buffers(
+            memory,
+            MODULE,
+            MEMORY,
+            true,
+            Storage {
+                land: Buffer::Growing(&mut self.land),
+                land_groups: Buffer::Growing(&mut self.land_groups),
+                land_members: Buffer::Growing(&mut self.land_members),
+                air: Buffer::Growing(&mut self.air),
+                air_groups: Buffer::Growing(&mut self.air_groups),
+                air_members: Buffer::Growing(&mut self.air_members),
+                names: Buffer::Growing(&mut self.names),
+            },
+        )
+    }
+}
+fn many_theatres(countries: usize, members: usize) -> Vec<u8> {
+    let first = 0x30000;
+    let mut bytes = vec![0; first + countries * 0x1000];
+    array(
+        &mut bytes,
+        MEMORY + cgame_state::COUNTRIES,
+        0x2000,
+        countries as u32 + 1,
+    );
+    array(
+        &mut bytes,
+        MEMORY + cgame_state::COUNTRY_LINKS,
+        0x12000,
+        countries as u32 + 1,
+    );
+    for index in 0..countries {
+        let slot = index + 1;
+        let country = first + index * 0x1000;
+        let land = country + 0x200;
+        let group = country + 0x400;
+        let orders = country + 0x500;
+        let air = country + 0x700;
+        let air_group = country + 0x800;
+        put(
+            &mut bytes,
+            0x2000 + slot * 8,
+            (country as u64).to_le_bytes(),
+        );
+        put(&mut bytes, 0x12000 + slot * 4, (slot as u32).to_le_bytes());
+        put(
+            &mut bytes,
+            country,
+            ((MODULE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            country + ccountry::ID,
+            (slot as u32).to_le_bytes(),
+        );
+        array(&mut bytes, country + ccountry::THEATRES, country + 0x900, 1);
+        put(&mut bytes, country + 0x900, (land as u64).to_le_bytes());
+        array(
+            &mut bytes,
+            country + ccountry::AIR_THEATRES,
+            country + 0x908,
+            1,
+        );
+        put(&mut bytes, country + 0x908, (air as u64).to_le_bytes());
+        object(&mut bytes, land, VTABLE_RVA, REFERENCE_TYPE);
+        put(&mut bytes, land + OWNER, (slot as u32).to_le_bytes());
+        array(&mut bytes, land + THEATER_GROUP_DATA, country + 0x910, 1);
+        put(&mut bytes, country + 0x910, (group as u64).to_le_bytes());
+        object(
+            &mut bytes,
+            group,
+            ctheater_group::VTABLE_RVA,
+            ctheater_group::REFERENCE_TYPE,
+        );
+        put(
+            &mut bytes,
+            group + ctheater_group::THEATRE,
+            (land as u64).to_le_bytes(),
+        );
+        string(&mut bytes, group + ctheater_group::NAME, b"land");
+        array(
+            &mut bytes,
+            group + ctheater_group::ORDERS_GROUP_DATA,
+            country + 0x920,
+            members as u32,
+        );
+        object(
+            &mut bytes,
+            orders,
+            corders_group::VTABLE_RVA,
+            corders_group::REFERENCE_TYPE,
+        );
+        put(
+            &mut bytes,
+            orders + corders_group::THEATRE,
+            (land as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            orders + corders_group::THEATER_GROUP,
+            (group as u64).to_le_bytes(),
+        );
+        object(
+            &mut bytes,
+            air,
+            cair_theatre::VTABLE_RVA,
+            cair_theatre::TYPE,
+        );
+        put(
+            &mut bytes,
+            air + cair_theatre::COUNTRY,
+            (slot as u32).to_le_bytes(),
+        );
+        string(&mut bytes, air + cair_theatre::NAME, b"air");
+        array(&mut bytes, air + cair_theatre::GROUPS, country + 0x918, 1);
+        put(
+            &mut bytes,
+            country + 0x918,
+            (air_group as u64).to_le_bytes(),
+        );
+        object(
+            &mut bytes,
+            air_group,
+            cair_group::VTABLE_RVA,
+            cair_group::TYPE,
+        );
+        put(
+            &mut bytes,
+            air_group + cair_group::THEATRE_HANDLE,
+            handle(cair_theatre::TYPE).to_le_bytes(),
+        );
+        string(&mut bytes, air_group + cair_group::NAME, b"group");
+        array(
+            &mut bytes,
+            air_group + cair_group::WINGS,
+            country + 0xc00,
+            members as u32,
+        );
+        for member in 0..members {
+            put(
+                &mut bytes,
+                country + 0x920 + member * 8,
+                (orders as u64).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                country + 0xc00 + member * 8,
+                handle(cair_wing::TYPE).to_le_bytes(),
+            );
+        }
+    }
+    bytes
+}
+#[test]
+fn worker_theatres_grow_for_5000_countries_and_later_nested_demand_without_rereads() {
+    struct Once<'a> {
+        memory: SliceMemory<'a>,
+        headers: std::cell::RefCell<std::collections::BTreeSet<usize>>,
+    }
+    impl Memory for Once<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            // Nested vector headers are acquired once, including after growth.
+            if output.len() == 16
+                && address >= 0x30000
+                && matches!(
+                    (address - 0x30000) % 0x1000,
+                    0x168 | 0x180 | 0x2c8 | 0x448 | 0x740 | 0x878
+                )
+            {
+                assert!(
+                    self.headers.borrow_mut().insert(address),
+                    "header reread at {address:x}"
+                );
+            }
+            self.memory.copy(address, output)
+        }
+    }
+    let mut captured = GrowingTables::default();
+    for members in [3, 40] {
+        let bytes = many_theatres(5000, members);
+        let memory = Once {
+            memory: SliceMemory {
+                base: MEMORY,
+                bytes: &bytes,
+            },
+            headers: Default::default(),
+        };
+        let walked = captured.capture(&memory);
+        for outcome in [
+            walked.land,
+            walked.land_groups,
+            walked.air,
+            walked.air_groups,
+        ] {
+            assert_eq!(outcome, Outcome::Rows { len: 5000 });
+        }
+        for outcome in [walked.land_members, walked.air_members] {
+            assert_eq!(
+                outcome,
+                Outcome::Rows {
+                    len: 5000 * members
+                }
+            );
+        }
+        assert_eq!(walked.names_len, 5000 * 12);
+        assert_eq!(walked.names_required, walked.names_len);
+        assert_eq!(
+            captured.land_members[5000 * members - 1].ordinal,
+            members as u32 - 1
+        );
+    }
 }

@@ -5,14 +5,9 @@ use replay::{frame::TableView, rows::TableId};
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::EventFeedHistory];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     pub events: usize,
-}
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { events: 1024 }
-    }
 }
 const ASSEMBLED: &str = "Event feed assembled by spool";
 
@@ -22,6 +17,15 @@ pub struct Captured {
 }
 
 impl Captured {
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities { events: 0 })
+    }
+    pub(crate) fn fail(&mut self, hour: i32, reason: &'static str) {
+        crate::event_feed_observer::lost_drain();
+        self.snapshot
+            .refuse(crate::world_lifetime::generation(), hour, reason);
+        self.sampled = true;
+    }
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             snapshot: crate::event_feed_history::Snapshot::new(capacity.events),
@@ -38,8 +42,8 @@ impl Captured {
         crate::table_capture::grow_capacity(&mut capacity.events, self.snapshot.required);
         let _ = self.snapshot.grow(capacity.events);
     }
-    pub fn drain(&mut self, hour: i32, partial: bool) {
-        crate::event_feed_observer::capture(&mut self.snapshot, hour, partial);
+    pub(crate) fn drain_growing(&mut self, hour: i32, partial: bool) {
+        crate::event_feed_observer::capture_growing(&mut self.snapshot, hour, partial);
         self.sampled = true;
     }
     pub(crate) fn discard(&mut self) {

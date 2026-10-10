@@ -243,7 +243,7 @@ fn texture_lookup_is_byte_exact_by_basename_and_keeps_the_first_file() {
 
 /// A stack's descriptor files, the overlay's second.
 #[cfg(feature = "test-support")]
-fn roster_of(name: &str, base: &[(&str, &[u8])], overlay: &[(&str, &[u8])]) -> Roster {
+pub(super) fn roster_of(name: &str, base: &[(&str, &[u8])], overlay: &[(&str, &[u8])]) -> Roster {
     let root = std::env::temp_dir().join(format!("installed-content-roster-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let (under, over) = (root.join("base"), root.join("over"));

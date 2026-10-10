@@ -70,7 +70,7 @@ pub struct Observation<'a> {
 /// until its next slice after growth.
 ///
 /// Memory is about 16 bytes per nonzero opinion and 8 bytes per pending mark,
-/// each with a quarter headroom, plus about 80 bytes per country.
+/// sized from acquired matrices and observed writes, plus per-country identities.
 #[derive(Default)]
 pub struct Baseline {
     scope: (usize, usize),
@@ -85,7 +85,7 @@ pub struct Baseline {
     /// Per canonical slot: statuses marked since its last read.
     pending: Vec<Vec<usize>>,
     /// Per canonical slot: `[rows, pending]` it needed that did not fit.
-    demand: Vec<[u32; 2]>,
+    demand: Vec<[usize; 2]>,
     /// `(diplomacy, slot)` of every valid owner, sorted, in the first
     /// `recorded` entries.
     by_diplomacy: Vec<(usize, u32)>,
@@ -157,15 +157,6 @@ pub struct Counts {
 }
 
 impl Baseline {
-    /// Scratch rows every grown baseline holds: one owner's whole matrix at
-    /// the vanilla country count.
-    pub const MIN_SCRATCH: usize = 1024;
-    /// Marks every grown baseline can take in one walk (64 KiB).
-    pub const MIN_MARKS: usize = 4096;
-    /// Marks every slot can hold between two of its reads: a day's writes to
-    /// one owner's statuses fit before any overflow has been seen.
-    pub const MIN_PENDING: usize = 64;
-
     /// Off the game thread: room for `marks` marks in one walk, as when the
     /// caller knows its observation's bound.
     pub fn reserve_marks(&mut self, marks: usize) -> std::io::Result<()> {
@@ -200,20 +191,14 @@ impl Baseline {
             || scratch > self.scratch.len()
             || take > self.take.len()
             || self.demand.iter().any(|demand| *demand != [0, 0])
-            || self
-                .pending
-                .iter()
-                .any(|pending| pending.capacity() < Self::MIN_PENDING)
     }
 
-    /// Grow to the last walk's demand, with a quarter headroom for rows and
-    /// marks. Allocation failure is reported before admitting another walk.
+    /// Grow to acquired matrix extents and observed mark demand. Allocation
+    /// failure is reported before admitting another walk.
     pub fn grow(&mut self) -> std::io::Result<()> {
         fn fit<T: Default>(vector: &mut Vec<T>, required: usize) -> std::io::Result<()> {
             if required > vector.len() {
-                let len = required
-                    .checked_add(required / 4)
-                    .ok_or_else(crate::allocation::oom)?;
+                let len = required;
                 crate::allocation::reserve_exact(vector, len - vector.len())?;
                 vector.resize_with(len, T::default);
             }
@@ -221,9 +206,7 @@ impl Baseline {
         }
         fn reserve<T>(vector: &mut Vec<T>, required: usize) -> std::io::Result<()> {
             if required > vector.capacity() {
-                let len = required
-                    .checked_add(required / 4)
-                    .ok_or_else(crate::allocation::oom)?;
+                let len = required;
                 crate::allocation::reserve_exact(vector, len - vector.len())?;
             }
             Ok(())
@@ -248,16 +231,16 @@ impl Baseline {
         }
         for (slot, demand) in self.demand.iter_mut().enumerate() {
             if let Some(rows) = self.rows.get_mut(slot) {
-                reserve(rows, demand[0] as usize)?;
+                reserve(rows, demand[0])?;
             }
             if let Some(pending) = self.pending.get_mut(slot) {
-                reserve(pending, (demand[1] as usize).max(Self::MIN_PENDING))?;
+                reserve(pending, demand[1])?;
             }
             *demand = [0, 0];
         }
-        fit(&mut self.scratch, scratch.max(Self::MIN_SCRATCH))?;
-        fit(&mut self.take, take.max(Self::MIN_MARKS))?;
-        fit(&mut self.updates, take.max(Self::MIN_MARKS))?;
+        fit(&mut self.scratch, scratch)?;
+        fit(&mut self.take, take)?;
+        fit(&mut self.updates, take)?;
         Ok(())
     }
 
@@ -283,7 +266,7 @@ impl Baseline {
                 .sum::<usize>()
             + self.rows.capacity() * size_of::<Vec<Row>>()
             + self.pending.capacity() * size_of::<Vec<usize>>()
-            + self.demand.capacity() * size_of::<[u32; 2]>()
+            + self.demand.capacity() * size_of::<[usize; 2]>()
             + self.by_diplomacy.capacity() * size_of::<(usize, u32)>()
             + self.take.capacity() * size_of::<(u32, usize)>()
             + (self.updates.capacity() + self.scratch.capacity()) * size_of::<Row>()
@@ -372,15 +355,16 @@ impl Baseline {
             let slot = recorded[at].1;
             // An owner this filing made invalid stays listed until `finish`.
             if !self.owners[slot as usize].valid() {
+                if self.demand[slot as usize][1] != 0 {
+                    self.demand[slot as usize][1] = self.demand[slot as usize][1].saturating_add(1);
+                }
                 continue;
             }
             let pending = &mut self.pending[slot as usize];
             if pending.len() == pending.capacity() {
-                // Twice what it held: the owner is read in full at its slice,
-                // and its marks fit from the next day on.
-                self.demand[slot as usize][1] = (pending.len() as u32)
-                    .saturating_mul(2)
-                    .max(Self::MIN_PENDING as u32);
+                // Retain the original burst demand, including all remaining
+                // marks for this owner. Its next slice still reads in full.
+                self.demand[slot as usize][1] = pending.len().saturating_add(1);
                 self.invalidate(slot);
                 continue;
             }
@@ -567,6 +551,13 @@ impl Baseline {
     pub(super) fn visit(&mut self, slot: u32, identity: Identity) {
         self.owner = slot;
         self.visiting = Some(identity);
+        // CDiplomacyStatus::Write@140D32BD0 visits the signed matrix count.
+        self.required[1] = self.required[1].max(identity.matrix.count as usize);
+        if let Some(demand) = self.demand.get_mut(slot as usize)
+            && self.pending[slot as usize].capacity() < identity.matrix.count as usize
+        {
+            demand[1] = demand[1].max(identity.matrix.count as usize);
+        }
         self.scratch_len = 0;
         self.scratch_count = 0;
     }
@@ -595,7 +586,7 @@ impl Baseline {
         slot: u32,
         owner_country: u32,
         counters: &mut Counters,
-        opinions: &mut [OpinionRow],
+        opinions: &mut crate::walk::Buffer<'_, OpinionRow>,
     ) -> Result<(), &'static str> {
         self.counts.reused_owners += 1;
         while self.cursor < self.updates_len && self.updates[self.cursor].owner < slot {
@@ -659,7 +650,7 @@ impl Baseline {
         self.required[1] = self.required[1].max(self.scratch_count);
         let rows = &mut self.rows[slot];
         if self.scratch_count > self.scratch_len || self.scratch_len > rows.capacity() {
-            self.demand[slot][0] = self.scratch_count as u32;
+            self.demand[slot][0] = self.scratch_count;
             self.invalidate(self.owner);
             return;
         }
@@ -723,8 +714,22 @@ mod tests {
         };
         let mut counters = Counters::default();
         let mut output = [OpinionRow::default(); 4];
-        baseline.replay(1, 100, &mut counters, &mut output).unwrap();
-        baseline.replay(2, 200, &mut counters, &mut output).unwrap();
+        baseline
+            .replay(
+                1,
+                100,
+                &mut counters,
+                &mut crate::walk::Buffer::Fixed(&mut output),
+            )
+            .unwrap();
+        baseline
+            .replay(
+                2,
+                200,
+                &mut counters,
+                &mut crate::walk::Buffer::Fixed(&mut output),
+            )
+            .unwrap();
         let emitted = |owner_country, target_country, opinion| OpinionRow {
             owner_country,
             target_country,
@@ -735,5 +740,26 @@ mod tests {
             [emitted(100, 30, 9), emitted(100, 4, -3), emitted(200, 1, 7)]
         );
         assert_eq!(counters.opinions, 3);
+    }
+}
+
+#[cfg(test)]
+mod demand_tests {
+    use super::*;
+    #[test]
+    fn empty_baseline_stays_empty_and_grows_to_original_demand() {
+        let mut baseline = Baseline::default();
+        baseline.grow().unwrap();
+        assert!(baseline.owners.is_empty());
+        assert!(baseline.scratch.is_empty());
+        baseline.required = [5_001, 5_001, 5_001];
+        baseline.grow().unwrap();
+        assert_eq!(baseline.owners.len(), 5_001);
+        assert_eq!(baseline.scratch.len(), 5_001);
+        assert_eq!(baseline.take.len(), 5_001);
+        baseline.demand[5_000] = [5_001, 5_001];
+        baseline.grow().unwrap();
+        assert_eq!(baseline.pending[5_000].capacity(), 5_001);
+        assert_eq!(baseline.rows[5_000].capacity(), 5_001);
     }
 }

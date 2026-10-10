@@ -65,6 +65,38 @@ pub fn walk(
     output: &mut [Row],
     names: &mut [u8],
 ) -> NameWalk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(names),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+    names: &mut Vec<u8>,
+) -> NameWalk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(names),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: crate::walk::Buffer<'_, Row>,
+    names: crate::walk::Buffer<'_, u8>,
+) -> NameWalk {
     let mut pass = Pass {
         resolver: &mut crelation_status::Resolver::default(),
         ownership: None,
@@ -86,7 +118,44 @@ pub fn walk_owned(
     names: &mut [u8],
     scratch: &mut OwnedSnapshotScratch,
 ) -> NameWalk {
+    walk_owned_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(names),
+        scratch,
+    )
+}
+
+pub fn walk_owned_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+    names: &mut Vec<u8>,
+    scratch: &mut OwnedSnapshotScratch,
+) -> NameWalk {
+    walk_owned_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(names),
+        scratch,
+    )
+}
+
+pub fn walk_owned_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: crate::walk::Buffer<'_, Row>,
+    names: crate::walk::Buffer<'_, u8>,
+    scratch: &mut OwnedSnapshotScratch,
+) -> NameWalk {
     scratch.begin();
+    scratch.worker_growth(output.is_growing());
     let mut resolver = std::mem::take(&mut scratch.resolver);
     let mut pass = Pass {
         resolver: &mut resolver,
@@ -112,7 +181,15 @@ fn walk_matrix(
         resolver: &mut crelation_status::Resolver::default(),
         ownership: None,
     };
-    walk_from(memory, base, game_state, output, names, true, &mut pass)
+    walk_from(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(names),
+        true,
+        &mut pass,
+    )
 }
 
 /// Original messages of the subject ownership scans, shared with the war
@@ -123,7 +200,6 @@ const SUBJECT_MEMBERSHIP: MembershipReasons = MembershipReasons {
     null: "null subject ownership entry",
     mismatch: "subject ownership cross-link count mismatch",
     changed: "subject ownership snapshot changed or became unreadable",
-    budget: "subject ownership rescans exceed the census budget; snapshot storage grows for the next pass",
 };
 
 /// Per-walk reusable storage; both parts may be empty.
@@ -136,19 +212,21 @@ fn walk_from(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
-    names: &mut [u8],
+    mut output: crate::walk::Buffer<'_, Row>,
+    mut names: crate::walk::Buffer<'_, u8>,
     matrix: bool,
     pass: &mut Pass<'_>,
 ) -> NameWalk {
     let result = (|| {
         let reader = Reader::new(memory, base, game_state)?;
         pass.resolver.begin(&reader.countries);
-        if let Some(scratch) = pass.ownership.as_deref_mut() {
-            scratch.set_census(reader.countries.count());
+        if output.is_growing() {
+            pass.resolver
+                .grow()
+                .map_err(|_| "subject resolver allocation failed")?;
         }
         let mut found_country = false;
-        let (mut len, mut bytes_len, mut required_bytes) = (0, 0_usize, 0_usize);
+        let (mut len, mut bytes_len, mut required_bytes) = (0_usize, 0_usize, 0_usize);
         let mut unread_rows = 0_u32;
         let mut highest_slot = 0;
         if matrix {
@@ -205,18 +283,15 @@ fn walk_from(
                 {
                     Ok(Some(row)) => row,
                     Ok(None) => continue,
-                    Err(reason) => {
-                        if reason == SUBJECT_MEMBERSHIP.budget {
-                            reader.observe_remaining(slot + 1, pass);
-                        }
-                        return Err(reason);
-                    }
+                    Err(reason) => return Err(reason),
                 };
                 let state = reader.pointer(pointer, AUTONOMY_STATE)?;
                 let (source, name_len) = definition_name(memory, state)?;
                 required_bytes = required_bytes
                     .checked_add(name_len)
                     .ok_or("subject name byte count overflow")?;
+                output.ensure(len.checked_add(1).ok_or("subject row demand overflow")?)?;
+                names.ensure(required_bytes)?;
                 if len == output.len() || name_len > names.len() - bytes_len {
                     unread_rows = unread_rows
                         .checked_add(1)
@@ -499,28 +574,6 @@ impl<'a, M: Memory> Reader<'a, M> {
             return Err("subject endpoint matrix pointers disagree");
         }
         Ok(status)
-    }
-
-    /// After a rescan-budget failure, records the owned-vector headers of the
-    /// countries the pass did not reach so one off-thread growth covers the
-    /// whole world. The pass has already failed; a fault only ends this early.
-    fn observe_remaining(&self, from: u32, pass: &mut Pass<'_>) {
-        for slot in from..self.countries.count() {
-            let country = match self.countries.at(slot) {
-                Ok(Some(country)) => country,
-                Ok(None) => continue,
-                Err(_) => break,
-            };
-            let Ok(diplomacy) = pass.resolver.diplomacy(country, || self.diplomacy(country)) else {
-                break;
-            };
-            let Ok(owned) = self.array(diplomacy, cdiplomacy_status::OWNED_RELATIONS) else {
-                break;
-            };
-            if let Some(scratch) = pass.ownership.as_deref_mut() {
-                scratch.observe_owned(owned.count);
-            }
-        }
     }
 
     /// Counts `relation` in the vector at `root + offset`. Diplomacy-owned

@@ -39,11 +39,7 @@ impl Memory for TraceMemory<'_> {
             destination.fill(0xa5); // A failed field may have copied bytes.
             return false;
         }
-        let copied = engine::memory::SliceMemory {
-            base: 0,
-            bytes: self.bytes,
-        }
-        .copy(address, destination);
+        let copied = super::air_bases_test_kit::memory(self.bytes).copy(address, destination);
         if copied && self.changing_address == Some(address) && !destination.is_empty() {
             destination[0] = destination[0].wrapping_add(self.reads.borrow().len() as u8);
         }
@@ -88,6 +84,246 @@ fn assert_logs_and_growth<const M: usize>(mut actual: RawLog<M>, mut scalar: Raw
     assert_eq!(actual.grow_for_next(), scalar.grow_for_next());
     assert_eq!((actual.spans.capacity(), actual.bytes.capacity()), capacity);
     assert_eq!((scalar.spans.capacity(), scalar.bytes.capacity()), capacity);
+}
+
+fn registration_wing_fields() -> [(usize, usize); 4] {
+    use super::air_bases_test_kit as kit;
+    [
+        (kit::W0, 32),
+        (kit::W0 + cair_wing::POOL, 8),
+        (kit::W1, 32),
+        (kit::W1 + cair_wing::POOL, 8),
+    ]
+}
+
+fn registration_reads(memory: &TraceMemory<'_>) -> Vec<(usize, usize)> {
+    let fields = registration_wing_fields();
+    memory
+        .reads
+        .borrow()
+        .iter()
+        .copied()
+        .filter(|read| fields.contains(read))
+        .collect()
+}
+
+#[test]
+fn registration_mirror_retains_every_wing_field_fault_prefix_without_retry() {
+    use super::air_bases_test_kit as kit;
+    let bytes = kit::fixture();
+    let fields = registration_wing_fields();
+    let faults =
+        std::iter::once((fields.len(), 0..0)).chain(fields.into_iter().enumerate().flat_map(
+            |(index, (address, size))| {
+                (0..size).map(move |byte| (index, address + byte..address + byte + 1))
+            },
+        ));
+    for (field_index, fault) in faults {
+        let actual_memory = TraceMemory::new(&bytes, fault.clone());
+        let direct_memory = TraceMemory::new(&bytes, fault.clone());
+        let direct = kit::direct(&direct_memory);
+        let (actual, report, job) = kit::split(&actual_memory);
+        assert!(report.raw_ok);
+        kit::assert_matches_direct(&actual, &direct);
+        let end = (field_index + 1).min(fields.len());
+        assert_eq!(registration_reads(&actual_memory), fields[..end]);
+        assert_eq!(registration_reads(&direct_memory), fields[..end]);
+        let spans: Vec<_> = job
+            .log
+            .spans
+            .iter()
+            .filter(|span| fields.contains(&(span.addr, span.len as usize)))
+            .map(|span| (span.addr, span.len as usize, span.ok))
+            .collect();
+        let expected: Vec<_> = fields[..end]
+            .iter()
+            .enumerate()
+            .map(|(index, &(address, size))| (address, size, index != field_index))
+            .collect();
+        assert_eq!(spans, expected, "fault {fault:x?}");
+        assert_eq!(job.log.fault, [false, !fault.is_empty(), false]);
+        kit::assert_no_mandatory_growth(&job);
+    }
+}
+
+#[test]
+fn registration_mirror_copies_the_chunk_before_semantic_admission() {
+    use super::air_bases_test_kit as kit;
+    let fields = registration_wing_fields();
+    for (address, value, reason) in [
+        (kit::W0, 0_u64, "air pool wing vtable mismatch"),
+        (
+            kit::W0 + cair_wing::SECONDARY,
+            0,
+            "air pool wing vtable mismatch",
+        ),
+        (
+            kit::W0 + cair_wing::POOL,
+            kit::POOL0 as u64 + 0x100,
+            "registered air wing backlink differs from containing pool",
+        ),
+        (
+            kit::W0 + cair_wing::REFERENCE_TYPE,
+            0,
+            "registered air wing has a null reference handle",
+        ),
+    ] {
+        let mut bytes = kit::fixture();
+        kit::put64(&mut bytes, address, value);
+        for fault in [
+            0..0,
+            fields[1].0..fields[1].0 + 1,
+            fields[3].0..fields[3].0 + 1,
+        ] {
+            let actual_memory = TraceMemory::new(&bytes, fault.clone());
+            let direct_memory = TraceMemory::new(&bytes, fault.clone());
+            let direct = kit::direct(&direct_memory);
+            let (actual, report, _) = kit::split(&actual_memory);
+            assert!(report.raw_ok);
+            kit::assert_matches_direct(&actual, &direct);
+            assert_eq!(
+                registration_reads(&actual_memory),
+                registration_reads(&direct_memory)
+            );
+            assert_eq!(
+                actual.regs.outcome,
+                Outcome::Unavailable {
+                    reason: if fault.start == fields[1].0 {
+                        "air pool wing identity unreadable"
+                    } else {
+                        reason
+                    }
+                }
+            );
+        }
+    }
+    // The typed pointer-prefix check rejects a counted null before it
+    // gathers any object fields, including the preceding valid wing.
+    let mut bytes = kit::fixture();
+    let header = kit::POOL0 + cair_wing_pool::WINGS;
+    let vector = u64::from_le_bytes(bytes[header..header + 8].try_into().unwrap()) as usize;
+    kit::put64(&mut bytes, vector + 8, 0);
+    let actual_memory = TraceMemory::new(&bytes, 0..0);
+    let direct_memory = TraceMemory::new(&bytes, 0..0);
+    let direct = kit::direct(&direct_memory);
+    let (actual, _, _) = kit::split(&actual_memory);
+    kit::assert_matches_direct(&actual, &direct);
+    assert_eq!(
+        actual.regs.outcome,
+        Outcome::Unavailable {
+            reason: "air pool wing pointer unreadable or null"
+        }
+    );
+    assert!(registration_reads(&actual_memory).is_empty());
+    assert!(registration_reads(&direct_memory).is_empty());
+}
+
+#[test]
+fn registration_backlink_span_and_byte_pressure_grow_only_between_fresh_passes() {
+    use super::air_bases_test_kit as kit;
+    let bytes = kit::fixture();
+    let fields = registration_wing_fields();
+    let mut baseline = AirBasesJob::fixture();
+    copy_air_bases_pass(
+        &mut baseline,
+        &kit::memory(&bytes),
+        kit::BASE,
+        kit::GAME_STATE,
+        false,
+        &mut [0; 3],
+    );
+    let backlink = baseline
+        .log
+        .spans
+        .iter()
+        .position(|span| span.addr == fields[1].0)
+        .unwrap();
+    let byte_prefix = baseline.log.spans[backlink].start as usize;
+    for spans_short in [false, true] {
+        let memory = TraceMemory::new(&bytes, 0..0);
+        let mut job = AirBasesJob::fixture();
+        job.log = if spans_short {
+            RawLog::new(backlink, baseline.log.bytes.len())
+        } else {
+            RawLog::new(baseline.log.spans.len(), byte_prefix)
+        };
+        let initial = (job.log.spans.capacity(), job.log.bytes.capacity());
+        copy_air_bases_pass(
+            &mut job,
+            &memory,
+            kit::BASE,
+            kit::GAME_STATE,
+            false,
+            &mut [0; 3],
+        );
+        assert!(job.log.overflowed && job.grow_for_next());
+        assert_eq!(registration_reads(&memory), fields[..1]);
+        assert_eq!(
+            (job.log.spans.capacity(), job.log.bytes.capacity()),
+            initial,
+            "capture cannot grow storage"
+        );
+        assert!(!job.log.fault.iter().any(|fault| *fault));
+        job.grow();
+        let grown = (job.log.spans.capacity(), job.log.bytes.capacity());
+        if spans_short {
+            assert!(grown.0 > initial.0);
+            assert_eq!(grown.1, initial.1);
+        } else {
+            assert_eq!(grown.0, initial.0);
+            assert!(grown.1 > initial.1);
+        }
+        memory.reads.borrow_mut().clear();
+        copy_air_bases_pass(
+            &mut job,
+            &memory,
+            kit::BASE,
+            kit::GAME_STATE,
+            false,
+            &mut [0; 3],
+        );
+        assert!(!job.log.overflowed);
+        kit::assert_no_mandatory_growth(&job);
+        assert_eq!(job.log.spans, baseline.log.spans);
+        assert_eq!(job.log.bytes, baseline.log.bytes);
+        assert_eq!(registration_reads(&memory), fields);
+        job.clear();
+        assert_eq!((job.log.spans.capacity(), job.log.bytes.capacity()), grown);
+        assert!(job.log.spans.is_empty() && job.log.bytes.is_empty());
+    }
+}
+
+#[test]
+#[ignore = "run alone: the allocator-refusal harness owns process-global controls"]
+fn registration_backlink_acquisition_uses_only_prepared_storage() {
+    use super::air_bases_test_kit as kit;
+    let bytes = kit::fixture();
+    let memory = kit::memory(&bytes);
+    let mut job = AirBasesJob::fixture();
+    copy_air_bases_pass(
+        &mut job,
+        &memory,
+        kit::BASE,
+        kit::GAME_STATE,
+        false,
+        &mut [0; 3],
+    );
+    let spans = job.log.spans.clone();
+    let payload = job.log.bytes.to_vec();
+    crate::allocation_failure_tests::with_allocations_denied(|| {
+        copy_air_bases_pass(
+            &mut job,
+            &memory,
+            kit::BASE,
+            kit::GAME_STATE,
+            false,
+            &mut [0; 3],
+        );
+    });
+    assert!(!job.log.overflowed && !job.log.fault.iter().any(|fault| *fault));
+    assert_eq!(job.log.spans, spans);
+    assert_eq!(job.log.bytes, payload);
+    assert_eq!(job.registration_demand, Some([2, 2]));
 }
 
 fn scalar_stats_channels(
@@ -241,7 +477,7 @@ fn history_owned_pass_preserves_every_record_fault_and_damage_continuation() {
             let mut direct_memory = TraceMemory::new(&bytes, fault.clone());
             actual_memory.changing_address = Some(kit::REC0 + 0x50);
             direct_memory.changing_address = Some(kit::REC0 + 0x50);
-            let mut actual = AirHistoryJob::new();
+            let mut actual = AirHistoryJob::fixture();
             let mut previous_attribution = None;
             for _ in 0..2 {
                 let direct = kit::direct(&direct_memory);
@@ -300,7 +536,7 @@ fn history_owned_pass_preserves_native_capacity_prefixes() {
             let actual_memory = TraceMemory::new(&bytes, 0..0);
             let direct_memory = TraceMemory::new(&bytes, 0..0);
             let direct = kit::direct_with(&direct_memory, history_cap, damage_cap);
-            let mut actual = AirHistoryJob::new();
+            let mut actual = AirHistoryJob::fixture();
             let capacity = (actual.history.capacity(), actual.damage.capacity());
             acquire_air_history_pass(
                 &mut actual,
@@ -362,7 +598,7 @@ fn history_owned_pass_preserves_invalid_record_vector_addresses() {
         let actual_memory = TraceMemory::new(&bytes, 0..0);
         let direct_memory = TraceMemory::new(&bytes, 0..0);
         let direct = kit::direct(&direct_memory);
-        let mut actual = AirHistoryJob::new();
+        let mut actual = AirHistoryJob::fixture();
         acquire_air_history_pass(
             &mut actual,
             &actual_memory,

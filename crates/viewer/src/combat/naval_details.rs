@@ -1,7 +1,7 @@
-//! Native naval member grouping and retained ship-result categories (format 22).
+//! Native naval member grouping and retained result dispatch.
 use super::{
     HoverText, Selection, Values, Widget,
-    binding::{Bindings, FLAG, Flags, NavalEntry, TEXT, country_flag, fill, hide, sprite, text},
+    binding::{Bindings, Flags, NavalEntry, TEXT, country_flag, fill, hide, text},
     tooltips::{hover_text, set_hover},
 };
 use crate::{
@@ -15,15 +15,11 @@ use crate::{
 use replay::{
     frame::DecodedFrame,
     rows::{
-        AirBaseRow, AirWingRow, CountryRow, NavalCombatPlane, NavalCombatShipRow, NavalResultShip,
+        AirBaseRow, AirWingRow, CountryRow, NavalCombatPlane, NavalCombatShipRow,
         VariantDefinitionRow, tables,
     },
 };
-use std::{
-    cmp::Reverse,
-    collections::{BTreeMap, BTreeSet},
-    io,
-};
+use std::{cmp::Reverse, collections::BTreeMap, io};
 
 struct AirGroup<'a> {
     side: u8,
@@ -695,7 +691,9 @@ pub(super) fn bind(
 ) -> io::Result<()> {
     match selection {
         Selection::Naval(id) => active(out, document, frame, id, flags, vision),
-        Selection::NavalResult(id) => result(out, document, frame, id, flags),
+        Selection::NavalResult(id) => {
+            super::naval_results::bind(out, document, frame, id, flags, vision)
+        }
         Selection::Land(_) => Ok(()),
     }
 }
@@ -1215,178 +1213,6 @@ pub(super) fn descriptions(
         country_flag(flags, owner).map(|flag| format!("{}{flag}", super::INLINE_FLAG)),
     );
     values.entry(flag_key.into()).or_default().offset = offset(flag_key);
-}
-
-fn repeated(values: &mut Values, key: &str, template: String, entries: Vec<Values>) {
-    values.insert(
-        key.into(),
-        Widget {
-            entry_template: Some(template),
-            entries,
-            ..Widget::default()
-        },
-    );
-}
-fn result(
-    out: &mut Bindings,
-    document: &Document,
-    frame: &DecodedFrame,
-    id: u64,
-    flags: &Flags,
-) -> io::Result<()> {
-    let table = rows::<tables::NavalCombatResultDetails>(frame)?;
-    let Some(detail) = table.rows().iter().find(|r| r.result == id) else {
-        out.warnings.push(format!(
-            "Naval result {id}: no NavalCombatResultDetails row, so the survivor and loss lists are omitted."
-        ));
-        return Ok(());
-    };
-    for (side, row) in detail.sides.iter().enumerate() {
-        let label = if side == 0 { "attacker" } else { "defender" };
-        let root = if side == 0 {
-            "attacking_side"
-        } else {
-            "defending_side"
-        };
-        let mut survivor_keys = BTreeMap::new();
-        let mut survivors: Vec<Vec<&NavalResultShip>> = Vec::new();
-        let mut loss_keys = BTreeMap::new();
-        let mut losses: Vec<Vec<&NavalResultShip>> = Vec::new();
-        for ship in &row.ships {
-            // 1417C4C30/141DF27E0/141DEBD30: survivor subunit+formation;
-            // losses use copied sprite, with convoys in a separate list.
-            if ship.sunk_by.is_empty() {
-                let next = survivors.len();
-                let index = *survivor_keys
-                    .entry((ship.subunit_index, ship.formation_type))
-                    .or_insert(next);
-                if index == next {
-                    survivors.push(Vec::new());
-                }
-                survivors[index].push(ship);
-            } else {
-                let next = losses.len();
-                let index = *loss_keys
-                    .entry((ship.is_convoy, ship.sprite.as_slice()))
-                    .or_insert(next);
-                if index == next {
-                    losses.push(Vec::new());
-                }
-                losses[index].push(ship);
-            }
-        }
-        let mut entries = Vec::new();
-        for group in survivors {
-            let mut values = Values::new();
-            let name = format!(
-                "GFX_unit_{}_icon_medium_black",
-                String::from_utf8_lossy(&group[0].sprite)
-            );
-            if document.icons.combat.has_sprite(&name) {
-                sprite(&mut values, "fleet", name);
-            } else {
-                hide(&mut values, "fleet");
-            }
-            text(&mut values, "number", group.len().to_string());
-            result_flags(out, &mut values, &group, flags);
-            entries.push(values);
-        }
-        repeated(
-            &mut out.values,
-            &format!("{root}/survivors/survivors_grid"),
-            format!("naval_combat_results_{label}_survivor_entry"),
-            entries,
-        );
-        let mut entries = Vec::new();
-        for group in losses {
-            let mut values = Values::new();
-            let name = format!(
-                "GFX_navalcombat_ship_icon_{}",
-                String::from_utf8_lossy(&group[0].sprite)
-            );
-            if document.icons.combat.has_sprite(&name) {
-                values.insert(
-                    "equipment".into(),
-                    Widget {
-                        sprite: Some(name),
-                        frame: Some(side as u32),
-                        ..Widget::default()
-                    },
-                );
-            } else {
-                hide(&mut values, "equipment");
-            }
-            if !group.iter().any(|s| s.pride != 0) {
-                hide(&mut values, "pride");
-            }
-            let mut countries = BTreeMap::new();
-            for ship in group {
-                *countries.entry(ship.owner).or_insert(0usize) += 1;
-            }
-            let counts = countries
-                .into_iter()
-                .map(|(owner, count)| {
-                    let mut values = Values::new();
-                    text(&mut values, "number", count.to_string());
-                    out.bind_in(
-                        &mut values,
-                        "country_flag",
-                        FLAG,
-                        country_flag(flags, owner),
-                    );
-                    values
-                })
-                .collect();
-            repeated(
-                &mut values,
-                "lost_ships_grid",
-                format!("naval_combat_results_{label}_lost_ship_entry"),
-                counts,
-            );
-            entries.push(values);
-        }
-        repeated(
-            &mut out.values,
-            &format!("{root}/lost/lost_line_grid"),
-            format!("naval_combat_results_{label}_lost_line_entry"),
-            entries,
-        );
-    }
-    out.warnings.retain(|w| {
-        !w.starts_with("Combat results:") && !w.starts_with("NavalCombatResultDetails side")
-    });
-    out.warnings.push("Format-22 retained results: copied sunk_by classifies survivors/losses; native subunit/formation survivor and sprite/convoy loss groups, recorded counts, copied sprites and country flags are bound. UNVERIFIED: country ordering, representative survivor sprite choice, plane equipment-icon joins, outcome perspective, detail hit text and result scrolling require native binder completion and a retained-result capture. No active-combat disappearance is treated as a result.".into());
-    Ok(())
-}
-fn result_flags(
-    out: &mut Bindings,
-    values: &mut Values,
-    ships: &[&NavalResultShip],
-    flags: &Flags,
-) {
-    for key in [
-        "country_flag_left",
-        "country_flag_right",
-        "country_flag_center",
-    ] {
-        hide(values, key);
-    }
-    let mut owners = Vec::new();
-    let mut seen = BTreeSet::new();
-    for ship in ships {
-        if seen.insert(ship.owner) {
-            owners.push(ship.owner);
-        }
-    }
-    let slots: &[&str] = if owners.len() == 1 {
-        &["country_flag_center"]
-    } else {
-        &["country_flag_left", "country_flag_right"]
-    };
-    for (owner, key) in owners.into_iter().zip(slots) {
-        out.bind_in(values, key, FLAG, country_flag(flags, owner));
-        values.entry((*key).into()).or_default().size = Some([12.0, 8.0]);
-    }
 }
 
 #[cfg(test)]

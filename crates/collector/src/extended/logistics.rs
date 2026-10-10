@@ -19,6 +19,15 @@ pub struct Capacities {
     rows: usize,
 }
 impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        self.raise(native::row_demand(memory, base, state)?);
+        Ok(())
+    }
     pub(crate) fn raise(&mut self, rows: usize) {
         self.rows = self.rows.max(rows);
     }
@@ -68,7 +77,7 @@ impl Captured {
         }
         let _reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        self.rows.outcome = native::walk(memory, base, game_state, &mut self.rows.rows);
+        self.rows.outcome = native::walk_growing(memory, base, game_state, &mut self.rows.rows);
         crate::logistics_balance::fill(
             memory,
             base,

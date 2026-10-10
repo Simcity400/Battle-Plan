@@ -63,6 +63,58 @@ pub struct Buffers<'a> {
     pub equipment: &'a mut [cstate_garrison_data::equipment::Row],
 }
 
+pub struct GrowingBuffers<'a> {
+    pub settings: &'a mut Vec<Row>,
+    pub laws: &'a mut Vec<LawRow>,
+    pub group_laws: &'a mut Vec<ccountry_occupation_data::GroupLawRow>,
+    pub garrisons: &'a mut Vec<cstate_garrison_data::Row>,
+    pub manpower: &'a mut Vec<ManpowerRow>,
+    pub reserve_manpower: &'a mut Vec<ReserveManpowerRow>,
+    pub names: &'a mut Vec<u8>,
+    pub equipment: &'a mut Vec<cstate_garrison_data::equipment::Row>,
+}
+
+pub struct BuffersBuffer<'a> {
+    pub settings: crate::walk::Buffer<'a, Row>,
+    pub laws: crate::walk::Buffer<'a, LawRow>,
+    pub group_laws: crate::walk::Buffer<'a, ccountry_occupation_data::GroupLawRow>,
+    pub garrisons: crate::walk::Buffer<'a, cstate_garrison_data::Row>,
+    pub manpower: crate::walk::Buffer<'a, ManpowerRow>,
+    pub reserve_manpower: crate::walk::Buffer<'a, ReserveManpowerRow>,
+    pub names: crate::walk::Buffer<'a, u8>,
+    pub equipment: crate::walk::Buffer<'a, cstate_garrison_data::equipment::Row>,
+}
+
+impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
+    fn from(value: Buffers<'a>) -> Self {
+        Self {
+            settings: crate::walk::Buffer::Fixed(value.settings),
+            laws: crate::walk::Buffer::Fixed(value.laws),
+            group_laws: crate::walk::Buffer::Fixed(value.group_laws),
+            garrisons: crate::walk::Buffer::Fixed(value.garrisons),
+            manpower: crate::walk::Buffer::Fixed(value.manpower),
+            reserve_manpower: crate::walk::Buffer::Fixed(value.reserve_manpower),
+            names: crate::walk::Buffer::Fixed(value.names),
+            equipment: crate::walk::Buffer::Fixed(value.equipment),
+        }
+    }
+}
+
+impl<'a> From<GrowingBuffers<'a>> for BuffersBuffer<'a> {
+    fn from(value: GrowingBuffers<'a>) -> Self {
+        Self {
+            settings: crate::walk::Buffer::Growing(value.settings),
+            laws: crate::walk::Buffer::Growing(value.laws),
+            group_laws: crate::walk::Buffer::Growing(value.group_laws),
+            garrisons: crate::walk::Buffer::Growing(value.garrisons),
+            manpower: crate::walk::Buffer::Growing(value.manpower),
+            reserve_manpower: crate::walk::Buffer::Growing(value.reserve_manpower),
+            names: crate::walk::Buffer::Growing(value.names),
+            equipment: crate::walk::Buffer::Growing(value.equipment),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub settings: Outcome,
@@ -81,7 +133,7 @@ pub struct Walk {
 }
 
 struct Occupied<'a> {
-    rows: &'a mut [u32],
+    rows: crate::walk::Buffer<'a, u32>,
     len: usize,
     required: usize,
 }
@@ -102,6 +154,7 @@ impl Occupied<'_> {
             .required
             .checked_add(count)
             .ok_or("occupied-country roster demand overflow")?;
+        self.rows.ensure(self.required)?;
         if count > self.rows.len().saturating_sub(self.len) {
             return Err("occupied-country roster arena capacity exceeded");
         }
@@ -173,14 +226,14 @@ pub fn occupied_demand(
 /// Independent table accounting; one table's capacity/fault never fabricates a
 /// complete result for that table or prevents a sibling table's valid read.
 pub(crate) struct Rows<'a, T> {
-    pub data: &'a mut [T],
+    pub data: crate::walk::Buffer<'a, T>,
     pub len: usize,
     unread: u32,
     reason: Option<&'static str>,
 }
 
-impl<'a, T> Rows<'a, T> {
-    fn new(data: &'a mut [T]) -> Self {
+impl<'a, T: Default> Rows<'a, T> {
+    fn new(data: crate::walk::Buffer<'a, T>) -> Self {
         Self {
             data,
             len: 0,
@@ -188,18 +241,27 @@ impl<'a, T> Rows<'a, T> {
             reason: None,
         }
     }
-    pub fn fits(&self) -> bool {
-        self.reason.is_none() && self.len < self.data.len()
+    pub fn fits(&mut self) -> Result<bool, &'static str> {
+        if self.reason.is_some() {
+            return Ok(false);
+        }
+        self.data.ensure(
+            self.len
+                .checked_add(1)
+                .ok_or("occupation row count overflow")?,
+        )
     }
     pub fn remaining(&self) -> usize {
         if self.reason.is_some() {
             0
+        } else if self.data.is_growing() {
+            usize::MAX
         } else {
             self.data.len() - self.len
         }
     }
     pub fn push(&mut self, row: T) -> Result<(), &'static str> {
-        if self.fits() {
+        if self.fits()? {
             self.data[self.len] = row;
             self.len += 1;
             Ok(())
@@ -296,7 +358,7 @@ fn settings(
         });
     }
     let token = coccupation_law::literal(memory, base, law)?;
-    match names.copy(memory, token, rows.fits())? {
+    match names.copy(memory, token, rows.fits()?)? {
         Some(law_start) => rows.push(Row {
             country,
             garrison_template,
@@ -313,7 +375,7 @@ fn settings(
 /// buffers. Law bytes are copied exactly into one arena; no hashing or engine
 /// invocation occurs. Reserve manpower is distinct from state assignments.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffers<'_>) -> Walk {
-    walk_inner(memory, base, game_state, buffers, None)
+    walk_inner(memory, base, game_state, buffers.into(), None)
 }
 
 pub fn walk_with_occupied(
@@ -322,6 +384,46 @@ pub fn walk_with_occupied(
     game_state: usize,
     buffers: Buffers<'_>,
     occupied: &mut [u32],
+) -> Walk {
+    walk_inner(
+        memory,
+        base,
+        game_state,
+        buffers.into(),
+        Some(Occupied {
+            rows: crate::walk::Buffer::Fixed(occupied),
+            len: 0,
+            required: 0,
+        }),
+    )
+}
+
+pub fn walk_with_occupied_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    buffers: GrowingBuffers<'_>,
+    occupied: &mut Vec<u32>,
+) -> Walk {
+    walk_inner(
+        memory,
+        base,
+        game_state,
+        buffers.into(),
+        Some(Occupied {
+            rows: crate::walk::Buffer::Growing(occupied),
+            len: 0,
+            required: 0,
+        }),
+    )
+}
+
+pub fn walk_with_occupied_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    buffers: BuffersBuffer<'_>,
+    occupied: crate::walk::Buffer<'_, u32>,
 ) -> Walk {
     walk_inner(
         memory,
@@ -340,7 +442,7 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    buffers: Buffers<'_>,
+    buffers: BuffersBuffer<'_>,
     mut occupied: Option<Occupied<'_>>,
 ) -> Walk {
     let mut setting_rows = Rows::new(buffers.settings);
@@ -349,8 +451,8 @@ fn walk_inner(
     let mut garrison_rows = Rows::new(buffers.garrisons);
     let mut manpower_rows = Rows::new(buffers.manpower);
     let mut reserve_rows = Rows::new(buffers.reserve_manpower);
-    let mut names = coccupation_law::Names::new(buffers.names);
-    let mut equipment = cstate_garrison_data::equipment::Arena::new(buffers.equipment);
+    let mut names = coccupation_law::Names::new_buffer(buffers.names);
+    let mut equipment = cstate_garrison_data::equipment::Arena::new_buffer(buffers.equipment);
     let fallback_law = coccupation_law::fallback(memory, base)
         .ok()
         .and_then(|token| {

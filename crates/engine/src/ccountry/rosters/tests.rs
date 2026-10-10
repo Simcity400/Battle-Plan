@@ -44,15 +44,15 @@ fn effect_rosters_preserve_order_at_5000_countries_and_fail_independently() {
     let mut neighbors = vec![0; 15_000];
     let mut policies = vec![0; 10_000];
     let mut rosters = CounterRosters {
-        states: &mut states,
-        leaders: &mut leaders,
+        states: Buffer::Fixed(&mut states),
+        leaders: Buffer::Fixed(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
     };
     let mut effects = EffectRosters {
-        neighbors: &mut neighbors,
-        policies: &mut policies,
+        neighbors: Buffer::Fixed(&mut neighbors),
+        policies: Buffer::Fixed(&mut policies),
         neighbor_len: 0,
         policy_len: 0,
         required: Default::default(),
@@ -80,7 +80,7 @@ fn effect_rosters_preserve_order_at_5000_countries_and_fail_independently() {
             &[row.country + 80_000; 2]
         );
     }
-    effects.neighbors = &mut [];
+    effects.neighbors = Buffer::Fixed(&mut []);
     effects.neighbor_len = 0;
     effects.policy_len = 0;
     effects.required = Default::default();
@@ -194,8 +194,8 @@ fn five_native_order_rosters_scale_to_5000_countries_without_fabricating_handles
     let mut states = vec![0; 45_000];
     let mut leaders = vec![0; 30_000];
     let mut rosters = CounterRosters {
-        states: &mut states,
-        leaders: &mut leaders,
+        states: Buffer::Fixed(&mut states),
+        leaders: Buffer::Fixed(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -242,8 +242,8 @@ fn a_short_arena_and_invalid_leaders_preserve_country_scalars() {
     let mut states = [0; 17];
     let mut leaders = [0; 12];
     let mut rosters = CounterRosters {
-        states: &mut states,
-        leaders: &mut leaders,
+        states: Buffer::Fixed(&mut states),
+        leaders: Buffer::Fixed(&mut leaders),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -321,8 +321,8 @@ fn absent_arenas_preserve_all_scalar_rows_at_5000_countries() {
     let (world, _) = fixture(5_000);
     let mut rows = vec![CounterInputsRow::default(); 5_000];
     let mut rosters = CounterRosters {
-        states: &mut [],
-        leaders: &mut [],
+        states: Buffer::Fixed(&mut []),
+        leaders: Buffer::Fixed(&mut []),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -362,8 +362,8 @@ fn observed_empty_and_null_character_rosters_are_present_empty_spans() {
     let world = World::new(0x4000_0000, 1, 0x1100);
     let mut rows = [CounterInputsRow::default()];
     let mut rosters = CounterRosters {
-        states: &mut [],
-        leaders: &mut [],
+        states: Buffer::Fixed(&mut []),
+        leaders: Buffer::Fixed(&mut []),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -409,8 +409,8 @@ fn a_short_member_copy_cannot_publish_empty_rosters_and_demand_never_follows_mem
     );
     let mut rows = [CounterInputsRow::default()];
     let mut rosters = CounterRosters {
-        states: &mut [0; 9],
-        leaders: &mut [0; 6],
+        states: Buffer::Fixed(&mut [0; 9]),
+        leaders: Buffer::Fixed(&mut [0; 6]),
         state_len: 0,
         leader_len: 0,
         required: Default::default(),
@@ -437,4 +437,100 @@ fn a_short_member_copy_cannot_publish_empty_rosters_and_demand_never_follows_mem
     assert_eq!(rows[0].pride_of_the_fleet, (1 << 32) | 51);
     assert_eq!(rows[0].first_division, (1 << 32) | 4);
     assert_eq!((rosters.state_len, rosters.leader_len), (0, 0));
+}
+
+#[test]
+fn growing_rosters_keep_the_first_5000_country_capture_and_later_mod_sized_headers() {
+    let (mut world, _) = fixture(5_000);
+    let (mut rows, mut states, mut leaders, mut neighbors, mut policies) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut capture = |world: &World| {
+        let memory = world.memory();
+        let mut rosters = CounterRosters {
+            states: Buffer::Growing(&mut states),
+            leaders: Buffer::Growing(&mut leaders),
+            state_len: 0,
+            leader_len: 0,
+            required: Default::default(),
+        };
+        let mut effects = EffectRosters {
+            neighbors: Buffer::Growing(&mut neighbors),
+            policies: Buffer::Growing(&mut policies),
+            neighbor_len: 0,
+            policy_len: 0,
+            required: Default::default(),
+        };
+        let result = crate::ccountry::walk_counter_inputs_with_effect_rosters_observed_growing(
+            &memory,
+            world.module,
+            world.game_state(),
+            &mut rows,
+            &mut rosters,
+            &mut effects,
+            &mut None,
+        );
+        assert_eq!(result, Outcome::Rows { len: 5_000 });
+        assert!(
+            rows[..5_000]
+                .iter()
+                .all(|row| row.state_rosters.is_some() && row.leader_rosters.is_some())
+        );
+        rosters.state_len
+    };
+    assert_eq!(capture(&world), 45_000);
+    let header = world.object(1) + CORE_STATES;
+    let old = Array::read(&world.memory(), header, 8).unwrap();
+    let pointer = read::<u64>(&world.memory(), old.data).unwrap();
+    let expanded = world.alloc(4_000 * 8);
+    for slot in 0..4_000 {
+        world.u64(expanded + slot * 8, pointer);
+    }
+    world.array(header, expanded, 4_000);
+    assert_eq!(capture(&world), 45_000 - old.count as usize + 4_000);
+}
+
+#[test]
+fn growing_civil_wars_capture_5000_native_rosters_and_same_hour_expansion() {
+    let mut world = World::new(0x4000_0000, 5_000, 0x1300);
+    let targets = world.alloc(1_024 * 4);
+    for index in 0..1_024 {
+        world.u32(targets + index * 4, index as u32);
+    }
+    for slot in 1..=5_000 {
+        world.array(
+            world.object(slot) + crate::ccountry::CIVIL_WAR_TARGETS,
+            targets,
+            64,
+        );
+    }
+    let mut rows = Vec::new();
+    assert_eq!(
+        crate::ccountry::walk_civil_wars_growing(
+            &world.memory(),
+            world.module,
+            world.game_state(),
+            &mut rows
+        ),
+        Outcome::Rows { len: 5_000 * 64 }
+    );
+    world.array(
+        world.object(1) + crate::ccountry::CIVIL_WAR_TARGETS,
+        targets,
+        1_024,
+    );
+    assert_eq!(
+        crate::ccountry::walk_civil_wars_growing(
+            &world.memory(),
+            world.module,
+            world.game_state(),
+            &mut rows
+        ),
+        Outcome::Rows {
+            len: 5_000 * 64 + 960
+        }
+    );
+    assert_eq!(
+        (rows[1_023].country, rows[1_023].ordinal, rows[1_023].target),
+        (1, 1_023, 1_023)
+    );
 }

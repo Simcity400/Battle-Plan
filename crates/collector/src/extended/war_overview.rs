@@ -109,7 +109,7 @@ impl Captured {
         if force_full {
             self.discovery.invalidate();
         }
-        let outcomes = native::walk_cached(
+        let outcomes = native::walk_cached_growing(
             memory,
             base,
             state,

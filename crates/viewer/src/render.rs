@@ -492,6 +492,16 @@ pub fn write_png(
     writer.finish().map_err(io::Error::other)
 }
 
+#[cfg(test)]
+pub(crate) fn read_test_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    texel_bytes: u32,
+) -> io::Result<Vec<u8>> {
+    read_texture(device, queue, texture, texel_bytes)
+}
+
 fn read_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -625,7 +635,16 @@ pub fn dump_png(
             .request_device(&device_descriptor(&adapter))
             .await
             .map_err(io::Error::other)?;
-        let mut scene = Scene::new(&device, &queue, assets, icons, Default::default())?;
+        let mut scene = Scene::new(
+            &device,
+            &queue,
+            assets,
+            icons,
+            dashboard::protocol::MapGraphics {
+                full_resolution: layers.content.game_full_resolution,
+                ..Default::default()
+            },
+        )?;
         // political fill + borders
         if !layers.omitted.gradient {
             scene.warm_political(&device, &queue, layers.content)?;
@@ -719,10 +738,8 @@ pub fn dump_png(
         scene.set_snow_mud(
             &device,
             &queue,
-            &snow_mud.texels,
-            snow_mud.width,
-            snow_mud.height,
-            &snow_mud.province_snow,
+            snow_mud,
+            crate::map::presentation::Continuity::Reset,
         )?;
         // fog of war
         scene.set_fog_of_war(&queue, &layers.intel_map.texels, layers.intel_map.fog)?;

@@ -13,13 +13,17 @@
 //! railway advance's detour marks its line on the thread, so the segment detour
 //! knows whose output it is.
 //!
-//! Every clocked hourly callback hands the log over since its last drain into its
-//! frame ([`drain`]); the spool totals it per branch (`extended::construction_ic`).
+//! Every clocked hourly boundary joins the worker that grows its owned frame
+//! from the original pending burst ([`drain_growing`]); the spool totals it per
+//! branch (`extended::construction_ic`). Producer storage follows the original
+//! native construction queues and route counts at attach and input cadence,
+//! plus complete attempted bursts. After its owned drain, the empty boundary
+//! installs prepared storage; retired storage is released off-thread.
 //! The detours run on the simulation thread (the daily production pass is serial);
 //! the log is multi-producer safe anyway, and the railway pairing is per thread.
 //!
 //! A site whose prologue differs from the pinned sentinel, or that cannot be
-//! detoured, leaves all six uninstalled: the collector still attaches and
+//! detoured, leaves the family uninstalled: the collector still attaches and
 //! ConstructionLineOutput is unavailable with the reason (`unhooked` in
 //! `status.json`).
 pub use crate::output_log::Drained;
@@ -31,36 +35,67 @@ use crate::{
 use engine::{
     Memory,
     construction_ic_sites::{
-        BUILDING_COMPLETE, BUILDING_SPEED, BUILDING_SPEND_RETURN, COMPLETE_RETURN,
+        BUILDING_COMPLETE, BUILDING_RESET, BUILDING_SPEED, BUILDING_SPEND_RETURN, COMPLETE_RETURN,
         LINKED_COMPLETE_RETURN, RAILWAY_ADVANCE, RAILWAY_COMPLETE, RAILWAY_PROGRESS,
         REMOVE_GENERAL_LINE, Site,
     },
 };
 use std::{
     cell::Cell,
+    mem::ManuallyDrop,
     ops::Range,
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+    ptr,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+    },
 };
 
-/// Capacity between hourly drains, including railway carries and instant calls.
-const LOG: usize = crate::output_log::CAPACITY;
-static LINES: [AtomicU64; LOG] = [const { AtomicU64::new(0) }; LOG];
-static PARTNERS: [AtomicU64; LOG] = [const { AtomicU64::new(0) }; LOG];
-static AMOUNTS: [AtomicU64; LOG] = [const { AtomicU64::new(0) }; LOG];
-static BANKS: [AtomicU64; LOG] = [const { AtomicU64::new(0) }; LOG];
-static FLAGS: [AtomicU8; LOG] = [const { AtomicU8::new(0) }; LOG];
-static OBSERVATION: Log = Log::new(LOG);
-#[cfg(test)]
+#[derive(Default)]
+struct Slot {
+    line: AtomicU64,
+    partner: AtomicU64,
+    amount: AtomicU64,
+    bank: AtomicU64,
+    flags: AtomicU8,
+}
+
+struct Storage {
+    slots: Vec<Slot>,
+}
+impl Storage {
+    fn new(capacity: usize) -> Option<Box<Self>> {
+        let mut slots = engine::allocation::vec(capacity).ok()?;
+        slots.resize_with(capacity, Slot::default);
+        engine::allocation::boxed(Self { slots }).ok()
+    }
+}
+
+#[derive(Default)]
+struct LogSwap {
+    current: Option<Box<Storage>>,
+    next: Option<Box<Storage>>,
+    retired: Option<Box<Storage>>,
+}
+static LOG_SWAP: Mutex<LogSwap> = Mutex::new(LogSwap {
+    current: None,
+    next: None,
+    retired: None,
+});
+static LOG: AtomicPtr<Storage> = AtomicPtr::new(ptr::null_mut());
+static SWAPS: AtomicU64 = AtomicU64::new(0);
+static FAILED_OFFERS: AtomicU64 = AtomicU64::new(0);
+static REJECTED: AtomicU64 = AtomicU64::new(0);
+static OBSERVATION: Log = Log::new(0);
 static CURSOR: &Padded<AtomicU64> = &OBSERVATION.cursor;
 static ENABLED: &AtomicBool = &OBSERVATION.enabled;
 pub static ACTIVE: &Padded<AtomicUsize> = &OBSERVATION.active;
 /// The spend and native completion trampolines.
-static INSTALLED: [AtomicBool; 6] = [const { AtomicBool::new(false) }; 6];
-static ORIGINAL: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
+static INSTALLED: [AtomicBool; 7] = [const { AtomicBool::new(false) }; 7];
+static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
 /// The module base the RVAs are relative to.
 static BASE: AtomicUsize = AtomicUsize::new(0);
 /// The next entry the hourly drain hands over; only the callback moves it.
-#[cfg(test)]
 static CONSUMED: &AtomicU64 = &OBSERVATION.consumed;
 /// Why the hooks are not installed, when they are not.
 static REFUSED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
@@ -71,6 +106,78 @@ static UNHOOKED: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 /// overflowed logs, unobserved drains, refused operand reads]`.
 static COUNTERS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
 
+pub fn capacity() -> usize {
+    OBSERVATION.capacity.load(Ordering::Acquire)
+}
+
+/// Loader/spool thread: two native passes cover the bounded hourly handoff,
+/// independently of country count. Rejected bursts retain their whole demand.
+pub fn presize(events: usize) {
+    engine::allocation::advisory(|| presize_storage(events));
+}
+
+fn presize_storage(events: usize) {
+    let Some(capacity) = events
+        .checked_mul(2)
+        .map(|native| native.max(OBSERVATION.required.load(Ordering::Acquire)))
+    else {
+        let _ = crate::allocation::oom();
+        FAILED_OFFERS.fetch_add(1, Ordering::Relaxed);
+        return;
+    };
+    let Ok(mut swap) = LOG_SWAP.lock() else {
+        return;
+    };
+    let offered = swap.next.as_ref().map_or(0, |storage| storage.slots.len());
+    if (swap.current.is_some() && capacity <= self::capacity())
+        || (swap.next.is_some() && capacity <= offered)
+    {
+        return;
+    }
+    if let Some(next) = Storage::new(capacity) {
+        swap.next = Some(next);
+    } else {
+        FAILED_OFFERS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Parked hourly boundary, after its owned drain: no allocation or freeing.
+pub fn install_offered() {
+    let Ok(mut swap) = LOG_SWAP.try_lock() else {
+        return;
+    };
+    if swap.retired.is_some()
+        || ACTIVE.load(Ordering::SeqCst) != 0
+        || CURSOR.load(Ordering::SeqCst) != CONSUMED.load(Ordering::Relaxed)
+    {
+        return;
+    }
+    let Some(mut next) = swap.next.take() else {
+        return;
+    };
+    let capacity = next.slots.len();
+    let pointer = &mut *next as *mut Storage;
+    swap.retired = swap.current.replace(next);
+    LOG.store(pointer, Ordering::SeqCst);
+    OBSERVATION.capacity.store(capacity, Ordering::Release);
+    if swap.retired.is_some() {
+        SWAPS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Off-thread only: the replaced producer was empty and writer-free.
+pub fn collect() {
+    if let Ok(mut swap) = LOG_SWAP.lock() {
+        drop(swap.retired.take());
+    }
+}
+
+fn log() -> Option<&'static Storage> {
+    // SAFETY: writers hold OBSERVATION.enter(). The sole worker drain finishes
+    // before the same parked hourly boundary can install a replacement.
+    unsafe { LOG.load(Ordering::SeqCst).as_ref() }
+}
+
 const RAILWAY: u8 = 1;
 const REPAIR: u8 = 2;
 const INSTANT: u8 = 4;
@@ -78,6 +185,7 @@ const LINKED: u8 = 8;
 const CARRY: u8 = 16;
 const COMPLETE: u8 = 32;
 const CANCELLED: u8 = 64;
+const RESET: u8 = 128;
 
 /// One construction spend, railway carry or native completion decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -103,6 +211,8 @@ pub struct Entry {
     /// The secondary receiver completed inside its primary's advance; its share
     /// stays unknown even if the primary spend preceded this observation.
     pub linked_completion: bool,
+    /// Signed quantity cleared by MarkComplete@140F55390, never spending.
+    pub count_reset: Option<i32>,
 }
 
 thread_local! {
@@ -165,6 +275,7 @@ fn observe(line: usize, amount: i64, railway: bool, carry: bool) {
         carry,
         completion: None,
         linked_completion: false,
+        count_reset: None,
     });
 }
 
@@ -261,66 +372,70 @@ fn append(entry: Entry) {
     if entry.instant {
         COUNTERS[6].fetch_add(1, Ordering::Relaxed);
     }
-    let (index, slot) = OBSERVATION.reserve();
+    let (index, slot) = OBSERVATION.reserve_optional();
+    let Some(slot) = slot.and_then(|slot| log()?.slots.get(slot)) else {
+        REJECTED.fetch_add(1, Ordering::Relaxed);
+        invalidate();
+        return;
+    };
     let flags = (u8::from(entry.railway) * RAILWAY)
         | (u8::from(entry.repair) * REPAIR)
         | (u8::from(entry.instant) * INSTANT)
         | (u8::from(entry.partner.is_some() || entry.linked_completion) * LINKED)
         | (u8::from(entry.carry) * CARRY)
         | (u8::from(entry.completion.is_some()) * COMPLETE)
-        | (u8::from(entry.completion.is_some_and(|event| event.cancelled)) * CANCELLED);
-    LINES[slot].store(entry.line, Ordering::SeqCst);
-    PARTNERS[slot].store(entry.partner.unwrap_or(0), Ordering::SeqCst);
+        | (u8::from(entry.completion.is_some_and(|event| event.cancelled)) * CANCELLED)
+        | (u8::from(entry.count_reset.is_some()) * RESET);
+    slot.line.store(entry.line, Ordering::SeqCst);
+    slot.partner
+        .store(entry.partner.unwrap_or(0), Ordering::SeqCst);
     // Completion entries use this slot for the native hour, never IC.
-    AMOUNTS[slot].store(
-        entry
-            .completion
-            .map_or(entry.amount, |event| i64::from(event.hour)) as u64,
+    slot.amount.store(
+        entry.completion.map_or_else(
+            || entry.count_reset.map_or(entry.amount, i64::from),
+            |event| i64::from(event.hour),
+        ) as u64,
         Ordering::SeqCst,
     );
-    BANKS[slot].store(entry.bank as u64, Ordering::SeqCst);
-    FLAGS[slot].store(flags, Ordering::SeqCst);
+    slot.bank.store(entry.bank as u64, Ordering::SeqCst);
+    slot.flags.store(flags, Ordering::SeqCst);
     OBSERVATION.finish(index);
 }
 
-fn entry(slot: usize) -> Entry {
-    let flags = FLAGS[slot].load(Ordering::SeqCst);
-    let amount = AMOUNTS[slot].load(Ordering::SeqCst) as i64;
+fn entry(slot: &Slot) -> Entry {
+    let flags = slot.flags.load(Ordering::SeqCst);
+    let amount = slot.amount.load(Ordering::SeqCst) as i64;
     Entry {
-        line: LINES[slot].load(Ordering::SeqCst),
+        line: slot.line.load(Ordering::SeqCst),
         carry: flags & CARRY != 0,
-        amount: if flags & COMPLETE == 0 { amount } else { 0 },
-        bank: BANKS[slot].load(Ordering::SeqCst) as i64,
+        amount: if flags & (COMPLETE | RESET) == 0 {
+            amount
+        } else {
+            0
+        },
+        bank: slot.bank.load(Ordering::SeqCst) as i64,
         railway: flags & RAILWAY != 0,
         repair: flags & REPAIR != 0,
         instant: flags & INSTANT != 0,
         partner: (flags & LINKED != 0 && flags & COMPLETE == 0)
-            .then(|| PARTNERS[slot].load(Ordering::SeqCst)),
+            .then(|| slot.partner.load(Ordering::SeqCst)),
         completion: (flags & COMPLETE != 0).then_some(replay::rows::ConstructionCompletion {
             hour: amount as i32,
             cancelled: flags & CANCELLED != 0,
         }),
         linked_completion: flags & (COMPLETE | LINKED) == (COMPLETE | LINKED),
+        count_reset: (flags & RESET != 0).then_some(amount as i32),
     }
 }
 
 /// Copy settled entries without allocating; short storage defers the rest.
+#[cfg(test)]
 pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
-    let unavailable = || {
-        if let Some(reason) = UNHOOKED.get() {
-            Some(*reason)
-        } else if REFUSAL_PENDING.swap(false, Ordering::SeqCst) {
-            REFUSED.get().copied()
-        } else if !ENABLED.load(Ordering::SeqCst) {
-            Some("construction line hooks are not enabled")
-        } else {
-            None
-        }
-    };
+    let log = log();
     OBSERVATION.drain(
         output,
-        entry,
-        unavailable,
+        |slot| entry(&log.unwrap().slots[slot]),
+        || unavailable(log.is_some()),
         "construction line observation restarted during the drain",
         DrainCounters {
             drains: &COUNTERS[7],
@@ -331,12 +446,59 @@ pub fn drain(output: &mut [Entry]) -> Result<Drained, &'static str> {
     )
 }
 
+/// Joined acquisition worker only: reserve the original complete pending burst
+/// before advancing its consumed frontier; the producer is never reread.
+pub fn drain_growing(output: &mut Vec<Entry>) -> Result<Drained, &'static str> {
+    let log = log();
+    OBSERVATION.drain_growing(
+        output,
+        |slot| entry(&log.unwrap().slots[slot]),
+        || unavailable(log.is_some()),
+        "construction line observation restarted during the drain",
+        DrainCounters {
+            drains: &COUNTERS[7],
+            copied: &COUNTERS[8],
+            overflow: &COUNTERS[9],
+            unobserved: &COUNTERS[10],
+        },
+    )
+}
+
+fn unavailable(installed: bool) -> Option<&'static str> {
+    if let Some(reason) = UNHOOKED.get() {
+        Some(*reason)
+    } else if REFUSAL_PENDING.swap(false, Ordering::SeqCst) {
+        REFUSED.get().copied()
+    } else if !ENABLED.load(Ordering::SeqCst) {
+        Some("construction line hooks are not enabled")
+    } else if !installed {
+        Some("construction line log is not installed")
+    } else {
+        None
+    }
+}
+
+#[path = "country_scale/construction_demand.rs"]
+mod demand;
+
+/// Attach/input-demand cadence, off-thread: census native pass storage and
+/// retain independent sizing failures without withdrawing current coverage.
+pub fn presize_from_live(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
+    demand::presize(memory, base)
+}
+
 pub fn status() -> impl serde::Serialize {
     let counters = COUNTERS
         .each_ref()
         .map(|value| value.load(Ordering::Relaxed));
     let base = output_hooks::status(&OBSERVATION, &UNHOOKED, Some(&INSTALLED));
     base.join(crate::status::status!({
+        "capacity": capacity(),
+        "required": OBSERVATION.required.load(Ordering::Acquire),
+        "swaps": SWAPS.load(Ordering::Relaxed),
+        "failed_offers": FAILED_OFFERS.load(Ordering::Relaxed),
+        "rejected_entries": REJECTED.load(Ordering::Relaxed),
+        "sizing": demand::status(),
         "building_spends": counters[0],
         "other_speed_reads": counters[1],
         "railway_advances": counters[2],
@@ -355,15 +517,16 @@ pub fn status() -> impl serde::Serialize {
 }
 
 pub struct Hooks {
-    shared: output_hooks::Hooks<6>,
+    shared: ManuallyDrop<output_hooks::Hooks<7>>,
 }
-const SITES: [&Site; 6] = [
+const SITES: [&Site; 7] = [
     &BUILDING_SPEED,
     &RAILWAY_ADVANCE,
     &RAILWAY_PROGRESS,
     &BUILDING_COMPLETE,
     &RAILWAY_COMPLETE,
     &REMOVE_GENERAL_LINE,
+    &BUILDING_RESET,
 ];
 #[cfg(test)]
 fn validate_sentinels(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
@@ -379,6 +542,8 @@ impl Hooks {
     /// The runtime verified the executable hash. Installation failure leaves
     /// the output table unavailable; site order preserves paired observation.
     pub unsafe fn new(memory: &impl Memory, base: usize) -> Self {
+        let _ = presize_from_live(memory, base);
+        install_offered();
         let domain = output_hooks::Domain {
             sentinel_error: "construction line sentinel differs",
             failure: output_hooks::Failure::Unavailable,
@@ -389,7 +554,7 @@ impl Hooks {
             unhooked: &UNHOOKED,
         };
         Self {
-            shared: unsafe {
+            shared: ManuallyDrop::new(unsafe {
                 output_hooks::Hooks::new(
                     memory,
                     base,
@@ -401,11 +566,12 @@ impl Hooks {
                         building_complete_entry as *const () as usize,
                         railway_complete_entry as *const () as usize,
                         linked_complete_entry as *const () as usize,
+                        building_reset as *const () as usize,
                     ],
                     domain,
                     Ok(()),
                 )
-            },
+            }),
         }
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
@@ -416,8 +582,40 @@ impl Hooks {
     }
 }
 
+impl Drop for Hooks {
+    fn drop(&mut self) {
+        if ACTIVE.load(Ordering::SeqCst) != 0 {
+            return;
+        }
+        // Runtime removes the family and joins drains before releasing it.
+        unsafe { ManuallyDrop::drop(&mut self.shared) };
+        LOG.store(ptr::null_mut(), Ordering::SeqCst);
+        OBSERVATION.capacity.store(0, Ordering::Release);
+        let mut swap = LOG_SWAP
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *swap = LogSwap::default();
+    }
+}
+
 fn original(site: usize) -> usize {
     ORIGINAL[site].load(Ordering::Acquire)
+}
+
+unsafe extern "system-unwind" fn building_reset(line: usize) {
+    let _call = OBSERVATION.enter();
+    let memory = unsafe { engine::memory::LiveMemory::new() };
+    match engine::construction_ic_sites::count_reset(&memory, BASE.load(Ordering::Relaxed), line) {
+        Ok((line, count)) => append(Entry {
+            line,
+            count_reset: Some(count),
+            ..Entry::default()
+        }),
+        Err(reason) => refuse(reason),
+    }
+    let original: unsafe extern "system-unwind" fn(usize) =
+        unsafe { std::mem::transmute(original(6)) };
+    unsafe { original(line) };
 }
 
 // The speed getter takes two integer arguments, so R8 is free: its entry copies
@@ -518,11 +716,33 @@ pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
 /// the current cursor. Hold [`test_lock`].
 #[cfg(test)]
 pub(crate) fn observe_for_test(enabled: bool, base: usize) {
+    if enabled {
+        reset_log_for_test(crate::output_log::CAPACITY);
+    }
     BASE.store(base, Ordering::Relaxed);
     ENABLED.store(enabled, Ordering::SeqCst);
     CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
     RAILWAY_LINE.set((0, 0));
 }
+
+#[cfg(test)]
+pub(crate) fn reset_log_for_test(capacity: usize) {
+    assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+    let mut current = Storage::new(capacity).unwrap();
+    let pointer = &mut *current as *mut Storage;
+    *LOG_SWAP.lock().unwrap() = LogSwap {
+        current: Some(current),
+        ..Default::default()
+    };
+    LOG.store(pointer, Ordering::SeqCst);
+    OBSERVATION.capacity.store(capacity, Ordering::Release);
+    OBSERVATION.required.store(0, Ordering::Release);
+    CONSUMED.store(CURSOR.load(Ordering::SeqCst), Ordering::Relaxed);
+}
+
+#[cfg(test)]
+#[path = "construction_ic/growth_tests.rs"]
+mod growth_tests;
 
 #[cfg(test)]
 mod tests {
@@ -532,6 +752,26 @@ mod tests {
         LINKED_LINE, REPAIR_LEVELS,
     };
     use engine::cproduction_line;
+
+    #[test]
+    fn count_reset_entries_preserve_quantity_without_spending_or_completion() {
+        let _lock = test_lock();
+        observe_for_test(true, 0);
+        for count in [0, 1, i32::MAX, i32::MIN] {
+            let expected = Entry {
+                line: 19,
+                count_reset: Some(count),
+                ..Entry::default()
+            };
+            let _writer = OBSERVATION.enter();
+            append(expected);
+            drop(_writer);
+            let mut entries = [Entry::default(); 1];
+            drain(&mut entries).unwrap();
+            assert_eq!(entries[0], expected);
+        }
+        observe_for_test(false, 0);
+    }
 
     #[test]
     fn completion_entries_keep_native_date_and_do_not_become_output() {
@@ -938,7 +1178,7 @@ mod tests {
                 best_day.as_secs_f64() * 1000.0,
                 best_drain.as_secs_f64() * 1000.0,
                 sum_hour / 20.0,
-                LOG * (4 * size_of::<AtomicU64>() + size_of::<AtomicU8>()),
+                capacity() * size_of::<Slot>(),
                 output.len() * size_of::<Entry>()
             );
         }
@@ -969,7 +1209,7 @@ mod tests {
             entries.iter().map(|e| e.amount).collect::<Vec<_>>(),
             [3, 4, 5]
         );
-        for _ in 0..=LOG {
+        for _ in 0..=capacity() {
             observe_speed(&mut building, 1, spend_site(&image));
         }
         let (result, entries) = drained(4);
@@ -995,7 +1235,7 @@ mod tests {
 
     #[test]
     fn every_sentinel_is_checked_before_installation() {
-        struct Prologues([[u8; 16]; 6]);
+        struct Prologues([[u8; 16]; 7]);
         impl Memory for Prologues {
             fn copy(&self, address: usize, out: &mut [u8]) -> bool {
                 let Some(index) = SITES.iter().position(|s| s.rva == address) else {

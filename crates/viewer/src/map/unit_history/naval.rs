@@ -4,12 +4,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Budget, Entity, Frame, Kind, Part, Target};
+use super::super::{counter_move::CounterClass, unit_selection::Unit};
+use super::{Budget, Entity, Frame, Kind, ModelInstance, Part, Target};
 
 #[derive(Clone, Default)]
 pub struct Sources {
     pub candidates: Vec<Candidate>,
     pub formations: Vec<Formation>,
+    pub combats: super::naval_combat::Sources,
 }
 
 impl Sources {
@@ -59,7 +61,7 @@ pub struct Candidate {
     /// other shared-vision = 2, at war = 1, otherwise 0.
     pub priority: u8,
     pub ours: bool,
-    pub naval: bool,
+    pub class: CounterClass,
     /// 141277D76..DBD: land occupants must pass both the terrain/slot
     /// predicate and the land model gate to offer a representative.
     pub land_eligible: bool,
@@ -74,6 +76,20 @@ pub struct Candidate {
     /// 141632130: arrival glide needs speed < 4, no combat, and its day deadline.
     pub arrival_allowed: bool,
     pub day: i32,
+}
+
+impl Candidate {
+    fn unit(&self) -> Unit {
+        match self.class {
+            CounterClass::Division => Unit::Division(self.identity),
+            CounterClass::RailwayGun => Unit::RailwayGun(self.identity),
+            CounterClass::TaskForce => Unit::TaskForce(self.identity),
+        }
+    }
+
+    fn naval(&self) -> bool {
+        self.class == CounterClass::TaskForce
+    }
 }
 
 #[derive(Clone)]
@@ -201,8 +217,10 @@ pub(super) struct History {
     sources: Sources,
     candidates: BTreeMap<u32, Vec<usize>>,
     formations: BTreeMap<u64, usize>,
-    arcs: BTreeMap<(bool, u64), ArcState>,
+    arcs: BTreeMap<Unit, ArcState>,
+    selected: BTreeSet<Unit>,
     representatives: [usize; 0x26],
+    combat: Option<(u64, u64)>,
 }
 
 impl Default for History {
@@ -212,7 +230,9 @@ impl Default for History {
             candidates: BTreeMap::new(),
             formations: BTreeMap::new(),
             arcs: BTreeMap::new(),
+            selected: BTreeSet::new(),
             representatives: [0; 0x26],
+            combat: None,
         }
     }
 }
@@ -310,6 +330,13 @@ impl ArcState {
 }
 
 impl History {
+    /// Viewer selection is read on each frame, independent of hourly sources.
+    pub(super) fn set_selection(&mut self, selected: &BTreeSet<Unit>) {
+        if self.selected != *selected {
+            self.selected.clone_from(selected);
+        }
+    }
+
     pub(super) fn install(&mut self, sources: Sources) {
         self.candidates.clear();
         for (index, candidate) in sources.candidates.iter().enumerate() {
@@ -330,7 +357,7 @@ impl History {
         let current: BTreeMap<_, _> = sources
             .candidates
             .iter()
-            .map(|candidate| ((candidate.naval, candidate.identity), candidate))
+            .map(|candidate| (candidate.unit(), candidate))
             .collect();
         self.arcs.retain(|key, _| current.contains_key(key));
         // Allocate route/arc storage at the hour boundary, never in the
@@ -349,10 +376,7 @@ impl History {
         // animators. Only a load-equivalent reset restarts our simulated arcs.
         if provinces.is_none() {
             for candidate in &self.sources.candidates {
-                let state = self
-                    .arcs
-                    .get_mut(&(candidate.naval, candidate.identity))
-                    .unwrap();
+                let state = self.arcs.get_mut(&candidate.unit()).unwrap();
                 if state.arrived {
                     std::mem::swap(&mut state.route, &mut state.pending_route);
                 }
@@ -382,30 +406,35 @@ impl History {
                 continue;
             }
             *count += 1;
-            let state = self
-                .arcs
-                .get_mut(&(candidate.naval, candidate.identity))
-                .unwrap();
+            let state = self.arcs.get_mut(&candidate.unit()).unwrap();
             state.advance(candidate, frame);
             let candidate_arc = state.arc;
             let moving = state.sample_count != 0;
-            if (candidate.naval && !frame.shown[Kind::Ship as usize])
-                || (!candidate.naval
+            if (candidate.naval() && !frame.shown[Kind::Ship as usize])
+                || (!candidate.naval()
                     && (!candidate.land_eligible || !frame.shown[Kind::Land as usize]))
             {
                 continue;
             }
+            // 141277A00: only an own selected unit gets priority 4.
+            // Moving-arc precedence below still runs before priority.
+            let candidate_priority = if candidate.ours && self.selected.contains(&candidate.unit())
+            {
+                4
+            } else {
+                candidate.priority
+            };
             let slot = &mut slots[candidate.slot as usize];
             let Some((current, priority)) = slot else {
-                *slot = Some((index, candidate.priority));
+                *slot = Some((index, candidate_priority));
                 continue;
             };
             let held = &self.sources.candidates[*current];
-            let held_arc = self.arcs[&(held.naval, held.identity)].arc;
+            let held_arc = self.arcs[&held.unit()].arc;
             if moving && candidate_arc > held_arc {
                 *current = index;
-            } else if candidate.priority > *priority
-                || (candidate.priority == *priority && candidate.ours)
+            } else if candidate_priority > *priority
+                || (candidate_priority == *priority && candidate.ours)
             {
                 if !held.ours || candidate.ours {
                     *current = index;
@@ -413,12 +442,34 @@ impl History {
             } else {
                 continue;
             }
-            *priority = candidate.priority;
+            *priority = candidate_priority;
         }
+        // 14127CDCE compares slot PRIORITIES, not occupant counts. A tie
+        // selects slot 9 even if only slot 10 has a priority-zero unit.
+        let combat_slot = if slots[9].map_or(0, |(_, priority)| priority)
+            < slots[10].map_or(0, |(_, priority)| priority)
+        {
+            10
+        } else {
+            9
+        };
+        self.combat = slots[combat_slot].and_then(|(index, _)| {
+            let candidate = &self.sources.candidates[index];
+            candidate
+                .naval()
+                .then_some(candidate)
+                .and_then(|candidate| {
+                    self.sources
+                        .combats
+                        .links
+                        .get(&candidate.identity)
+                        .map(|links| (links[1], links[0]))
+                })
+        });
         let mut count = 0;
         for (index, _) in slots.into_iter().flatten() {
             let candidate = &self.sources.candidates[index];
-            if !candidate.naval || matches!(candidate.slot, 9 | 10 | 19) {
+            if !candidate.naval() || matches!(candidate.slot, 9 | 10 | 19) {
                 continue;
             }
             if let Some(&i) = self.formations.get(&candidate.identity) {
@@ -433,6 +484,22 @@ impl History {
         self.representatives[..count]
             .iter()
             .map(move |&i| &formations[i])
+    }
+
+    pub(super) fn combat(&self, province: u32) -> Option<super::naval_combat::Selection<'_>> {
+        let (id, first) = self.combat?;
+        let battle = self.sources.combats.battles.get(&id)?;
+        let geometry = self.sources.combats.roots.get(&province)?;
+        Some(super::naval_combat::Selection {
+            battle,
+            first,
+            root: ModelInstance {
+                position: geometry.position,
+                scale: geometry.scale,
+                rotation: geometry.rotation,
+                ..battle.root.instance
+            },
+        })
     }
 }
 
@@ -458,7 +525,7 @@ mod tests {
             slot: 0,
             priority,
             ours,
-            naval: true,
+            class: CounterClass::TaskForce,
             land_eligible: false,
             sample_count: 0,
             next_arc: 0.0,
@@ -473,7 +540,7 @@ mod tests {
     fn sources(candidates: Vec<Candidate>) -> Sources {
         let formations = candidates
             .iter()
-            .filter(|c| c.naval)
+            .filter(|c| c.naval())
             .map(|c| Formation {
                 identity: c.identity,
                 province: c.province,
@@ -484,6 +551,7 @@ mod tests {
         Sources {
             candidates,
             formations,
+            ..Default::default()
         }
     }
 
@@ -492,6 +560,95 @@ mod tests {
             .representatives(9206, frame(delta))
             .map(|f| f.identity)
             .collect()
+    }
+
+    #[test]
+    fn viewer_selection_changes_representatives_without_reinstalling_the_hour() {
+        let mut history = History::default();
+        history.install(sources(vec![candidate(1, 3, true), candidate(2, 3, true)]));
+        assert_eq!(selected(&mut history, 0.0), [2]);
+        history.set_selection(&BTreeSet::from([Unit::TaskForce(1)]));
+        assert_eq!(selected(&mut history, 0.0), [1]);
+        history.set_selection(&BTreeSet::from([Unit::TaskForce(1), Unit::TaskForce(2)]));
+        assert_eq!(
+            selected(&mut history, 0.0),
+            [2],
+            "selected ties keep own last"
+        );
+        history.set_selection(&BTreeSet::new());
+        assert_eq!(selected(&mut history, 0.0), [2]);
+
+        history.install(sources(vec![
+            candidate(1, 2, false),
+            candidate(2, 1, false),
+        ]));
+        history.set_selection(&BTreeSet::from([Unit::TaskForce(2)]));
+        assert_eq!(
+            selected(&mut history, 0.0),
+            [1],
+            "foreign selection adds no priority"
+        );
+    }
+
+    #[test]
+    fn viewer_selection_distinguishes_land_classes_and_keeps_camera_gates() {
+        let mut history = History::default();
+        let mut land = candidate(2, 3, true);
+        land.class = CounterClass::RailwayGun;
+        land.land_eligible = true;
+        history.install(sources(vec![candidate(1, 3, true), land]));
+        history.set_selection(&BTreeSet::from([Unit::TaskForce(1), Unit::Division(2)]));
+        assert_eq!(
+            selected(&mut history, 0.0),
+            [1],
+            "a division handle cannot select a gun"
+        );
+        history.set_selection(&BTreeSet::from([Unit::TaskForce(1), Unit::RailwayGun(2)]));
+        assert!(
+            selected(&mut history, 0.0).is_empty(),
+            "own selected land wins its slot"
+        );
+        let mut closed = frame(0.0);
+        closed.shown[Kind::Land as usize] = false;
+        assert_eq!(
+            history
+                .representatives(9206, closed)
+                .next()
+                .unwrap()
+                .identity,
+            1
+        );
+    }
+
+    #[test]
+    fn viewer_selection_preserves_moving_arc_precedence_and_animation() {
+        let mut history = History::default();
+        let mut moving = candidate(2, 0, false);
+        moving.sample_count = 8;
+        moving.route = vec![1434];
+        history.install(sources(vec![candidate(1, 3, true), moving]));
+        history.set_selection(&BTreeSet::from([Unit::TaskForce(1)]));
+        assert_eq!(selected(&mut history, 0.0), [1]);
+        assert_eq!(selected(&mut history, 0.25), [2]);
+        history.set_selection(&BTreeSet::new());
+        assert_eq!(selected(&mut history, 0.0), [2]);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 0.25);
+    }
+
+    #[test]
+    fn land_classes_with_equal_handles_keep_separate_arc_state() {
+        let mut history = History::default();
+        let mut division = candidate(2, 3, true);
+        division.class = CounterClass::Division;
+        division.route = vec![1434];
+        division.sample_count = 8;
+        let mut gun = division.clone();
+        gun.class = CounterClass::RailwayGun;
+        gun.route = vec![1660];
+        history.install(sources(vec![division, gun]));
+        assert_eq!(history.arcs.len(), 2);
+        assert_eq!(history.arcs[&Unit::Division(2)].route, [1434]);
+        assert_eq!(history.arcs[&Unit::RailwayGun(2)].route, [1660]);
     }
 
     #[test]
@@ -535,7 +692,7 @@ mod tests {
         moving.sample_count = 8;
         history.install(sources(vec![candidate(1, 3, true), moving]));
         assert_eq!(selected(&mut history, 0.25), [2]);
-        assert_eq!(history.arcs[&(true, 2)].arc, 0.25);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 0.25);
         history.reset(None);
         assert_eq!(selected(&mut history, 0.0), [1], "zero arc is a strict tie");
         assert_eq!(selected(&mut history, 0.25), [2]);
@@ -555,7 +712,7 @@ mod tests {
         moving.min_arc = 1.0;
         history.install(sources(vec![candidate(1, 3, true), moving]));
         assert_eq!(selected(&mut history, 0.0), [2]);
-        assert_eq!(history.arcs[&(true, 2)].arc, 1.0);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 1.0);
     }
 
     #[test]
@@ -576,7 +733,7 @@ mod tests {
         // Main instead allocated the arc map node and cloned the route at
         // first frame admission. Every occupant is prepared before this walk.
         assert_eq!(history.arcs.len(), 0x26);
-        let route = history.arcs[&(true, 1)].route.as_ptr();
+        let route = history.arcs[&Unit::TaskForce(1)].route.as_ptr();
         let buffer = history.representatives.as_ptr();
         for _ in 0..3 {
             let mut previous = None;
@@ -589,7 +746,7 @@ mod tests {
             }
             assert_eq!(count, 0x26 - 3);
             assert_eq!(history.arcs.len(), 0x26);
-            assert_eq!(history.arcs[&(true, 1)].route.as_ptr(), route);
+            assert_eq!(history.arcs[&Unit::TaskForce(1)].route.as_ptr(), route);
             assert_eq!(history.representatives.as_ptr(), buffer);
         }
     }
@@ -604,10 +761,10 @@ mod tests {
         assert_eq!(selected(&mut history, 0.25), [2]);
         history.reset(Some(&[9206].into_iter().collect()));
         assert_eq!(selected(&mut history, 0.0), [2]);
-        assert_eq!(history.arcs[&(true, 2)].arc, 0.25);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 0.25);
         history.reset(None);
         assert_eq!(selected(&mut history, 0.0), [1]);
-        assert_eq!(history.arcs[&(true, 2)].arc, 0.0);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 0.0);
     }
 
     #[test]
@@ -619,15 +776,15 @@ mod tests {
         moving.route = vec![1434, 1660];
         history.install(sources(vec![moving.clone()]));
         assert_eq!(selected(&mut history, 0.75), [2]);
-        let old_route = history.arcs[&(true, 2)].route.as_ptr();
+        let old_route = history.arcs[&Unit::TaskForce(2)].route.as_ptr();
         moving.province = 1434;
         moving.route = vec![1660];
         moving.next_arc = 8.0;
         let mut standing = candidate(1, 3, true);
         standing.province = 1434;
         history.install(sources(vec![standing, moving.clone()]));
-        assert_eq!(history.arcs[&(true, 2)].arc, 0.75);
-        assert_eq!(history.arcs[&(true, 2)].route.as_ptr(), old_route);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 0.75);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].route.as_ptr(), old_route);
         let winner = |history: &mut History, delta| {
             history
                 .representatives(1434, frame(delta))
@@ -636,10 +793,10 @@ mod tests {
                 .identity
         };
         assert_eq!(winner(&mut history, 0.5), 2);
-        assert_eq!(history.arcs[&(true, 2)].arc, 1.25);
-        assert_eq!(history.arcs[&(true, 2)].arrival_deadline, Some(16));
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 1.25);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arrival_deadline, Some(16));
         assert_eq!(winner(&mut history, 0.5), 1);
-        let state = &history.arcs[&(true, 2)];
+        let state = &history.arcs[&Unit::TaskForce(2)];
         assert_eq!(state.arc, 0.0, "rebuild consumes this frame's advance");
         assert_eq!(state.province, 1434);
         assert_eq!(state.route, [1660]);
@@ -653,8 +810,8 @@ mod tests {
         moving.route.clear();
         moving.sample_count = 0;
         history.install(sources(vec![moving]));
-        assert_eq!(history.arcs[&(true, 2)].arc, 0.25);
-        assert_eq!(history.arcs[&(true, 2)].sample_count, 8);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 0.25);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].sample_count, 8);
         assert_eq!(
             history
                 .representatives(1660, frame(1.0))
@@ -663,10 +820,10 @@ mod tests {
                 .identity,
             2
         );
-        assert_eq!(history.arcs[&(true, 2)].arc, 1.25);
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 1.25);
         history.reset(None);
-        assert_eq!(history.arcs[&(true, 2)].arc, 0.0);
-        assert!(history.arcs[&(true, 2)].route.is_empty());
+        assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 0.0);
+        assert!(history.arcs[&Unit::TaskForce(2)].route.is_empty());
     }
 
     #[test]
@@ -687,13 +844,13 @@ mod tests {
             moving.route = vec![1660];
             history.install(sources(vec![moving.clone()]));
             history.representatives(1434, frame(0.0)).count();
-            assert_eq!(history.arcs[&(true, 2)].arc, 0.5);
+            assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 0.5);
             moving.day = day;
             moving.arrival_allowed = allowed;
             moving.route = route;
             history.install(sources(vec![moving]));
-            assert_eq!(history.arcs[&(true, 2)].arc, 0.0);
-            assert_eq!(history.arcs[&(true, 2)].arrival_deadline, None);
+            assert_eq!(history.arcs[&Unit::TaskForce(2)].arc, 0.0);
+            assert_eq!(history.arcs[&Unit::TaskForce(2)].arrival_deadline, None);
         }
     }
 
@@ -743,7 +900,7 @@ mod tests {
         let mut history = History::default();
         let ship = candidate(1, 3, true);
         let mut land = candidate(2, 3, true);
-        land.naval = false;
+        land.class = CounterClass::Division;
         history.install(sources(vec![ship.clone(), land.clone()]));
         assert_eq!(
             selected(&mut history, 0.0),

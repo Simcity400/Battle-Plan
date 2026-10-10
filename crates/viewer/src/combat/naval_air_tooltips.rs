@@ -103,7 +103,7 @@ fn category_key(mask: u64) -> &'static str {
 
 /// LocalizeShortNameForCountry@140BBAA50 checks TAG_key_short, key_short,
 /// then LocalizeForCountry@140BBA780 for the ordinary key.
-pub(super) fn wing_short_name(loc: &Localisation, tag: &str, key: &str) -> Result<String, String> {
+pub(crate) fn wing_short_name(loc: &Localisation, tag: &str, key: &str) -> Result<String, String> {
     let short = format!("{key}_short");
     let qualified = format!("{tag}_{short}");
     let selected = if loc.get(&qualified).is_some() {

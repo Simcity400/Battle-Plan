@@ -121,7 +121,7 @@ fn collect_split(
         wings: 8,
     };
     let mut captured = Captured::with_capacities(&capacities);
-    let mut first = RadarJob::new();
+    let mut first = RadarJob::with_storage(rows_cap, provinces_cap);
     let report = copy_radar_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     let mut ticks = [0u64; 1];

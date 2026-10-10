@@ -21,6 +21,7 @@ pub(super) struct TraitDefinition {
 /// supplies every definition byte consumed by the decode worker.
 #[derive(Debug, Default)]
 pub(super) struct TraitDefinitions {
+    growing: bool,
     pub(super) entries: Vec<TraitDefinition>,
     by_address: std::collections::HashMap<usize, usize>,
     log: crate::raw::RawLog<2>,
@@ -30,13 +31,19 @@ pub(super) struct TraitDefinitions {
 
 impl TraitDefinitions {
     pub(super) fn new() -> Self {
+        let hint = demand::initial_traits();
+        let rows = hint[0].rows.saturating_add(hint[1].rows);
+        let bytes = hint[0].bytes.saturating_add(hint[1].bytes);
         let mut value = Self {
-            entries: owned_vec(vec(4096)),
+            entries: owned_vec(vec(rows)),
             by_address: std::collections::HashMap::default(),
-            log: crate::raw::RawLog::new(32768, 1 << 20),
+            log: crate::raw::RawLog::new(
+                rows.saturating_mul(8),
+                rows.saturating_mul(64).saturating_add(bytes),
+            ),
             ..Self::default()
         };
-        let _ = reserve_map(&mut value.by_address, 4096);
+        let _ = reserve_map(&mut value.by_address, rows);
         value.update_charge();
         value
     }
@@ -69,11 +76,11 @@ impl TraitDefinitions {
 
     pub(super) fn grow(&mut self) {
         if self.overflowed {
-            crate::raw::double_capacity(&mut self.entries);
-            let additional = self
-                .entries
-                .capacity()
-                .saturating_sub(self.by_address.len());
+            let required = self.entries.len().saturating_add(1);
+            if engine::allocation::reserve_exact(&mut self.entries, 1).is_err() {
+                return;
+            }
+            let additional = required.saturating_sub(self.by_address.len());
             if reserve_map(&mut self.by_address, additional).is_err() {
                 return;
             }
@@ -83,6 +90,10 @@ impl TraitDefinitions {
     }
 
     fn room(&mut self) -> Result<(), &'static str> {
+        if self.growing {
+            engine::allocation::reserve(&mut self.entries, 1)
+                .map_err(|_| "character trait definition allocation failed")?;
+        }
         if self.entries.len() == self.entries.capacity() {
             self.overflowed = true;
             Err("character trait definition staging capacity exhausted")
@@ -254,8 +265,13 @@ impl TraitDefinitions {
             if !self.by_address.contains_key(&definition.address)
                 && self.by_address.len() == self.by_address.capacity()
             {
-                self.overflowed = true;
-                return Err("character trait definition index capacity exhausted");
+                if self.growing {
+                    reserve_map(&mut self.by_address, 1)
+                        .map_err(|_| "character trait definition index allocation failed")?;
+                } else {
+                    self.overflowed = true;
+                    return Err("character trait definition index capacity exhausted");
+                }
             }
             self.by_address.insert(definition.address, index);
         }
@@ -302,6 +318,7 @@ pub(super) struct TraitVector {
 /// are shared only inside this owned image.
 #[derive(Debug, Default)]
 pub(super) struct TraitCapture {
+    pub(super) growing: bool,
     pub(super) definitions: TraitDefinitions,
     pub(super) vectors: [Vec<TraitVector>; 2],
     occurrences: [Vec<TraitOccurrence>; 2],
@@ -317,11 +334,35 @@ pub(super) struct TraitCapture {
 }
 
 impl TraitCapture {
+    #[cfg(test)]
+    pub(super) fn with_test_capacities(
+        vectors: usize,
+        occurrences: [usize; 2],
+        definitions: usize,
+        bytes: usize,
+    ) -> Self {
+        let mut value = Self {
+            definitions: TraitDefinitions {
+                entries: owned_vec(vec(definitions)),
+                log: crate::raw::RawLog::new(definitions.saturating_mul(8), bytes),
+                ..TraitDefinitions::default()
+            },
+            vectors: std::array::from_fn(|_| owned_vec(vec(vectors))),
+            occurrences: std::array::from_fn(|index| owned_vec(vec(occurrences[index]))),
+            ..Self::default()
+        };
+        let _ = reserve_map(&mut value.definitions.by_address, definitions);
+        value.definitions.update_charge();
+        value.update_charge();
+        value
+    }
+
     pub(super) fn new() -> Self {
+        let hint = demand::initial_traits();
         let mut value = Self {
             definitions: TraitDefinitions::new(),
-            vectors: std::array::from_fn(|_| owned_vec(vec(4096))),
-            occurrences: [owned_vec(vec(4096)), owned_vec(vec(32768))],
+            vectors: std::array::from_fn(|_| owned_vec(vec(census::initial_len()))),
+            occurrences: std::array::from_fn(|index| owned_vec(vec(hint[index].rows))),
             ..Self::default()
         };
         value.update_charge();
@@ -364,18 +405,27 @@ impl TraitCapture {
     pub(super) fn grow(&mut self) {
         if self.overflowed {
             for vector in &mut self.vectors {
-                crate::raw::double_capacity(vector);
+                if vector.len() == vector.capacity() {
+                    let _ = engine::allocation::reserve(vector, 1);
+                }
             }
             for occurrences in &mut self.occurrences {
-                crate::raw::double_capacity(occurrences);
+                if occurrences.len() == occurrences.capacity() {
+                    let _ = engine::allocation::reserve(occurrences, 1);
+                }
             }
             self.update_charge();
         }
         self.definitions.grow();
     }
 
-    pub(super) fn begin(&mut self, context: CharactersCopyContext) {
+    pub(super) fn begin(&mut self, context: CharactersCopyContext, growing: bool) {
         self.clear();
+        self.growing = growing;
+        self.definitions.growing = growing;
+        if growing {
+            self.definitions.log.enable_worker_growth();
+        }
         self.rows = context.trait_rows;
         self.bytes = context.trait_bytes;
     }
@@ -387,6 +437,10 @@ impl TraitCapture {
         params: TraitVectorCopy,
     ) -> Result<(), &'static str> {
         let table = usize::from(params.has_experience);
+        if self.growing {
+            engine::allocation::reserve(&mut self.vectors[table], 1)
+                .map_err(|_| "character trait vector allocation failed")?;
+        }
         if self.vectors[table].len() == self.vectors[table].capacity() {
             self.overflowed = true;
             return Err("character trait vector staging capacity exhausted");
@@ -441,9 +495,17 @@ impl TraitCapture {
             let array = header
                 .and_then(|header| Array::from_header(header, params.stride))
                 .ok_or("unit leader trait vector invalid or unreadable")?;
+            // 140C0D920 bounds these vectors by +0xDD4/+0xE04. Their
+            // original acquired counts reserve every occurrence before reads.
+            if self.growing {
+                engine::allocation::reserve(&mut self.occurrences[table], array.count as usize)
+                    .map_err(|_| "character trait occurrence allocation failed")?;
+            }
             base.checked_add(cunit_leader_trait::VTABLE_RVA)
                 .ok_or("unit leader address overflow")?;
-            let row_limit = if self.truncated[table] {
+            let row_limit = if self.growing {
+                array.count as usize
+            } else if self.truncated[table] {
                 0
             } else {
                 self.rows[table].saturating_sub(self.used_rows[table])
@@ -485,7 +547,7 @@ impl TraitCapture {
                     .required_bytes
                     .checked_add(len)
                     .ok_or("unit leader trait byte count overflow")?;
-                let fits = len <= byte_limit - vector.bytes_len;
+                let fits = self.growing || len <= byte_limit - vector.bytes_len;
                 let definition = self.definitions.consume(memory, definition, table, fits)?;
                 self.definitions.result(definition)?;
                 if !fits {
@@ -525,6 +587,21 @@ impl TraitCapture {
             self.fault[table] |= self.definitions.log.fault[table];
             self.raw_bytes[table] += self.definitions.log.raw_bytes[table];
         }
+        self.update_charge();
+        self.definitions.update_charge();
+    }
+
+    pub(super) fn demand(&self) -> [Result<(usize, usize), &'static str>; 2] {
+        std::array::from_fn(|table| {
+            self.vectors[table]
+                .iter()
+                .try_fold(0_usize, |bytes, vector| {
+                    bytes
+                        .checked_add(vector.bytes_len)
+                        .ok_or("unit leader trait projection byte count overflow")
+                })
+                .map(|bytes| (self.occurrences[table].len(), bytes))
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

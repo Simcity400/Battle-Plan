@@ -18,6 +18,12 @@ fn flight_defines(max_training: i32) -> FlightDefines {
                     MAX_SCOUT_SCENARIOS = 7,
                     BOMBERS_DIVISION_FACTOR = 40,
                     AIRPLANES_3_BOMBER_BOMBING_ANIM = 3,
+                    AIRPLANES_1_BOMBER_BOMBING_ANIM = 1,
+                    AIRPLANES_1_FIGHTER_VS_1_FIGHTER_ANIM = 1,
+                    AIRPLANES_3_FIGHTER_VS_3_FIGHTER_ANIM = 3,
+                    MAX_DOGFIGHTS_SCENARIOS = 7,
+                    STRAT_BOMBER_FIREBOMB_THRESHOLD = 2,
+                    STRAT_BOMBER_CARPETBOMB_THRESHOLD = 1,
                     MAX_BOMBING_SCENARIOS = 7,
                     TRANSPORT_DIVISION_FACTOR = 30,
                     AIRPLANES_1_TRANSPORT_SUPPLY_ANIM = 2,
@@ -93,14 +99,13 @@ fn regions_with_empty_arrays_fly_planes_over_the_transport_factor_as_fighter_pat
                 limit: 2,
             },
             single: 1,
-            refusal: None,
         }
     );
     let mut foreign = trainee(102, 300);
     foreign.owner = 8;
     // An override flies with its pool, not its country.
     foreign.country_override = VIEWER as i32;
-    let mut lent = trainee(203, 300);
+    let mut lent = trainee(401, 300);
     lent.country_override = 8;
     let untrained = AirWingRow {
         mission_mask: 1 << 2,
@@ -110,7 +115,7 @@ fn regions_with_empty_arrays_fly_planes_over_the_transport_factor_as_fighter_pat
         trainee(101, 100),
         foreign,
         trainee(201, 60),
-        trainee(202, 300),
+        trainee(301, 300),
         lent,
         untrained,
     ];
@@ -124,8 +129,9 @@ fn regions_with_empty_arrays_fly_planes_over_the_transport_factor_as_fighter_pat
             (201, 2, 1, 2),
             // 300 / 30 = 10 units: three triples, beyond the limit
             // of two, which is checked before the batch.
-            (202, 2, 3, 3),
-            // The triple limit is now reached.
+            (301, 3, 3, 3),
+            // A country override leaves the wing in its owner's pool.
+            (401, 4, 3, 3),
         ]
     );
     assert!(diagnostics.is_empty());
@@ -183,34 +189,32 @@ fn a_region_with_bomber_or_fighter_wings_does_not_train() {
 fn a_wing_below_a_single_or_a_refused_batch_ends_the_regions_pass() {
     let defines = flight_defines(2);
     let wings = [
-        // No planes: no units, and the region's later wings wait.
         trainee(101, 0),
-        trainee(102, 60),
-        // Two singles fill the single limit; the next single is
-        // refused, and the triple after it is not reached.
+        trainee(102, 0),
         trainee(201, 60),
-        trainee(202, 30),
-        trainee(203, 100),
+        trainee(202, 60),
+        trainee(203, 60),
     ];
     let mut diagnostics = Vec::new();
-    assert_eq!(
-        draws(&wings, &open(), &defines, &mut diagnostics),
-        [(201, 2, 1, 2)]
-    );
+    let flown = draws(&wings, &open(), &defines, &mut diagnostics);
+    // Either zero-unit wing ends region1. The first chosen two-single
+    // batch fills the limit in region2; its next batch ends that pass.
+    assert_eq!(flown.len(), 1);
+    assert!((201..=203).contains(&flown[0].0));
+    assert_eq!((flown[0].1, flown[0].2, flown[0].3), (2, 1, 2));
+    assert_eq!(draws(&wings, &open(), &defines, &mut Vec::new()), flown);
     assert!(diagnostics.is_empty());
-    // A non-positive limit admits one batch.
-    let mut diagnostics = Vec::new();
-    assert_eq!(
-        draws(&wings[2..], &open(), &flight_defines(0), &mut diagnostics),
-        [(201, 2, 1, 2)]
-    );
+    // Native admits one batch against a nonpositive scenario limit.
+    let flown = draws(&wings[2..], &open(), &flight_defines(0), &mut diagnostics);
+    assert_eq!(flown.len(), 1);
+    assert_eq!(flown[0].3, 2);
 }
 
 /// Region 1 lists 51 candidates whose pool order runs against their
-/// IDs: the first 50 in pool order fly, in wing-ID order, and the
-/// lowest ID, last in its pools, stays on the ground.
+/// IDs: the first50 in pool order fly with deterministic random selection;
+/// the lowest ID, last in its pools, stays on the ground.
 #[test]
-fn the_first_fifty_in_pool_order_fly_in_wing_id_order() {
+fn the_first_fifty_in_pool_order_fly_with_repeatable_random_removal() {
     let defines = flight_defines(1_000);
     let last = GROUP_CAPACITY as u64;
     let mut wings: Vec<_> = (0..=last)
@@ -224,13 +228,17 @@ fn the_first_fifty_in_pool_order_fly_in_wing_id_order() {
     let flown = draws(&wings, &open(), &defines, &mut diagnostics);
     let ids: Vec<u64> = flown.iter().map(|draw| draw.0).collect();
     let expected: Vec<u64> = (101..=150).chain([201]).collect();
-    assert_eq!(ids, expected);
+    assert_ne!(ids, expected);
+    let mut sorted = ids;
+    sorted.sort_unstable();
+    assert_eq!(sorted, expected);
+    assert_eq!(draws(&wings, &open(), &defines, &mut Vec::new()), flown);
     assert!(diagnostics.is_empty());
     // Exactly 50 in pool order all fly.
     wings.remove(1);
     let flown = draws(&wings, &open(), &defines, &mut diagnostics);
     assert_eq!(flown.len(), GROUP_CAPACITY + 1);
-    assert_eq!(flown[0].0, 100);
+    assert!(flown.iter().any(|draw| draw.0 == 100));
     assert!(diagnostics.is_empty());
     // A trainee whose base does not resolve could hold one of the
     // 50 places in the game, so the full region is counted.
@@ -301,6 +309,7 @@ fn a_carrier_base_stands_where_its_task_force_is() {
         ships: Some(&ships),
         task_forces: Some(&task_forces),
         registry: &registry,
+        origin: &|_| Err("unused training province lookup"),
     };
     let base = |id, host| AirBaseRow {
         id,

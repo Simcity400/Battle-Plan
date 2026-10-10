@@ -1,0 +1,91 @@
+//! Unit-owned ordered combat references, sampled once with existing motion.
+//! This is CUnit+1A8/+1B4, not a saved combat-side membership reconstruction.
+use super::*;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UnitCombatReference {
+    /// Complete registry handle. Reference-type words are runtime minted;
+    /// they never select the class or lose their high word during transport.
+    pub combat: u64,
+    /// Authenticated primary native vtable: ordinary land0, border war1, naval2.
+    pub kind: u8,
+}
+
+impl UnitCombatReference {
+    fn check(&self) -> io::Result<()> {
+        if self.combat == 0 || self.kind > 2 {
+            return Err(invalid("invalid unit combat reference"));
+        }
+        Ok(())
+    }
+}
+
+impl Value for UnitCombatReference {
+    const MINIMUM_ENCODED_BYTES: usize = 9;
+    #[cfg(test)]
+    const STRUCT_FIELDS: usize = 2;
+
+    fn encoded_bytes(&self) -> io::Result<usize> {
+        self.check()?;
+        Ok(Self::MINIMUM_ENCODED_BYTES)
+    }
+    fn try_clone(&self) -> io::Result<Self> {
+        self.check()?;
+        Ok(*self)
+    }
+    fn encode_reserved(&self, output: &mut Vec<u8>) -> io::Result<()> {
+        self.check()?;
+        Value::encode_reserved(&self.combat, output)?;
+        Value::encode_reserved(&self.kind, output)
+    }
+    fn decode(input: &mut Decoder<'_>) -> io::Result<Self> {
+        let value = Self {
+            combat: Value::decode(input)?,
+            kind: Value::decode(input)?,
+        };
+        value.check()?;
+        Ok(value)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UnitCombatReferences {
+    /// The authenticated acquisition request's callback hour, not a UI clock.
+    pub sample_hour: i32,
+    /// Native order including repeats. A present empty vector is known zero.
+    pub entries: Vec<UnitCombatReference>,
+}
+value_struct!(UnitCombatReferences {
+    sample_hour: i32,
+    entries: Vec<UnitCombatReference>
+});
+opaque_value!(Option<UnitCombatReferences>);
+
+pub(crate) fn check_unit_combat_references(
+    field: &Recorded<Option<UnitCombatReferences>>,
+    count: u32,
+) -> io::Result<()> {
+    if let Recorded::Value(Some(packet)) = field {
+        if packet.entries.len() != count as usize {
+            return Err(invalid("unit combat reference count differs"));
+        }
+        for entry in &packet.entries {
+            entry.check()?;
+        }
+    }
+    Ok(())
+}
+
+impl UnitCombatReferences {
+    /// Consumer admission also binds the immutable frame hour. Historical
+    /// absence and field-local refusal stay distinct at the caller's require.
+    pub fn valid_at(&self, hour: i32, count: u32) -> bool {
+        self.sample_hour == hour
+            && self.entries.len() == count as usize
+            && self.entries.iter().all(|entry| entry.check().is_ok())
+    }
+}
+
+#[cfg(test)]
+#[path = "unit_combat_references/tests.rs"]
+mod tests;

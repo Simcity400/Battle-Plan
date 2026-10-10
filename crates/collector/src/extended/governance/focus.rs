@@ -5,10 +5,9 @@ use engine::allocation::{default_vec, owned_vec};
 // Scheduled Focus and CompletedFocuses owned native acquisition.
 //
 // The callback-bounded World job runs the existing native walker once per pass.
-// Rows and referenced token bytes are owned here; the decode worker only installs
-// admitted prefixes. No raw index, mirrored census or replayed walker remains.
-// Exact frame grants are checked before any source read, so storage refusal
-// can use the typed fallback without retrying a consumed read fault.
+// Rows and referenced token bytes grow from their original native headers on the
+// worker. Decode grows destination storage before installing complete owned rows;
+// no live pointer, mirrored census or replayed walker remains.
 // ===========================================================================
 
 #[derive(Debug, Default)]
@@ -65,7 +64,7 @@ impl FocusJob {
         self.active = true;
         self.row_grants = rows;
         self.byte_grant = bytes;
-        self.provisioned && !self.grow_for_next()
+        self.provisioned
     }
 
     pub fn grow_for_next(&self) -> bool {
@@ -101,7 +100,7 @@ impl FocusJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct FocusCopyReport {
-    /// False only for a preflight refusal, before any live source read.
+    /// Native refusals remain table outcomes; inactive cadence is accepted.
     pub raw_ok: bool,
     /// Shared native traversal is charged once to Focus.
     pub copy_ticks: [u64; 2],
@@ -150,14 +149,14 @@ pub(super) fn copy_focus_pass(
                 let first = focus_total.len();
                 let completed = completed_total.len();
                 let text = text_len;
-                let result = cnational_focus_progress::walk(
+                let result = cnational_focus_progress::walk_buffer(
                     memory,
                     base,
                     country.pointer,
                     country.id,
-                    &mut job.rows[first..job.row_grants[0]],
-                    &mut job.completed[completed..job.row_grants[1]],
-                    &mut job.bytes[text..job.byte_grant],
+                    engine::walk::Buffer::Growing(&mut job.rows).suffix(first),
+                    engine::walk::Buffer::Growing(&mut job.completed).suffix(completed),
+                    engine::walk::Buffer::Growing(&mut job.bytes).suffix(text),
                 );
                 for row in &mut job.rows[first..first + result.outcome.len()] {
                     for span in [&mut row.tree, &mut row.current, &mut row.continuous]
@@ -178,6 +177,9 @@ pub(super) fn copy_focus_pass(
             }
         }
     }
+    job.row_grants = [job.rows.len(), job.completed.len()];
+    job.byte_grant = job.bytes.len();
+    job.update_capacity_charge();
     job.outcomes = [Some(focus_total), Some(completed_total)];
     job.bytes_len = text_len;
     job.required_bytes = text_required;
@@ -196,9 +198,9 @@ pub(crate) fn copy_focus_refresh(
             ..Default::default()
         };
     }
-    if !job.prepare(ctx.rows, ctx.bytes) {
-        return FocusCopyReport::default();
-    }
+    // An admitted worker can grow an empty job returned by a pool miss.
+    job.provisioned = true;
+    let _ = job.prepare(ctx.rows, ctx.bytes);
     let mut report = FocusCopyReport {
         raw_ok: true,
         ..Default::default()
@@ -212,6 +214,9 @@ pub(crate) fn copy_focus_refresh(
     );
     report
 }
+
+#[cfg(test)]
+mod sizing_tests;
 
 impl Captured {
     pub(crate) fn focus_copy_context(
@@ -242,8 +247,7 @@ impl Captured {
         self.focus_raw_mode = false;
     }
 
-    /// Installs only already-owned admitted prefixes. A changed frame grant is
-    /// an ownership error, never a reason to touch the live source again.
+    /// Installs owned rows after growing destination storage off the game thread.
     pub(crate) fn decode_focus_payload(
         &mut self,
         _base: usize,
@@ -255,14 +259,12 @@ impl Captured {
             return;
         }
         let started = qpc();
-        let arena_ok = self.focus_text.first.len() == job.byte_grant
-            && job.bytes_len <= job.byte_grant
-            && job.bytes_len <= job.bytes.len();
+        let arena_ok =
+            grow_vec(&mut self.focus_text.first, job.bytes_len) && job.bytes_len <= job.bytes.len();
+        let focus_ok = grow_vec(&mut self.focus.rows, job.outcome(0).len());
+        let completed_ok = grow_vec(&mut self.completed.rows, job.outcome(1).len());
         self.focus.outcome = job.outcome(0);
-        if !arena_ok
-            || self.focus.rows.len() != job.row_grants[0]
-            || self.focus.outcome.len() > job.row_grants[0]
-        {
+        if !arena_ok || !focus_ok || self.focus.outcome.len() > job.rows.len() {
             self.focus.outcome = Outcome::Unavailable {
                 reason: "focus owned payload capacity mismatch",
             };
@@ -281,10 +283,7 @@ impl Captured {
         decode_ticks[0] += elapsed(started);
         let started = qpc();
         self.completed.outcome = job.outcome(1);
-        if !arena_ok
-            || self.completed.rows.len() != job.row_grants[1]
-            || self.completed.outcome.len() > job.row_grants[1]
-        {
+        if !arena_ok || !completed_ok || self.completed.outcome.len() > job.completed.len() {
             self.completed.outcome = Outcome::Unavailable {
                 reason: "completed focus owned payload capacity mismatch",
             };

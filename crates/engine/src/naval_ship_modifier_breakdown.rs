@@ -125,24 +125,24 @@ pub struct Frame {
     next: u32,
 }
 
-/// All storage is pack-owned and grows only after the hourly block. A short
-/// arena refuses the complete Table 270 for that hour and reports demand.
+/// Pack-owned worker buffers grow from original requests and tree headers.
+/// Fixed callback/fixture arenas retain explicit refusal and demand outcomes.
 /// `*_len` is a stored prefix; `*_required` is full demand, counting each tree once.
 /// Root.nodes uses census offsets; every short arena returns Err, never publishes.
 pub struct Buffers<'a> {
-    pub requests: &'a mut [Request],
+    pub requests: crate::walk::Buffer<'a, Request>,
     pub request_len: usize,
     pub request_required: usize,
-    pub roots: &'a mut [Root],
+    pub roots: crate::walk::Buffer<'a, Root>,
     pub root_len: usize,
     pub root_required: usize,
-    pub nodes: &'a mut [RawNode],
+    pub nodes: crate::walk::Buffer<'a, RawNode>,
     pub node_len: usize,
     pub node_required: usize,
-    pub text: &'a mut [u8],
+    pub text: crate::walk::Buffer<'a, u8>,
     pub text_len: usize,
     pub text_required: usize,
-    pub stack: &'a mut [Frame],
+    pub stack: crate::walk::Buffer<'a, Frame>,
     pub stack_required: usize,
 }
 
@@ -214,6 +214,7 @@ fn record_request(mut request: Request, buffers: &mut Buffers<'_>) -> Result<(),
         .request_required
         .checked_add(1)
         .ok_or("naval modifier request length overflow")?;
+    buffers.requests.ensure(buffers.request_required)?;
     if let Some(slot) = buffers.requests.get_mut(buffers.request_len) {
         *slot = request;
         buffers.request_len += 1;
@@ -273,7 +274,7 @@ fn eligible_submarine(members: &[cfex_member::DetailsRow], side: u8) -> bool {
 /// 141609460 and 14160A7B0 call 1415B4BB0 for each live side. The latter
 /// walks country, weather, terrain/ocean and commander sources in this order.
 /// 0x1B3 passes null province and commander, so it has country only.
-fn side_trees(
+fn side_trees<const TERMINAL: bool>(
     emit: &mut impl FnMut(Request) -> Result<(), &'static str>,
     memory: &impl Memory,
     base: usize,
@@ -317,7 +318,8 @@ fn side_trees(
         // 140F04E40 returns null outside the live region array; 1415B4BB0
         // simply omits that optional weather source.
         let region_at = regions.element(region, 0x160);
-        let terrain = naval_ship_modifier_inputs::terrain(memory, base, definition)?;
+        let terrain =
+            naval_ship_modifier_inputs::terrain_with_policy::<TERMINAL>(memory, base, definition)?;
         let current_leader = field::<u64>(memory, side, cnaval_combatant::COMMANDER)? as usize;
         // 1416094A5 calls the opposite-side getter with this side in RCX;
         // 1416094B1 saves its +0x110, then 14160969A passes it for 0x5A.
@@ -534,7 +536,7 @@ fn enumerate_requests(
             member_cursor += 1;
         }
         let combat_members = &members[start..member_cursor];
-        side_trees(
+        side_trees::<true>(
             emit,
             memory,
             base,
@@ -606,7 +608,7 @@ fn enumerate_requests(
                         }
                     }
                 } else if member.live_convoy != 0 {
-                    convoy(memory, base, game_state, member, key, emit)?;
+                    convoy::<true>(memory, base, game_state, member, key, emit)?;
                 } else if key != 0x24 && key != 0x1b6 {
                     return Err("state-8 naval member has no live ship or convoy");
                 } else {
@@ -660,6 +662,9 @@ fn capture_requested_root(
         .ok_or("naval modifier root length overflow")?;
     let first = buffers.node_required;
     capture_root(memory, base, root, wanted, store, buffers, stack_limits)?;
+    if store {
+        buffers.roots.ensure(buffers.root_required)?;
+    }
     if store && let Some(slot) = buffers.roots.get_mut(index) {
         *slot = Root {
             accumulator: root,
@@ -708,9 +713,13 @@ fn capture_root(
         if address == 0 || buffers.stack[..depth].iter().any(|f| f.address == address) {
             return Err("naval modifier null node or ancestor cycle");
         }
-        // Once retained scratch ends, count the entire remaining subtree with
-        // call-stack frames. Later hours need not discover deeper demand.
-        if depth == buffers.stack.len() {
+        // 14054D0F0 visits the full retained depth. Worker scratch grows here;
+        // fixed count-only fixtures retain their checked call-stack fallback.
+        if !buffers.stack.ensure(
+            depth
+                .checked_add(1)
+                .ok_or("naval modifier depth overflow")?,
+        )? {
             let limits = stack_limits.as_ref().map_err(|reason| *reason)?;
             limits.check_current()?;
             walk_without_scratch(
@@ -803,6 +812,9 @@ fn capture_node(
             .checked_add(name.len)
             .ok_or("naval modifier text length overflow")?;
         buffers.text_required = name_end;
+        if store {
+            buffers.text.ensure(name_end)?;
+        }
         if store && let Some(output) = buffers.text.get_mut(name_first..name_end) {
             name.copy(memory, output)?;
             buffers.text_len = name_end;
@@ -818,6 +830,9 @@ fn capture_node(
     buffers.node_required = node_index
         .checked_add(1)
         .ok_or("naval modifier node length overflow")?;
+    if store {
+        buffers.nodes.ensure(buffers.node_required)?;
+    }
     if store && let Some(node) = buffers.nodes.get_mut(node_index) {
         *node = RawNode {
             children: children.count,
@@ -909,7 +924,7 @@ fn walk_without_scratch(
     Ok(())
 }
 
-fn convoy(
+fn convoy<const TERMINAL: bool>(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
@@ -940,7 +955,8 @@ fn convoy(
     if let Some(region_at) = regions.element(region, 0x160) {
         push(emit, member, 6, 0, key, at(region_at, 0x58)?)?;
     }
-    let terrain = naval_ship_modifier_inputs::terrain(memory, base, definition)?;
+    let terrain =
+        naval_ship_modifier_inputs::terrain_with_policy::<TERMINAL>(memory, base, definition)?;
     push(emit, member, 5, 0, key, at(terrain, 0xb8)?)?;
     let leader: usize = field::<u64>(memory, side, cnaval_combatant::COMMANDER)? as usize;
     if leader != 0 {
@@ -1055,19 +1071,19 @@ mod tests {
             },
         ];
         let mut buffers = Buffers {
-            requests: &mut [],
+            requests: crate::walk::Buffer::Fixed(&mut []),
             request_len: 0,
             request_required: 0,
-            roots: &mut [],
+            roots: crate::walk::Buffer::Fixed(&mut []),
             root_len: 0,
             root_required: 0,
-            nodes: &mut [],
+            nodes: crate::walk::Buffer::Fixed(&mut []),
             node_len: 0,
             node_required: 0,
-            text: &mut [],
+            text: crate::walk::Buffer::Fixed(&mut []),
             text_len: 0,
             text_required: 0,
-            stack: &mut [],
+            stack: crate::walk::Buffer::Fixed(&mut []),
             stack_required: 0,
         };
         census_requested_roots(
@@ -1158,19 +1174,19 @@ mod tests {
                     len: 0,
                 };
                 let mut buffers = Buffers {
-                    requests: &mut [],
+                    requests: crate::walk::Buffer::Fixed(&mut []),
                     request_len: 0,
                     request_required: 0,
-                    roots: &mut [],
+                    roots: crate::walk::Buffer::Fixed(&mut []),
                     root_len: 0,
                     root_required: 0,
-                    nodes: &mut [],
+                    nodes: crate::walk::Buffer::Fixed(&mut []),
                     node_len: 0,
                     node_required: 0,
-                    text: &mut [],
+                    text: crate::walk::Buffer::Fixed(&mut []),
                     text_len: 0,
                     text_required: 0,
-                    stack: &mut [],
+                    stack: crate::walk::Buffer::Fixed(&mut []),
                     stack_required: 0,
                 };
                 limits.check_current().unwrap();
@@ -1199,19 +1215,19 @@ mod tests {
         for capacity in [0, 1, 8] {
             let mut requests = [Request::default(); 8];
             let mut buffers = Buffers {
-                requests: &mut requests[..capacity],
+                requests: crate::walk::Buffer::Fixed(&mut requests[..capacity]),
                 request_len: 0,
                 request_required: 0,
-                roots: &mut [],
+                roots: crate::walk::Buffer::Fixed(&mut []),
                 root_len: 0,
                 root_required: 0,
-                nodes: &mut [],
+                nodes: crate::walk::Buffer::Fixed(&mut []),
                 node_len: 0,
                 node_required: 0,
-                text: &mut [],
+                text: crate::walk::Buffer::Fixed(&mut []),
                 text_len: 0,
                 text_required: 0,
-                stack: &mut [],
+                stack: crate::walk::Buffer::Fixed(&mut []),
                 stack_required: 0,
             };
             for slot in 0..16 {
@@ -1261,19 +1277,19 @@ mod tests {
             let mut text = [0; 6];
             let mut stack = [Frame::default(); 2];
             let mut buffers = Buffers {
-                requests: &mut [],
+                requests: crate::walk::Buffer::Fixed(&mut []),
                 request_len: 0,
                 request_required: 0,
-                roots: &mut [],
+                roots: crate::walk::Buffer::Fixed(&mut []),
                 root_len: 0,
                 root_required: 0,
-                nodes: &mut nodes[..node_capacity],
+                nodes: crate::walk::Buffer::Fixed(&mut nodes[..node_capacity]),
                 node_len: 0,
                 node_required: 0,
-                text: &mut text[..text_capacity],
+                text: crate::walk::Buffer::Fixed(&mut text[..text_capacity]),
                 text_len: 0,
                 text_required: 0,
-                stack: &mut stack[..depth_capacity],
+                stack: crate::walk::Buffer::Fixed(&mut stack[..depth_capacity]),
                 stack_required: 0,
             };
             capture_root(
@@ -1308,19 +1324,19 @@ mod tests {
         for capacity in [0, 1, 2, 3] {
             let mut stack = [Frame::default(); 3];
             let mut buffers = Buffers {
-                requests: &mut [],
+                requests: crate::walk::Buffer::Fixed(&mut []),
                 request_len: 0,
                 request_required: 0,
-                roots: &mut [],
+                roots: crate::walk::Buffer::Fixed(&mut []),
                 root_len: 0,
                 root_required: 0,
-                nodes: &mut [],
+                nodes: crate::walk::Buffer::Fixed(&mut []),
                 node_len: 0,
                 node_required: 0,
-                text: &mut [],
+                text: crate::walk::Buffer::Fixed(&mut []),
                 text_len: 0,
                 text_required: 0,
-                stack: &mut stack[..capacity],
+                stack: crate::walk::Buffer::Fixed(&mut stack[..capacity]),
                 stack_required: 0,
             };
             assert_eq!(
@@ -1357,19 +1373,19 @@ mod tests {
         let mut text = [0_u8; 32];
         let mut stack = [Frame::default(); 2];
         let mut buffers = Buffers {
-            requests: &mut requests,
+            requests: crate::walk::Buffer::Fixed(&mut requests),
             request_len: 0,
             request_required: 0,
-            roots: &mut roots,
+            roots: crate::walk::Buffer::Fixed(&mut roots),
             root_len: 0,
             root_required: 0,
-            nodes: &mut nodes,
+            nodes: crate::walk::Buffer::Fixed(&mut nodes),
             node_len: 0,
             node_required: 0,
-            text: &mut text,
+            text: crate::walk::Buffer::Fixed(&mut text),
             text_len: 0,
             text_required: 0,
-            stack: &mut stack,
+            stack: crate::walk::Buffer::Fixed(&mut stack),
             stack_required: 0,
         };
         push_side(
@@ -1448,7 +1464,7 @@ mod tests {
         assert!(!eligible_submarine(
             &[cfex_member::DetailsRow {
                 member_source: 1,
-                ..member
+                ..member.clone()
             }],
             1
         ));
@@ -1458,9 +1474,123 @@ mod tests {
                     state: 4,
                     ..member.member
                 },
-                ..member
+                ..member.clone()
             }],
             1
         ));
+    }
+    #[test]
+    fn cold_and_later_breakdown_arenas_grow_for_country_and_mod_sized_trees() {
+        const NODES: usize = 0x10_0000;
+        const ENTRIES: usize = 0x30_0000;
+        const CHILDREN: usize = 0x40_0000;
+        const NAME: usize = 0x50_0000;
+        let (mut requests, mut roots, mut nodes, mut text, mut stack) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for (count, deep, name_len) in [
+            (1500usize, false, 8),
+            (5000, false, 4097),
+            (5000, true, 4097),
+        ] {
+            let mut fixture = Fixture::new();
+            fixture.0.resize(NAME + name_len + 1, 0);
+            fixture.put(NAME, &vec![b'x'; name_len]);
+            for index in 0..count {
+                let node = NODES + index * 0x100;
+                fixture.node(node, ENTRIES + index * 16, modifier_keys::POSITIONING, 7000);
+                let child_count = if deep {
+                    usize::from(index + 1 < count)
+                } else if index == 0 {
+                    count - 1
+                } else {
+                    0
+                };
+                if child_count != 0 {
+                    let first = CHILDREN + index * 8;
+                    fixture.u64(node + 0x18, first as u64);
+                    fixture.u64(
+                        node + 0x20,
+                        ((child_count as u64) << 32) | child_count as u64,
+                    );
+                    for offset in 0..child_count {
+                        fixture.u64(
+                            first + offset * 8,
+                            (NODES + (index + offset + 1) * 0x100 - 0x10) as u64,
+                        );
+                    }
+                } else {
+                    fixture.u64(node + 0x48, NAME as u64);
+                    fixture.u64(node + 0x58, name_len as u64);
+                    fixture.u64(node + 0x60, name_len.max(15) as u64);
+                    if name_len <= 15 {
+                        fixture.put(node + 0x48, &vec![b'x'; name_len]);
+                    }
+                }
+            }
+            let mut buffers = Buffers {
+                requests: crate::walk::Buffer::Growing(&mut requests),
+                request_len: 0,
+                request_required: 0,
+                roots: crate::walk::Buffer::Growing(&mut roots),
+                root_len: 0,
+                root_required: 0,
+                nodes: crate::walk::Buffer::Growing(&mut nodes),
+                node_len: 0,
+                node_required: 0,
+                text: crate::walk::Buffer::Growing(&mut text),
+                text_len: 0,
+                text_required: 0,
+                stack: crate::walk::Buffer::Growing(&mut stack),
+                stack_required: 0,
+            };
+            for index in 0..count {
+                record_request(
+                    Request {
+                        accumulator: NODES,
+                        key: modifier_keys::POSITIONING,
+                        usage: Use {
+                            source_index: index as u32,
+                            ..Default::default()
+                        },
+                    },
+                    &mut buffers,
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                (buffers.request_len, buffers.request_required),
+                (count, count)
+            );
+            let mut wanted = [false; KEYS.len()];
+            wanted[KEYS.binary_search(&modifier_keys::POSITIONING).unwrap()] = true;
+            capture_requested_root(
+                &fixture,
+                0,
+                NODES,
+                wanted,
+                true,
+                &mut buffers,
+                &Err("growing traversal must not need native call-stack scratch"),
+            )
+            .unwrap();
+            assert_eq!((buffers.root_len, buffers.root_required), (1, 1));
+            assert_eq!((buffers.node_len, buffers.node_required), (count, count));
+            assert_eq!(buffers.stack_required, if deep { count } else { 2 });
+            let expected_text = if deep {
+                name_len
+            } else {
+                (count - 1) * name_len
+            };
+            assert_eq!(
+                (buffers.text_len, buffers.text_required),
+                (expected_text, expected_text)
+            );
+            assert!(
+                buffers.text[..expected_text]
+                    .iter()
+                    .all(|&byte| byte == b'x')
+            );
+            assert_eq!(buffers.roots[0].nodes, [0, count]);
+        }
     }
 }

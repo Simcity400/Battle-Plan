@@ -95,6 +95,13 @@ fn small() -> (Capacities, Captured) {
     (capacities, captured)
 }
 
+fn fixed_job() -> SessionJob {
+    SessionJob {
+        log: RawLog::new(256, 16 * 1024),
+        ..Default::default()
+    }
+}
+
 fn complete<S: TableSchema>(view: &TableView) -> &[S::Row] {
     let TableView::Complete(rows) = view else {
         panic!("expected complete rows, got {view:?}")
@@ -116,7 +123,7 @@ fn daily_session_skips_native_reads_and_failures_outside_slot_18() {
         bytes: &bytes,
     };
     let (capacities, mut captured) = small();
-    let mut job = SessionJob::new();
+    let mut job = fixed_job();
     for force_full in [false, true] {
         for hour in 0..24 {
             let ctx = SessionCopyContext {
@@ -274,7 +281,7 @@ fn split(memory: &impl Memory, capacities: &Capacities) -> (Captured, SessionCop
         base: 0,
         game_state: BASE,
     };
-    let mut first = SessionJob::new();
+    let mut first = fixed_job();
     let report = copy_session_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     captured.raw_mode = report.raw_ok;
@@ -413,7 +420,7 @@ fn session_split_copy_matches_direct_walk_under_truncation() {
             base: 0,
             game_state: BASE,
         };
-        let mut first = SessionJob::new();
+        let mut first = fixed_job();
         let report = copy_session_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok);
         captured.raw_mode = true;
@@ -483,7 +490,7 @@ fn session_truncation_matrix_matches_direct_with_same_caps() {
             base: 0,
             game_state: BASE,
         };
-        let mut first = SessionJob::new();
+        let mut first = fixed_job();
         let report = copy_session_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok, "rows={rows:?}");
         split.raw_mode = true;
@@ -532,7 +539,7 @@ fn session_copy_sizes_cover_documented_read_set() {
         },
         sizes: std::cell::RefCell::new(BTreeSet::new()),
     };
-    let mut job = SessionJob::new();
+    let mut job = fixed_job();
     copy_pass(&memory, 0, BASE, &mut job.log);
     assert!(job.log.raw_bytes.iter().any(|&b| b > 0));
     let sizes = memory.sizes.borrow().clone();
@@ -545,16 +552,16 @@ fn session_copy_sizes_cover_documented_read_set() {
 }
 
 #[test]
-fn session_worst_case_pools_start_above_late_campaign_caps() {
-    // Late-campaign worst case: 1024 sources + 512 aggregates with
-    // 128 KiB reasons. Pools start above that so steady state never
-    // overflows; overflow still falls back to the typed walk above.
+fn session_cold_job_is_provisioned_without_content_guesses() {
     let job = SessionJob::new();
-    assert!(job.log.spans.capacity() >= 8192);
-    assert!(job.log.bytes.capacity() >= (1 << 20));
+    assert!(job.is_provisioned());
+    assert_eq!(job.log.spans.capacity(), 0);
+    assert_eq!(job.log.bytes.capacity(), 0);
     let capacities = Capacities::default();
-    assert!(capacities.rows[1] >= 1024);
-    assert!(capacities.reason_bytes >= 128 * 1024);
+    assert_eq!(capacities.rows, [1, 0, 0]);
+    assert_eq!(capacities.reason_bytes, 0);
+    let captured = Captured::vacant();
+    assert_eq!(captured.allocated_bytes(), 0);
 }
 
 #[test]
@@ -568,7 +575,7 @@ fn session_bulk_header_serves_enclosed_length_word() {
         base: BASE,
         bytes: &bytes,
     };
-    let mut job = SessionJob::new();
+    let mut job = fixed_job();
     copy_pass(&memory, 0, BASE, &mut job.log);
     assert!(job.log.has_bulk);
     let recorded = crate::raw::Recorded::build(&job.log);
@@ -585,4 +592,242 @@ fn session_bulk_header_serves_enclosed_length_word() {
     let mut expected = [0u8; 8];
     expected.copy_from_slice(&bytes[header.addr - BASE + 3..header.addr - BASE + 11]);
     assert_eq!(word, expected);
+}
+
+fn mod_sized_fixture(countries: usize, sources: usize, reason_len: usize) -> Vec<u8> {
+    let pointers = 0x3000;
+    let aggregates = pointers + sources * 8 + 16;
+    let objects = aggregates + (countries + 1) * 8 + 16;
+    let reasons = objects + sources * cthreat_source::SIZE + 16;
+    let mut bytes = vec![0; reasons + sources * (reason_len + 1) - BASE];
+    put(
+        &mut bytes,
+        BASE + cgame_state::WORLD_THREAT,
+        &(MANAGER as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        MANAGER,
+        &(cworld_threat::VTABLE_RVA as u64).to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        MANAGER + cworld_threat::TOTAL,
+        &(-7_i64).to_le_bytes(),
+    );
+    array(
+        &mut bytes,
+        MANAGER + cworld_threat::SOURCES,
+        pointers,
+        sources as u32,
+    );
+    array(
+        &mut bytes,
+        MANAGER + cworld_threat::COUNTRY_AGGREGATES,
+        aggregates,
+        (countries + 1) as u32,
+    );
+    for slot in 0..=countries {
+        put(
+            &mut bytes,
+            aggregates + slot * 8,
+            &(-(slot as i64)).to_le_bytes(),
+        );
+    }
+    for ordinal in 0..sources {
+        let object = objects + ordinal * cthreat_source::SIZE;
+        let reason = reasons + ordinal * (reason_len + 1);
+        put(
+            &mut bytes,
+            pointers + ordinal * 8,
+            &(object as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            object,
+            &(cthreat_source::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            object + cthreat_source::COUNTRY,
+            &((ordinal % countries + 1) as u32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            object + cthreat_source::CURRENT,
+            &(ordinal as i64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            object + cthreat_source::REASON,
+            &(reason as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            object + cthreat_source::REASON + msvc_string::LENGTH,
+            &(reason_len as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            object + cthreat_source::REASON + msvc_string::CAPACITY,
+            &(reason_len as u64).to_le_bytes(),
+        );
+        bytes[reason - BASE..reason - BASE + reason_len].fill((ordinal % 251) as u8);
+    }
+    bytes
+}
+
+#[test]
+fn session_live_demand_and_original_payload_growth_keep_5000_countries_and_mod_sources() {
+    use std::cell::Cell;
+    struct Counted<'a> {
+        inner: SliceMemory<'a>,
+        calls: Cell<usize>,
+        headers: Cell<usize>,
+    }
+    impl Memory for Counted<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.calls.set(self.calls.get() + 1);
+            if address == MANAGER && output.len() == 0x40 {
+                self.headers.set(self.headers.get() + 1);
+            }
+            self.inner.copy(address, output)
+        }
+    }
+    let countries = 5_000;
+    let mut captured = Captured::vacant();
+    let mut typed = Captured::vacant();
+    let mut job = SessionJob::default();
+    for (sources, reason_len, hour) in [(5_003, 33, 0), (50_003, 127, 24)] {
+        let bytes = mod_sized_fixture(countries, sources, reason_len);
+        let source = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let mut capacities = Capacities::default();
+        capacities.presize(&source, 0, BASE).unwrap();
+        assert!(capacities.rows[1] >= sources);
+        assert!(capacities.rows[2] > countries);
+        assert!(capacities.reason_bytes >= sources * reason_len);
+        let memory = Counted {
+            inner: source,
+            calls: Cell::new(0),
+            headers: Cell::new(0),
+        };
+        let report = copy_session_refresh_growing(
+            &memory,
+            SessionCopyContext {
+                base: 0,
+                game_state: BASE,
+                hour,
+                force_full: true,
+            },
+            &mut job,
+        );
+        assert!(report.raw_ok);
+        assert!(!job.grow_for_next());
+        let calls = memory.calls.get();
+        assert_eq!(calls, 2 + sources * 5 + countries + 1);
+        assert_eq!(
+            memory.headers.get(),
+            1,
+            "original controls must not be reread after growth"
+        );
+        captured.raw_mode = true;
+        captured.decode_session_payload(0, &job, &mut [0; N]);
+        assert_eq!(
+            memory.calls.get(),
+            calls,
+            "owned decode must not read native memory"
+        );
+        assert_eq!(
+            captured.outcomes(),
+            [
+                Outcome::Rows { len: 1 },
+                Outcome::Rows { len: sources },
+                Outcome::Rows { len: countries + 1 },
+            ]
+        );
+        assert_eq!(captured.manager.rows[0].source_count, sources as i32);
+        assert_eq!(
+            captured.aggregates.rows[countries].total_raw,
+            -(countries as i64)
+        );
+        let last = captured.sources.rows[sources - 1];
+        assert_eq!(
+            (last.ordinal, last.current_raw, last.reason_len),
+            ((sources - 1) as u32, (sources - 1) as i64, reason_len)
+        );
+        assert_eq!(captured.reason_bytes.len, sources * reason_len);
+        assert_eq!(captured.reason_bytes.required, sources * reason_len);
+        assert!(
+            captured.reason_bytes.first[last.reason_start..last.reason_start + last.reason_len]
+                .iter()
+                .all(|byte| *byte == ((sources - 1) % 251) as u8)
+        );
+        assert!(!captured.raw_mode);
+        memory.calls.set(0);
+        memory.headers.set(0);
+        typed.capture_growing(&memory, 0, BASE, hour, true);
+        assert_eq!(memory.headers.get(), 1);
+        assert_matches_direct(&captured, &typed);
+    }
+}
+
+#[test]
+fn session_growing_source_fault_is_not_retried_and_preserves_aggregate_sibling() {
+    use std::cell::Cell;
+    struct FaultOnce<'a> {
+        inner: SliceMemory<'a>,
+        attempts: Cell<usize>,
+    }
+    impl Memory for FaultOnce<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == FIRST && output.len() == 0x34 {
+                self.attempts.set(self.attempts.get() + 1);
+                if self.attempts.get() == 1 {
+                    return false;
+                }
+            }
+            self.inner.copy(address, output)
+        }
+    }
+    let bytes = fixture();
+    let memory = FaultOnce {
+        inner: SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        },
+        attempts: Cell::new(0),
+    };
+    let mut job = SessionJob::default();
+    assert!(
+        copy_session_refresh_growing(
+            &memory,
+            SessionCopyContext {
+                base: 0,
+                game_state: BASE,
+                hour: 0,
+                force_full: true,
+            },
+            &mut job
+        )
+        .raw_ok
+    );
+    let mut captured = Captured::with_capacities(&Capacities {
+        rows: [0; N],
+        reason_bytes: 0,
+    });
+    captured.decode_session_payload(0, &job, &mut [0; N]);
+    assert_eq!(memory.attempts.get(), 1);
+    assert_eq!(
+        captured.outcomes(),
+        [
+            Outcome::Rows { len: 1 },
+            Outcome::Unavailable {
+                reason: "threat source fields unreadable"
+            },
+            Outcome::Rows { len: 2 },
+        ]
+    );
 }

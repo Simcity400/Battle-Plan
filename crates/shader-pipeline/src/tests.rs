@@ -5,6 +5,7 @@ use std::path::Path;
 static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 mod arena;
+mod dimensions;
 mod samplers;
 
 #[test]

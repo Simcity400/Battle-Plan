@@ -28,7 +28,7 @@ use installed_content::{
 };
 use replay::{
     frame::{DecodedFrame, TableView},
-    rows::{FactionMemberRow, TableSchema, tables},
+    rows::{TableSchema, tables},
 };
 
 /// Recorded inputs for authored country-scoped scripted text and its triggers.
@@ -1079,18 +1079,10 @@ impl<'a> ScriptedText<'a> {
                     let Some(faction) = faction else {
                         return Ok(object);
                     };
-                    let members = self
-                        .frame
-                        .complete::<tables::FactionMembers>()
-                        .map_err(|why| why.to_string())?;
-                    let leader = members
-                        .iter()
-                        .find(|row| row.faction == faction && row.ordinal == 0)
-                        .ok_or_else(|| format!("faction {faction} has no first member"))?;
-                    let country = self
-                        .scopes
-                        .slot(leader.country)
-                        .ok_or("faction leader country link is unresolved")?;
+                    let raw = self.scopes.faction_first_raw(faction)?;
+                    // Text keeps the actual Country0 object; event-scope clearing
+                    // is a separate native setter and is not applied here.
+                    let country = self.scopes.raw_slot(raw)?;
                     return Ok(Object::Country(country)); // 141A81FD0.
                 }
             }
@@ -1105,10 +1097,10 @@ impl<'a> ScriptedText<'a> {
                 if named(segment, "FactionLeader") {
                     // PromoteScope (141A7DC60) keeps the context when the
                     // country has no faction.
-                    return Ok(self
-                        .scopes
-                        .faction_leader(slot)?
-                        .map_or(object, Object::Country));
+                    return Ok(match self.scopes.faction_leader_raw(slot)? {
+                        Some(raw) => Object::Country(self.scopes.raw_slot(raw)?),
+                        None => object,
+                    });
                 }
             }
             Object::State(state) => {
@@ -1601,12 +1593,6 @@ impl<'a> ScriptedText<'a> {
         Ok(None)
     }
 
-    /// The country's faction membership (+0x290), `None` without one.
-    fn faction_member(&self, slot: u32) -> Result<Option<&'a FactionMemberRow>, String> {
-        self.country_row::<tables::FactionMembers>(slot, |row| row.country)
-            .map_err(|reason| format!("the faction of country slot {slot} is unknown: {reason}"))
-    }
-
     fn state_country(&self, id: u32, owner: bool) -> Result<Object, String> {
         let (states, gap) = rows::<tables::States>(self.frame);
         let state = states
@@ -1888,10 +1874,10 @@ impl<'a> ScriptedText<'a> {
     /// executable's key `NO_FACTION` through the localiser (142230F20), which
     /// copies it as its bytes when the content lacks it (142230940).
     fn faction_name(&self, slot: u32) -> Result<String, String> {
-        let Some(member) = self.faction_member(slot)? else {
+        let Some(faction) = self.scopes.faction(slot)? else {
             return self.localise(NO_FACTION);
         };
-        self.faction_name_by_id(member.faction)
+        self.faction_name_by_id(faction)
     }
 
     /// Effect descriptions name the same faction without a country lookup.

@@ -205,17 +205,30 @@ impl PreparedCombats {
         let root = inputs.windows.gui_type(LAND_COMBAT_WINDOW.as_bytes());
         for drawn in drawn {
             let marker = &placed[&drawn.owner].marker;
-            batch.at_layer(layer(
+            let key = layer(
                 inputs.content.defines.land_combat_priority,
                 report.combat_ordinal(),
                 0,
-            ));
+            );
+            batch.at_layer(key);
             match native_gui::draw(&drawn.layout, drawn.origin, &resources, batch) {
                 Ok(()) => {
-                    if let Some(root) = root {
+                    if let Some(root) = root
+                        && let Some(button) = root.find(native::Kind::Button, "bg_btn")
+                        && let Some(hit) = gui_windows::hit_rectangle(
+                            button,
+                            &drawn.layout,
+                            drawn.origin,
+                            &resources,
+                            &mut report.icon_gui_notes,
+                        )
+                    {
                         report.combat_hits.push(crate::combat::Hit {
                             selection: crate::combat::Selection::Land(marker.id),
-                            rect: hit_rectangle(root, &drawn.layout, drawn.origin),
+                            rect: hit.rect,
+                            layer: key,
+                            order: hit.order,
+                            supported: hit.supported,
                         });
                     }
                     report.land_combats += 1;
@@ -229,23 +242,6 @@ impl PreparedCombats {
             }
         }
     }
-}
-
-fn hit_rectangle(
-    root: &native::Element,
-    layout: &native_gui::Layout,
-    origin: [i32; 2],
-) -> [f32; 4] {
-    // Keep the window clickable when an undecided score withholds its background drawable.
-    let mut rect = naval_markers::background_footprint(root, layout).unwrap_or([
-        0.,
-        0.,
-        layout.size[0] as f32,
-        layout.size[1] as f32,
-    ]);
-    rect[0] += origin[0] as f32;
-    rect[1] += origin[1] as f32;
-    rect
 }
 
 #[cfg(test)]
@@ -372,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn score_gap_marker_keeps_its_window_clickable() {
+    fn a_withheld_score_background_does_not_invent_a_window_hit() {
         let root = window("Main_14");
         let resources = fixture();
         let mut placed = placed();
@@ -389,9 +385,15 @@ mod tests {
         .unwrap();
         let layout = instance.layout(&root, &resources, None).unwrap().unwrap();
         assert!(naval_markers::background_footprint(&root, &layout).is_none());
-        assert_eq!(
-            hit_rectangle(&root, &layout, [20, 30]),
-            [20., 30., 80., 40.]
+        assert!(
+            gui_windows::hit_rectangle(
+                controls(&root).unwrap().background,
+                &layout,
+                [20, 30],
+                &resources,
+                &mut BTreeMap::new()
+            )
+            .is_none()
         );
     }
 

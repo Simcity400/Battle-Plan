@@ -59,8 +59,16 @@ pub(in crate::oracle) fn occupation_settings(
             replay::rows::Recorded::Value(Some(groups)) => {
                 let mut recorded = BTreeMap::new();
                 for group in groups {
-                    let occupied = required_country_tag(group.occupied, links)?.to_vec();
-                    if recorded.insert(occupied, group.law.clone()).is_some() {
+                    let occupied = required_country_tag(group.occupied, links)?;
+                    // 140FEA660 gates on the +0xA0 law pointer, then
+                    // writes the law's +0x10 string through 1424ADF40.
+                    let field =
+                        format!("{subject}.group_laws.{}", String::from_utf8_lossy(occupied));
+                    let law = group
+                        .law
+                        .as_deref()
+                        .map(|law| super::super::serialized_text(report, &field, law));
+                    if recorded.insert(occupied, law).is_some() {
                         return Err(invalid("duplicate resolved occupied-country law"));
                     }
                 }
@@ -68,7 +76,11 @@ pub(in crate::oracle) fn occupation_settings(
                     report,
                     &format!("{subject}.group_laws"),
                     &recorded,
-                    &saved.group_laws,
+                    &saved
+                        .group_laws
+                        .iter()
+                        .map(|(tag, law)| (tag.as_slice(), law.as_deref()))
+                        .collect::<BTreeMap<_, _>>(),
                 );
             }
             replay::rows::Recorded::Value(None) => report.difference(
@@ -90,12 +102,11 @@ pub(in crate::oracle) fn occupation_settings(
             format!("{subject}.fallback_law"),
         );
         if let Some(law) = &saved.default_law {
-            value(
-                report,
-                &format!("{subject}.default_law"),
-                row.law.as_slice(),
-                law.as_slice(),
-            );
+            // 140FEAE70 gates on the default-law pointer (+0x100 at
+            // the secondary base), not on its stored string length.
+            let field = format!("{subject}.default_law");
+            let name = super::super::serialized_text(report, &field, &row.law);
+            value(report, &field, name, law.as_slice());
         }
     }
     missing(
@@ -136,7 +147,11 @@ pub(in crate::oracle) fn occupation_laws(
             continue;
         };
         matched += 1;
-        value(report, &subject, row.name.as_slice(), saved.law.as_slice());
+        // 140FEA660 writes override law names through 1424AD7A0 /
+        // 1424ADB70; CArchiveFile@1424CC890 and CMemoryFile@1424D9810
+        // consume only the first-NUL prefix of that raw string.
+        let name = super::super::serialized_text(report, &subject, &row.name);
+        value(report, &subject, name, saved.law.as_slice());
     }
     missing(
         report,
@@ -375,7 +390,7 @@ pub(in crate::oracle) fn reserve_manpower(
         ));
     }
     let mut matched = 0;
-    for (country, saved) in &saved.country_reserve_manpower {
+    for (country, saved) in report.canonical_countries(&saved.country_reserve_manpower) {
         let rows = groups.remove(country).unwrap_or_default();
         matched += rows.iter().filter(|row| row.2 > 0).count().min(saved.len());
         manpower(

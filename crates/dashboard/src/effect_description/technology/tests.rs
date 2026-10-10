@@ -167,21 +167,25 @@ fn fixture() -> (Fixture, Folder) {
     *fixture.frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(vec![
             ResearchTechnologyRow {
+                database_index: 42,
                 country: 100,
                 technology_handle: 53,
                 ..Default::default()
             },
             ResearchTechnologyRow {
+                database_index: 53,
                 country: 100,
                 technology_handle: 54,
                 ..Default::default()
             },
             ResearchTechnologyRow {
+                database_index: 42,
                 country: 200,
                 technology_handle: 53,
                 ..Default::default()
             },
             ResearchTechnologyRow {
+                database_index: 54,
                 country: 100,
                 technology_handle: 55,
                 ..Default::default()

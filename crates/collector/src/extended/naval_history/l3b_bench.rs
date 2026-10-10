@@ -63,7 +63,7 @@ fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
             let live = world.live();
             let slice_roster = countries_cache.roster_view(&slice);
             let live_roster = countries_cache.roster_view(&live);
-            let mut job = NavalJob::new();
+            let mut job = NavalJob::fixture();
             // An off-slot hour: the land theatre headers and the order of
             // battle are the hourly work; theatre details stay daily.
             let ctx = NavalCopyContext {
@@ -127,7 +127,7 @@ fn l3b_bench_hourly_land_theatres_and_order_of_battle_ordinals() {
             let rows = 4 * world.groups as usize;
             let capacity = Capacities {
                 rows: [rows; N],
-                ..Capacities::default()
+                ..Capacities::fixture()
             };
             let mut captured = Captured::with_capacities(&capacity);
             let mut ticks = [0; NAVAL_PACK_N];

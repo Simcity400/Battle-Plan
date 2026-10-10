@@ -180,13 +180,13 @@ pub unsafe extern "system" fn worker(module: *mut c_void) -> u32 {
         }
         Err(error) => Err(*error),
     };
+    if let Err(error) = result
+        && !crate::allocation::failed()
+        && let Ok(path) = module_path(module)
+    {
+        let _ = fs::write(path.with_file_name("collector.error.txt"), error);
+    }
     finish_worker(&SHARED, witness, |witness| {
-        if let Err(error) = result
-            && !crate::allocation::failed()
-            && let Ok(path) = module_path(module)
-        {
-            let _ = fs::write(path.with_file_name("collector.error.txt"), error);
-        }
         crate::allocation::clear_handle();
         engine::allocation::set_hooks(None, None);
         engine::allocation::set_stop_hook(None);
@@ -585,6 +585,7 @@ fn run(
     {
         return Err("collector config names another session or process");
     }
+    let _allocation_details = crate::allocation::prepare_details(&config.output_dir);
     let mut creation = unsafe { std::mem::zeroed() };
     let mut exit = unsafe { std::mem::zeroed() };
     let mut kernel = unsafe { std::mem::zeroed() };
@@ -713,6 +714,9 @@ fn run(
     // spool thread then raises capacities as soon as a save fills it.
     let slots = crate::country_scale::observe(&memory, base).unwrap_or(0);
     crate::country_scale::note_slots(slots);
+    // Size the live weather boundary before installing the hourly hook;
+    // attachment after a native rebuild still captures its retained edges.
+    let _ = crate::extended::weather::observe_display_capacity(&memory, base);
     let mut event_feed_hooks = unsafe {
         crate::event_feed_observer::Hooks::new(
             &memory,
@@ -722,13 +726,30 @@ fn run(
             slots,
         )
     }?;
+    let mut directed_query_hooks =
+        unsafe { crate::directed_war_queries::Hooks::new(&memory, base, slots) }?;
     crate::politics_changes::resize(
         crate::country_scale::observe_politics_demand(&memory, base, slots).unwrap_or(slots),
-        engine::politics_sites::lexical_key_demand(&memory, base).unwrap_or(0),
+        processor
+            .observe_input_demand(engine::politics_sites::lexical_key_demand(&memory, base))
+            .unwrap_or(0),
     );
     crate::relation_changes::presize(slots);
     crate::history_changes::presize(slots, strategic_regions(&memory, base));
     let mut sizing = crate::country_scale::Sizing::for_slots(slots);
+    match crate::country_scale::source_demand::Demand::observe(&memory, base) {
+        Ok(Some(demand)) => demand.apply(&mut sizing),
+        Ok(None) => {}
+        Err(reason) => processor.observe_input_demand_error(reason),
+    }
+    if let Err(reason) = crate::country_scale::presize_table_inputs(
+        &memory,
+        base,
+        &mut sizing.map,
+        &mut sizing.extended,
+    ) {
+        processor.observe_input_demand_error(reason);
+    }
     if let Err(reason) = sizing.extended.presize_live_inputs(&memory, base) {
         processor.observe_input_demand_error(reason);
     }
@@ -749,6 +770,11 @@ fn run(
             .map_err(|error| error_reason(error, "game score sizing status allocation failed"))?;
     }
     let _ = sizing.extended.combat_progress.presize(&memory, base);
+    if let Some(count) = processor.observe_input_demand(
+        crate::country_scale::observe_ship_strike_metadata(&memory, base),
+    ) {
+        sizing.extended.ship_models.raise_for_strike_metadata(count);
+    }
     crate::equipment_destruction::prepare(&memory, base, slots);
     crate::experience_gains::prepare(slots);
     sizing.extended.equipment_destruction = crate::equipment_destruction::capacity();
@@ -760,43 +786,155 @@ fn run(
     sizing.extended.air_losses.events = crate::air_losses::capacity();
     sizing.extended.building_bombing = crate::building_bombing::capacity();
     sizing.content = engine::cdlc_manager::observe_counts(&memory, base);
-    if let Some(rows) = crate::country_scale::observe_country_intel(&memory, base) {
+    if let Some(rows) = processor
+        .observe_input_demand(crate::country_scale::observe_country_intel(&memory, base))
+        .flatten()
+    {
         sizing.extended.raise_for_country_intel(rows);
     }
-    if let Ok(Some(demand)) = crate::country_scale::observe_ace_names(&memory, base) {
+    if let Some(demand) = processor
+        .observe_input_demand(crate::country_scale::observe_ace_names(&memory, base))
+        .flatten()
+    {
         sizing.extended.air.raise_for_names(demand);
     }
-    if let Ok(Some(bytes)) = crate::country_scale::observe_air_wing_names(&memory, base) {
+    if let Some(bytes) = processor
+        .observe_input_demand(crate::country_scale::observe_air_wing_names(&memory, base))
+        .flatten()
+    {
         crate::country_scale::note_air_wing_name_bytes(bytes);
         sizing.map.raise_for_air_wing_names(bytes);
     }
-    if let Ok(Some(demand)) = crate::country_scale::observe_railway_gun_names(&memory, base) {
+    if let Some(demand) = processor
+        .observe_input_demand(crate::country_scale::observe_railway_gun_names(
+            &memory, base,
+        ))
+        .flatten()
+    {
         crate::country_scale::note_railway_gun_names(demand);
         sizing.extended.railway_guns.raise_for_names(demand);
     }
-    if let Ok(Some(demand)) = crate::country_scale::observe_attrition_inputs(&memory, base) {
+    let mut fresh_eta_map = crate::country_scale::FreshEtaMapCache::default();
+    let mut naval_foreign_scratch = 0;
+    if let Some(demand) = processor
+        .observe_input_demand(crate::country_scale::observe_fresh_eta(
+            &memory,
+            base,
+            &mut fresh_eta_map,
+            &mut naval_foreign_scratch,
+        ))
+        .flatten()
+    {
+        for reason in demand.map_refusals() {
+            processor.observe_input_demand_error(reason);
+        }
+        if let Some(reason) = demand.naval.refusal() {
+            processor.observe_input_demand_error(reason);
+        }
+        if let Ok(carrier) = demand.carrier {
+            crate::country_scale::note_carrier_demand(carrier);
+        }
+        sizing
+            .raise_for_fresh_map(&demand)
+            .map_err(|error| error_reason(error, "fresh ETA map sizing failed"))?;
+        let _ = processor.observe_input_demand(
+            sizing
+                .extended
+                .country_counters
+                .raise_for_movement(demand.movement),
+        );
+        sizing
+            .extended
+            .country_counters
+            .raise_for_naval_movement(demand.naval.capacities);
+        sizing
+            .extended
+            .country_appearance
+            .raise_for_naval_movement(demand.naval.shared);
+        sizing
+            .extended
+            .naval_counters
+            .raise_for_names(demand.naval.name_rows, demand.naval.name_bytes);
+        sizing
+            .extended
+            .naval_counters
+            .raise_for_supply_origins(demand.naval.supply_origins);
+        let _ = processor.observe_input_demand(
+            sizing
+                .extended
+                .naval_counters
+                .raise_for_port(demand.naval.port),
+        );
+    }
+    if let Some(demand) = processor
+        .observe_input_demand(crate::country_scale::observe_attrition_inputs(
+            &memory, base,
+        ))
+        .flatten()
+    {
+        if let Some(reason) = demand.failure {
+            processor.observe_input_demand_error(reason);
+        }
         sizing
             .extended
             .division_presentation
             .raise_for_attrition(demand);
     }
-    if let Some(demand) = crate::country_scale::observe_raid_arenas(&memory, base) {
+    if let Some(demand) = processor
+        .observe_input_demand(crate::country_scale::observe_raid_arenas(&memory, base))
+        .flatten()
+    {
+        for reason in demand.failures.into_iter().flatten() {
+            processor.observe_input_demand_error(reason);
+        }
         sizing.extended.raise_for_raid_arenas(demand);
     }
-    if let Some(demand) = crate::country_scale::observe_saved_targets(&memory, base) {
+    if let Some(demand) = processor
+        .observe_input_demand(crate::country_scale::observe_saved_targets(&memory, base))
+        .flatten()
+    {
         sizing.extended.saved_event_targets.raise(demand);
     }
-    if let Ok(Some(demand)) = crate::country_scale::observe_characters(&memory, base) {
+    if let Some(demand) = processor
+        .observe_input_demand(crate::country_scale::observe_characters(&memory, base))
+        .flatten()
+    {
         sizing.extended.raise_for_characters(demand);
     }
-    if let Ok(Some(demand)) = crate::country_scale::observe_politics(&memory, base) {
+    if let Some(demand) = processor
+        .observe_input_demand(crate::country_scale::observe_politics(&memory, base))
+        .flatten()
+    {
+        sizing
+            .extended
+            .country_counters
+            .raise_for_pride_names(demand.pride_name_bytes);
+        for reason in demand.failures() {
+            processor.observe_input_demand_error(reason);
+        }
         sizing.extended.raise_for_politics(demand);
     }
-    if let Ok(Some(demand)) = crate::country_scale::observe_fuel_unit_demand(&memory, base) {
+    if let Some(slots) = processor
+        .observe_input_demand(crate::country_scale::observe_reserved_visibility(
+            &memory, base,
+        ))
+        .flatten()
+    {
+        sizing.extended.raise_reserved_visibility(slots);
+    }
+    if let Some(demand) = processor
+        .observe_input_demand(crate::country_scale::observe_fuel_unit_demand(
+            &memory, base,
+        ))
+        .flatten()
+    {
         sizing.extended.economy.demand.raise(demand);
     }
     sizing.extended.operation_outcomes.prepare();
     let combat_hints = CombatHints::observe(&memory, base);
+    for reason in combat_hints.failures.into_iter().flatten() {
+        processor.observe_input_demand_error(reason);
+    }
     sizing.extended.line_output.entries = sizing.extended.line_output.entries.max(events);
     let peace_capacity = crate::peace_settlements::capacity_for_world(&memory, base);
     sizing.extended.peace_settlements = peace_capacity;
@@ -823,6 +961,7 @@ fn run(
     ranges.extend(bombing_hooks.executable_ranges());
     ranges.extend(line_hooks.executable_ranges());
     ranges.extend(event_feed_hooks.executable_ranges());
+    ranges.extend(directed_query_hooks.executable_ranges());
     ranges.extend(world_hooks.executable_ranges());
     ranges.extend(peace_hooks.executable_ranges());
     ranges.extend(land_hooks.executable_ranges());
@@ -832,12 +971,17 @@ fn run(
     ranges.extend(fuel_hooks.executable_ranges());
     ranges.extend(operation_hooks.executable_ranges());
     ranges.extend(politics_hooks.executable_ranges());
-    let shared = Arc::new(
-        Shared::with_sizing(base, hook.trampoline(), frequency as u64, &sizing)
-            .map_err(|e| error_reason(e, "capture buffers allocation failed"))?,
-    );
+    let mut shared = Shared::with_sizing(base, hook.trampoline(), frequency as u64, &sizing)
+        .map_err(|e| error_reason(e, "capture buffers allocation failed"))?;
+    shared.prepare_roster(&memory);
+    shared
+        .prepare_clock_capture(&memory)
+        .map_err(|_| "clock preparation allocation failed")?;
+    let shared = Arc::new(shared);
     let mut spool_state = SpoolState {
         sizing,
+        fresh_eta_map,
+        naval_foreign_scratch,
         applied_combat_hints: [CombatHintState::default(); sampling::BUFFERS],
     };
     grow_combat_hints(
@@ -907,6 +1051,13 @@ fn run(
     while installation_error.is_none() && !crate::allocation::failed() {
         match world_hooks
             .set_enabled(true)
+            .and_then(|ready| {
+                if ready {
+                    directed_query_hooks.set_enabled(true)
+                } else {
+                    Ok(false)
+                }
+            })
             .and_then(|ready| {
                 if ready {
                     fuel_hooks.set_enabled(true)
@@ -1092,28 +1243,43 @@ fn run(
     let decode_stopped_early = installation_error.is_none() && decode::worker_finished();
     let detach_started = Instant::now();
     let mut event_feed_detach = None;
-    // Retain executable hooks and Shared on refusal; worker must not unload.
+    // Retain every callback, worker and frame owner on refusal. Keep an earlier
+    // terminal fault separate from the new stop diagnostic.
     macro_rules! retain_detach {
-        ($reason:expr) => {{
-            refuse_detach!($reason, |reason| {
-            shared.recording.store(false, Ordering::Release);
-            status_writer.finish();
-            let _ = write_status(&status_path, &crate::status::status!({
-                "state":"detach_refused", "session":session_id,
-                "drain_complete":false, "error":reason,
-                "land_events":crate::land_events::status(),
-                "event_feed_detach":event_feed_detach,
-            }));
-            let _ = fs::write(dll_path.with_file_name("collector.error.txt"), reason);
-            std::mem::forget((hook, portrait_hooks, advisor_hooks, relation_hooks,
-                history_hooks, opinion_hooks, destruction_hooks, naval_result_hooks,
-                air_loss_hooks, bombing_hooks, line_hooks,
-                land_hooks, prune_hooks, construction_hooks, experience_hooks, event_feed_hooks, world_hooks,
-                fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
-                peace_hooks, shared, output_lock, _payload_pools));
+        ($reason:expr, $fault:expr, $workers:expr) => {{
+            let reason: &'static str = $reason;
+            let fault: Option<&'static str> = $fault;
+            let error = fault.unwrap_or(reason);
+            refuse_detach!(error, |_error| {
+                shared.recording.store(false, Ordering::Release);
+                shared.cancel_buffer_wait.store(true, Ordering::Release);
+                status_writer.finish();
+                if !crate::allocation::failed() {
+                    let _ = write_status(
+                        &status_path,
+                        &crate::status::status!({
+                            "state":"detach_refused", "session":session_id,
+                            "drain_complete":false, "original_bytes_verified":false,
+                            "error":error, "detach_refusal":reason,
+                            "installation_error":installation_error,
+                            "land_events":crate::land_events::status(),
+                            "event_feed_detach":event_feed_detach,
+                        }),
+                    );
+                    let _ = fs::write(dll_path.with_file_name("collector.error.txt"), error);
+                }
+                std::mem::forget((
+                    $workers, hook, portrait_hooks, advisor_hooks, relation_hooks,
+                    history_hooks, opinion_hooks, destruction_hooks, naval_result_hooks,
+                    air_loss_hooks, bombing_hooks, line_hooks, land_hooks, prune_hooks,
+                    construction_hooks, experience_hooks, event_feed_hooks, directed_query_hooks, world_hooks,
+                    fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
+                    peace_hooks, shared, output_lock, _payload_pools,
+                ));
             });
         }};
     }
+
     // Keep observing until the hourly entry is restored. A hard refusal must
     // not prevent restoration of the independent writer families below.
     let mut restored = [false; RestoreFamily::ALL.len()];
@@ -1135,16 +1301,20 @@ fn run(
     // observers, proves that no callback can submit another acquisition job.
     HOURLY_ADMISSION.close();
     if let Err(reason) = wait_acquisitions(&HOURLY_ADMISSION, detach_started) {
-        retain_detach!(reason);
+        retain_detach!(
+            reason,
+            installation_error.or(Some(reason)),
+            (spool, status_writer)
+        );
     }
     // Keep mutation observation intact until the last acquisition has finished.
     // Every round visits all unfinished families even if an earlier one refuses.
     // A damaged enabled patch still prevents unloading its relay and this DLL.
+    let mut first_restore_error = None;
     let restore_result = loop {
         // Keep invalidation published while any older native invocation can
         // still reach an observer post reader, even after its site was restored.
-        let world_ready = world_restore_ready(&restored, observers_active());
-        let result = restore_round(&mut restored, &mut previous_errors, |family| {
+        let restore = |family| {
             let result = match family {
                 RestoreFamily::Hourly => hook
                     .set_enabled(false)
@@ -1165,6 +1335,7 @@ fn run(
                 RestoreFamily::History => history_hooks.set_enabled(false),
                 RestoreFamily::Experience => experience_hooks.set_enabled(false),
                 RestoreFamily::EventFeed => event_feed_hooks.set_enabled(false),
+                RestoreFamily::DirectedQueries => directed_query_hooks.set_enabled(false),
                 RestoreFamily::Fuel => fuel_hooks.set_enabled(false),
                 RestoreFamily::OperationOutcomes => operation_hooks
                     .set_enabled(false)
@@ -1177,22 +1348,42 @@ fn run(
                 RestoreFamily::NavalResultSources => naval_result_hooks.set_enabled(false),
                 RestoreFamily::AirLosses => air_loss_hooks.set_enabled(false),
                 RestoreFamily::BuildingBombing => bombing_hooks.set_enabled(false),
-                RestoreFamily::WorldLifetime if world_ready => world_hooks.set_enabled(false),
-                RestoreFamily::WorldLifetime => Ok(false),
+                RestoreFamily::WorldLifetime => world_hooks.set_enabled(false),
             };
-            if result == Ok(false) && detach_started.elapsed() >= DETACH_BUDGET {
-                Err(observer_detach_refusal(detach_started.elapsed(), |family| {
-                    family.observer_state().0
-                })
-                .unwrap_or(family.observer_state().1))
+            let result = if result == Ok(false) && detach_started.elapsed() >= DETACH_BUDGET {
+                Err(mutation_detach_refusal(
+                    detach_started.elapsed(),
+                    |family| family.observer_state().0,
+                ))
             } else {
                 result
+            };
+            if let Err(error) = result {
+                first_restore_error.get_or_insert(error);
             }
-        });
+            result
+        };
+        let result = restore_round(
+            &mut restored,
+            &mut previous_errors,
+            observers_active,
+            restore,
+        );
         match result {
             Ok(true) => break Ok(()),
-            Ok(false) => std::thread::sleep(Duration::from_millis(100)),
-            Err(error) => break Err(error),
+            Ok(false) => {
+                let Some(delay) =
+                    detach_retry_delay(detach_started.elapsed(), Duration::from_millis(100))
+                else {
+                    break Err(first_restore_error.unwrap_or_else(|| {
+                        mutation_detach_refusal(detach_started.elapsed(), |family| {
+                            family.observer_state().0
+                        })
+                    }));
+                };
+                std::thread::sleep(delay);
+            }
+            Err(error) => break Err(first_restore_error.unwrap_or(error)),
         }
     };
     let _ = teardown_status.set(TeardownStatus {
@@ -1209,9 +1400,20 @@ fn run(
         shared: &SHARED,
     };
     if hooks.restored
-        && let Err(reason) = wait_quiet(&ranges, image_size, &owned_workers, detach_started)
+        && let Err(reason) = wait_quiet(
+            &ranges,
+            image_size,
+            &owned_workers,
+            QuietPhase::Observers,
+            &restored,
+            detach_started,
+        )
     {
-        retain_detach!(reason);
+        retain_detach!(
+            reason,
+            installation_error.or(Some(reason)),
+            (spool, status_writer)
+        );
     }
     // Normal restoration also waits for callbacks and originals before release;
     // the pinned path retains their state after acquisition admission closes.
@@ -1219,7 +1421,15 @@ fn run(
     // Closed admission proves every acquisition lease is complete; successful
     // restoration additionally proves callback and relay quiescence for unload.
     // Join the precreated readers before releasing any shared/frame storage.
-    let acquisition_outcome = acquisition.shutdown();
+    if let Err(reason) = acquisition.shutdown() {
+        // Pool::shutdown reports an acquisition that escaped its runner guard.
+        // A caller-owned Running marker can remain after the workers joined.
+        retain_detach!(
+            reason,
+            installation_error.or(Some(reason)),
+            (spool, status_writer)
+        );
+    }
     // Decode drain first: pending refreshes decode in FIFO hour order into
     // their pooled frames and hand off to the spool ready queue; the existing
     // spool drain below then consumes them in order. Undrainable items use the
@@ -1239,9 +1449,6 @@ fn run(
         ),
         Err(error) => (Err(error), None),
     };
-    if let Err(error) = acquisition_outcome {
-        add_terminal_error(&mut spool_result, error);
-    }
     if shared.acquisition_failed() {
         add_terminal_error(&mut spool_result, "game-thread acquisition failed");
     }
@@ -1251,16 +1458,23 @@ fn run(
         add_terminal_error(&mut spool_result, "decode worker stopped before detach");
     }
     if hooks.restored
-        && let Err(reason) = wait_quiet(&ranges, image_size, &[], detach_started)
+        && let Err(reason) = wait_quiet(
+            &ranges,
+            image_size,
+            &[],
+            QuietPhase::Release,
+            &restored,
+            detach_started,
+        )
     {
-        retain_detach!(reason);
+        retain_detach!(reason, spool_result.as_ref().err().copied(), ());
     }
     if hooks.restored {
         // Spool/status readers joined and every family passed the final quiet check.
         experience_hooks.release_after_quiet();
         event_feed_detach = Some(match event_feed_hooks.release_after_quiet() {
             Ok(losses) => losses,
-            Err(reason) => retain_detach!(reason),
+            Err(reason) => retain_detach!(reason, spool_result.as_ref().err().copied(), ()),
         });
         unsafe {
             crate::logistics_balance::release();
@@ -1272,7 +1486,7 @@ fn run(
             .and_then(|()| crate::naval_result_sources::release())
             .and_then(|()| crate::fuel_awards::release())
         {
-            retain_detach!(reason);
+            retain_detach!(reason, spool_result.as_ref().err().copied(), ());
         }
     }
     hooks.release(
@@ -1293,6 +1507,7 @@ fn run(
             construction_hooks,
             experience_hooks,
             event_feed_hooks,
+            directed_query_hooks,
             world_hooks,
             fuel_hooks,
             operation_hooks,
@@ -1386,6 +1601,7 @@ enum RestoreFamily {
     AirLosses,
     BuildingBombing,
     EventFeed,
+    DirectedQueries,
     WorldLifetime,
 }
 
@@ -1477,6 +1693,10 @@ impl RestoreFamily {
                 crate::event_feed_observer::active() != 0,
                 "Event feed callbacks did not quiesce; collector retained",
             ),
+            Self::DirectedQueries => (
+                crate::directed_war_queries::ACTIVE.load(Ordering::SeqCst) != 0,
+                "directed war query callbacks did not quiesce; collector retained",
+            ),
             Self::WorldLifetime => (
                 crate::world_lifetime::ACTIVE.load(Ordering::SeqCst) != 0,
                 "native world lifetime callbacks did not quiesce; collector retained",
@@ -1484,7 +1704,7 @@ impl RestoreFamily {
         }
     }
 
-    const ALL: [Self; 22] = [
+    const ALL: [Self; 23] = [
         Self::Hourly,
         Self::EquipmentDestruction,
         Self::Land,
@@ -1506,6 +1726,7 @@ impl RestoreFamily {
         Self::AirLosses,
         Self::BuildingBombing,
         Self::EventFeed,
+        Self::DirectedQueries,
         Self::WorldLifetime,
     ];
 }
@@ -1532,7 +1753,7 @@ fn restore_hourly(
                 return;
             }
             Ok(false) => {
-                if started.elapsed() >= DETACH_BUDGET {
+                if detach_retry_delay(started.elapsed(), Duration::from_millis(100)).is_none() {
                     return;
                 }
                 wait();
@@ -1575,16 +1796,23 @@ impl HookLifetime<'_> {
 fn restore_round(
     restored: &mut [bool; RestoreFamily::ALL.len()],
     previous_errors: &mut [bool; RestoreFamily::ALL.len()],
+    mut active: impl FnMut() -> bool,
     mut restore: impl FnMut(RestoreFamily) -> Result<bool, &'static str>,
 ) -> Result<bool, &'static str> {
     let mut persistent_error = None;
     for family in RestoreFamily::ALL {
-        let complete = &mut restored[family as usize];
-        if !*complete {
-            let previous_error = &mut previous_errors[family as usize];
+        let index = family as usize;
+        if !restored[index] {
+            // World invalidation@1401D09E5/1401BF509/1401C9080 stays published
+            // through other native returns. Recheck after this round's restores:
+            // they can finish the last flight and consume the retry budget.
+            if family == RestoreFamily::WorldLifetime && !world_restore_ready(restored, active()) {
+                continue;
+            }
+            let previous_error = &mut previous_errors[index];
             match restore(family) {
                 Ok(ready) => {
-                    *complete = ready;
+                    restored[index] = ready;
                     *previous_error = false;
                 }
                 Err(error) => {
@@ -1770,6 +1998,7 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "naval_result_sources": crate::naval_result_sources::status(),
         "experience_gains": crate::experience_gains::status(),
         "event_feed": crate::event_feed_observer::status(),
+        "directed_war_queries": crate::directed_war_queries::status(),
         "world_lifetime": crate::world_lifetime::status(),
         "operation_outcomes": crate::operation_outcomes::status(),
         "operative_capture": crate::extended::intel::operative_capture_diagnostics(),
@@ -2000,12 +2229,55 @@ fn observer_detach_refusal(
         .map(|family| family.observer_state().1)
 }
 
+fn mutation_detach_refusal(
+    elapsed: Duration,
+    active: impl FnMut(RestoreFamily) -> bool,
+) -> &'static str {
+    // A busy patch or a deferred world entry need not have a native flight.
+    observer_detach_refusal(elapsed, active)
+        .unwrap_or("collector mutation entry restoration refused; collector retained")
+}
+
+// Native retry phases share the detach start and budget. Windows calls and
+// owned worker joins remain separate obligations; timeout never permits release.
+
+fn detach_retry_delay(elapsed: Duration, poll: Duration) -> Option<Duration> {
+    DETACH_BUDGET
+        .checked_sub(elapsed)
+        .filter(|remaining| !remaining.is_zero())
+        .map(|remaining| remaining.min(poll))
+}
+
+#[derive(Clone, Copy)]
+enum QuietPhase {
+    Observers,
+    Release,
+}
+impl QuietPhase {
+    fn entries_restored(self, restored: &[bool; RestoreFamily::ALL.len()]) -> bool {
+        match self {
+            Self::Observers | Self::Release => restored.iter().all(|restored| *restored),
+        }
+    }
+    fn refusal(self) -> &'static str {
+        match self {
+            Self::Observers => "collector observer quiescence refused; collector retained",
+            Self::Release => "collector final quiescence refused; collector retained",
+        }
+    }
+}
+
 fn wait_quiet(
     ranges: &[std::ops::Range<usize>],
     image_size: usize,
     excluded_threads: &[u32],
+    phase: QuietPhase,
+    restored: &[bool; RestoreFamily::ALL.len()],
     started: Instant,
 ) -> Result<(), &'static str> {
+    if image_size == 0 || !phase.entries_restored(restored) {
+        return Err("collector quiescence entries or image range unproved; collector retained");
+    }
     crate::air_losses::mark_stranded();
     crate::building_bombing::mark_stranded();
     loop {
@@ -2014,26 +2286,110 @@ fn wait_quiet(
         {
             return Err(reason);
         }
-        let quiet = image_size != 0
-            && !observers_active()
-            && Threads::open_excluding(excluded_threads).is_ok_and(|mut threads| {
-                let result = threads.suspend().and_then(|()| {
-                    if observers_active() {
-                        Ok(false)
-                    } else {
-                        threads.contains_ip(ranges).map(|present| !present)
-                    }
-                });
-                let resumed = threads.resume();
-                resumed.is_ok() && result == Ok(true)
+        if !observers_active()
+            && let Ok(mut threads) = Threads::open_excluding(excluded_threads)
+        {
+            // Snapshot/open may allocate. Only scalar counts and current IPs
+            // are consulted after suspension; no owner drops in this window.
+            let result = threads.suspend().and_then(|()| {
+                if observers_active() {
+                    Ok(false)
+                } else {
+                    threads.contains_ip(ranges).map(|present| !present)
+                }
             });
-        if quiet {
-            return Ok(());
+            if threads.resume().is_err() {
+                // Shared Threads::resume returns a failure only after every
+                // owned suspension is actually resumed or proved exited.
+                // Error history still refuses release; diagnostics now run
+                // outside the suspended interval and all roots are retained.
+                return Err("collector quiet thread resume refused; collector retained");
+            }
+            if result == Ok(true) {
+                return Ok(());
+            }
         }
-        if started.elapsed() >= DETACH_BUDGET {
-            return Err("collector executable ranges did not quiesce; collector retained");
-        }
-        std::thread::sleep(Duration::from_millis(1));
+        let Some(delay) = detach_retry_delay(started.elapsed(), Duration::from_millis(1)) else {
+            return Err(phase.refusal());
+        };
+        std::thread::sleep(delay);
+    }
+}
+
+#[cfg(test)]
+mod detach_policy_tests {
+    use super::*;
+
+    #[test]
+    fn restoration_refusal_still_visits_later_families_and_keeps_progress() {
+        let mut restored = [false; RestoreFamily::ALL.len()];
+        let mut visited = Vec::new();
+        let mut previous_errors = [false; RestoreFamily::ALL.len()];
+        assert_eq!(
+            restore_round(
+                &mut restored,
+                &mut previous_errors,
+                || false,
+                |family| {
+                    visited.push(family);
+                    match family {
+                        RestoreFamily::Hourly => Err("bytes differ"),
+                        RestoreFamily::Portrait => Ok(false), // pending cache flush
+                        _ => Ok(true),
+                    }
+                }
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            visited,
+            RestoreFamily::ALL[..RestoreFamily::WorldLifetime as usize]
+        );
+        assert!(!restored[RestoreFamily::Hourly as usize]);
+        assert!(!restored[RestoreFamily::Portrait as usize]);
+        assert!(restored[RestoreFamily::History as usize]);
+        visited.clear();
+        assert_eq!(
+            restore_round(
+                &mut restored,
+                &mut previous_errors,
+                || false,
+                |family| {
+                    visited.push(family);
+                    Ok(true)
+                }
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            visited,
+            [
+                RestoreFamily::Hourly,
+                RestoreFamily::Portrait,
+                RestoreFamily::WorldLifetime
+            ]
+        );
+    }
+
+    #[test]
+    fn detach_retry_budget_does_not_restart_for_last_short_poll() {
+        let poll = Duration::from_millis(100);
+        assert_eq!(detach_retry_delay(Duration::ZERO, poll), Some(poll));
+        let last = Duration::from_nanos(1);
+        assert_eq!(detach_retry_delay(DETACH_BUDGET - last, poll), Some(last));
+        assert_eq!(detach_retry_delay(DETACH_BUDGET, poll), None);
+        assert_eq!(detach_retry_delay(DETACH_BUDGET + last, poll), None);
+    }
+
+    #[test]
+    fn later_quiet_phases_require_every_current_entry_restored() {
+        let mut restored = [false; RestoreFamily::ALL.len()];
+        restored[RestoreFamily::Hourly as usize] = true;
+        assert!(!QuietPhase::Observers.entries_restored(&restored));
+        assert!(!QuietPhase::Release.entries_restored(&restored));
+        restored.fill(true);
+        assert!(QuietPhase::Observers.entries_restored(&restored));
+        assert!(QuietPhase::Release.entries_restored(&restored));
     }
 }
 
@@ -2077,6 +2433,111 @@ mod detach_tests {
     }
 
     #[test]
+    fn world_signal_restores_in_the_round_where_the_last_callback_returns() {
+        let callbacks = CaptureAdmission::new();
+        let mut native_return = Some(callbacks.enter().unwrap());
+        let mut restored = [false; RestoreFamily::ALL.len()];
+        let mut errors = [false; RestoreFamily::ALL.len()];
+        let mut world_restores = 0;
+        // The preceding restoration/return consumes the shared wait budget.
+        // A quiet world must still get its first restoration attempt now.
+        let elapsed = std::cell::Cell::new(Duration::ZERO);
+        let result = restore_round(
+            &mut restored,
+            &mut errors,
+            || !callbacks.quiet(),
+            |family| match family {
+                RestoreFamily::DirectedQueries => {
+                    drop(native_return.take());
+                    elapsed.set(DETACH_BUDGET);
+                    Ok(true)
+                }
+                RestoreFamily::WorldLifetime => {
+                    assert!(callbacks.quiet());
+                    world_restores += 1;
+                    Ok(true)
+                }
+                _ => Ok(true),
+            },
+        );
+        assert!(callbacks.quiet());
+        assert_eq!(
+            detach_retry_delay(elapsed.get(), Duration::from_millis(100)),
+            None
+        );
+        assert_eq!(result, Ok(true));
+        assert_eq!(world_restores, 1);
+        assert!(QuietPhase::Observers.entries_restored(&restored));
+        assert!(QuietPhase::Release.entries_restored(&restored));
+    }
+
+    #[test]
+    fn quiet_world_gets_its_first_restore_after_slow_predecessors() {
+        let mut restored = [false; RestoreFamily::ALL.len()];
+        let mut errors = [false; RestoreFamily::ALL.len()];
+        let elapsed = std::cell::Cell::new(Duration::ZERO);
+        let mut visited = Vec::new();
+        assert_eq!(
+            restore_round(
+                &mut restored,
+                &mut errors,
+                || false,
+                |family| {
+                    visited.push(family);
+                    elapsed.set(DETACH_BUDGET);
+                    Ok(true)
+                }
+            ),
+            Ok(true)
+        );
+        assert_eq!(visited, RestoreFamily::ALL);
+        assert_eq!(
+            detach_retry_delay(elapsed.get(), Duration::from_millis(100)),
+            None
+        );
+        assert!(QuietPhase::Release.entries_restored(&restored));
+    }
+
+    #[test]
+    fn world_signal_waits_for_a_native_return_after_its_entry_was_restored() {
+        let callbacks = CaptureAdmission::new();
+        let native_return = callbacks.enter().unwrap();
+        let mut restored = [true; RestoreFamily::ALL.len()];
+        restored[RestoreFamily::WorldLifetime as usize] = false;
+        let mut errors = [false; RestoreFamily::ALL.len()];
+        let world_restores = std::cell::Cell::new(0);
+        let mut restore = |family| {
+            assert_eq!(family, RestoreFamily::WorldLifetime);
+            assert!(callbacks.quiet());
+            world_restores.set(world_restores.get() + 1);
+            Ok(true)
+        };
+        assert_eq!(
+            restore_round(
+                &mut restored,
+                &mut errors,
+                || !callbacks.quiet(),
+                &mut restore
+            ),
+            Ok(false)
+        );
+        assert_eq!(world_restores.get(), 0);
+        assert!(!QuietPhase::Release.entries_restored(&restored));
+        assert!(!callbacks.quiet());
+        drop(native_return);
+        assert_eq!(
+            restore_round(
+                &mut restored,
+                &mut errors,
+                || !callbacks.quiet(),
+                &mut restore
+            ),
+            Ok(true)
+        );
+        assert_eq!(world_restores.get(), 1);
+    }
+
+    #[test]
     fn every_observer_family_has_a_named_bounded_detach_refusal() {
         for family in RestoreFamily::ALL {
             let reason = family.observer_state().1;
@@ -2085,6 +2546,20 @@ mod detach_tests {
             assert_eq!(observer_detach_refusal(Duration::ZERO, active), None);
             assert_eq!(observer_detach_refusal(DETACH_BUDGET, active), Some(reason));
             assert!(reason.ends_with("collector retained"));
+        }
+    }
+
+    #[test]
+    fn expired_restoration_reports_callback_refusal_only_for_an_active_family() {
+        let generic = "collector mutation entry restoration refused; collector retained";
+        assert_eq!(mutation_detach_refusal(DETACH_BUDGET, |_| false), generic);
+        for family in RestoreFamily::ALL {
+            let active = |candidate| candidate == family;
+            assert_eq!(mutation_detach_refusal(Duration::ZERO, active), generic);
+            assert_eq!(
+                mutation_detach_refusal(DETACH_BUDGET, active),
+                family.observer_state().1
+            );
         }
     }
 }
@@ -2104,6 +2579,9 @@ struct RegistryWatch {
     air_wing_names: usize,
     last_railway_gun_names: Option<Instant>,
     railway_gun_names: engine::railway_gun_counter_inputs::NameDemand,
+    last_fresh_eta: Option<Instant>,
+    fresh_eta_map: crate::country_scale::FreshEtaMapCache,
+    naval_foreign_scratch: usize,
     last_attrition_inputs: Option<Instant>,
     attrition_inputs: engine::attrition_modifier_breakdown::Demand,
     last_raids: Option<Instant>,
@@ -2114,10 +2592,14 @@ struct RegistryWatch {
     saved_targets: engine::saved_event_targets::Demand,
     last_politics: Option<Instant>,
     politics: crate::country_scale::PoliticsDemand,
+    last_reserved_visibility: Option<Instant>,
+    reserved_visibility: usize,
     last_lines: Option<Instant>,
     last_logistics: Option<Instant>,
     last_game_score: Option<Instant>,
     last_combat_hints: Option<Instant>,
+    last_ship_strike_metadata: Option<Instant>,
+    ship_strike_metadata: usize,
 }
 
 impl RegistryWatch {
@@ -2125,6 +2607,49 @@ impl RegistryWatch {
     /// The intel total walks every country's table header, so it is sampled
     /// less often than the three registry headers.
     const INTEL_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// Definitions can grow independently of the country registry. Failed
+    /// header hints leave the old storage floor and are reported by the spool.
+    fn poll_ship_strike_metadata(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Result<Option<usize>, &'static str> {
+        if self
+            .last_ship_strike_metadata
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return Ok(None);
+        }
+        self.last_ship_strike_metadata = Some(Instant::now());
+        let count = crate::country_scale::observe_ship_strike_metadata(memory, base)?;
+        if count <= self.ship_strike_metadata {
+            return Ok(None);
+        }
+        self.ship_strike_metadata = count;
+        Ok(Some(count))
+    }
+
+    fn poll_reserved_visibility(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Result<Option<usize>, &'static str> {
+        if self
+            .last_reserved_visibility
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return Ok(None);
+        }
+        self.last_reserved_visibility = Some(Instant::now());
+        let Some(slots) = crate::country_scale::observe_reserved_visibility(memory, base)? else {
+            return Ok(None);
+        };
+        Ok((slots > self.reserved_visibility).then(|| {
+            self.reserved_visibility = slots;
+            slots
+        }))
+    }
 
     fn poll_game_score(
         &mut self,
@@ -2213,19 +2738,25 @@ impl RegistryWatch {
 
     /// A larger dense CountryIntel total than any seen, at most every
     /// `INTEL_INTERVAL`. Intel vectors fill after a save's registry does.
-    fn poll_intel(&mut self, memory: &impl engine::Memory, base: usize) -> Option<usize> {
+    fn poll_intel(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Result<Option<usize>, &'static str> {
         if self
             .last_intel
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
         {
-            return None;
+            return Ok(None);
         }
         self.last_intel = Some(Instant::now());
-        let rows = crate::country_scale::observe_country_intel(memory, base)?;
-        (rows > self.intel_rows).then(|| {
+        let Some(rows) = crate::country_scale::observe_country_intel(memory, base)? else {
+            return Ok(None);
+        };
+        Ok((rows > self.intel_rows).then(|| {
             self.intel_rows = rows;
             rows
-        })
+        }))
     }
 
     fn poll_ace_names(
@@ -2304,6 +2835,29 @@ impl RegistryWatch {
             }))
     }
 
+    /// Moving-owner counts and the terrain roster can change independently of
+    /// the country census. Failed hint components are retried independently;
+    /// the applied capture capacities retain every earlier readable floor.
+    fn poll_fresh_eta(
+        &mut self,
+        memory: &impl engine::Memory,
+        base: usize,
+    ) -> Result<Option<crate::country_scale::FreshEtaDemand>, &'static str> {
+        if self
+            .last_fresh_eta
+            .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
+        {
+            return Ok(None);
+        }
+        self.last_fresh_eta = Some(Instant::now());
+        crate::country_scale::observe_fresh_eta(
+            memory,
+            base,
+            &mut self.fresh_eta_map,
+            &mut self.naval_foreign_scratch,
+        )
+    }
+
     fn poll_attrition_inputs(
         &mut self,
         memory: &impl engine::Memory,
@@ -2320,7 +2874,7 @@ impl RegistryWatch {
             return Ok(None);
         };
         let raised = self.attrition_inputs.max(demand);
-        if raised == self.attrition_inputs {
+        if raised == self.attrition_inputs && demand.failure.is_none() {
             return Ok(None);
         }
         self.attrition_inputs = raised;
@@ -2334,25 +2888,31 @@ impl RegistryWatch {
         &mut self,
         memory: &impl engine::Memory,
         base: usize,
-    ) -> Option<crate::country_scale::RaidArenas> {
+    ) -> Result<Option<crate::country_scale::RaidArenas>, &'static str> {
         if self
             .last_raids
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
         {
-            return None;
+            return Ok(None);
         }
         self.last_raids = Some(Instant::now());
-        let demand = crate::country_scale::observe_raid_arenas(memory, base)?;
-        (demand.type_tokens > self.raids.type_tokens
-            || demand.reservation_words > self.raids.reservation_words
-            || demand.path_rows > self.raids.path_rows)
-            .then(|| {
-                self.raids.type_tokens = self.raids.type_tokens.max(demand.type_tokens);
-                self.raids.reservation_words =
-                    self.raids.reservation_words.max(demand.reservation_words);
-                self.raids.path_rows = self.raids.path_rows.max(demand.path_rows);
-                self.raids
-            })
+        let Some(demand) = crate::country_scale::observe_raid_arenas(memory, base)? else {
+            return Ok(None);
+        };
+        let before = self.raids;
+        self.raids = crate::country_scale::RaidArenas {
+            type_tokens: before.type_tokens.max(demand.type_tokens),
+            reservation_words: before.reservation_words.max(demand.reservation_words),
+            path_rows: before.path_rows.max(demand.path_rows),
+            facility_rows: before.facility_rows.max(demand.facility_rows),
+            air_regions: before.air_regions.max(demand.air_regions),
+            counteroperatives: before.counteroperatives.max(demand.counteroperatives),
+            failures: demand.failures,
+        };
+        Ok(
+            (self.raids != before || demand.failures.into_iter().any(|reason| reason.is_some()))
+                .then_some(self.raids),
+        )
     }
 
     /// Larger character or script flag demand than any seen, at most every
@@ -2396,21 +2956,23 @@ impl RegistryWatch {
         &mut self,
         memory: &impl engine::Memory,
         base: usize,
-    ) -> Option<engine::saved_event_targets::Demand> {
+    ) -> Result<Option<engine::saved_event_targets::Demand>, &'static str> {
         if self
             .last_saved_targets
             .is_some_and(|last| last.elapsed() < Self::INTEL_INTERVAL)
         {
-            return None;
+            return Ok(None);
         }
         self.last_saved_targets = Some(Instant::now());
-        let demand = crate::country_scale::observe_saved_targets(memory, base)?;
+        let Some(demand) = crate::country_scale::observe_saved_targets(memory, base)? else {
+            return Ok(None);
+        };
         let raised = self.saved_targets.max(demand);
         if raised == self.saved_targets {
-            return None;
+            return Ok(None);
         }
         self.saved_targets = raised;
-        Some(raised)
+        Ok(Some(raised))
     }
 
     /// Larger political table demand than any seen, at most every
@@ -2432,10 +2994,9 @@ impl RegistryWatch {
         let Some(demand) = crate::country_scale::observe_politics(memory, base)? else {
             return Ok(None);
         };
-        Ok(demand.exceeds(&self.politics).then(|| {
-            self.politics = self.politics.max(demand);
-            self.politics
-        }))
+        let changed = demand.exceeds(&self.politics) || demand.failures().next().is_some();
+        self.politics = self.politics.max(demand);
+        Ok(changed.then_some(self.politics))
     }
 }
 
@@ -2449,6 +3010,7 @@ fn strategic_regions(memory: &impl engine::Memory, base: usize) -> usize {
 struct CombatHints {
     land: Option<engine::cland_combat::DetailDemand>,
     naval: Option<engine::naval_ship_modifier_breakdown::Demand>,
+    failures: [Option<&'static str>; 2],
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -2459,14 +3021,19 @@ struct CombatHintState {
 
 struct SpoolState {
     sizing: crate::country_scale::Sizing,
+    fresh_eta_map: crate::country_scale::FreshEtaMapCache,
+    naval_foreign_scratch: usize,
     applied_combat_hints: [CombatHintState; sampling::BUFFERS],
 }
 
 impl CombatHints {
     fn observe(memory: &impl engine::Memory, base: usize) -> Self {
+        let land = crate::country_scale::observe_land_details(memory, base);
+        let naval = crate::country_scale::observe_naval_breakdowns(memory, base);
         Self {
-            land: crate::country_scale::observe_land_details(memory, base),
-            naval: crate::country_scale::observe_naval_breakdowns(memory, base),
+            failures: [land.as_ref().err().copied(), naval.as_ref().err().copied()],
+            land: land.ok().flatten(),
+            naval: naval.ok().flatten(),
         }
     }
 
@@ -2516,7 +3083,7 @@ fn grow_combat_hints(
         };
         let hint = pending[index];
         if hint.land.is_none() && hint.naval.is_none() {
-            shared.recycle_frame(index);
+            shared.recycle_frame_prepared(index);
             continue;
         }
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -2534,7 +3101,7 @@ fn grow_combat_hints(
             frame.allocated_bytes().saturating_sub(before) as u64,
             Ordering::Relaxed,
         );
-        shared.recycle_frame(index);
+        shared.recycle_frame_prepared(index);
     }
 }
 
@@ -2557,6 +3124,7 @@ fn grow_idle_frames(
         let old_bytes = idle.allocated_bytes() + shared.country_intel.allocated_bytes();
         idle.grow(capacities);
         idle.map.grow(map_capacities);
+        extended_capacities.raise_for_states(capacities[3]);
         idle.extended.grow(extended_capacities);
         let new_bytes = idle.allocated_bytes() + shared.country_intel.allocated_bytes();
         if new_bytes >= old_bytes {
@@ -2568,7 +3136,7 @@ fn grow_idle_frames(
                 .pool_bytes
                 .fetch_sub((old_bytes - new_bytes) as u64, Ordering::Relaxed);
         }
-        shared.recycle_frame(idle_index);
+        shared.recycle_frame_prepared(idle_index);
     }
 }
 
@@ -2618,6 +3186,9 @@ struct SpoolStatus<P, D, W> {
     installation_error: Option<&'static str>,
     status_writer: W,
     combat_sizing_hints: crate::country_scale::CombatHintStatus,
+    clock_misses: u64,
+    clock_advisory_misses: u64,
+    clock_last_failure: Option<&'static str>,
 }
 #[allow(clippy::too_many_arguments)]
 fn spool_status<'a>(
@@ -2635,6 +3206,7 @@ fn spool_status<'a>(
     teardown: TeardownStatus,
 ) -> io::Result<impl serde::Serialize + 'a> {
     let pinned = terminal && teardown.restoration_error.is_some();
+    let (clock_misses, clock_advisory_misses, clock_last_failure) = shared.clock_status();
     Ok(SpoolStatus {
         processor: processor
             .status_with_work(work.status(processor.recorded_hours(), shared.frequency)?)?,
@@ -2660,6 +3232,9 @@ fn spool_status<'a>(
         installation_error: teardown.installation_error,
         status_writer: writer.status(),
         combat_sizing_hints: crate::country_scale::combat_hint_status(),
+        clock_misses,
+        clock_advisory_misses,
+        clock_last_failure,
     })
 }
 
@@ -2699,7 +3274,11 @@ fn spool_loop(
     let mut map_capacities = sizing.map;
     let mut extended_capacities = sizing.extended;
     let live = unsafe { LiveMemory::new() };
-    let mut registry = RegistryWatch::default();
+    let mut registry = RegistryWatch {
+        fresh_eta_map: state.fresh_eta_map,
+        naval_foreign_scratch: state.naval_foreign_scratch,
+        ..Default::default()
+    };
     let mut fuel_demand_at = Instant::now();
     let mut last_warning = None;
     let mut drain_result = Ok(());
@@ -2712,6 +3291,9 @@ fn spool_loop(
         if crate::allocation::failed() {
             return Err("collector allocation failed");
         }
+        shared
+            .prepare_clock_capture(&live)
+            .map_err(|_| "clock preparation allocation failed")?;
         priority.follow(shared.buffers_backlogged());
         while let Some(index) = shared.ready.pop() {
             if crate::allocation::failed() {
@@ -2727,10 +3309,14 @@ fn spool_loop(
             crate::allocation::set_context(crate::allocation::Context {
                 campaign_id: frame
                     .clock
+                    .as_ref()
                     .and_then(|clock| clock.campaign_id.as_bytes().try_into().ok()),
                 branch: None,
-                load_signal: frame.clock.map(|clock| clock.play_session_started_at),
-                failed_hour: frame.clock.map(|clock| clock.hour),
+                load_signal: frame
+                    .clock
+                    .as_ref()
+                    .map(|clock| clock.play_session_started_at),
+                failed_hour: frame.clock.as_ref().map(|clock| clock.hour),
             });
             // The shared CountryIntel buffer grows through whichever frame
             // returns it, so its bytes are part of every growth delta.
@@ -2749,7 +3335,7 @@ fn spool_loop(
                             .map(|loss| loss.count)
                             .sum::<u64>(),
                     );
-                shared.recycle_frame(index);
+                shared.recycle_frame_prepared(index);
                 work.buffer_service
                     .record_ticks(sampling::qpc() - service_started, shared.frequency);
                 continue;
@@ -2839,7 +3425,7 @@ fn spool_loop(
                         crate::event_feed_observer::lost_drain();
                         crate::operation_outcomes::lost_drain();
                         crate::politics_changes::invalidate();
-                        crate::land_events::fail();
+                        crate::land_events::fail("land prepared spool write failed");
                         crate::air_losses::lost_drain();
                         crate::building_bombing::lost_drain();
                         last_warning = Some(error_reason(error, "collector spool I/O failed"));
@@ -2856,7 +3442,7 @@ fn spool_loop(
                     crate::event_feed_observer::lost_drain();
                     crate::operation_outcomes::lost_drain();
                     crate::politics_changes::invalidate();
-                    crate::land_events::fail();
+                    crate::land_events::fail("land frame conversion failed");
                     crate::air_losses::lost_drain();
                     crate::building_bombing::lost_drain();
                     last_warning = Some(error_reason(error, "collector spool I/O failed"));
@@ -2867,7 +3453,7 @@ fn spool_loop(
                 return Err("collector allocation failed");
             }
             if processor.take_retry_full() {
-                shared.force_next.store(true, Ordering::Release);
+                shared.request_retry_full();
             }
             let unpublished = processor.take_unpublished_families();
             if unpublished != 0 {
@@ -2886,6 +3472,7 @@ fn spool_loop(
                 .presize(&live, shared.base);
             frame.grow(&mut capacities);
             frame.map.grow(&mut map_capacities);
+            extended_capacities.raise_for_states(capacities[3]);
             frame.extended.grow(&mut extended_capacities);
             let after_bytes = frame.allocated_bytes() + shared.country_intel.allocated_bytes();
             if after_bytes >= before_bytes {
@@ -2913,7 +3500,7 @@ fn spool_loop(
             if let SeedStatus::Capacity { required_cells } = frame.country_cache_status {
                 shared.offer_country_cache(required_cells);
             }
-            shared.recycle_frame(index);
+            shared.recycle_frame_prepared(index);
             work.buffer_service
                 .record_ticks(sampling::qpc() - service_started, shared.frequency);
             // No reference to the recycled frame survives this point. Complete
@@ -2928,7 +3515,7 @@ fn spool_loop(
                 crate::event_feed_observer::lost_drain();
                 crate::operation_outcomes::lost_drain();
                 crate::politics_changes::invalidate();
-                crate::land_events::fail();
+                crate::land_events::fail("land recycled spool write failed");
                 crate::air_losses::lost_drain();
                 crate::building_bombing::lost_drain();
                 last_warning = Some(error_reason(error, "collector spool I/O failed"));
@@ -2985,6 +3572,7 @@ fn spool_loop(
         extended_capacities.operation_outcomes.prepare();
         crate::experience_gains::prepare(registry.slots);
         crate::line_output::collect();
+        crate::construction_ic::collect();
         crate::fuel_awards::collect();
         if fuel_demand_at.elapsed() >= RegistryWatch::INTEL_INTERVAL {
             fuel_demand_at = Instant::now();
@@ -3050,6 +3638,7 @@ fn spool_loop(
         }
         crate::peace_settlements::presize(extended_capacities.peace_settlements);
         crate::event_feed_observer::presize(crate::country_scale::census_rows(0));
+        crate::directed_war_queries::prepare(crate::country_scale::census_rows(0));
         crate::naval_result_sources::prepare(&live, shared.base);
         let naval_result_capacity = crate::naval_result_sources::capacity();
         if naval_result_capacity > extended_capacities.naval_result_sources {
@@ -3076,6 +3665,18 @@ fn spool_loop(
         // A save load rebuilds the country registry before its first hourly
         // tick; presize every buffer while the game is still loading. Sizing
         // only grows, so a larger region roster alone repeats it harmlessly.
+        if let Ok(bytes) = crate::extended::weather::observe_display_capacity(&live, shared.base)
+            && bytes > extended_capacities.weather.display_bytes
+        {
+            extended_capacities.weather.display_bytes = bytes;
+            decode::presize_weather_jobs();
+            grow_idle_frames(
+                shared,
+                &mut capacities,
+                &mut map_capacities,
+                &mut extended_capacities,
+            );
+        }
         if let Some((slots, regions)) = registry.poll(&live, shared.base) {
             crate::country_scale::note_slots(slots);
             crate::operation_outcomes::resize(slots.max(1));
@@ -3083,7 +3684,12 @@ fn spool_loop(
             crate::politics_changes::resize(
                 crate::country_scale::observe_politics_demand(&live, shared.base, slots)
                     .unwrap_or(slots),
-                engine::politics_sites::lexical_key_demand(&live, shared.base).unwrap_or(0),
+                processor
+                    .observe_input_demand(engine::politics_sites::lexical_key_demand(
+                        &live,
+                        shared.base,
+                    ))
+                    .unwrap_or(0),
             );
             crate::relation_changes::presize(slots);
             crate::history_changes::presize(slots, regions);
@@ -3113,7 +3719,28 @@ fn spool_loop(
                 );
             }
         }
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_ship_strike_metadata(&live, shared.base))
+            .flatten()
+        {
+            let count = demand;
+            let before = extended_capacities;
+            extended_capacities
+                .ship_models
+                .raise_for_strike_metadata(count);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
+            }
+        }
         if reported.elapsed() >= RegistryWatch::INTEL_INTERVAL {
+            if let Err(reason) = crate::construction_ic::presize_from_live(&live, shared.base) {
+                processor.observe_input_demand_error(reason);
+            }
             crate::air_losses::prepare(&live, shared.base, registry.slots);
             crate::building_bombing::prepare(&live, shared.base, registry.slots);
             let before = extended_capacities;
@@ -3124,10 +3751,28 @@ fn spool_loop(
             extended_capacities.building_bombing = extended_capacities
                 .building_bombing
                 .max(crate::building_bombing::capacity());
+            let before_map = map_capacities;
+            let before_core = capacities;
+            match crate::country_scale::source_demand::Demand::observe(&live, shared.base) {
+                Ok(Some(demand)) => demand.apply_parts(&mut capacities, &mut extended_capacities),
+                Ok(None) => {}
+                Err(reason) => processor.observe_input_demand_error(reason),
+            }
+            if let Err(reason) = crate::country_scale::presize_table_inputs(
+                &live,
+                shared.base,
+                &mut map_capacities,
+                &mut extended_capacities,
+            ) {
+                processor.observe_input_demand_error(reason);
+            }
             if let Err(reason) = extended_capacities.presize_live_inputs(&live, shared.base) {
                 processor.observe_input_demand_error(reason);
             }
-            if extended_capacities != before {
+            if extended_capacities != before
+                || map_capacities != before_map
+                || capacities != before_core
+            {
                 grow_idle_frames(
                     shared,
                     &mut capacities,
@@ -3151,7 +3796,10 @@ fn spool_loop(
                 );
             }
         }
-        if let Some(rows) = registry.poll_intel(&live, shared.base) {
+        if let Some(rows) = processor
+            .observe_input_demand(registry.poll_intel(&live, shared.base))
+            .flatten()
+        {
             let before = extended_capacities;
             extended_capacities.raise_for_country_intel(rows);
             if extended_capacities != before {
@@ -3163,81 +3811,139 @@ fn spool_loop(
                 );
             }
         }
-        match registry.poll_ace_names(&live, shared.base) {
-            Ok(Some(demand)) => {
-                let before = extended_capacities;
-                extended_capacities.air.raise_for_names(demand);
-                if extended_capacities != before {
-                    grow_idle_frames(
-                        shared,
-                        &mut capacities,
-                        &mut map_capacities,
-                        &mut extended_capacities,
-                    );
-                }
-            }
-            Ok(None) => {}
-            Err(reason) => {
-                processor.observe_input_demand_error(reason);
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_ace_names(&live, shared.base))
+            .flatten()
+        {
+            let before = extended_capacities;
+            extended_capacities.air.raise_for_names(demand);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
             }
         }
-        match registry.poll_air_wing_names(&live, shared.base) {
-            Ok(Some(bytes)) => {
-                crate::country_scale::note_air_wing_name_bytes(bytes);
-                decode::presize_air_wing_names();
-                let before = map_capacities;
-                map_capacities.raise_for_air_wing_names(bytes);
-                if map_capacities != before {
-                    grow_idle_frames(
-                        shared,
-                        &mut capacities,
-                        &mut map_capacities,
-                        &mut extended_capacities,
-                    );
-                }
-            }
-            Ok(None) => {}
-            Err(reason) => {
-                processor.observe_input_demand_error(reason);
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_air_wing_names(&live, shared.base))
+            .flatten()
+        {
+            let bytes = demand;
+            crate::country_scale::note_air_wing_name_bytes(bytes);
+            decode::presize_air_wing_names();
+            let before = map_capacities;
+            map_capacities.raise_for_air_wing_names(bytes);
+            if map_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
             }
         }
-        match registry.poll_railway_gun_names(&live, shared.base) {
-            Ok(Some(demand)) => {
-                crate::country_scale::note_railway_gun_names(demand);
-                let before = extended_capacities;
-                extended_capacities.railway_guns.raise_for_names(demand);
-                if extended_capacities != before {
-                    grow_idle_frames(
-                        shared,
-                        &mut capacities,
-                        &mut map_capacities,
-                        &mut extended_capacities,
-                    );
-                }
-            }
-            Ok(None) => {}
-            Err(reason) => {
-                processor.observe_input_demand_error(reason);
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_railway_gun_names(&live, shared.base))
+            .flatten()
+        {
+            crate::country_scale::note_railway_gun_names(demand);
+            let before = extended_capacities;
+            extended_capacities.railway_guns.raise_for_names(demand);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
             }
         }
-        match registry.poll_attrition_inputs(&live, shared.base) {
-            Ok(Some(demand)) => {
-                let before = extended_capacities;
-                extended_capacities
-                    .division_presentation
-                    .raise_for_attrition(demand);
-                if extended_capacities != before {
-                    grow_idle_frames(
-                        shared,
-                        &mut capacities,
-                        &mut map_capacities,
-                        &mut extended_capacities,
-                    );
-                }
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_fresh_eta(&live, shared.base))
+            .flatten()
+        {
+            if let Ok(carrier) = demand.carrier
+                && crate::country_scale::note_carrier_demand(carrier)
+            {
+                decode::presize_country_pools();
             }
-            Ok(None) => {}
-            Err(reason) => {
+            for reason in demand.map_refusals() {
                 processor.observe_input_demand_error(reason);
+            }
+            let mut raised = crate::country_scale::Sizing {
+                core: capacities,
+                map: map_capacities,
+                extended: extended_capacities,
+                country_cells: 0,
+                content: engine::cdlc_manager::Counts::default(),
+            };
+            raised
+                .raise_for_fresh_map(&demand)
+                .map_err(|error| error_reason(error, "fresh ETA map sizing failed"))?;
+            if let Err(reason) = raised
+                .extended
+                .country_counters
+                .raise_for_movement(demand.movement)
+            {
+                processor.observe_input_demand_error(reason);
+            }
+            raised
+                .extended
+                .country_counters
+                .raise_for_naval_movement(demand.naval.capacities);
+            raised
+                .extended
+                .country_appearance
+                .raise_for_naval_movement(demand.naval.shared);
+            raised
+                .extended
+                .naval_counters
+                .raise_for_names(demand.naval.name_rows, demand.naval.name_bytes);
+            raised
+                .extended
+                .naval_counters
+                .raise_for_supply_origins(demand.naval.supply_origins);
+            if let Err(reason) = raised
+                .extended
+                .naval_counters
+                .raise_for_port(demand.naval.port)
+            {
+                processor.observe_input_demand_error(reason);
+            }
+            if let Some(reason) = demand.naval.refusal() {
+                processor.observe_input_demand_error(reason);
+            }
+            if raised.core != capacities || raised.extended != extended_capacities {
+                capacities = raised.core;
+                extended_capacities = raised.extended;
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
+            }
+        }
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_attrition_inputs(&live, shared.base))
+            .flatten()
+        {
+            if let Some(reason) = demand.failure {
+                processor.observe_input_demand_error(reason);
+            }
+            let before = extended_capacities;
+            extended_capacities
+                .division_presentation
+                .raise_for_attrition(demand);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
             }
         }
         if extended_capacities.game_score.enabled
@@ -3263,7 +3969,13 @@ fn spool_loop(
                 );
             }
         }
-        if let Some(demand) = registry.poll_raids(&live, shared.base) {
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_raids(&live, shared.base))
+            .flatten()
+        {
+            for reason in demand.failures.into_iter().flatten() {
+                processor.observe_input_demand_error(reason);
+            }
             let before = extended_capacities;
             extended_capacities.raise_for_raid_arenas(demand);
             if extended_capacities != before {
@@ -3275,25 +3987,25 @@ fn spool_loop(
                 );
             }
         }
-        match registry.poll_characters(&live, shared.base) {
-            Ok(Some(demand)) => {
-                let before = extended_capacities;
-                extended_capacities.raise_for_characters(demand);
-                if extended_capacities != before {
-                    grow_idle_frames(
-                        shared,
-                        &mut capacities,
-                        &mut map_capacities,
-                        &mut extended_capacities,
-                    );
-                }
-            }
-            Ok(None) => {}
-            Err(reason) => {
-                processor.observe_input_demand_error(reason);
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_characters(&live, shared.base))
+            .flatten()
+        {
+            let before = extended_capacities;
+            extended_capacities.raise_for_characters(demand);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
             }
         }
-        if let Some(demand) = registry.poll_saved_targets(&live, shared.base) {
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_saved_targets(&live, shared.base))
+            .flatten()
+        {
             let before = extended_capacities;
             extended_capacities.saved_event_targets.raise(demand);
             if extended_capacities != before {
@@ -3305,26 +4017,48 @@ fn spool_loop(
                 );
             }
         }
-        match registry.poll_politics(&live, shared.base) {
-            Ok(Some(demand)) => {
-                let before = extended_capacities;
-                extended_capacities.raise_for_politics(demand);
-                extended_capacities.operation_outcomes.prepare();
-                if extended_capacities != before {
-                    grow_idle_frames(
-                        shared,
-                        &mut capacities,
-                        &mut map_capacities,
-                        &mut extended_capacities,
-                    );
-                }
-            }
-            Ok(None) => {}
-            Err(reason) => {
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_politics(&live, shared.base))
+            .flatten()
+        {
+            for reason in demand.failures() {
                 processor.observe_input_demand_error(reason);
+            }
+            let before = extended_capacities;
+            extended_capacities
+                .country_counters
+                .raise_for_pride_names(demand.pride_name_bytes);
+            extended_capacities.raise_for_politics(demand);
+            extended_capacities.operation_outcomes.prepare();
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
+            }
+        }
+        if let Some(demand) = processor
+            .observe_input_demand(registry.poll_reserved_visibility(&live, shared.base))
+            .flatten()
+        {
+            let slots = demand;
+            let before = extended_capacities;
+            extended_capacities.raise_reserved_visibility(slots);
+            if extended_capacities != before {
+                grow_idle_frames(
+                    shared,
+                    &mut capacities,
+                    &mut map_capacities,
+                    &mut extended_capacities,
+                );
             }
         }
         if let Some(hints) = registry.poll_combat_hints(&live, shared.base) {
+            for reason in hints.failures.into_iter().flatten() {
+                processor.observe_input_demand_error(reason);
+            }
             grow_combat_hints(
                 shared,
                 &extended_capacities,
@@ -3343,7 +4077,7 @@ fn spool_loop(
             crate::event_feed_observer::lost_drain();
             crate::operation_outcomes::lost_drain();
             crate::politics_changes::invalidate();
-            crate::land_events::fail();
+            crate::land_events::fail("land final spool flush failed");
             crate::air_losses::lost_drain();
             crate::building_bombing::lost_drain();
             last_warning = Some(error_reason(error, "collector spool I/O failed"));
@@ -3811,6 +4545,7 @@ mod tests {
             }
         }
         let mut memory = Combats(vec![0; 0x6000]);
+        memory.array(0x1000 + cgame_state::COUNTRIES, 0x5800, 2);
         memory.word(0x2000, combat::VTABLE_RVA as u64);
         memory.word(0x2000 + combat::BODY, combat::BODY_VTABLE_RVA as u64);
         memory.word(
@@ -3962,6 +4697,7 @@ mod tests {
                 requests: usize::MAX,
                 ..Default::default()
             }),
+            failures: [None; 2],
         };
         let stopped = crate::allocation::failed();
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
@@ -3989,6 +4725,7 @@ mod tests {
                 requests: 1,
                 ..Default::default()
             }),
+            failures: [None; 2],
         };
         grow_combat_hints(&shared, &capacities, &valid, &mut applied);
         assert!(
@@ -4014,6 +4751,7 @@ mod tests {
                 requests: 1,
                 ..Default::default()
             }),
+            failures: [None; 2],
         };
         grow_combat_hints(&shared, &capacities, &hints, &mut applied);
         let grown = applied;
@@ -4120,8 +4858,10 @@ mod tests {
             mask: Cell::new(2_047),
         };
         let mut sizing = crate::country_scale::Sizing::for_slots(5_001);
-        assert_eq!(sizing.extended.projects.rows[12], 1_024);
-        let initial = crate::country_scale::observe_raid_arenas(&memory, 0).unwrap();
+        assert_eq!(sizing.extended.projects.rows[12], 0);
+        let initial = crate::country_scale::observe_raid_arenas(&memory, 0)
+            .unwrap()
+            .unwrap();
         assert_eq!(initial.path_rows, 2_048 + 13);
         sizing.extended.raise_for_raid_arenas(initial);
         assert!(sizing.extended.projects.rows[12] >= initial.path_rows);
@@ -4129,22 +4869,24 @@ mod tests {
             raids: initial,
             ..Default::default()
         };
-        assert_eq!(watch.poll_raids(&memory, 0), None);
+        assert_eq!(watch.poll_raids(&memory, 0).unwrap(), Some(initial));
+        // Optional unreadable hints remain reportable on each unthrottled poll.
+        assert!(initial.failures.into_iter().any(|reason| reason.is_some()));
         // Rehash alone grows: tokens and reservations remain unchanged.
         memory.mask.set(8_191);
-        assert_eq!(watch.poll_raids(&memory, 0), None); // throttled
+        assert_eq!(watch.poll_raids(&memory, 0).unwrap(), None); // throttled
         watch.last_raids = None;
-        let demand = watch.poll_raids(&memory, 0).unwrap();
+        let demand = watch.poll_raids(&memory, 0).unwrap().unwrap();
         assert_eq!(demand.path_rows, 8_192 + 15);
         assert_eq!(demand.type_tokens, initial.type_tokens);
         assert_eq!(demand.reservation_words, initial.reservation_words);
         sizing.extended.raise_for_raid_arenas(demand);
         assert!(sizing.extended.projects.rows[12] >= demand.path_rows);
         watch.last_raids = None;
-        assert_eq!(watch.poll_raids(&memory, 0), None);
+        assert_eq!(watch.poll_raids(&memory, 0).unwrap(), Some(demand));
         memory.mask.set(1_023);
         watch.last_raids = None;
-        assert_eq!(watch.poll_raids(&memory, 0), None);
+        assert_eq!(watch.poll_raids(&memory, 0).unwrap(), Some(demand));
         assert_eq!(watch.raids.path_rows, demand.path_rows);
     }
 
@@ -4224,6 +4966,149 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn racing_political_hint_counts_in_completed_status_without_a_session_warning() {
+        use engine::{Memory, ccountry};
+        use std::cell::Cell;
+
+        struct RacingHint {
+            bytes: Vec<u8>,
+            roster_reads: Cell<usize>,
+        }
+        impl Memory for RacingHint {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                if address == cgame_state::SINGLETON_RVA && output.len() == 8 {
+                    output.copy_from_slice(&0x1000_u64.to_le_bytes());
+                    return true;
+                }
+                let Some(source) = address
+                    .checked_add(output.len())
+                    .and_then(|end| self.bytes.get(address..end))
+                else {
+                    return false;
+                };
+                output.copy_from_slice(source);
+                if address == 0x4000 + ccountry::DIVISIONS && output.len() == 16 {
+                    let reads = self.roster_reads.get() + 1;
+                    self.roster_reads.set(reads);
+                    // The count and seed passes see the same empty roster;
+                    // native growth races its final selecting-header check.
+                    if reads >= 3 {
+                        output[8..12].copy_from_slice(&1_u32.to_le_bytes());
+                    }
+                }
+                true
+            }
+        }
+        fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
+            bytes[at..at + value.len()].copy_from_slice(value);
+        }
+        let mut memory = RacingHint {
+            bytes: vec![0; 0x6000],
+            roster_reads: Cell::new(0),
+        };
+        for (field, data) in [
+            (cgame_state::COUNTRIES, 0x3000_u64),
+            (cgame_state::COUNTRY_LINKS, 0x3100),
+            (cgame_state::PROVINCES, 0x3200),
+        ] {
+            put(&mut memory.bytes, 0x1000 + field, &data.to_le_bytes());
+            put(&mut memory.bytes, 0x1000 + field + 8, &2_u32.to_le_bytes());
+            put(&mut memory.bytes, 0x1000 + field + 12, &2_u32.to_le_bytes());
+        }
+        put(&mut memory.bytes, 0x3008, &0x4000_u64.to_le_bytes());
+        put(&mut memory.bytes, 0x3104, &1_u32.to_le_bytes());
+        put(
+            &mut memory.bytes,
+            0x4000,
+            &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut memory.bytes,
+            0x4000 + ccountry::ID,
+            &1_u32.to_le_bytes(),
+        );
+
+        let session = SessionStart {
+            id: 1,
+            process_id: 100,
+            process_start_time: 1000,
+            qpc_frequency: 1,
+            sample_boundary: replay::identity::SampleBoundary::EndOfHour,
+            identity: replay::identity::Identity {
+                game_version: "fixture".into(),
+                exe_hash: [1; 32],
+                exe_size: 1,
+                vanilla_hash: [2; 32],
+                dlc: Vec::new(),
+                mods: Vec::new(),
+                coverage_policy: 1,
+                language: "english".into(),
+                recorder_version: "fixture".into(),
+                collector_hash: [3; 32],
+                verification: replay::identity::Verification::Unchecked,
+            },
+        };
+        let directory = std::env::temp_dir()
+            .join(format!("hoi4-political-hint-status-{}", std::process::id(),));
+        let mut processor =
+            Processor::new(&directory, PreparedCampaigns::default(), session.clone()).unwrap();
+        let mut watch = RegistryWatch::default();
+        assert!(
+            processor
+                .observe_input_demand(watch.poll_attrition_inputs(&memory, 0))
+                .flatten()
+                .is_none()
+        );
+        assert_eq!(memory.roster_reads.get(), 3);
+        assert_eq!(
+            watch.attrition_inputs,
+            engine::attrition_modifier_breakdown::Demand::default(),
+        );
+        // Throttling is not another failure observation.
+        assert!(
+            processor
+                .observe_input_demand(watch.poll_attrition_inputs(&memory, 0))
+                .flatten()
+                .is_none()
+        );
+
+        let shared = Shared::new(0, 0, 1);
+        shared.recording.store(false, Ordering::Release);
+        let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
+        let work = WorkerWork::new();
+        let handle = writer.handle();
+        let status = serde_json::to_value(
+            spool_status(
+                &processor,
+                &shared,
+                &session,
+                &work,
+                &handle,
+                "detached",
+                0,
+                None,
+                None,
+                true,
+                true,
+                TeardownStatus::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["input_demand_errors"], 1);
+        assert_eq!(
+            status["input_demand_last_error"],
+            "attrition demand selecting header changed",
+        );
+        assert_eq!(status["write_errors"], 0);
+        assert_eq!(status["drain_complete"], true);
+        assert!(status.get("warning").is_none());
+        assert!(status.get("error").is_none());
+        drop(writer);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -621,11 +621,9 @@ fn country_groups_faction_names_distinguish_null_template_from_unread_content_an
             .contains("not in the recorded content")
     );
     assert!(names[1].reason.as_ref().unwrap().contains("LexicalTokens"));
-    assert_eq!(
-        names[2].reason.as_deref(),
-        Some("Faction name has no plain display text"),
-    );
-    assert!(names.iter().all(|run| run.name.is_none()));
+    assert_eq!(names[2].name.as_deref(), Some(""));
+    assert_eq!(names[2].reason, None);
+    assert!(names[..2].iter().all(|run| run.name.is_none()));
 }
 
 #[test]
@@ -713,31 +711,31 @@ fn country_groups_faction_names_use_mod_localisation_override() {
 }
 
 #[test]
-fn country_groups_faction_names_keep_empty_bound_and_plain_text_reasons() {
-    let templates =
-        crate::catalogue::tests::loaded_templates("unbound = { } icon = { name = ICON_NAME }");
-    let localisation =
-        crate::catalogue::tests::loaded("l_english:\n ICON_NAME:0 \"\u{a3}missing_icon\"\n");
+fn country_groups_faction_names_keep_known_empty_names_and_plain_text_refusals() {
+    let templates = crate::catalogue::tests::loaded_templates(
+        "unbound={} localised_empty={name=EMPTY_NAME} icon={name=ICON_NAME}",
+    );
+    let localisation = crate::catalogue::tests::loaded(
+        "l_english:\n EMPTY_NAME:0 \"\"\n ICON_NAME:0 \"\u{a3}missing_icon\"\n",
+    );
     let factions = named_factions(
         vec![
             template_frame(100, "", Some((17, "unbound"))),
-            template_frame(101, "", Some((18, "icon"))),
+            template_frame(101, "", Some((18, "localised_empty"))),
+            template_frame(102, "", Some((19, "icon"))),
         ],
         &templates,
         &localisation,
     );
-    assert!(
-        factions[0].names[0]
-            .reason
-            .as_ref()
-            .unwrap()
-            .contains("has no bound name")
-    );
+    assert_eq!(factions[0].names[0].name.as_deref(), Some(""));
+    assert_eq!(factions[0].names[0].reason, None);
+    assert_eq!(factions[0].names[0].first_hour, 100);
+    assert_eq!(factions[0].names[0].last_hour, 101);
     assert_eq!(
         factions[0].names[1].reason.as_deref(),
         Some("Faction name has no plain display text")
     );
-    assert!(factions[0].names.iter().all(|run| run.name.is_none()));
+    assert_eq!(factions[0].names[1].name, None);
 }
 
 #[test]
@@ -1422,27 +1420,73 @@ fn country_groups_faction_literals_refuse_a_different_viewer_language() {
 }
 
 #[test]
-fn country_groups_faction_names_restart_when_the_same_tokens_dictionary_recovers() {
-    let templates = crate::catalogue::tests::loaded_templates("demo = { name = DEMO_NAME }");
+fn country_groups_faction_names_keep_renames_and_dictionary_gaps_separate_from_membership() {
+    let templates = crate::catalogue::tests::loaded_templates("demo={name=DEMO_NAME} empty={}");
     let localisation = crate::catalogue::tests::loaded("l_english:\n DEMO_NAME:0 \"Demo Pact\"\n");
-    let mut missing = template_frame(101, "", Some((17, "demo")));
+    let mut missing = template_frame(103, "", Some((17, "demo")));
     *missing.tables[TableId::LexicalTokens.index()] = TableView::Unavailable {
-        reason: "missing".into(),
+        reason: "missing template dictionary".into(),
     };
-    let factions = named_factions(
-        vec![
-            template_frame(100, "", Some((17, "demo"))),
-            missing,
-            template_frame(102, "", Some((17, "demo"))),
+    let replay = Replay::from_records(
+        CAMPAIGN.into(),
+        &[records(
+            1,
+            vec![
+                template_frame(100, "First Pact", None),
+                template_frame(101, "Renamed Pact", None),
+                template_frame(102, "", Some((17, "demo"))),
+                missing,
+                template_frame(104, "", Some((17, "demo"))),
+                template_frame(105, "", Some((18, "empty"))),
+            ],
+        )],
+    )
+    .unwrap();
+    let scan = super::scan_branch(&replay, 1, &AtomicBool::new(false)).unwrap();
+    let mut refused = crate::catalogue::Refusals::default();
+    let factions = scan.faction_groups(Ok(&templates), &localisation, "english", &mut refused);
+    let faction = &factions[0];
+    let names = &faction.names;
+    assert_eq!(
+        names
+            .iter()
+            .map(|run| (run.first_hour, run.last_hour, run.name.as_deref()))
+            .collect::<Vec<_>>(),
+        [
+            (100, 100, Some("First Pact")),
+            (101, 101, Some("Renamed Pact")),
+            (102, 102, Some("Demo Pact")),
+            (103, 103, None),
+            (104, 104, Some("Demo Pact")),
+            (105, 105, Some("")),
         ],
-        &templates,
-        &localisation,
     );
-    let names = &factions[0].names;
-    assert_eq!(names.len(), 3);
-    assert_eq!(names[0].name.as_deref(), Some("Demo Pact"));
-    assert!(names[1].reason.as_ref().unwrap().contains("LexicalTokens"));
-    assert_eq!(names[2].name.as_deref(), Some("Demo Pact"));
+    let reason = names[3].reason.as_ref().unwrap();
+    assert!(reason.contains("LexicalTokens"));
+    assert!(reason.contains("missing template dictionary"));
+    assert!(
+        names
+            .iter()
+            .enumerate()
+            .all(|(index, run)| index == 3 || run.reason.is_none())
+    );
+    assert_eq!(refused.lines("faction names are").len(), 1);
+    assert_eq!(faction.name.as_deref(), Some(""));
+    assert_eq!(faction.name_reason, None);
+    assert_eq!(
+        faction.members.iter().collect::<Vec<_>>(),
+        [&super::MembershipRun {
+            tag: "GER".into(),
+            first_hour: 100,
+            last_hour: 105,
+        }],
+    );
+    assert_eq!(
+        faction.leaders.iter().collect::<Vec<_>>(),
+        faction.members.iter().collect::<Vec<_>>(),
+    );
+    assert!(faction.incomplete.is_empty());
+    assert!(scan.unobserved().factions.is_empty());
 }
 
 #[test]

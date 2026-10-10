@@ -3,6 +3,7 @@
 use std::io;
 
 use crate::map::frame::{seasonal_direction_raw, seasonal_sine};
+use replay::rows::{Recorded, WeatherProvinceRow};
 
 const SCALE: i64 = 100_000;
 
@@ -29,10 +30,35 @@ impl Defines {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocalClock {
     pub hour: i32,
-    /// Signed i64 fixed5 night factor, clamped 0..100000.
+    /// Signed i64 fixed5 night factor, copied from the native held field.
     pub night: i64,
     /// PROV_TOOLTIP_LOCAL_TIME's FRAME (1424D8760 rounds, then +1).
     pub icon_frame: i32,
+}
+
+/// Native getters 140F04620 / 140F044D0 read the held pair even while weather
+/// simulation is suspended. Only recordings predating both fields derive it.
+pub fn resolve(
+    province: &WeatherProvinceRow,
+    historical: impl FnOnce() -> Result<LocalClock, String>,
+) -> Result<LocalClock, String> {
+    match (province.local_hour, province.night_factor) {
+        (Recorded::Value(hour), Recorded::Value(night)) => Ok(stored(hour, night)),
+        (Recorded::NotRecorded, Recorded::NotRecorded) => historical(),
+        _ => Err("Province local clock/night refused: incomplete recorded pair".into()),
+    }
+}
+
+fn stored(hour: i32, night: i64) -> LocalClock {
+    // 1424D8760 rounds ties away from zero, then 140DEBC90 takes the low
+    // signed i32 result and adds one. Preserve the raw word without clamping.
+    let half = if night < 0 { -50_000 } else { 50_000 };
+    let rounded = night.wrapping_add(half).wrapping_div(SCALE);
+    LocalClock {
+        hour,
+        night,
+        icon_frame: (rounded as i32).wrapping_add(1),
+    }
 }
 
 pub fn derive(
@@ -94,11 +120,7 @@ pub fn derive(
         .clamp(0, SCALE);
     let hour_delta = i64::from(utc) * 10_000_000_000 / 2_400_000;
     let local = (phase.wrapping_add(hour_delta) % SCALE).wrapping_mul(2_400_000);
-    Ok(LocalClock {
-        hour: (local / 10_000_000_000) as i32 + 1,
-        night,
-        icon_frame: ((night + 50_000) / SCALE + 1) as i32,
-    })
+    Ok(stored((local / 10_000_000_000) as i32 + 1, night))
 }
 
 fn longitude_phase(x: i32, width: u32, gmt_offset: i32) -> i64 {

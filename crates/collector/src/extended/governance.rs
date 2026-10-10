@@ -23,6 +23,9 @@ use replay::{
 };
 use std::mem::size_of;
 
+mod demand;
+pub(crate) use demand::status as demand_status;
+
 pub const N: usize = 25;
 
 pub const TABLES: [TableId; N] = [
@@ -94,7 +97,7 @@ pub(crate) struct CaptureReport {
     pub ticks: [u64; N],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capacities {
     rows: [usize; N],
     focus_text: usize,
@@ -118,37 +121,28 @@ pub struct Capacities {
     effect_events: usize,
     dictionary: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: [
-                512, 8192, 32768, 2048, 4096, 512, 2048, 16384, 512, 8192, 4096, 512, 128, 1024,
-                128, 512, 1024, 512, 2048, 4096, 16384, 2048, 0, 0, 0,
-            ],
-            focus_text: 131072,
-            definition_text: 262144,
-            party_text: 32768,
-            idea_text: 262144,
-            timed_idea_text: 0,
-            random_item_text: 0,
-            decision_text: 262144,
-            modifier_text: 131072,
-            modifier_values: 16384,
-            tactic_text: 16384,
-            balance_text: 65536,
-            party_countries: 2048,
-            idea_countries: 16384,
-            decision_countries: 8192,
-            effect_tokens: 128,
-            effect_frames: 128,
-            effect_names: 128,
-            effect_bytes: 4096,
-            effect_events: 128,
-            dictionary: 8192,
-        }
-    }
-}
+
 impl Capacities {
+    #[cfg(test)]
+    pub(super) fn for_test_research(rows: usize) -> Self {
+        let mut capacity = Self::default();
+        for index in RESEARCH {
+            capacity.rows[index] = rows;
+        }
+        capacity
+    }
+
+    /// Off-thread hints from complete live party/modifier headers. Each
+    /// independent family raises storage even if a sibling hint fails.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        demand::presize(self, memory, base, state)
+    }
+
     pub(crate) fn raise_for_effect_inputs(
         &mut self,
         timed: cpolitical_status::IdeaDemand,
@@ -162,19 +156,13 @@ impl Capacities {
     }
 
     /// One row per canonical country for Focus, Politics, DecisionCounts and
-    /// the preferred-tactic table; PoliticalParties (and its country arena)
-    /// one per country and ideology group, ResearchSlots and ResearchInputs
-    /// one per country and research slot. The per-country factors keep the
-    /// defaults' ratios; larger content still grows on demand.
+    /// the preferred-tactic table. Variable rosters and arenas use their
+    /// own live demand, including each country's research slot header.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         for index in [0, 5, 8, 11] {
             raise(&mut self.rows[index], rows(slots, 1));
         }
-        for index in [3, 6, 18] {
-            raise(&mut self.rows[index], rows(slots, 4));
-        }
-        raise(&mut self.party_countries, self.rows[6]);
     }
 
     /// PartyLeaders from the live leader total
@@ -364,26 +352,31 @@ impl ResearchPart {
                             continue;
                         }
                         let input_start = outcomes[0].len();
-                        let (inputs, bonuses) = engine::research_inputs::walk_country(
+                        let (inputs, bonuses) = engine::research_inputs::walk_country_buffer(
                             memory,
                             context.base,
                             country.pointer,
                             country.id,
                             research_context,
-                            &mut self.inputs.rows[outcomes[0].len()..],
-                            &mut self.bonuses.rows[outcomes[1].len()..],
+                            engine::walk::Buffer::Growing(&mut self.inputs.rows)
+                                .suffix(outcomes[0].len()),
+                            engine::walk::Buffer::Growing(&mut self.bonuses.rows)
+                                .suffix(outcomes[1].len()),
                         );
                         if enabled[2] {
                             let modifiers = match inputs {
-                                Outcome::Rows { len } => engine::research_modifiers::walk_country(
-                                    memory,
-                                    context.base,
-                                    &countries,
-                                    country,
-                                    modifier_context,
-                                    &self.inputs.rows[input_start..input_start + len],
-                                    &mut self.modifiers.rows[outcomes[2].len()..],
-                                ),
+                                Outcome::Rows { len } => {
+                                    engine::research_modifiers::walk_country_buffer(
+                                        memory,
+                                        context.base,
+                                        &countries,
+                                        country,
+                                        modifier_context,
+                                        &self.inputs.rows[input_start..input_start + len],
+                                        engine::walk::Buffer::Growing(&mut self.modifiers.rows)
+                                            .suffix(outcomes[2].len()),
+                                    )
+                                }
                                 _ => Outcome::Unavailable {
                                     reason: "research modifier assignments incomplete",
                                 },
@@ -724,8 +717,26 @@ impl Captured {
             + self.ranges.allocated_bytes()
             + self.overrides.allocated_bytes()
             + self.research_bonuses.allocated_bytes()
+            + self
+                .research_bonuses
+                .rows
+                .iter()
+                .map(|row| row.value.name.allocated_bytes())
+                .sum::<usize>()
             + self.research_modifiers.allocated_bytes()
+            + self
+                .research_modifiers
+                .rows
+                .iter()
+                .map(|row| row.name.allocated_bytes())
+                .sum::<usize>()
             + self.research_inputs.allocated_bytes()
+            + self
+                .research_inputs
+                .rows
+                .iter()
+                .map(|row| row.token.allocated_bytes())
+                .sum::<usize>()
             + self.party_leaders.allocated_bytes()
             + self.focus_text.allocated_bytes()
             + self.definition_text.allocated_bytes()
@@ -744,6 +755,18 @@ impl Captured {
             + self.dictionary.capacity() * size_of::<ctechnology_template::Entry>()
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
+        // Worker-grown storage is demand for every recycled frame, including
+        // an empty or failed later capture. Pooled headroom never sizes hooks.
+        capacity.rows[6] = capacity.rows[6].max(self.parties.rows.len());
+        capacity.rows[10] = capacity.rows[10].max(self.modifiers.rows.len());
+        capacity.party_text = capacity.party_text.max(self.party_text.first.len());
+        capacity.modifier_text = capacity.modifier_text.max(self.modifier_text.first.len());
+        capacity.modifier_values = capacity
+            .modifier_values
+            .max(self.modifier_values.first.len());
+        capacity.party_countries = capacity
+            .party_countries
+            .max(self.party_countries.first.len());
         capacity.rows[2] = capacity.rows[2].max(self.technologies.rows.len());
         capacity.rows[4] = capacity.rows[4].max(self.definitions.rows.len());
         self.focus.grow(&mut capacity.rows[0]);
@@ -776,7 +799,7 @@ impl Captured {
         self.research_modifiers.grow(&mut capacity.rows[20]);
         self.party_leaders.grow(&mut capacity.rows[21]);
         self.overrides.grow(&mut capacity.rows[17]);
-        capacity.party_countries = capacity.rows[6];
+        capacity.party_countries = capacity.party_countries.max(capacity.rows[6]);
         capacity.idea_countries = capacity.rows[7];
         capacity.decision_countries = capacity.rows[9];
         self.focus_text.grow(&mut capacity.focus_text);
@@ -992,7 +1015,7 @@ impl Captured {
             let _reads = read_accounting::table(TABLES[index]);
             let started = qpc();
             if index == 23 {
-                let result = cpolitical_status::walk_timed_ideas(
+                let result = cpolitical_status::walk_timed_ideas_growing(
                     memory,
                     base,
                     game_state,
@@ -1003,7 +1026,7 @@ impl Captured {
                 self.timed_idea_text.len = result.bytes_len;
                 self.timed_idea_text.required = result.required_bytes;
             } else {
-                let result = cdecision_status::walk_random_items(
+                let result = cdecision_status::walk_random_items_growing(
                     memory,
                     base,
                     game_state,
@@ -1119,43 +1142,43 @@ fn one<R: Copy>(output: &mut [R], value: R) -> Outcome {
     }
 }
 struct Buffers<'a> {
-    focus: &'a mut [cnational_focus_progress::Row],
-    completed: &'a mut [cnational_focus_progress::CompletedRow],
+    focus: &'a mut Vec<cnational_focus_progress::Row>,
+    completed: &'a mut Vec<cnational_focus_progress::CompletedRow>,
     technologies: &'a mut Vec<ctechnology::Row>,
     technology_pointers: &'a mut Vec<usize>,
-    slots: &'a mut [cresearch_slot::Row],
+    slots: &'a mut Vec<cresearch_slot::Row>,
     definitions: &'a mut Vec<ctechnology_template::Row>,
-    politics: &'a mut [CountryRow<cpolitical_status::Row>],
-    parties: &'a mut [cpolitical_party::Row],
-    ideas: &'a mut [cpolitical_status::IdeaRow],
-    counts: &'a mut [CountryRow<cdecision_status::Counts>],
-    decisions: &'a mut [cdecision_status::Row],
+    politics: &'a mut Vec<CountryRow<cpolitical_status::Row>>,
+    parties: &'a mut Vec<cpolitical_party::Row>,
+    ideas: &'a mut Vec<cpolitical_status::IdeaRow>,
+    counts: &'a mut Vec<CountryRow<cdecision_status::Counts>>,
+    decisions: &'a mut Vec<cdecision_status::Row>,
     effect_tokens: &'a mut Arena<engine::border_effect_demand::Token>,
     effect_frames: &'a mut Arena<engine::border_effect_demand::Frame>,
     effect_names: &'a mut Arena<engine::border_effect_demand::Name>,
     effect_bytes: &'a mut Arena<u8>,
     effect_events: &'a mut Arena<u32>,
-    modifiers: &'a mut [cdynamic_modifier_container::Row],
-    tactics: &'a mut [TacticRow],
-    sharing: &'a mut [ctechnology_sharing_group::Row],
-    sharing_members: &'a mut [ctechnology_sharing_group::MemberRow],
-    balances: &'a mut [power_balance_record::Row],
-    balance_members: &'a mut [power_balance_record::MemberRow],
-    ranges: &'a mut [power_balance_range::Row],
-    overrides: &'a mut [power_balance_gfx_override::Row],
-    party_leaders: &'a mut [cpolitical_party::LeaderRow],
-    focus_text: &'a mut [u8],
+    modifiers: &'a mut Vec<cdynamic_modifier_container::Row>,
+    tactics: &'a mut Vec<TacticRow>,
+    sharing: &'a mut Vec<ctechnology_sharing_group::Row>,
+    sharing_members: &'a mut Vec<ctechnology_sharing_group::MemberRow>,
+    balances: &'a mut Vec<power_balance_record::Row>,
+    balance_members: &'a mut Vec<power_balance_record::MemberRow>,
+    ranges: &'a mut Vec<power_balance_range::Row>,
+    overrides: &'a mut Vec<power_balance_gfx_override::Row>,
+    party_leaders: &'a mut Vec<cpolitical_party::LeaderRow>,
+    focus_text: &'a mut Vec<u8>,
     definition_text: &'a mut Vec<u8>,
-    party_text: &'a mut [u8],
-    idea_text: &'a mut [u8],
-    decision_text: &'a mut [u8],
-    modifier_text: &'a mut [u8],
-    modifier_values: &'a mut [i64],
-    tactic_text: &'a mut [u8],
-    balance_text: &'a mut [u8],
-    party_countries: &'a mut [u32],
-    idea_countries: &'a mut [u32],
-    decision_countries: &'a mut [u32],
+    party_text: &'a mut Vec<u8>,
+    idea_text: &'a mut Vec<u8>,
+    decision_text: &'a mut Vec<u8>,
+    modifier_text: &'a mut Vec<u8>,
+    modifier_values: &'a mut Vec<i64>,
+    tactic_text: &'a mut Vec<u8>,
+    balance_text: &'a mut Vec<u8>,
+    party_countries: &'a mut Vec<u32>,
+    idea_countries: &'a mut Vec<u32>,
+    decision_countries: &'a mut Vec<u32>,
     dictionary: &'a mut Vec<ctechnology_template::Entry>,
     technology_selection: &'a mut SliceSelection,
 }
@@ -1201,7 +1224,7 @@ fn acquire(
     let demand_failure = if enabled[9] {
         let started = qpc();
         let _reads = read_accounting::table(TABLES[9]);
-        let demand = engine::border_effect_demand::walk(
+        let demand = engine::border_effect_demand::walk_growing(
             memory,
             base,
             game_state,
@@ -1223,18 +1246,24 @@ fn acquire(
                 {
                     Some(required) => {
                         b.effect_bytes.required = required;
-                        match engine::border_effect_demand::copy_names(
-                            memory,
-                            tokens,
-                            &mut b.effect_names.first,
-                            &mut b.effect_bytes.first,
-                        ) {
-                            Ok(len) => {
-                                b.effect_names.len = demand.len;
-                                b.effect_bytes.len = len;
-                                None
+                        if !grow_vec(&mut b.effect_names.first, demand.len)
+                            || !grow_vec(&mut b.effect_bytes.first, required)
+                        {
+                            Some("border demand text allocation failed")
+                        } else {
+                            match engine::border_effect_demand::copy_names(
+                                memory,
+                                tokens,
+                                &mut b.effect_names.first,
+                                &mut b.effect_bytes.first,
+                            ) {
+                                Ok(len) => {
+                                    b.effect_names.len = demand.len;
+                                    b.effect_bytes.len = len;
+                                    None
+                                }
+                                Err(reason) => Some(reason),
                             }
-                            Err(reason) => Some(reason),
                         }
                     }
                     None => Some("border demand byte count overflow"),
@@ -1289,6 +1318,24 @@ fn acquire(
                 }
             }
             Ok(countries) => {
+                for index in [0, 5, 8, 11] {
+                    if !enabled[index] {
+                        continue;
+                    }
+                    let required = countries.count() as usize;
+                    let ready = match index {
+                        0 => grow_vec(b.focus, required),
+                        5 => grow_vec(b.politics, required),
+                        8 => grow_vec(b.counts, required),
+                        11 => grow_vec(b.tactics, required),
+                        _ => unreachable!(),
+                    };
+                    if !ready {
+                        o.outcomes[index] = Outcome::Unavailable {
+                            reason: "governance country row allocation failed",
+                        };
+                    }
+                }
                 for slot in 1..countries.count() {
                     let started = qpc();
                     let country = read_accounting::with_table(TABLES[5], || countries.at(slot));
@@ -1317,14 +1364,14 @@ fn acquire(
                         let first = o.outcomes[0].len();
                         let completed = o.outcomes[1].len();
                         let text = o.lens[0];
-                        let result = cnational_focus_progress::walk(
+                        let result = cnational_focus_progress::walk_buffer(
                             memory,
                             base,
                             country.pointer,
                             country.id,
-                            &mut b.focus[first..],
-                            &mut b.completed[completed..],
-                            &mut b.focus_text[text..],
+                            engine::walk::Buffer::Growing(b.focus).suffix(first),
+                            engine::walk::Buffer::Growing(b.completed).suffix(completed),
+                            engine::walk::Buffer::Growing(b.focus_text).suffix(text),
                         );
                         for row in &mut b.focus[first..first + result.outcome.len()] {
                             for span in [&mut row.tree, &mut row.current, &mut row.continuous]
@@ -1370,12 +1417,12 @@ fn acquire(
                         let _reads = read_accounting::table(TABLES[3]);
                         let started = qpc();
                         let first = o.outcomes[3].len();
-                        let result = ctechnology_status::walk_slots(
+                        let result = ctechnology_status::walk_slots_buffer(
                             memory,
                             base,
                             country.pointer,
                             country.id,
-                            &mut b.slots[first..],
+                            engine::walk::Buffer::Growing(b.slots).suffix(first),
                         );
                         append(&mut o.outcomes[3], result);
                         o.ticks[3] += elapsed(started);
@@ -1401,8 +1448,11 @@ fn acquire(
                                     let _reads = read_accounting::table(TABLES[21]);
                                     let leaders = qpc();
                                     let first = o.outcomes[21].len();
-                                    let result = reader
-                                        .party_leaders(country.id, &mut b.party_leaders[first..]);
+                                    let result = reader.party_leaders_buffer(
+                                        country.id,
+                                        engine::walk::Buffer::Growing(b.party_leaders)
+                                            .suffix(first),
+                                    );
                                     append(&mut o.outcomes[21], result);
                                     o.ticks[21] += elapsed(leaders);
                                 }
@@ -1422,11 +1472,14 @@ fn acquire(
                                 append(&mut o.outcomes[5], result);
                                 let first = o.outcomes[6].len();
                                 let text = o.lens[2];
-                                let capacity = b.parties.len().min(b.party_countries.len());
-                                let result = reader.parties(
-                                    &mut b.parties[first..capacity],
-                                    &mut b.party_text[text..],
-                                );
+                                let mut result =
+                                    reader.parties_growing(b.parties, first, b.party_text, text);
+                                if !grow_vec(b.party_countries, first + result.outcome.len()) {
+                                    result.outcome = Outcome::Unavailable {
+                                        reason: "political party country arena allocation failed",
+                                    };
+                                    result.bytes_len = 0;
+                                }
                                 for row in &mut b.parties[first..first + result.outcome.len()] {
                                     row.token_start += text;
                                     row.name_start += text;
@@ -1439,11 +1492,19 @@ fn acquire(
                                 if enabled[7] {
                                     let first = o.outcomes[7].len();
                                     let text = o.lens[3];
-                                    let capacity = b.ideas.len().min(b.idea_countries.len());
-                                    let result = reader.ideas(
-                                        &mut b.ideas[first..capacity],
-                                        &mut b.idea_text[text..],
+                                    let mut result = reader.ideas_buffer(
+                                        engine::walk::Buffer::Growing(b.ideas).suffix(first),
+                                        engine::walk::Buffer::Growing(b.idea_text).suffix(text),
                                     );
+                                    if engine::walk::Buffer::Growing(b.idea_countries)
+                                        .ensure(first + result.outcome.len())
+                                        .is_err()
+                                    {
+                                        result.outcome = Outcome::Unavailable {
+                                            reason: "active idea country arena allocation failed",
+                                        };
+                                        result.bytes_len = 0;
+                                    }
                                     for row in &mut b.ideas[first..first + result.outcome.len()] {
                                         row.token_start += text;
                                     }
@@ -1461,32 +1522,36 @@ fn acquire(
                         let started = qpc();
                         let first = o.outcomes[9].len();
                         let text = o.lens[4];
-                        let capacity = b.decisions.len().min(b.decision_countries.len());
                         let result = match demand_failure {
-                            None => cdecision_status::walk_with_description_demand(
+                            None => cdecision_status::walk_with_description_demand_buffer(
                                 memory,
                                 base,
                                 game_state,
                                 country.pointer,
-                                &mut b.decisions[first..capacity],
-                                &mut b.decision_text[text..],
+                                engine::walk::Buffer::Growing(b.decisions).suffix(first),
+                                engine::walk::Buffer::Growing(b.decision_text).suffix(text),
                                 engine::border_effect_demand::Demand {
                                     names: &b.effect_names.first[..b.effect_names.len],
                                     bytes: &b.effect_bytes.first[..b.effect_bytes.len],
                                 },
                             ),
-                            Some(_) => cdecision_status::walk(
+                            Some(_) => cdecision_status::walk_buffer(
                                 memory,
                                 base,
                                 country.pointer,
-                                &mut b.decisions[first..capacity],
-                                &mut b.decision_text[text..],
+                                engine::walk::Buffer::Growing(b.decisions).suffix(first),
+                                engine::walk::Buffer::Growing(b.decision_text).suffix(text),
                             ),
                         };
-                        for row in &mut b.decisions[first..first + result.outcome.len()] {
-                            row.token_start += text;
+                        let owners_ready =
+                            grow_vec(b.decision_countries, first + result.outcome.len());
+                        if owners_ready {
+                            for row in &mut b.decisions[first..first + result.outcome.len()] {
+                                row.token_start += text;
+                            }
+                            b.decision_countries[first..first + result.outcome.len()]
+                                .fill(country.id);
                         }
-                        b.decision_countries[first..first + result.outcome.len()].fill(country.id);
                         let counts = if let Some(row) = result.counts {
                             let first = o.outcomes[8].len();
                             one(
@@ -1502,7 +1567,16 @@ fn acquire(
                             }
                         };
                         append(&mut o.outcomes[8], counts);
-                        append(&mut o.outcomes[9], result.outcome);
+                        append(
+                            &mut o.outcomes[9],
+                            if owners_ready {
+                                result.outcome
+                            } else {
+                                Outcome::Unavailable {
+                                    reason: "decision owner row allocation failed",
+                                }
+                            },
+                        );
                         o.arena(4, result.bytes_len, result.required_bytes);
                         o.ticks[8] += elapsed(started);
                     }
@@ -1512,14 +1586,17 @@ fn acquire(
                         let first = o.outcomes[10].len();
                         let text = o.lens[5];
                         let values = o.lens[6];
-                        let result = cdynamic_modifier_container::walk(
+                        let result = cdynamic_modifier_container::walk_growing(
                             memory,
                             base,
                             country.pointer,
                             country.id,
-                            &mut b.modifiers[first..],
-                            &mut b.modifier_text[text..],
-                            &mut b.modifier_values[values..],
+                            b.modifiers,
+                            first,
+                            b.modifier_text,
+                            text,
+                            b.modifier_values,
+                            values,
                         );
                         for row in &mut b.modifiers[first..first + result.outcome.len()] {
                             row.token_start += text;
@@ -1534,12 +1611,12 @@ fn acquire(
                         let _reads = read_accounting::table(TABLES[11]);
                         let started = qpc();
                         let text = o.lens[7];
-                        let selected = ccombat_tactic::preferred(
+                        let selected = ccombat_tactic::preferred_buffer(
                             memory,
                             base,
                             country.pointer,
                             country.id,
-                            &mut b.tactic_text[text..],
+                            engine::walk::Buffer::Growing(b.tactic_text).suffix(text),
                         );
                         let result = match selected.outcome {
                             Outcome::Rows { .. } => {
@@ -1596,9 +1673,8 @@ fn acquire(
                     .filter(|entry| entry.copied)
                     .map(|entry| entry.row),
             );
-            // The old direct-index dictionary emitted increasing raw handles.
-            b.definitions
-                .sort_unstable_by_key(|row| row.technology_handle);
+            // 140EBFEF0 identifies templates by their positive database index.
+            b.definitions.sort_unstable_by_key(|row| row.database_index);
             Outcome::Rows { len: count }
         };
         o.outcomes[4] = match (o.outcomes[2], definitions.outcome(), copied) {
@@ -1629,8 +1705,13 @@ fn acquire(
     if enabled[12] {
         let _reads = read_accounting::table(TABLES[12]);
         let started = qpc();
-        let result =
-            ctechnology_sharing_group::walk(memory, base, game_state, b.sharing, b.sharing_members);
+        let result = ctechnology_sharing_group::walk_growing(
+            memory,
+            base,
+            game_state,
+            b.sharing,
+            b.sharing_members,
+        );
         o.outcomes[12] = result.groups;
         o.outcomes[13] = result.members;
         o.ticks[12] += elapsed(started);
@@ -1638,16 +1719,16 @@ fn acquire(
     if enabled[14] {
         let _reads = read_accounting::table(TABLES[14]);
         let started = qpc();
-        let result = power_balance_manager::walk(
+        let result = power_balance_manager::walk_buffer(
             memory,
             base,
             game_state,
-            power_balance_manager::Buffers {
-                records: b.balances,
-                members: b.balance_members,
-                ranges: b.ranges,
-                overrides: b.overrides,
-                text: b.balance_text,
+            power_balance_manager::GrowingBuffers {
+                records: engine::walk::Buffer::Growing(b.balances),
+                members: engine::walk::Buffer::Growing(b.balance_members),
+                ranges: engine::walk::Buffer::Growing(b.ranges),
+                overrides: engine::walk::Buffer::Growing(b.overrides),
+                text: engine::walk::Buffer::Growing(b.balance_text),
             },
         );
         o.outcomes[14] = result.records;
@@ -1763,6 +1844,8 @@ impl Captured {
             |_| true,
             |r| rows::ResearchTechnologyRow {
                 country: r.country,
+                database_index: r.database_index,
+                applied_bonus_count: r.applied_bonus_count,
                 technology_handle: r.technology_handle,
                 classifier: r.classifier,
                 level: r.level,
@@ -1850,6 +1933,7 @@ impl Captured {
                     index: r.index,
                     technology_handle: r.technology_handle,
                     technology_present: r.technology_present,
+                    database_index: rows::Recorded::Value(r.database_index),
                     research_speed_raw: r.research_speed_raw,
                     banked_days_raw: r.banked_days_raw,
                     applied_days_raw: r.applied_days_raw,
@@ -2034,6 +2118,7 @@ impl Captured {
                     index: r.slot.index,
                     technology_handle: r.slot.technology_handle,
                     technology_present: r.slot.technology_present,
+                    database_index: rows::Recorded::Value(r.template_index),
                     token: owned_vec(copy_vec(r.token.as_bytes())),
                     classifier: r.classifier,
                     level: r.level,

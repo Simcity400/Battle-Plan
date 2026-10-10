@@ -25,6 +25,7 @@ mod combat_log_prune;
 mod construction_ic;
 mod country_scale;
 mod decode;
+mod directed_war_queries;
 mod division_census;
 mod division_detail;
 mod equipment_destruction;
@@ -73,6 +74,7 @@ mod spooling;
 mod status;
 mod status_writer;
 mod table_capture;
+mod transport_admission;
 #[cfg(test)]
 mod unit_scale_tests;
 mod watch_registry;

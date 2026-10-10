@@ -782,7 +782,9 @@ impl Renderer<'_, '_, '_> {
                         continue;
                     }
                     let target = slot(raw as u32)?;
-                    if target != caller && world.exists(target)? {
+                    // vf25 1413DE2A0/1413DE500 reads +0x484 before
+                    // vf32 1403A3870 excludes the caller, including aliases.
+                    if world.exists(target)? && target != caller {
                         out.push(Scope::Country(target));
                     }
                 }

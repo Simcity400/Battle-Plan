@@ -188,43 +188,58 @@ pub(super) fn read(items: &[Item], comparison: Comparison) -> io::Result<Saved> 
         && comparison != Comparison::History
         && let Some(countries) = field(items, b"countries")?
     {
-        for country in block(countries)? {
-            if let Some(units) = field(block(&country.value)?, b"units")? {
-                for army in block(units)?
-                    .iter()
-                    .filter(|i| i.key.as_deref() == Some(b"division"))
-                {
-                    let i = block(&army.value)?;
-                    let id = division_handle(i)?;
-                    let mut division = Division {
-                        maximum: Decimal::parse(scalar(required(i, b"max_supply")?)?)?.raw,
-                        // 140C80E00 receives primary+10. Token4CED at 140C810CA
-                        // reads secondary+600 (primary+610), including zero.
-                        // Optional secondary+610 fuel is a different operand.
-                        remaining: Decimal::parse(scalar(required(
-                            i,
-                            b"army_current_supply_ratio",
-                        )?)?)?
+        read_division_countries(block(countries)?.iter(), &mut out)?;
+    }
+    Ok(out)
+}
+
+pub(super) fn read_projected_divisions(
+    document: &save::SaveDocument,
+    frame: &DecodedFrame,
+) -> io::Result<Saved> {
+    let countries = country_emissions::country_items(document, frame)?;
+    let mut out = Saved::default();
+    read_division_countries(countries.into_iter(), &mut out)?;
+    Ok(out)
+}
+
+fn read_division_countries<'a>(
+    countries: impl Iterator<Item = &'a Item>,
+    out: &mut Saved,
+) -> io::Result<()> {
+    for country in countries {
+        if let Some(units) = field(block(&country.value)?, b"units")? {
+            for army in block(units)?
+                .iter()
+                .filter(|i| i.key.as_deref() == Some(b"division"))
+            {
+                let i = block(&army.value)?;
+                let id = division_handle(i)?;
+                let mut division = Division {
+                    maximum: Decimal::parse(scalar(required(i, b"max_supply")?)?)?.raw,
+                    // 140C80E00 receives primary+10. Token4CED at 140C810CA
+                    // reads secondary+600 (primary+610), including zero.
+                    // Optional secondary+610 fuel is a different operand.
+                    remaining: Decimal::parse(scalar(required(i, b"army_current_supply_ratio")?)?)?
                         .raw,
-                        ..Default::default()
-                    };
-                    let manpower = block(required(i, b"army_manpower")?)?;
-                    let values = block(required(manpower, b"army_manpower_value")?)?;
-                    for v in values.iter().filter(|i| i.key.as_deref() == Some(b"value")) {
-                        let v = block(&v.value)?;
-                        division.manpower.push((
-                            scalar(required(v, b"tag")?)?.to_vec(),
-                            number(required(v, b"value")?)?,
-                        ));
-                    }
-                    if out.divisions.insert(id, division).is_some() {
-                        return Err(invalid("duplicate land save division"));
-                    }
+                    ..Default::default()
+                };
+                let manpower = block(required(i, b"army_manpower")?)?;
+                let values = block(required(manpower, b"army_manpower_value")?)?;
+                for v in values.iter().filter(|i| i.key.as_deref() == Some(b"value")) {
+                    let v = block(&v.value)?;
+                    division.manpower.push((
+                        scalar(required(v, b"tag")?)?.to_vec(),
+                        number(required(v, b"value")?)?,
+                    ));
+                }
+                if out.divisions.insert(id, division).is_some() {
+                    return Err(invalid("duplicate land save division"));
                 }
             }
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Compare the same hour's live counters, never a later terminal value with

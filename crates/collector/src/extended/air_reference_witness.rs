@@ -2,7 +2,11 @@
 //! Acquisition keeps each probed handle's result; conversion drops misses and
 //! keeps a base's fields only where the AirBases roster lacks or disagrees.
 
-use engine::{allocation, cair_base, map_air_base_reference::BaseReference, walk::Outcome};
+use engine::{
+    allocation, cair_base,
+    map_air_base_reference::{BaseReference, Host},
+    walk::Outcome,
+};
 use replay::{
     frame::TableView,
     rows::{AirReferenceWitnessRow, tables},
@@ -14,10 +18,39 @@ use crate::spooling::table;
 pub(super) struct BaseWitness {
     pub handle: u64,
     pub base: Option<BaseReference>,
-    /// A stateless base's host task-force owner; None when the host misses
+    /// The base's host task-force owner; None when the host misses
     /// or its task force is null, which the flag marks.
     pub host_owner: Option<u32>,
     pub host_without_task_force: bool,
+}
+
+/// The existing witness rows are the host memo: group by complete raw handle,
+/// retain each successful miss/value for its repeats, and stop on a fault.
+/// Restore base-handle order for the sortie reader even after a failed probe.
+pub(super) fn capture_hosts(
+    witnesses: &mut [BaseWitness],
+    mut read: impl FnMut(u64) -> Result<Host, &'static str>,
+) -> Result<(), &'static str> {
+    witnesses.sort_unstable_by_key(|witness| witness.base.map_or(0, |base| base.host));
+    let result = (|| {
+        let mut previous = 0;
+        let mut host = Host::Unresolved;
+        for witness in witnesses.iter_mut() {
+            let handle = witness.base.map_or(0, |base| base.host);
+            if handle != previous {
+                host = read(handle)?;
+                previous = handle;
+            }
+            witness.host_owner = match host {
+                Host::Owner(owner) => Some(owner),
+                _ => None,
+            };
+            witness.host_without_task_force = host == Host::NoTaskForce;
+        }
+        Ok(())
+    })();
+    witnesses.sort_unstable_by_key(|witness| witness.handle);
+    result
 }
 
 /// `witnesses` are this hour's probes and `outcome` says whether they are
@@ -51,9 +84,10 @@ pub(super) fn table_view(
             .is_some_and(|row| {
                 row.kind == base.kind
                     && row.state == base.state
+                    && row.host == base.host
                     && match base.state {
                         Some(_) => row.province == base.province,
-                        None => row.host == base.host,
+                        None => true,
                     }
             });
         Some(if listed {
@@ -69,7 +103,7 @@ pub(super) fn table_view(
                 base_kind: Some(base.kind),
                 state: base.state,
                 province: base.province,
-                host: base.state.is_none().then_some(base.host),
+                host: Some(base.host),
                 host_owner: witness.host_owner,
                 host_without_task_force: witness.host_without_task_force,
             }
@@ -175,5 +209,83 @@ mod tests {
             table_view(Outcome::Unavailable { reason: "x" }, &witnesses, None),
             TableView::Unavailable { .. }
         ));
+    }
+
+    #[test]
+    fn stateful_host_drift_keeps_the_actual_full_reference_and_owner() {
+        let manager = [cair_base::Row {
+            id: 8,
+            state: Some(4),
+            province: Some(5),
+            host: 7,
+            ..Default::default()
+        }];
+        let witnesses = [BaseWitness {
+            handle: 8,
+            base: Some(BaseReference {
+                state: Some(4),
+                province: Some(5),
+                host: (9_u64 << 32) | 50,
+                ..Default::default()
+            }),
+            host_owner: Some(3),
+            host_without_task_force: false,
+        }];
+        let captured = rows(table_view(
+            Outcome::Rows { len: 1 },
+            &witnesses,
+            Some(&manager),
+        ));
+        assert_eq!(captured[0].base_kind, Some(0));
+        assert_eq!(captured[0].state, Some(4));
+        assert_eq!(captured[0].host, Some((9_u64 << 32) | 50));
+        assert_eq!(captured[0].host_owner, Some(3));
+    }
+
+    #[test]
+    fn host_memo_preserves_full_identity_misses_and_handle_order_for_stateful_bases() {
+        let first = (5_u64 << 32) | 50;
+        let second = (6_u64 << 32) | 50;
+        let witness = |handle, host| BaseWitness {
+            handle,
+            base: Some(BaseReference {
+                host,
+                state: Some(4),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut witnesses = [
+            witness(4, first),
+            witness(2, second),
+            witness(3, first),
+            witness(1, 0),
+        ];
+        let mut reads = Vec::new();
+        capture_hosts(&mut witnesses, |host| {
+            reads.push(host);
+            Ok(if host == first {
+                Host::Unresolved
+            } else {
+                Host::Owner(7)
+            })
+        })
+        .unwrap();
+        assert_eq!(reads, [first, second]);
+        assert_eq!(witnesses.map(|row| row.handle), [1, 2, 3, 4]);
+        assert_eq!(
+            witnesses.map(|row| row.host_owner),
+            [None, Some(7), None, None]
+        );
+        reads.clear();
+        assert_eq!(
+            capture_hosts(&mut witnesses, |host| {
+                reads.push(host);
+                Err("host fault")
+            }),
+            Err("host fault")
+        );
+        assert_eq!(reads, [first], "a failed shared host cannot be retried");
+        assert_eq!(witnesses.map(|row| row.handle), [1, 2, 3, 4]);
     }
 }

@@ -131,6 +131,7 @@ fn format97_appended_fields_are_absent_in_snapshots_and_inserted_deltas() {
     check97(
         TableId::CountryCounterInputs,
         CountryCounterInputRow {
+            forward_visibility: crate::rows::Recorded::Value(None),
             country: 5000,
             owned_state_count: 3,
             controlled_state_count: 2,
@@ -160,6 +161,7 @@ fn format97_appended_fields_are_absent_in_snapshots_and_inserted_deltas() {
 #[test]
 fn format97_baseline_updates_use_original_mask_width_and_keep_appended_fields_absent() {
     let previous = CountryCounterInputRow {
+        forward_visibility: crate::rows::Recorded::Value(None),
         country: 5000,
         pride_of_the_fleet: u64::MAX,
         owned_state_count: 3,
@@ -190,7 +192,10 @@ fn format97_baseline_updates_use_original_mask_width_and_keep_appended_fields_ab
     };
     assert!(next.delta(Some(&previous)).is_err());
     assert_eq!(delta.mask, 0b1010);
-    assert_eq!(TableId::CountryCounterInputs.mask_width(), 2);
+    assert_eq!(
+        TableId::CountryCounterInputs.mask_width(),
+        CountryCounterInputRow::SCHEMA.len().div_ceil(8)
+    );
     let mut bytes = Vec::new();
     TableId::CountryCounterInputs
         .encode_key(delta.key, 0, &mut bytes)
@@ -337,6 +342,7 @@ fn format98_operands_preserve_bytes_order_and_independent_changed_fields() {
 fn format98_country_lists_and_lean_available_advisors_round_trip_at_5000_countries() {
     let countries = (1..=5000)
         .map(|country| CountryCounterInputRow {
+            forward_visibility: crate::rows::Recorded::Value(None),
             country,
             owned_state_count: 3,
             controlled_state_count: 2,
@@ -671,6 +677,7 @@ fn format97_border_width_and_nested_minimum_keep_following_inputs_aligned() {
 #[test]
 fn format98_optional_empty_inputs_remain_distinct_from_absent_inputs() {
     let old = CountryCounterInputRow {
+        forward_visibility: crate::rows::Recorded::Value(None),
         country: 5000,
         ..Default::default()
     };

@@ -2,7 +2,7 @@
 //! observers never call a game function to obtain a rate. Assembly is off-thread.
 use crate::{
     politics_changes::{self as hooks, Drained, Event, Kind},
-    table_capture::{grow_capacity, grow_vec},
+    table_capture::grow_capacity,
 };
 use engine::{allocation, politics_sites::BalanceSnapshot, walk::Outcome};
 use replay::{
@@ -69,7 +69,7 @@ impl Captured {
             balances: Vec::new(),
             drained: None,
             handoff: None,
-            cursors: allocation::owned_vec(allocation::default_vec(hooks::thread_slots())),
+            cursors: Vec::new(),
             census: Outcome::Unavailable { reason: ASSEMBLED },
         }
     }
@@ -80,7 +80,7 @@ impl Captured {
             balances: allocation::default_vec(capacity.countries)?,
             drained: None,
             handoff: None,
-            cursors: allocation::default_vec(hooks::thread_slots())?,
+            cursors: Vec::new(),
             census: Outcome::Unavailable { reason: ASSEMBLED },
         })
     }
@@ -106,7 +106,6 @@ impl Captured {
                 len.saturating_add(unread_rows as usize),
             );
         }
-        grow_vec(&mut self.cursors, hooks::thread_slots());
         hooks::resize(capacity.entries, 0);
     }
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -115,12 +114,23 @@ impl Captured {
     pub fn tables(&self) -> [TableView; N] {
         std::array::from_fn(|_| unavailable(ASSEMBLED))
     }
-    /// Game thread only: a constant-size ring-index handoff. The existing
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities::default())
+    }
+    pub(crate) fn fail(&mut self, reason: &'static str) {
+        hooks::invalidate();
+        self.handoff = Some(Err(reason));
+    }
+    /// Worker lane-index handoff. The existing
     /// Countries acquisition owns the endpoint reads; spool owns the census.
-    pub fn capture(&mut self) -> u64 {
+    pub(crate) fn capture_growing(&mut self) -> u64 {
         let started = crate::sampling::qpc();
-        self.handoff = Some(hooks::handoff(&mut self.cursors));
+        self.handoff = Some(hooks::handoff_growing(&mut self.cursors));
         crate::sampling::qpc().saturating_sub(started).max(0) as u64
+    }
+    #[cfg(test)]
+    pub fn capture(&mut self) -> u64 {
+        self.capture_growing()
     }
 }
 fn unavailable(reason: &str) -> TableView {

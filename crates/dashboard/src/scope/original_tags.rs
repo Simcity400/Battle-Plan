@@ -68,6 +68,17 @@ impl OriginalTagLists {
             })
     }
 
+    /// Actual reserved country +0x290: native null is None, not a missing read.
+    pub(crate) fn reserved_faction(&self) -> Result<Option<u64>, String> {
+        self.row()?
+            .faction
+            .require("ReservedCountryNaming.faction")?
+            .ok_or_else(|| {
+                "ReservedCountryNaming.faction capture refused (CDiplomacyStatus+0x290)".into()
+            })
+            .map(|faction| (faction != 0).then_some(faction))
+    }
+
     /// Physical CGameState country-array order, including aliases and zero.
     pub fn country_array(&self) -> Result<&[u32], String> {
         self.row()?

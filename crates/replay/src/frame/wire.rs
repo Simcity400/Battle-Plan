@@ -52,6 +52,12 @@ impl Frame {
                     TableUpdate::Snapshot(rows) => 1 + rows.recorded_rows_bytes()?,
                     TableUpdate::Truncated { rows, .. } => 5 + rows.recorded_rows_bytes()?,
                     TableUpdate::Unavailable { reason } => 5 + reason.len(),
+                    TableUpdate::Incompatible {
+                        source_format,
+                        recorded_bytes,
+                        ..
+                    } if *source_format == format => *recorded_bytes,
+                    TableUpdate::Incompatible { reason, .. } => 5 + reason.len(),
                     TableUpdate::Unchanged { .. } => 5,
                     TableUpdate::Delta {
                         changed, deleted, ..
@@ -113,7 +119,9 @@ impl Frame {
             if self.keyframe
                 && !matches!(
                     update,
-                    TableUpdate::Snapshot(_) | TableUpdate::Unavailable { .. }
+                    TableUpdate::Snapshot(_)
+                        | TableUpdate::Unavailable { .. }
+                        | TableUpdate::Incompatible { .. }
                 )
             {
                 return Err(invalid("keyframe contains a dependent or partial table"));
@@ -157,7 +165,7 @@ impl Frame {
                     out.extend_from_slice(&missing.to_le_bytes());
                     encode_rows(table, rows, out)?;
                 }
-                TableUpdate::Unavailable { reason } => {
+                TableUpdate::Unavailable { reason } | TableUpdate::Incompatible { reason, .. } => {
                     if reason.is_empty() {
                         return Err(invalid("unavailable table needs a reason"));
                     }
@@ -226,6 +234,7 @@ impl Frame {
                 continue;
             }
             input.recorded_fields = change.fields(table, format.version());
+            let update_start = input.remaining();
             let status = input.u8()?;
             if let Some(reason) = gap {
                 if keyframe && status != 0 && status != 4 {
@@ -254,7 +263,11 @@ impl Frame {
                     }
                     _ => return Err(invalid("unknown table status")),
                 }
-                tables.push(TableUpdate::Unavailable { reason });
+                tables.push(TableUpdate::Incompatible {
+                    reason,
+                    source_format: format,
+                    recorded_bytes: update_start - input.remaining(),
+                });
                 continue;
             }
             let update = match status {

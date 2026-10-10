@@ -1219,6 +1219,7 @@ fn rejects_unreadable_sources_bad_identity_and_doctrine_cycles() {
         assert!(maximum_organisation(&f, IMAGE, SHIP).is_err());
     }
     let mut f = fixture();
+    f.word(TASK + 0x648, 1);
     f.word(0x8000, 0x8100);
     f.word(0x8100, 0x8100);
     f.word(0x8110, 0x8100);
@@ -1226,5 +1227,60 @@ fn rejects_unreadable_sources_bad_identity_and_doctrine_cycles() {
     assert_eq!(
         maximum_organisation(&f, IMAGE, SHIP),
         Err("ship organisation doctrine traversal bound exceeded")
+    );
+}
+
+mod strike;
+
+#[test]
+fn organisation_arrays_use_original_counts_above_former_limits() {
+    let mut f = fixture();
+    f.array(SHIP + 0x918, 0x22000, 4_097);
+    // Repeated native effects are meaningful occurrences, even if all zero.
+    f.modifier(0x7400 + 0x98, 0, &[]);
+    for index in 0..4_097 {
+        f.word(0x22000 + index * 16, 0x7400);
+        f.dword(0x22008 + index * 16, 1);
+    }
+    let expected = maximum_organisation(&f, IMAGE, SHIP).unwrap();
+    f.array(TASK + 0x728, 0x40000, 4_097);
+    f.word(0x12140, 0);
+    for index in 0..4_097 {
+        f.word(0x40000 + index * 8, 0x12100);
+    }
+    assert_eq!(maximum_organisation(&f, IMAGE, SHIP), Ok(expected));
+    let mut weather = weather_fixture();
+    weather.array(WEATHER + 0x40, 0x29000, 65_537);
+    weather.array(WEATHER + 0x370, 0x2a000, 65_537);
+    // The native getters select a single region/province within the live arrays.
+    assert!(maximum_organisation(&weather, IMAGE, SHIP).is_ok());
+}
+
+#[test]
+fn organisation_doctrine_uses_native_map_size_and_deep_successors() {
+    let mut f = fixture();
+    const COUNT: usize = 4_097;
+    const NODES: usize = 0x50000;
+    const HEAD: usize = 0x8000;
+    f.word(TASK + 0x648, COUNT as u64);
+    f.word(HEAD, NODES as u64);
+    for index in 0..COUNT {
+        let at = NODES + index * 0x40;
+        f.word(at, HEAD as u64);
+        f.word(at + 8, if index == 0 { HEAD } else { at - 0x40 } as u64);
+        f.word(
+            at + 0x10,
+            if index + 1 == COUNT { HEAD } else { at + 0x40 } as u64,
+        );
+        f.put(at + 0x19, &[0]);
+        f.dword(at + 0x20, index as u32);
+        f.word(at + 0x30, 0x7800);
+    }
+    f.modifier(0x7810, 0, &[]);
+    assert!(maximum_organisation(&f, IMAGE, SHIP).is_ok());
+    f.word(TASK + 0x648, COUNT as u64 - 1);
+    assert_eq!(
+        maximum_organisation(&f, IMAGE, SHIP),
+        Err("ship organisation doctrine size mismatch")
     );
 }

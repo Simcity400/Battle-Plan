@@ -38,6 +38,30 @@ fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) ->
         if provinces.insert(row.id, row).is_some() {
             return Err(invalid("duplicate native weather province id"));
         }
+        report.recorded(
+            &row.local_hour,
+            "WeatherProvinces.local_hour",
+            format!("weather province {}.local_hour", row.id),
+        );
+        report.recorded(
+            &row.night_factor,
+            "WeatherProvinces.night_factor",
+            format!("weather province {}.night_factor", row.id),
+        );
+        if row.id == 0
+            && report
+                .recorded(
+                    &row.display,
+                    "WeatherProvinces.display",
+                    "weather display boundary",
+                )
+                .is_some_and(Option::is_none)
+        {
+            report.limitation(
+                "WeatherProvinces.display unavailable",
+                "1 live snow/mud boundary acquisition refused",
+            );
+        }
     }
     for (ordinal, &id) in provinces.keys().enumerate() {
         dense_slot(ordinal, id, "captured weather provinces")?;
@@ -101,6 +125,14 @@ fn compare_provinces(frame: &DecodedFrame, saved: &Save, report: &mut Report) ->
     report.limitation(
         "the manager serializer F0D8E0 omits the display byte arrays +0x310/+0x328; a load rebuilds them from the passes",
         "WeatherProvinces.display_snow, display_mud: census only",
+    );
+    report.limitation(
+        "the manager serializer F0D8E0 omits the stored day/night array +0x370; these simulation values require a matched native read witness",
+        "WeatherProvinces.local_hour, night_factor: census only",
+    );
+    report.limitation(
+        "the manager serializer 140F0D8E0 omits the graphics grid +388/+390, refresh interval +300 and refresh identity +340; retained boundary and local fade require matched native graphics witnesses",
+        "WeatherProvinces.display: runtime-only; no text-save equality claim",
     );
     Ok(())
 }

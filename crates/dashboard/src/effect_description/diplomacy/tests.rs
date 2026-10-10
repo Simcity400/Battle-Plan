@@ -5,6 +5,207 @@ use EventObject::{Country as C, State as S};
 use replay::{frame::TableView, rows::*};
 
 #[test]
+fn faction_preview_keeps_known_empty_names_in_named_removal_and_join_branches() {
+    let mut fixture = Fixture::new();
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "common/defines/test.lua",
+            "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+        ),
+        (
+            "common/factions/templates/test.txt",
+            "unbound={} localised_empty={name=EMPTY_NAME}",
+        ),
+        (
+            "localisation/test_l_english.yml",
+            concat!(
+                "\u{feff}l_english:\n BBB:0 \"Beta\"\n CCC:0 \"Gamma\"\n EMPTY_NAME:0 \"\"\n",
+                " EFFECT_REMOVE_FROM_FACTION_NAME:0 \"Leave $COUNTRY$/$FACTION$\"\n",
+                " EFFECT_ADD_TO_FACTION_NAME:0 \"Join $COUNTRY$/$FACTION$\"\n",
+            ),
+        ),
+    ]);
+    fixture.catalogue = catalogue;
+    fixture
+        .catalogue
+        .scripted_content()
+        .unwrap()
+        .set_synthetic_environment(Default::default());
+    *fixture.frame.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(vec![
+            FactionMemberRow {
+                country: 100,
+                faction: 4,
+                ordinal: 0,
+            },
+            FactionMemberRow {
+                country: 200,
+                faction: 5,
+                ordinal: 0,
+            },
+        ]));
+    let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    rows[1].subjects = vec![300].into();
+    *fixture.frame.tables[TableId::LexicalTokens.index()] =
+        TableView::Complete(TableRows::LexicalTokens(vec![
+            LexicalTokenRow {
+                token: 17,
+                literal: b"unbound".to_vec(),
+            },
+            LexicalTokenRow {
+                token: 18,
+                literal: b"localised_empty".to_vec(),
+            },
+        ]));
+    // 1404AC450 keeps the named branches even when 140D77360 returns empty.
+    for template_token in [None, Some(17), Some(18)] {
+        *fixture.frame.tables[TableId::Factions.index()] =
+            TableView::Complete(TableRows::Factions(
+                [4, 5]
+                    .into_iter()
+                    .map(|id| FactionRow {
+                        id,
+                        template_token,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ));
+        let mut graph = EventScopes::new(vec![EventScope::of(C(1))]);
+        let out = fixture.render("add_to_faction=BBB", &mut graph, Content::default());
+        assert_eq!(
+            out.text, "Leave Beta/\nLeave Gamma/\nJoin Beta/\nJoin Gamma/\n",
+            "{template_token:?}: {:?}",
+            out.refusals,
+        );
+        assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+    }
+}
+
+#[test]
+fn same_faction_nonleader_preview_reads_only_reached_subject_operands() {
+    let mut fixture = Fixture::new();
+    *fixture.frame.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(vec![
+            FactionMemberRow {
+                country: 200,
+                faction: 4,
+                ordinal: 0,
+            },
+            FactionMemberRow {
+                country: 100,
+                faction: 4,
+                ordinal: 1,
+            },
+        ]));
+    let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    rows[1].subjects = Recorded::NotRecorded;
+    let mut graph = EventScopes::new(vec![EventScope::of(C(1))]);
+    let out = fixture.render("add_to_faction=BBB", &mut graph, Content::default());
+    assert_eq!(out.text, "");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+
+    // 1404AC450 can still describe the target's outside-faction overlord,
+    // independently of the unreached removal/join subject loops.
+    let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    rows[1].overlord = 300;
+    let out = fixture.render("add_to_faction=BBB", &mut graph, Content::default());
+    assert_eq!(out.text, "Free Beta/gamma\n");
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+}
+
+#[test]
+fn reached_faction_subject_loops_keep_order_aliases_and_refusals() {
+    let mut fixture = Fixture::new();
+    let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    rows[1].subjects = vec![301, 100, 300, 301].into();
+    let TableView::Complete(TableRows::CountryLinks(links)) =
+        &mut *fixture.frame.tables[TableId::CountryLinks.index()]
+    else {
+        unreachable!()
+    };
+    links.push(CountryLinkRow {
+        id: 301,
+        canonical_slot: 3,
+    });
+    let mut graph = EventScopes::new(vec![EventScope::of(C(1))]);
+    let out = fixture.render("add_to_faction=BBB", &mut graph, Content::default());
+    assert_eq!(
+        out.text,
+        "Join Beta\nJoin Gamma\nJoin Alpha\nJoin Gamma\nJoin Gamma\n"
+    );
+    assert!(out.refusals.is_empty(), "{:?}", out.refusals);
+
+    // A different-faction removal still requires the roster even though
+    // the source is a nonleader and therefore emits no join descriptions.
+    *fixture.frame.tables[TableId::Factions.index()] =
+        TableView::Complete(TableRows::Factions(vec![
+            FactionRow {
+                id: 4,
+                name: b"Union".to_vec(),
+                ..Default::default()
+            },
+            FactionRow {
+                id: 5,
+                name: b"Other".to_vec(),
+                ..Default::default()
+            },
+        ]));
+    *fixture.frame.tables[TableId::FactionMembers.index()] =
+        TableView::Complete(TableRows::FactionMembers(vec![
+            FactionMemberRow {
+                country: 300,
+                faction: 4,
+                ordinal: 0,
+            },
+            FactionMemberRow {
+                country: 100,
+                faction: 4,
+                ordinal: 1,
+            },
+            FactionMemberRow {
+                country: 200,
+                faction: 5,
+                ordinal: 0,
+            },
+        ]));
+    let TableView::Complete(TableRows::CountryAppearance(rows)) =
+        &mut *fixture.frame.tables[TableId::CountryAppearance.index()]
+    else {
+        unreachable!()
+    };
+    rows[1].subjects = Recorded::NotRecorded;
+    let out = fixture.render("add_to_faction=BBB", &mut graph, Content::default());
+    assert!(out.text.is_empty());
+    assert_eq!(
+        out.refusals.values().sum::<usize>(),
+        1,
+        "{:?}",
+        out.refusals
+    );
+    assert!(
+        out.refusals
+            .keys()
+            .all(|why| why.contains("CountryAppearance.subjects not recorded"))
+    );
+}
+
+#[test]
 fn create_wargoal_uses_owned_type_recipient_subjects_and_claim_subset() {
     let mut fixture = Fixture::new();
     let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[

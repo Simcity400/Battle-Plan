@@ -93,6 +93,21 @@ fn game_score_country_counts_preserve_5000_countries_signed_values_and_fleet_occ
             slot_zero_refusal: None
         }
     );
+    let mut growing_countries = Vec::new();
+    let mut growing_fleets = Vec::new();
+    let first = walk_country_inputs_growing(
+        &SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        },
+        0,
+        GS,
+        &mut growing_countries,
+        &mut growing_fleets,
+    );
+    assert_eq!(first, result);
+    assert_eq!(&growing_countries[..N], countries.as_slice());
+    assert_eq!(&growing_fleets[..N * 3], fleets.as_slice());
     for (index, row) in countries.iter().enumerate() {
         assert_eq!(
             (row.country, row.army_count, row.navy_count, row.land_count),
@@ -691,4 +706,53 @@ fn game_score_multiplier_failures_do_not_hide_other_native_globals() {
     let partial = read_multipliers(&MissingArmy(&bytes), 0);
     assert!(partial.army_raw.is_err());
     assert_eq!((partial.total_raw, partial.land_raw), (Ok(-2), Ok(3)));
+}
+
+#[test]
+fn first_score_air_sites_grow_from_original_headers_for_mod_sized_lists() {
+    let mut rows = Vec::new();
+    for count in [5000_usize, 20000] {
+        let mut bytes = vec![0; 0x5000 + count * 8];
+        array(
+            &mut bytes,
+            0x100 + cstrategic_air::FIRST_AIR_SITES,
+            0x5000,
+            count,
+        );
+        u64_at(&mut bytes, 0x1000, cair_base::VTABLE_RVA as u64);
+        u64_at(&mut bytes, 0x1008, 65);
+        i32_at(&mut bytes, 0x1000 + cair_base::COUNTRY_CONTAINERS_COUNT, 1);
+        for index in 0..count {
+            u64_at(&mut bytes, 0x5000 + index * 8, 0x1000);
+        }
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            read_first_sites(&memory, 0, 1, Some(0x100), &mut []).state,
+            AirState::Unknown
+        );
+        let captured = read_first_sites_buffer(
+            &memory,
+            0,
+            1,
+            Some(0x100),
+            crate::walk::Buffer::Growing(&mut rows),
+        );
+        assert_eq!(
+            captured,
+            AirRead {
+                state: AirState::Present,
+                error: "",
+                len: count,
+                required: count
+            }
+        );
+        assert!(
+            rows[..count]
+                .iter()
+                .all(|row| row.base == 65 && row.access == Ok(false))
+        );
+    }
 }

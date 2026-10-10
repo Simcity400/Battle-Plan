@@ -16,6 +16,7 @@ base64 = "0.22.1"
 png.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 rfd.workspace = true
+shader-pipeline = { path = "../shader-pipeline" }
 
 [[bin]]
 name = "export-types"

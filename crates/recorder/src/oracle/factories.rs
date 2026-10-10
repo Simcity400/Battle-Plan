@@ -3,6 +3,7 @@
 //! and a load recalculates them. What it writes are their inputs, so the one
 //! comparison is each group's building levels: the levels of the saved state
 //! buildings the country controls and of its saved offsite buildings whose
+//! state writer omits control, captured control supplies that invariant input.
 //!
 //! The stored levels are those of the last recalculation. A country whose
 //! save shows one pending (production `dirty`, or `refresh` bit 1 or 9, which
@@ -16,7 +17,7 @@ use std::{
 
 use installed_content::{
     buildings::Buildings,
-    save::{PartialMapMembership, Save},
+    save::{PartialMapMembership, Save, StateControlEmission},
 };
 use replay::{
     frame::DecodedFrame,
@@ -45,12 +46,58 @@ pub(super) fn compare(
             return Err(invalid("duplicate resolved country in factory table"));
         }
     }
-    // Membership supplies the kept state IDs; every sum input is saved.
-    let control = saved.known_state_control(membership)?;
-    let controllers = control
-        .iter()
-        .map(|state| (state.id, state.controller.as_slice()))
-        .collect::<BTreeMap<_, _>>();
+    let control = saved.state_control_emissions(membership)?;
+    let states = complete::<tables::States>(frame).ok();
+    let captured = states.map(|rows| {
+        rows.iter()
+            .map(|row| (row.id, row))
+            .collect::<BTreeMap<_, _>>()
+    });
+    if states
+        .zip(captured.as_ref())
+        .is_some_and(|(rows, map)| rows.len() != map.len())
+    {
+        return Err(invalid("duplicate state row in factory inputs"));
+    }
+    let mut controllers = BTreeMap::new();
+    let mut unsaved_controls = 0;
+    let building_states: BTreeSet<_> = saved
+        .construction
+        .state_buildings
+        .keys()
+        .map(|(id, _)| *id)
+        .collect();
+    for state in &control {
+        match state {
+            StateControlEmission::Positive(state) => {
+                controllers.insert(state.id, Some(state.controller.as_slice()));
+            }
+            StateControlEmission::NonPositiveOwner { id } => {
+                if !building_states.contains(id) {
+                    continue;
+                }
+                // 1409D4040 omits this state's controller too. 140E4FC10 sums
+                // the controlled-state roster; 1409D0BF0 adds only positive
+                // controllers. Use captured control as an invariant input,
+                // never assign null-controlled buildings to a saved country.
+                let row = captured
+                    .as_ref()
+                    .and_then(|rows| rows.get(id))
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "unowned state {id} has no captured controller for factory inputs"
+                        ))
+                    })?;
+                let controller = if (row.controller as i32) > 0 {
+                    Some(required_country_tag(row.controller, links)?)
+                } else {
+                    None
+                };
+                controllers.insert(*id, controller);
+                unsaved_controls += 1;
+            }
+        }
+    }
     // [military, naval, civilian] levels by country, and the countries a type
     // with ambiguous flags reaches.
     let mut expected = BTreeMap::<&[u8], [i64; 3]>::new();
@@ -75,7 +122,7 @@ pub(super) fn compare(
                 .construction
                 .country_buildings
                 .iter()
-                .map(|((country, _), building)| Ok((country.as_slice(), building))),
+                .map(|((country, _), building)| Ok((Some(country.as_slice()), building))),
         );
     for entry in placed {
         let (country, building) = entry?;
@@ -85,6 +132,9 @@ pub(super) fn compare(
                 "saved building type {name} is not declared in the content"
             ))
         })?;
+        let Some(country) = country else {
+            continue;
+        };
         if content.ambiguous_factory_types.contains(name.as_ref()) {
             ambiguous.insert(country);
         }
@@ -105,7 +155,7 @@ pub(super) fn compare(
         .as_ref()
         .ok_or_else(|| invalid("save lacks the production countries"))?;
     let (mut count, mut pending, mut refused) = (0, 0, 0);
-    for (tag, country) in &saved.countries {
+    for (tag, country) in report.canonical_countries(&saved.countries) {
         let text = String::from_utf8_lossy(tag);
         let label = format!("{text}.factories");
         let actual = actual.remove(tag.as_slice());
@@ -156,6 +206,12 @@ pub(super) fn compare(
         );
     }
     report.compared("CountryFactories", count);
+    if unsaved_controls > 0 {
+        report.limitation(
+            "a nonpositive-owner state's controller is omitted by 1409D4040; its captured signed-positive control is an input to the saved-building-level invariant, not an independently saved controller comparison",
+            format!("CountryFactories: {unsaved_controls} nonpositive-owner states"),
+        );
+    }
     report.limitation(
         "the save writes neither the stored group-head levels nor the other factory totals (CProductionStatus::Serialize 140E5D3B0 omits them; RecalculateFactoryTotals 140E57F10 rebuilds them); levels are compared only with saved building inputs: totals, controlled, owned and damaged factories (state output factors and country modifiers are not saved), assigned and withheld factories, subject and other-country transfers, licence and trade exports and each civilian consumer's allocation, consumer goods included, are not compared",
         "CountryFactories",

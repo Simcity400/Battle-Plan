@@ -152,6 +152,7 @@ mod tests {
             defined: [1].into(),
             land: [1].into(),
             lake: Default::default(),
+            nonsea_indices: [(1, 0)].into(),
         };
         let mut checks = 0;
         let error = ProvinceAreas::from_map_checked(map, &mut || {

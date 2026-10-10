@@ -1,0 +1,233 @@
+use super::*;
+use crate::map::{
+    borders::{BorderClass, BorderMesh, BorderMeshes},
+    demilitarized::Zone,
+    political::Regions,
+};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+fn key() -> Key {
+    Key {
+        epoch: 1,
+        branch: 1,
+        hour: 2,
+        perspective: Default::default(),
+        borders: 3,
+        regions: vec![7].into(),
+    }
+}
+
+fn plan() -> FactionHighlight {
+    FactionHighlight::new(
+        &BorderMeshes {
+            meshes: BorderClass::ALL
+                .iter()
+                .map(|&class| BorderMesh {
+                    class,
+                    chunks: vec![],
+                    draws: vec![],
+                })
+                .collect(),
+            hidden: BorderMesh {
+                class: BorderClass::Province,
+                chunks: vec![],
+                draws: vec![],
+            },
+            indices: vec![],
+            one_pixel_provinces: vec![],
+        },
+        &Regions {
+            country_of: vec![],
+            owner_of: vec![],
+            state_of: vec![],
+            country_colors: Default::default(),
+            warnings: vec![],
+            strategic_attributes: Default::default(),
+        },
+        &Zone::default(),
+        &Default::default(),
+    )
+}
+
+#[test]
+fn hover_preparation_is_deferred_and_queue_admission_retries_without_frame_work() {
+    let dropper = hours::Dropper::new().unwrap();
+    let mut lane = Lane::default();
+    assert!(
+        lane.update(
+            key(),
+            |_| false,
+            || panic!("frame cannot build borders"),
+            &dropper
+        )
+        .is_none()
+    );
+    let mut queued = None;
+    let built = Arc::new(AtomicUsize::new(0));
+    let worker_built = Arc::clone(&built);
+    let frame_thread = std::thread::current().id();
+    assert!(
+        lane.update(
+            key(),
+            |job| {
+                queued = Some(job);
+                true
+            },
+            move || {
+                assert_ne!(std::thread::current().id(), frame_thread);
+                worker_built.fetch_add(1, Ordering::Relaxed);
+                plan()
+            },
+            &dropper
+        )
+        .is_none()
+    );
+    assert_eq!(built.load(Ordering::Relaxed), 0);
+    assert!(
+        lane.update(
+            key(),
+            |_| panic!("duplicate job"),
+            || panic!("duplicate build"),
+            &dropper
+        )
+        .is_none()
+    );
+    std::thread::spawn(queued.take().unwrap()).join().unwrap();
+    assert_eq!(built.load(Ordering::Relaxed), 1);
+    assert!(
+        lane.update(
+            key(),
+            |_| panic!("completed job"),
+            || panic!("completed build"),
+            &dropper
+        )
+        .is_some()
+    );
+    lane.installed();
+    assert!(
+        lane.update(
+            key(),
+            |_| panic!("installed job"),
+            || panic!("installed build"),
+            &dropper
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn a_failed_upload_does_not_mark_the_hover_installed() {
+    let dropper = hours::Dropper::new().unwrap();
+    let mut lane = Lane::default();
+    let mut job = None;
+    assert!(
+        lane.update(
+            key(),
+            |work| {
+                job = Some(work);
+                true
+            },
+            plan,
+            &dropper
+        )
+        .is_none()
+    );
+    job.take().unwrap()();
+    assert!(
+        lane.update(key(), |_| panic!("completed job"), plan, &dropper)
+            .is_some()
+    );
+    // The caller only acknowledges a successful GPU upload.
+    assert!(
+        lane.update(
+            key(),
+            |work| {
+                job = Some(work);
+                true
+            },
+            plan,
+            &dropper
+        )
+        .is_none()
+    );
+    assert!(job.is_some());
+}
+
+#[test]
+fn hover_results_are_rejected_after_hour_perspective_border_or_selection_changes() {
+    let dropper = hours::Dropper::new().unwrap();
+    for changed in [
+        Key { epoch: 9, ..key() },
+        Key { branch: 9, ..key() },
+        Key { hour: 9, ..key() },
+        Key {
+            perspective: perspective::Choice {
+                country: perspective::Country::Tag("OTHER".into()),
+                fog: true,
+            },
+            ..key()
+        },
+        Key {
+            borders: 9,
+            ..key()
+        },
+        Key {
+            regions: vec![9].into(),
+            ..key()
+        },
+        Key {
+            regions: Arc::default(),
+            ..key()
+        },
+    ] {
+        let mut lane = Lane::default();
+        let mut job = None;
+        assert!(
+            lane.update(
+                key(),
+                |work| {
+                    job = Some(work);
+                    true
+                },
+                plan,
+                &dropper
+            )
+            .is_none()
+        );
+        assert!(
+            lane.update(
+                changed.clone(),
+                |_| panic!("only one in-flight job"),
+                plan,
+                &dropper
+            )
+            .is_none()
+        );
+        job.take().unwrap()();
+        let mut next = None;
+        assert!(
+            lane.update(
+                changed.clone(),
+                |work| {
+                    next = Some(work);
+                    true
+                },
+                plan,
+                &dropper
+            )
+            .is_none()
+        );
+        if changed.regions.is_empty() {
+            assert!(
+                next.is_none(),
+                "clearing must restore the prepared ordinary plans"
+            );
+        } else {
+            next.unwrap()();
+            assert!(
+                lane.update(changed, |_| panic!("already prepared"), plan, &dropper)
+                    .is_some()
+            );
+        }
+    }
+}

@@ -209,6 +209,48 @@ fn acquire(
 }
 
 #[test]
+fn cold_worker_arenas_grow_for_five_thousand_country_hover_inputs() {
+    let fixture = Fixture::new(5000, true);
+    let mut countries = Vec::new();
+    let mut lines = Vec::new();
+    let mut efficiencies = Vec::new();
+    let mut requests = Vec::new();
+    let mut archetypes = Vec::new();
+    let mut context = None;
+    let mut out = GrowingBuffers {
+        countries: &mut countries,
+        country_len: 0,
+        country_required: 0,
+        lines: &mut lines,
+        line_len: 0,
+        line_required: 0,
+        efficiencies: &mut efficiencies,
+        efficiency_len: 0,
+        efficiency_required: 0,
+        requests: &mut requests,
+        request_len: 0,
+        request_required: 0,
+        archetypes: &mut archetypes,
+        archetype_required: 0,
+    };
+    assert_eq!(
+        capture_growing(
+            &fixture,
+            fixture.world.module,
+            fixture.world.game_state(),
+            &mut context,
+            &mut out
+        ),
+        Ok(())
+    );
+    assert_eq!(out.country_len, 5000);
+    assert_eq!(out.line_len, 5000);
+    assert_eq!(out.efficiency_len, 15000);
+    assert_eq!(out.request_len, 5000 * KEYS.len());
+    assert_eq!(out.line_required, out.line_len);
+}
+
+#[test]
 fn reader_acquires_five_thousand_authenticated_countries_and_their_ordered_retained_inputs() {
     let mut fixture = Fixture::new(5000, true);
     fixture.fault = Some(fixture.bonuses + 8 * 16);

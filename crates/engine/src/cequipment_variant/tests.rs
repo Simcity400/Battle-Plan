@@ -400,6 +400,56 @@ fn fixture() -> Vec<u8> {
 }
 
 #[test]
+fn native_null_equipment_archetypes_keep_their_stored_token() {
+    let mut bytes = fixture();
+    bytes.resize(0x1200, 0);
+    let archetype = 0x500 + cequipment_type::ARCHETYPE;
+    bytes[archetype..archetype + 8].copy_from_slice(&0x2000_u64.to_le_bytes());
+    bytes[0x1000..0x1008].copy_from_slice(&(cequipment_type::NULL_VTABLE_RVA as u64).to_le_bytes());
+    bytes[0x1008..0x100c].copy_from_slice(&0xffff_fffe_u32.to_le_bytes());
+    let variants = vec![source(&bytes); 5_000];
+    let mut rows = Vec::new();
+    for vtable in [
+        cequipment_type::NULL_VTABLE_RVA,
+        cequipment_type::VTABLE_RVA,
+    ] {
+        bytes[0x1000..0x1008].copy_from_slice(&(vtable as u64).to_le_bytes());
+        let result = walk_definitions(
+            &SliceMemory {
+                base: 0x1000,
+                bytes: &bytes,
+            },
+            0,
+            &variants,
+            &mut rows,
+            &mut Vec::new(),
+        );
+        assert_eq!(result.outcome, Outcome::Rows { len: 5_000 });
+        assert!(
+            rows.iter()
+                .all(|row| row.identity.archetype_token == 0xffff_fffe)
+        );
+    }
+    bytes[0x1000..0x1008].copy_from_slice(&0x1234_u64.to_le_bytes());
+    assert_eq!(
+        walk_definitions(
+            &SliceMemory {
+                base: 0x1000,
+                bytes: &bytes
+            },
+            0,
+            &variants,
+            &mut rows,
+            &mut Vec::new()
+        )
+        .outcome,
+        Outcome::Unavailable {
+            reason: "variant equipment archetype identity mismatch"
+        }
+    );
+}
+
+#[test]
 fn definition_preserves_native_handles_links_and_bytes() {
     let mut bytes = fixture();
     bytes[DISPLAY_NAME..DISPLAY_NAME + 3].copy_from_slice(&[b'A', 0xff, b'Z']);

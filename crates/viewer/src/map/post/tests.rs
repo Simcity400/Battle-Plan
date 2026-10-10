@@ -113,6 +113,10 @@ fn luminance_reduces_in_fixed_targets_and_gathers_the_last_rectangle() {
     let odd = ReductionSchedule::new([1023, 575]);
     assert_eq!((odd.seed, odd.backing), ([511, 287], [256, 144]));
     assert!(odd.steps[0].uv_scale[0] > 1.0);
+    // Half-resolution world for a 2051x1155 output: native floors twice;
+    // restore still uses the full output viewport, not this chain's dimensions.
+    let half = ReductionSchedule::new([1025, 577]);
+    assert_eq!((half.seed, half.backing), ([512, 288], [256, 144]));
     let tiny = ReductionSchedule::new([12, 10]);
     assert!(tiny.steps.is_empty());
     assert_eq!(tiny.gather, [6, 5]);
@@ -183,6 +187,15 @@ fn the_night_factor_follows_the_eye_and_applies_strength_before_saturating() {
         strength: 0.5,
     };
     assert_eq!(night_factor(equator, MapSize::TEST, half, defines), 1.0);
+    assert_eq!(
+        night_factor(
+            eye,
+            MapSize::TEST,
+            DayNight::at_hour(BERLIN_DAY + 12).with_cycle(false),
+            defines
+        ),
+        0.0
+    );
 }
 
 #[test]

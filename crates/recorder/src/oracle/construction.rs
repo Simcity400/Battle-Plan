@@ -13,7 +13,7 @@ use replay::{
     rows::{ConstructionLineOutputRow, CountryRow, TableId, tables},
 };
 
-use super::{Report, complete, daily_read, invalid, required_country_tag};
+use super::{Report, complete, country_tag, daily_read, invalid, required_country_tag};
 
 macro_rules! production_fields {
     ($report:expr, $subject:expr, $row:expr, $saved:expr, $links:expr) => {{
@@ -69,14 +69,29 @@ macro_rules! production_fields {
 ///
 /// province's eligible port buildings, the content's `is_port` types, so they
 /// are the sums of those buildings' saved `level` and `healthy_levels`. The
-/// base's own country (`(CNavalBase + 8) + 0x10`) and its `+0x40` country list
-/// are not serialized at all, so they are stated as a limitation.
+/// holder's raw country is not serialized. 140E9CFF0 saves the +0x40 country
+/// list through raw tag_string@140BA5C20, in order including repeats.
 pub(super) fn naval_bases(
     rows: &[replay::rows::NavalBaseRow],
     saved: &BTreeMap<saved::BuildingKey, saved::Building>,
     port_types: &BTreeSet<Vec<u8>>,
+    country_bases: &[installed_content::save::naval_launch::CountryNavalLaunchOccurrence],
+    raw_tags: &BTreeMap<u32, &[u8]>,
     report: &mut Report,
 ) -> io::Result<()> {
+    // 140E9D0C0 writes actual CStrategicNavy+18 rosters. A saved building
+    // alone does not prove a base: 140E96170 walks controlled provinces.
+    let mut expected_bases = BTreeMap::<u32, Vec<_>>::new();
+    for base in country_bases
+        .iter()
+        .filter_map(|country| country.naval_bases.as_ref())
+        .flatten()
+    {
+        expected_bases
+            .entry(base.province as u32)
+            .or_default()
+            .push(base);
+    }
     let mut ports: BTreeMap<u32, (i32, i32)> = BTreeMap::new();
     for ((province, kind), building) in saved {
         if port_types.contains(kind) {
@@ -87,9 +102,51 @@ pub(super) fn naval_bases(
     }
     let mut seen = BTreeSet::new();
     let mut count = 0;
+    let mut countries_count = 0;
     for row in rows {
         if !seen.insert(row.province) {
             return Err(invalid("duplicate naval base province"));
+        }
+        let label = format!("NavalBase {}", row.province);
+        if row.countries_unreadable {
+            report.difference(
+                format!("{label}.countries"),
+                "unreadable: null list with a positive count",
+                "a list the game can read",
+            );
+        } else {
+            let countries = match &row.country_tags {
+                replay::rows::Recorded::Value(Some(tags)) if tags.len() == row.countries.len() => {
+                    Some(
+                        tags.iter()
+                            .map(|tag| super::serialized_text(report, &label, tag))
+                            .collect::<Vec<_>>(),
+                    )
+                }
+                replay::rows::Recorded::NotRecorded => row
+                    .countries
+                    .iter()
+                    .map(|raw| raw_tags.get(raw).copied().map(installed_content::parser::c_string))
+                    .collect::<Option<Vec<_>>>(),
+                _ => None,
+            };
+            for (ordinal, base) in expected_bases
+                .get(&row.province)
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                match &countries {
+                    Some(countries) => {
+                        value(report, &format!("{label}.countries[{ordinal}]"),
+                            countries.clone(), base.countries.iter().map(Vec::as_slice).collect());
+                        countries_count += 1;
+                    }
+                    None => report.difference(format!("{label}.countries[{ordinal}]"),
+                        format!("{} raw countries with missing, unreadable or inconsistent exact tag bytes", row.countries.len()),
+                        &base.countries),
+                }
+            }
         }
         let Some(&(level, healthy_level)) = ports.get(&row.province) else {
             // The hash keeps a base while its level is zero, so only a
@@ -103,14 +160,6 @@ pub(super) fn naval_bases(
             }
             continue;
         };
-        let label = format!("NavalBase {}", row.province);
-        if row.countries_unreadable {
-            report.difference(
-                format!("{label}.countries"),
-                "unreadable: null list with a positive count",
-                "a list the game can read",
-            );
-        }
         for (name, actual, expected) in [
             ("level", row.level, level),
             ("healthy_level", row.healthy_level, healthy_level),
@@ -121,18 +170,19 @@ pub(super) fn naval_bases(
         }
         count += 1;
     }
-    for province in ports.keys() {
+    for province in expected_bases.keys() {
         if !seen.contains(province) {
             report.difference(
                 format!("NavalBase {province} membership"),
                 "absent from replay",
-                "saved port building",
+                "saved naval base roster entry",
             );
         }
     }
     report.compared("NavalBases", count);
+    report.compared("NavalBases serialized country lists", countries_count);
     report.limitation(
-        "the naval base's own country and its country list are not serialized; only its province membership and its port levels can be compared",
+        "the naval base holder's raw country is not serialized. Membership and ordered country lists are checked against every saved navy roster occurrence and levels against port buildings. 1401F2A20 omits physical country slot zero, so global bases absent from those rosters have no saved membership witness",
         "NavalBases",
     );
     Ok(())

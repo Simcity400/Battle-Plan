@@ -20,6 +20,14 @@ pub fn detail_demand(
     base: usize,
     game_state: usize,
 ) -> Result<DetailDemand, &'static str> {
+    crate::allocation::advisory(|| detail_demand_advisory(memory, base, game_state))
+}
+
+fn detail_demand_advisory(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+) -> Result<DetailDemand, &'static str> {
     let registry_at = game_state
         .checked_add(cgame_state::COMBATS + 8)
         .ok_or("land detail demand address overflow")?;

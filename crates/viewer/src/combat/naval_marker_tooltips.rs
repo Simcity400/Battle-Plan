@@ -34,6 +34,7 @@ super::text::tooltip_keys! {
     NAVAL_COMBAT_CLICK_DESC = "NAVAL_COMBAT_CLICK_DESC",
 }
 
+#[cfg(test)]
 pub(crate) fn hit(hits: &[super::Hit], point: [f32; 2]) -> Option<(u64, [f32; 4])> {
     let hit = hits.iter().rev().find(|hit| hit.contains(point))?;
     match hit.selection {

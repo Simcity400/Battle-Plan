@@ -88,6 +88,9 @@ fn a_click_hits_exactly_what_the_scaled_quad_covers() {
     let hit = crate::combat::Hit {
         selection: crate::combat::Selection::Land(7),
         rect: [100.0, 100.0, 40.0, 20.0],
+        layer: 0,
+        order: 0,
+        supported: true,
     };
     let [x0, y0, x1, y1] = crate::map::sprites::device_corners(hit.rect, 1.25);
     assert_eq!([x0, y0, x1, y1], [125.0, 125.0, 175.0, 150.0]);

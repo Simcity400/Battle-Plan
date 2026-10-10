@@ -86,7 +86,7 @@ impl BreakdownWork {
         })
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     details: usize,
     ships: usize,
@@ -106,6 +106,7 @@ pub struct Capacities {
     dense_wings: usize,
     side_units: usize,
     custom_sea: usize,
+    summary_countries: usize,
     damage_sources: usize,
     wing_types: usize,
     plane_wings: usize,
@@ -125,6 +126,20 @@ impl Capacities {
         for (capacity, required) in [
             (&mut self.details, demand.rows),
             (&mut self.ships, demand.ships),
+            (&mut self.damage, demand.damage),
+            (&mut self.air, demand.air_hits),
+            (&mut self.hits, demand.naval_hits),
+            (&mut self.plane_kills, demand.plane_kills),
+            (
+                &mut self.commander_timed_traits,
+                demand.commander_timed_traits,
+            ),
+            (&mut self.custom_sea, demand.custom_sea),
+            (&mut self.summary_countries, demand.summary_countries),
+            (&mut self.dense_bases, demand.dense_bases),
+            (&mut self.dense_wings, demand.dense_wings),
+            (&mut self.weapon_sources, demand.weapon_sources),
+            (&mut self.weapon_terms, demand.weapon_terms),
             (&mut self.groups, demand.groups),
             (&mut self.planes, demand.planes),
             (&mut self.commanders, demand.commanders),
@@ -141,38 +156,6 @@ impl Capacities {
             (&mut self.breakdown_depth, demand.depth),
         ] {
             grow_capacity(capacity, required);
-        }
-    }
-}
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            details: 64,
-            ships: 1024,
-            groups: 512,
-            damage: 2048,
-            air: 1024,
-            hits: 2048,
-            planes: 128,
-            plane_air: 256,
-            plane_hits: 512,
-            plane_kills: 1024,
-            commanders: 16,
-            commander_timed_traits: 0,
-            weapon_sources: 4096,
-            weapon_terms: 16384,
-            dense_bases: 128,
-            dense_wings: 1024,
-            side_units: 256,
-            custom_sea: 256,
-            damage_sources: 256,
-            wing_types: 1024,
-            plane_wings: 2048,
-            breakdown_requests: 0,
-            breakdown_roots: 0,
-            breakdown_nodes: 0,
-            breakdown_text: 0,
-            breakdown_depth: 0,
         }
     }
 }
@@ -196,7 +179,7 @@ pub struct Captured {
     dense_bases: CaptureRows<naval_combat_air_base_wings::Row>,
     dense_wings: Arena<u64>,
     base_handles: naval_combat_air_base_wings::UniqueHandles,
-    /// Each side's task-force handles (`CCombatant+0x20`), grown after the hour.
+    /// Each side's task-force handles, grown from original +0x20 headers.
     side_units: Arena<u64>,
     custom_sea: Arena<i16>,
     damage_sources: Arena<(u32, i64)>,
@@ -217,6 +200,17 @@ impl Captured {
         crate::table_capture::grow_hint! {
             self.details.rows => c.details,
             self.ships.rows => c.ships,
+            self.damage.first => c.damage,
+            self.air.first => c.air,
+            self.hits.first => c.hits,
+            self.plane_kills.first => c.plane_kills,
+            self.commander_timed_traits.first => c.commander_timed_traits,
+            self.custom_sea.first => c.custom_sea,
+            self.summary_countries => c.summary_countries,
+            self.dense_bases.rows => c.dense_bases,
+            self.dense_wings.first => c.dense_wings,
+            self.weapon_sources.first => c.weapon_sources,
+            self.weapon_terms.first => c.weapon_terms,
             self.groups => c.groups,
             self.planes.first => c.planes,
             self.commanders.first => c.commanders,
@@ -235,34 +229,7 @@ impl Captured {
     }
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
-        Self::with_capacities(&Capacities {
-            details: 0,
-            ships: 0,
-            groups: 0,
-            damage: 0,
-            air: 0,
-            hits: 0,
-            planes: 0,
-            plane_air: 0,
-            plane_hits: 0,
-            plane_kills: 0,
-            commanders: 0,
-            commander_timed_traits: 0,
-            weapon_sources: 0,
-            weapon_terms: 0,
-            dense_bases: 0,
-            dense_wings: 0,
-            side_units: 0,
-            custom_sea: 0,
-            damage_sources: 0,
-            wing_types: 0,
-            plane_wings: 0,
-            breakdown_requests: 0,
-            breakdown_roots: 0,
-            breakdown_nodes: 0,
-            breakdown_text: 0,
-            breakdown_depth: 0,
-        })
+        Self::with_capacities(&Capacities::default())
     }
 
     pub fn with_capacities(c: &Capacities) -> Self {
@@ -300,7 +267,7 @@ impl Captured {
             breakdown_text: Arena::new(c.breakdown_text),
             breakdown_depth: Arena::new(c.breakdown_depth),
             breakdown_outcome: Outcome::Rows { len: 0 },
-            summary_countries: Vec::new(),
+            summary_countries: owned_vec(filled(c.summary_countries, 0)),
             summary_countries_len: 0,
         }
     }
@@ -337,6 +304,19 @@ impl Captured {
     }
     pub fn allocated_bytes(&self) -> usize {
         self.details.allocated_bytes()
+            + self
+                .ships
+                .rows
+                .iter()
+                .map(cfex_member::DetailsRow::allocated_bytes)
+                .sum::<usize>()
+            + self
+                .hits
+                .first
+                .iter()
+                .chain(&self.plane_hits.first)
+                .map(naval_combat_hit::Row::allocated_bytes)
+                .sum::<usize>()
             + self.ships.allocated_bytes()
             + self.damage.allocated_bytes()
             + self.air.allocated_bytes()
@@ -346,6 +326,12 @@ impl Captured {
             + self.plane_hits.allocated_bytes()
             + self.plane_kills.allocated_bytes()
             + self.commanders.allocated_bytes()
+            + self
+                .commanders
+                .first
+                .iter()
+                .map(|row| row.allocated_bytes())
+                .sum::<usize>()
             + self.commander_timed_traits.allocated_bytes()
             + self.weapon_sources.allocated_bytes()
             + self.weapon_terms.allocated_bytes()
@@ -366,15 +352,16 @@ impl Captured {
             + self.summary_countries.capacity() * size_of::<u32>()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
-        // Adopt allocations made by the worker before replenishing other
-        // pooled frames. Used lengths remain separate from allocated capacity.
-        c.ships = c.ships.max(self.ships.rows.capacity());
-        c.groups = c.groups.max(self.groups.capacity());
-        c.damage = c.damage.max(self.damage.first.capacity());
-        c.air = c.air.max(self.air.first.capacity());
-        c.hits = c.hits.max(self.hits.first.capacity());
-        c.weapon_sources = c.weapon_sources.max(self.weapon_sources.first.capacity());
-        c.weapon_terms = c.weapon_terms.max(self.weapon_terms.first.capacity());
+        // Carry observed rows and arena lengths to the other pooled frames.
+        c.details = c.details.max(self.details.outcome.len());
+        c.summary_countries = c.summary_countries.max(self.summary_countries_len);
+        c.ships = c.ships.max(self.ships.outcome.len());
+        c.groups = c.groups.max(self.required_groups);
+        c.damage = c.damage.max(self.damage.len);
+        c.air = c.air.max(self.air.len);
+        c.hits = c.hits.max(self.hits.len);
+        c.weapon_sources = c.weapon_sources.max(self.weapon_sources.len);
+        c.weapon_terms = c.weapon_terms.max(self.weapon_terms.len);
         self.details.grow(&mut c.details);
         self.ships.grow(&mut c.ships);
         // These owned arenas grew from successfully read entries in the
@@ -394,6 +381,27 @@ impl Captured {
         if self.groups.len() < c.groups && resize_default(&mut self.groups, c.groups).is_err() {
             return;
         }
+        for (capacity, observed) in [
+            (&mut c.planes, self.planes.len),
+            (&mut c.plane_air, self.plane_air.len),
+            (&mut c.plane_hits, self.plane_hits.len),
+            (&mut c.plane_kills, self.plane_kills.len),
+            (&mut c.commanders, self.commanders.len),
+            (&mut c.dense_bases, self.dense_bases.outcome.len()),
+            (&mut c.dense_wings, self.dense_wings.len),
+            (&mut c.side_units, self.side_units.len),
+            (&mut c.custom_sea, self.custom_sea.len),
+            (&mut c.damage_sources, self.damage_sources.len),
+            (&mut c.wing_types, self.wing_types.len),
+            (&mut c.plane_wings, self.plane_wings.len),
+            (&mut c.breakdown_requests, self.breakdown_requests.len),
+            (&mut c.breakdown_roots, self.breakdown_roots.len),
+            (&mut c.breakdown_nodes, self.breakdown_nodes.len),
+            (&mut c.breakdown_text, self.breakdown_text.len),
+            (&mut c.breakdown_depth, self.breakdown_depth.len),
+        ] {
+            *capacity = (*capacity).max(observed);
+        }
         self.planes.grow(&mut c.planes);
         self.plane_air.grow(&mut c.plane_air);
         self.plane_hits.grow(&mut c.plane_hits);
@@ -401,7 +409,7 @@ impl Captured {
         self.commanders.grow(&mut c.commanders);
         c.commander_timed_traits = c
             .commander_timed_traits
-            .max(self.commander_timed_traits.first.capacity());
+            .max(self.commander_timed_traits.len);
         self.commander_timed_traits
             .grow(&mut c.commander_timed_traits);
         if self.weapon_sources.first.len() < c.weapon_sources
@@ -512,36 +520,36 @@ impl Captured {
             naval_hits: &mut self.hits.first,
             lengths: [0; 3],
             required: [0; 3],
-            planes: &mut self.planes.first,
+            planes: engine::walk::Buffer::Growing(&mut self.planes.first),
             planes_len: 0,
             planes_required: 0,
-            plane_air_hits: &mut self.plane_air.first,
-            plane_naval_hits: &mut self.plane_hits.first,
+            plane_air_hits: engine::walk::Buffer::Growing(&mut self.plane_air.first),
+            plane_naval_hits: engine::walk::Buffer::Growing(&mut self.plane_hits.first),
             plane_hit_lengths: [0; 2],
             plane_hit_required: [0; 2],
-            plane_kills: &mut self.plane_kills.first,
+            plane_kills: engine::walk::Buffer::Growing(&mut self.plane_kills.first),
             plane_kills_len: 0,
             plane_kills_required: 0,
-            commander_inputs: &mut self.commanders.first,
+            commander_inputs: engine::walk::Buffer::Growing(&mut self.commanders.first),
             commander_inputs_len: 0,
             commander_inputs_required: 0,
             commander_timed_traits: &mut self.commander_timed_traits.first,
             commander_timed_traits_len: 0,
-            side_units: &mut self.side_units.first,
+            side_units: engine::walk::Buffer::Growing(&mut self.side_units.first),
             side_units_len: 0,
             side_units_required: 0,
             summary_countries: &mut self.summary_countries,
             summary_countries_len: 0,
-            custom_sea: &mut self.custom_sea.first,
+            custom_sea: engine::walk::Buffer::Growing(&mut self.custom_sea.first),
             custom_sea_len: 0,
             custom_sea_required: 0,
-            damage_sources: &mut self.damage_sources.first,
+            damage_sources: engine::walk::Buffer::Growing(&mut self.damage_sources.first),
             damage_sources_len: 0,
             damage_sources_required: 0,
-            wing_types: &mut self.wing_types.first,
+            wing_types: engine::walk::Buffer::Growing(&mut self.wing_types.first),
             wing_types_len: 0,
             wing_types_required: 0,
-            plane_wings: &mut self.plane_wings.first,
+            plane_wings: engine::walk::Buffer::Growing(&mut self.plane_wings.first),
             plane_wings_len: 0,
             plane_wings_required: 0,
             weapon_sources: &mut self.weapon_sources.first,
@@ -553,7 +561,7 @@ impl Captured {
             memory,
             base,
             state,
-            &mut self.details.rows,
+            engine::walk::Buffer::Growing(&mut self.details.rows),
             &mut self.ships.rows,
             &mut self.groups,
             &mut buffers,
@@ -602,7 +610,7 @@ impl Captured {
         read_phase.select(TABLES[2]);
         self.dense_bases.outcome = match self.select_dense_base_handles() {
             Ok(()) => {
-                let walked = naval_combat_air_base_wings::walk(
+                let walked = naval_combat_air_base_wings::walk_growing(
                     memory,
                     base,
                     &self.base_handles,
@@ -620,19 +628,19 @@ impl Captured {
         let breakdown_started = qpc();
         read_phase.select(TABLES[3]);
         let mut breakdown = engine::naval_ship_modifier_breakdown::Buffers {
-            requests: &mut self.breakdown_requests.first,
+            requests: engine::walk::Buffer::Growing(&mut self.breakdown_requests.first),
             request_len: 0,
             request_required: 0,
-            roots: &mut self.breakdown_roots.first,
+            roots: engine::walk::Buffer::Growing(&mut self.breakdown_roots.first),
             root_len: 0,
             root_required: 0,
-            nodes: &mut self.breakdown_nodes.first,
+            nodes: engine::walk::Buffer::Growing(&mut self.breakdown_nodes.first),
             node_len: 0,
             node_required: 0,
-            text: &mut self.breakdown_text.first,
+            text: engine::walk::Buffer::Growing(&mut self.breakdown_text.first),
             text_len: 0,
             text_required: 0,
-            stack: &mut self.breakdown_depth.first,
+            stack: engine::walk::Buffer::Growing(&mut self.breakdown_depth.first),
             stack_required: 0,
         };
         self.breakdown_outcome = match (self.details.outcome, self.ships.outcome) {
@@ -1249,7 +1257,14 @@ mod tests {
     }
     #[test]
     fn dense_base_selection_uses_only_active_forward_planes_and_live_carrier_ships() {
-        let mut c = Captured::with_capacities(&Capacities::default());
+        let mut c = Captured::with_capacities(&Capacities {
+            details: 1,
+            ships: 2,
+            planes: 3,
+            dense_bases: 2,
+            dense_wings: 2,
+            ..Capacities::default()
+        });
         c.details.outcome = Outcome::Rows { len: 1 };
         c.ships.outcome = Outcome::Rows { len: 2 };
         c.details.rows[0].sides[0].planes = [0, 3];
@@ -1377,29 +1392,28 @@ mod tests {
         captured.details.rows[0].combat = 42;
         captured.ships.rows[0].member.combat = 42;
         let before = captured.allocated_bytes();
-        // The worker may grow these from original count observations before
-        // any outcome exists; recycling must adopt all actual allocations.
+        // Worker observations replenish the other frames independently of
+        // allocator rounding or spare storage in this frame.
         captured.ships.rows.resize(19, Default::default());
+        captured.ships.outcome = Outcome::Rows { len: 19 };
         captured.groups.resize(17, 0);
+        captured.required_groups = 17;
         captured.damage.first.resize(13, Default::default());
+        captured.damage.len = 13;
         captured.air.first.resize(9, Default::default());
+        captured.air.len = 9;
         captured.hits.first.resize(11, Default::default());
+        captured.hits.len = 11;
         captured.weapon_sources.first.resize(7, Default::default());
+        captured.weapon_sources.len = 7;
         captured.weapon_terms.first.resize(21, Default::default());
+        captured.weapon_terms.len = 21;
         captured
             .commander_timed_traits
             .first
             .resize(5000, Default::default());
+        captured.commander_timed_traits.len = 5000;
         assert!(captured.allocated_bytes() > before);
-        let worker_capacities = [
-            captured.ships.rows.capacity(),
-            captured.groups.capacity(),
-            captured.damage.first.capacity(),
-            captured.air.first.capacity(),
-            captured.hits.first.capacity(),
-            captured.weapon_sources.first.capacity(),
-            captured.weapon_terms.first.capacity(),
-        ];
         captured.plane_air.first[0].variant = 111;
         captured.plane_air.required = 9;
         captured.plane_hits.required = 5;
@@ -1407,18 +1421,20 @@ mod tests {
         captured.commanders.required = 3;
         captured.side_units.required = 4;
         captured.grow(&mut capacity);
-        assert_eq!(
-            [
-                capacity.ships,
-                capacity.groups,
-                capacity.damage,
-                capacity.air,
-                capacity.hits,
-                capacity.weapon_sources,
-                capacity.weapon_terms
-            ],
-            worker_capacities
-        );
+        for (prepared, observed) in [
+            capacity.ships,
+            capacity.groups,
+            capacity.damage,
+            capacity.air,
+            capacity.hits,
+            capacity.weapon_sources,
+            capacity.weapon_terms,
+        ]
+        .into_iter()
+        .zip([19, 17, 13, 9, 11, 7, 21])
+        {
+            assert!(prepared >= observed && prepared <= observed * 2);
+        }
         assert_eq!(Captured::vacant().allocated_bytes(), 0);
         assert!(capacity.plane_air >= 9 && capacity.plane_hits >= 5);
         assert!(capacity.plane_kills >= 7 && capacity.commanders >= 3);
@@ -1494,7 +1510,21 @@ mod tests {
 
     #[test]
     fn plane_and_ship_hit_spans_project_from_independent_arenas() {
+        const WINGS: usize = 257;
         let mut c = Captured::with_capacities(&Capacities {
+            details: 1,
+            ships: 1,
+            planes: 1,
+            plane_air: 1,
+            plane_hits: 1,
+            air: 1,
+            hits: 1,
+            weapon_sources: 1,
+            weapon_terms: 1,
+            custom_sea: 3,
+            damage_sources: 1,
+            wing_types: 2,
+            plane_wings: WINGS,
             breakdown_requests: 1,
             breakdown_roots: 1,
             breakdown_nodes: 1,
@@ -1527,7 +1557,6 @@ mod tests {
         c.planes.first[0].naval_hits = [0, 1];
         c.plane_air.first[0].variant = 111;
         c.plane_hits.first[0].target_slot = 12;
-        const WINGS: usize = 257;
         c.planes.first[0].wings[0] = [0, WINGS];
         for (slot, value) in c.plane_wings.first[..WINGS]
             .iter_mut()

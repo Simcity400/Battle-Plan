@@ -26,6 +26,7 @@ pub fn build(
     content: &crate::document::Content,
     frame: &DecodedFrame,
     ours: u32,
+    nato: bool,
     key: &Key,
 ) -> Tooltip {
     let flag_exists = |key: &str| content.icons.counters.flags.contains(key);
@@ -33,6 +34,7 @@ pub fn build(
         assets: &content.icons.raids,
         frame,
         ours,
+        nato,
         key,
         loc: &content.names.localisation,
         recorded_language: &content.recorded_language,
@@ -45,6 +47,7 @@ pub(crate) struct Inputs<'a> {
     pub assets: &'a RaidAssets,
     pub frame: &'a DecodedFrame,
     pub ours: u32,
+    pub nato: bool,
     pub key: &'a Key,
     pub loc: &'a Localisation,
     pub recorded_language: &'a str,
@@ -57,6 +60,7 @@ pub(crate) fn build_from(input: Inputs<'_>) -> Tooltip {
         assets,
         frame,
         ours,
+        nato,
         key,
         loc,
         recorded_language,
@@ -78,6 +82,7 @@ pub(crate) fn build_from(input: Inputs<'_>) -> Tooltip {
         recorded_language,
         scripted_content,
         ours,
+        nato,
         flag_exists,
         scripted: Default::default(),
         countries: installed_content::country_names::CountryNames::read(frame, loc),
@@ -107,6 +112,7 @@ struct Context<'a, 'w> {
     /// What custom trigger tooltips' scripted text reads.
     scripted_content: &'a Result<dashboard::scripted_text::ScriptedContent>,
     ours: u32,
+    nato: bool,
     countries: installed_content::country_names::CountryNames<'a>,
     flag_exists: &'a dyn Fn(&str) -> bool,
     scripted: std::cell::OnceCell<dashboard::scripted_text::ScriptedText<'a>>,
@@ -219,6 +225,7 @@ impl Context<'_, '_> {
                 content,
                 self.ours,
             )
+            .with_nato_counters(self.nato)
         });
         scripted.expand_in(&text, &event_scopes(scopes))
     }

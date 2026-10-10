@@ -147,8 +147,8 @@ fn hourly_losses_changed_new_variant_empty_pool_and_capacity_growth() {
     worlds[0].set(1, 13, 1);
     read(&mut c, &worlds);
     assert!(
-        !c.losses_complete(),
-        "first loss demand waits for off-thread growth"
+        c.losses_complete(),
+        "first loss demand grows before copying the original pools"
     );
     assert_eq!(c.equipment.required, 2);
     c.grow(&mut capacity);
@@ -176,8 +176,8 @@ fn hourly_losses_changed_new_variant_empty_pool_and_capacity_growth() {
     worlds[0].set(0, 15, 2); // New variant joins mid-battle.
     read(&mut c, &worlds);
     assert!(
-        !c.losses_complete(),
-        "a new variant can exceed the last off-thread census"
+        c.losses_complete(),
+        "new variants grow storage during the original worker acquisition"
     );
     c.grow(&mut capacity);
     read(&mut c, &worlds);
@@ -261,8 +261,8 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
     assert_eq!(
         c.outcomes()[0],
         Outcome::Truncated {
-            len: 1,
-            unread_rows: 4
+            len: 2,
+            unread_rows: 3
         }
     );
     assert_eq!(c.rows.rows[0].attacker_progress, 50_000);
@@ -276,7 +276,7 @@ fn hourly_losses_parent_capacity_preserves_full_growth_demand_and_progress() {
     assert!(matches!(c.outcomes()[0], Outcome::Unavailable { .. }));
 }
 #[test]
-fn hourly_losses_visit_never_grows_and_counts_shortfall_in_coverage() {
+fn hourly_losses_worker_growth_captures_five_thousand_combats_without_coverage_loss() {
     use crate::land_events::test_support;
     let _guard = test_support::EXCLUSIVE.lock().unwrap();
     test_support::reset();
@@ -285,54 +285,34 @@ fn hourly_losses_visit_never_grows_and_counts_shortfall_in_coverage() {
     );
     events.drain(10, true);
     events.drain(11, false);
-    let mut capacity = Capacities {
+    let mut captured = Captured::with_capacities(&Capacities {
         rows: 1,
         variants: 1,
-    };
-    let mut captured = Captured::with_capacities(&capacity);
-    let worlds = [World::new(3), World::new(5)];
+    });
+    let worlds = (0..5_000).map(|_| World::new(3)).collect::<Vec<_>>();
+    read(&mut captured, &worlds);
+    assert_eq!(captured.outcomes(), [Outcome::Rows { len: 5_000 }]);
+    assert_eq!(captured.equipment.required, 30_000);
+    assert_eq!(captured.equipment.len, 30_000);
+    assert_eq!(captured.lost_reads(), 0);
+    let actual = rows(&captured);
+    assert_eq!(actual.len(), 5_000);
+    assert!(actual.iter().all(|row| {
+        row.attacker_equipment_losses
+            .require("fixture")
+            .unwrap()
+            .len()
+            == 3
+            && row
+                .defender_equipment_losses
+                .require("fixture")
+                .unwrap()
+                .len()
+                == 3
+    }));
     let allocated = captured.allocated_bytes();
-    let capacities = (
-        captured.rows.rows.capacity(),
-        captured.losses.capacity(),
-        captured.equipment.first.capacity(),
-        captured.pointers.capacity(),
-        captured.identities.capacity(),
-    );
-    let lengths = (
-        captured.rows.rows.len(),
-        captured.losses.len(),
-        captured.equipment.first.len(),
-        captured.pointers.len(),
-        captured.identities.len(),
-    );
     read(&mut captured, &worlds);
     assert_eq!(captured.allocated_bytes(), allocated);
-    assert_eq!(
-        (
-            captured.rows.rows.capacity(),
-            captured.losses.capacity(),
-            captured.equipment.first.capacity(),
-            captured.pointers.capacity(),
-            captured.identities.capacity()
-        ),
-        capacities
-    );
-    assert_eq!(
-        (
-            captured.rows.rows.len(),
-            captured.losses.len(),
-            captured.equipment.first.len(),
-            captured.pointers.len(),
-            captured.identities.len()
-        ),
-        lengths
-    );
-    assert_eq!(
-        captured.equipment.required, 16,
-        "count every side even after shortage"
-    );
-    assert_eq!(captured.lost_reads(), 2);
     events.lost_casualty_reads(captured.lost_reads());
     let [
         _,
@@ -342,26 +322,8 @@ fn hourly_losses_visit_never_grows_and_counts_shortfall_in_coverage() {
     else {
         panic!("coverage missing")
     };
-    assert_eq!(coverage[0].lost_events, 2);
-    assert!(
-        coverage[0].complete,
-        "independent event interval remains certified"
-    );
-    let epoch = coverage[0].epoch;
-    captured.grow(&mut capacity);
-    read(&mut captured, &worlds);
-    assert!(captured.losses_complete());
-    events.drain(12, false);
-    let [
-        _,
-        _,
-        TableView::Complete(replay::rows::TableRows::LandEventCoverage(coverage)),
-    ] = events.tables()
-    else {
-        panic!("coverage missing")
-    };
+    assert_eq!(coverage[0].lost_events, 0);
     assert!(coverage[0].complete);
-    assert_eq!(coverage[0].epoch, epoch);
     test_support::disable();
 }
 #[test]
@@ -384,10 +346,10 @@ fn hourly_losses_off_thread_census_presizes_all_sides() {
     worlds[1].set(1, 12, 9);
     read(&mut captured, &worlds);
     assert!(
-        !captured.losses_complete(),
-        "native pool grew past the earlier census"
+        captured.losses_complete(),
+        "native pool growth is captured without waiting for another census"
     );
-    assert_eq!(captured.equipment.first.len(), first_capacity);
+    assert!(captured.equipment.first.len() > first_capacity);
     capacity.presize(&registry, 0).unwrap();
     captured.grow(&mut capacity);
     assert!(captured.equipment.first.len() > first_capacity);

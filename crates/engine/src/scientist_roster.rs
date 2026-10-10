@@ -56,6 +56,34 @@ pub struct Buffers<'a> {
     pub skills: &'a mut [SkillRow],
 }
 
+pub struct GrowingBuffers<'a> {
+    pub scientists: &'a mut Vec<Row>,
+    pub skills: &'a mut Vec<SkillRow>,
+}
+
+pub struct BuffersBuffer<'a> {
+    pub scientists: crate::walk::Buffer<'a, Row>,
+    pub skills: crate::walk::Buffer<'a, SkillRow>,
+}
+
+impl<'a> From<Buffers<'a>> for BuffersBuffer<'a> {
+    fn from(value: Buffers<'a>) -> Self {
+        Self {
+            scientists: crate::walk::Buffer::Fixed(value.scientists),
+            skills: crate::walk::Buffer::Fixed(value.skills),
+        }
+    }
+}
+
+impl<'a> From<GrowingBuffers<'a>> for BuffersBuffer<'a> {
+    fn from(value: GrowingBuffers<'a>) -> Self {
+        Self {
+            scientists: crate::walk::Buffer::Growing(value.scientists),
+            skills: crate::walk::Buffer::Growing(value.skills),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Walk {
     pub scientists: Outcome,
@@ -69,7 +97,16 @@ struct Count {
 }
 
 impl Count {
-    fn push<T>(&mut self, output: &mut [T], row: T) -> Result<(), &'static str> {
+    fn push<T: Default>(
+        &mut self,
+        output: &mut crate::walk::Buffer<'_, T>,
+        row: T,
+    ) -> Result<(), &'static str> {
+        output.ensure(
+            self.len
+                .checked_add(1)
+                .ok_or("scientist row count overflow")?,
+        )?;
         if let Some(destination) = output.get_mut(self.len) {
             *destination = row;
             self.len += 1;
@@ -102,6 +139,32 @@ pub fn walk(
     base: usize,
     game_state: usize,
     output: &mut Buffers<'_>,
+) -> Walk {
+    let mut buffers = BuffersBuffer {
+        scientists: crate::walk::Buffer::Fixed(&mut *output.scientists),
+        skills: crate::walk::Buffer::Fixed(&mut *output.skills),
+    };
+    walk_buffer(memory, base, game_state, &mut buffers)
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut GrowingBuffers<'_>,
+) -> Walk {
+    let mut buffers = BuffersBuffer {
+        scientists: crate::walk::Buffer::Growing(&mut *output.scientists),
+        skills: crate::walk::Buffer::Growing(&mut *output.skills),
+    };
+    walk_buffer(memory, base, game_state, &mut buffers)
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut BuffersBuffer<'_>,
 ) -> Walk {
     let mut counts = [Count::default(); 2];
     let failure = (|| {
@@ -151,7 +214,7 @@ pub fn walk(
                     return Err("scientist trait count is negative");
                 }
                 counts[0].push(
-                    output.scientists,
+                    &mut output.scientists,
                     Row {
                         country: country.id,
                         ordinal,
@@ -170,7 +233,7 @@ pub fn walk(
                     let experience_raw =
                         reader.field::<i64>(record, scientist_skill_entry::EXPERIENCE)?;
                     counts[1].push(
-                        output.skills,
+                        &mut output.skills,
                         SkillRow {
                             character: id,
                             ordinal: index,

@@ -3,23 +3,23 @@ use crate::{
     carmy, ccountry, cfleet, corders_group,
     cpdx_array::{self, Array},
     creference_registry, cunit, msvc_string,
-    walk::Outcome,
+    walk::{Buffer, Outcome},
 };
 
-/// Caller-owned admitted arrays. Only the collector's off-thread grow path
-/// resizes them; a short array retains demand and a named refusal.
+/// Fixed admitted arrays or worker storage grown from the original headers.
 pub struct Rows<'a, T> {
-    pub rows: &'a mut [T],
+    pub rows: Buffer<'a, T>,
     pub len: usize,
     pub required: usize,
 }
-impl<T> Rows<'_, T> {
+impl<T: Default> Rows<'_, T> {
     pub(super) fn push(&mut self, value: T) -> Result<(), &'static str> {
         self.required = self.required.max(
             self.len
                 .checked_add(1)
                 .ok_or("fuel demand row count overflow")?,
         );
+        self.rows.ensure(self.required)?;
         let destination = self
             .rows
             .get_mut(self.len)
@@ -39,6 +39,7 @@ impl<T> Rows<'_, T> {
             .required
             .checked_add(count as usize)
             .ok_or("fuel demand row count overflow")?;
+        self.rows.ensure(self.required)?;
         Ok(())
     }
 }
@@ -52,17 +53,17 @@ pub struct Buffers<'a> {
     pub weather: Rows<'a, Weather>,
     pub contexts: Rows<'a, Context>,
     /// Pack-local open-addressed index; caller clears it before acquisition.
-    pub context_slots: &'a mut [usize],
-    pub names: &'a mut [u8],
+    pub context_slots: Buffer<'a, usize>,
+    pub names: Buffer<'a, u8>,
     pub name_len: usize,
     pub name_required: usize,
-    pub roots: &'a mut [corders_group::Root],
-    pub groups: &'a mut [corders_group::GroupRow],
-    pub members: &'a mut [corders_group::MemberRow],
-    pub children: &'a mut [corders_group::ChildRow],
-    pub roster_scratch: &'a mut [corders_group::RosterEntry],
-    pub group_names: &'a mut [Name],
-    pub group_countries: &'a mut [Option<u32>],
+    pub roots: Buffer<'a, corders_group::Root>,
+    pub groups: Buffer<'a, corders_group::GroupRow>,
+    pub members: Buffer<'a, corders_group::MemberRow>,
+    pub children: Buffer<'a, corders_group::ChildRow>,
+    pub roster_scratch: Buffer<'a, corders_group::RosterEntry>,
+    pub group_names: Buffer<'a, Name>,
+    pub group_countries: Buffer<'a, Option<u32>>,
     pub group_owner_reason: Option<&'static str>,
     pub group_outcomes: Option<[Outcome; 3]>,
     pub roots_outcome: Option<Outcome>,
@@ -85,6 +86,7 @@ pub(super) fn name(
             .name_len
             .checked_add(text.len)
             .ok_or("fuel demand name span overflow")?;
+        out.names.ensure(end)?;
         text.copy(
             memory,
             out.names
@@ -213,21 +215,29 @@ fn topology<M: Memory>(
     countries: &ccountry::Reader<'_, M>,
     out: &mut Buffers<'_>,
 ) {
-    let roots = corders_group::walk_roots(memory, base, out.roots);
+    let roots = corders_group::walk_roots_buffer(memory, base, out.roots.suffix(0));
     out.roots_outcome = Some(roots);
     if !matches!(roots, Outcome::Rows { .. }) {
         return;
     }
     let count = roots.len();
-    let mut graph = corders_group::OrderOfBattle {
-        groups: out.groups,
-        members: out.members,
-        children: out.children,
-        roster_scratch: out.roster_scratch,
+    let mut graph = corders_group::OrderOfBattleStorage {
+        groups: out.groups.suffix(0),
+        members: out.members.suffix(0),
+        children: out.children.suffix(0),
+        roster_scratch: out.roster_scratch.suffix(0),
     };
     let acquired =
-        corders_group::walk_order_of_battle(memory, base, &out.roots[..count], &mut graph);
+        corders_group::walk_order_of_battle_buffers(memory, base, &out.roots[..count], &mut graph);
     out.group_outcomes = Some([acquired.groups, acquired.members, acquired.children]);
+    if let Err(reason) = out
+        .group_names
+        .ensure(acquired.groups.len())
+        .and_then(|_| out.group_countries.ensure(acquired.groups.len()))
+    {
+        out.group_owner_reason = Some(reason);
+        return;
+    }
     for index in 0..acquired.groups.len().min(out.group_names.len()) {
         let root = out.roots[index];
         let owner = if root.country == 0 {
@@ -240,10 +250,10 @@ fn topology<M: Memory>(
             out.group_owner_reason.get_or_insert(reason);
         }
         // Shared LAND stored-name accessor; no separate command-name capture.
-        let copied = corders_group::copy_name(
+        let copied = corders_group::copy_name_buffer(
             memory,
             root.pointer(),
-            out.names,
+            out.names.suffix(0),
             &mut out.name_len,
             &mut out.name_required,
         );
@@ -267,6 +277,8 @@ pub fn capture(
     out: &mut Buffers<'_>,
 ) -> Result<(), &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
+    // FuelPanel_BuildBreakdown@1410DE880 visits the original country contributors.
+    out.countries.demand(countries.count().saturating_sub(1))?;
     for slot in 1..countries.count() {
         let Some(country) = countries.at(slot)? else {
             continue;

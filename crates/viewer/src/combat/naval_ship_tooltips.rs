@@ -5,10 +5,7 @@ use super::{
     binding::{Bindings, TextIcons, builtin, token},
     tooltips::{hover_text, set_hover},
 };
-use crate::{
-    document::Document,
-    table_access::{TokenNames, rows},
-};
+use crate::{document::Document, table_access::rows};
 use installed_content::localisation::{Argument, Localisation};
 use replay::{
     frame::DecodedFrame,
@@ -22,9 +19,7 @@ use std::{collections::BTreeMap, io};
 struct VariantContext<'a> {
     document: &'a Document,
     frame: &'a DecodedFrame,
-    tokens: Result<TokenNames<'a>, String>,
-    countries: BTreeMap<u32, &'a replay::rows::CountryRow>,
-    appearances: Result<BTreeMap<u32, &'a replay::rows::CountryAppearanceRow>, String>,
+    names: super::naval_variants::Names<'a>,
     escape: EscapeContext<'a>,
 }
 
@@ -116,11 +111,7 @@ pub(super) fn bind(
     let context = VariantContext {
         document,
         frame,
-        tokens: TokenNames::new(frame).map_err(|error| error.to_string()),
-        countries: by_country.clone(),
-        appearances: rows::<tables::CountryAppearance>(frame)
-            .map(|rows| rows.rows().iter().map(|row| (row.country, row)).collect())
-            .map_err(|error| error.to_string()),
+        names: super::naval_variants::Names::new(document, frame),
         escape: EscapeContext {
             details: rows::<tables::NavalCombatDetails>(frame)
                 .map_err(|error| error.to_string())
@@ -307,88 +298,13 @@ fn group_tooltip(
     }
 }
 
-/// 140BCB030 returns a nonempty saved CEquipmentVariant+0x28 name verbatim.
-/// Otherwise it localises its effective definition's +0x18 key for origin
-/// (or creator) country, through the stacked equipment and recorded lexicon.
-/// Finally it appends +0x48 only when +0x24 permits it.
 fn variant_name(
     row: &VariantDefinitionRow,
     icons: &dyn TextIcons,
     loc: &Localisation,
     context: Option<&VariantContext<'_>>,
 ) -> Result<String, String> {
-    let mut name = if !row.display_name.is_empty() {
-        std::str::from_utf8(&row.display_name)
-            .map_err(|_| format!("variant {} explicit name is not UTF-8", row.id))?
-            .to_owned()
-    } else {
-        let context = context.ok_or_else(|| {
-            format!(
-                "variant {} has no context to localise its equipment definition",
-                row.id
-            )
-        })?;
-        let key = context
-            .tokens
-            .as_ref()
-            .map_err(Clone::clone)?
-            .name(row.equipment_token)
-            .map_err(|error| error.to_string())?;
-        let database = context
-            .document
-            .icons
-            .combat
-            .naval_air_groups
-            .equipment()
-            .ok_or("the stacked equipment database is unavailable")?;
-        let index = database.get(key.as_bytes()).ok_or_else(|| {
-            format!(
-                "variant {} equipment key {key} is absent from stacked content",
-                row.id
-            )
-        })?;
-        let raw = std::str::from_utf8(&database.equipment[index].name)
-            .map_err(|_| format!("variant {} equipment key is not UTF-8", row.id))?;
-        let country = if row.origin_link > 0 {
-            row.origin_link
-        } else {
-            row.creator_link
-        };
-        let tag =
-            if country == 0 {
-                // CCountryDatabase ctor 14070E670 installs this null-country tag.
-                "---"
-            } else {
-                let linked = context.countries.get(&country).copied().ok_or_else(|| {
-                    format!("variant {} country {country} has no Countries row", row.id)
-                })?;
-                let appearance = context.appearances.as_ref().map_err(Clone::clone)?
-                .get(&country).copied()
-                .ok_or_else(|| {
-                    format!(
-                        "variant {} country {country} has no CountryAppearance original-tag row",
-                        row.id
-                    )
-                })?;
-                let tag = if appearance.name_tag.is_empty() {
-                    &linked.tag
-                } else {
-                    &appearance.name_tag
-                };
-                std::str::from_utf8(tag)
-                    .map_err(|_| format!("variant {} country {country} tag is not UTF-8", row.id))?
-            };
-        let localised = super::text::country_localised(loc, Ok(tag), raw)?;
-        super::binding::displayable(icons, localised)?
-    };
-    if row.append_variant_name != 0 && !row.variant_name.is_empty() {
-        name.push(' ');
-        name.push_str(
-            std::str::from_utf8(&row.variant_name)
-                .map_err(|_| format!("variant {} suffix is not UTF-8", row.id))?,
-        );
-    }
-    Ok(name)
+    super::naval_variants::name(row, icons, loc, context.map(|context| &context.names))
 }
 
 /// 1417D3220 calls 14195FAC0 on CFEXMember's cached +0x48 name and +0x68

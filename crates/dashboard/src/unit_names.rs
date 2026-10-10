@@ -1,8 +1,34 @@
-//! Names returned by the native Army getter, shared by scripted UNIT names,
-//! political counters, combat entries and recorded-unit products.
+//! Retained native unit names, shared by political counters, combat entries,
+//! scripted UNIT names and recorded-unit products.
 
 use installed_content::{division_names::Database, localisation::Localisation};
-use replay::rows::{DivisionStatusRow, NameOperands, Recorded};
+use replay::rows::{DivisionStatusRow, NameOperands, Recorded, TaskForceCounterInputRow};
+
+/// CTaskForce's primary vslot+0x68 calls 140BEDEB0, returning CUnit+0x258
+/// directly. No generator provenance survives in this cache, so readable
+/// nonempty text keeps the recording-language guard; empty bytes are exact.
+pub fn task_force_name(
+    row: &TaskForceCounterInputRow,
+    localisation: &Localisation,
+    recorded_language: &str,
+) -> Result<String, String> {
+    let bytes = row
+        .name
+        .require("TaskForceCounterInputs.name")?
+        .as_deref()
+        .ok_or_else(|| {
+            format!(
+                "TaskForceCounterInputs.name unavailable for task force {:#x}: guarded read or name arena refusal (140BEDEB0)",
+                row.task_force
+            )
+        })?;
+    crate::scripted_text::stored_text(
+        localisation,
+        recorded_language,
+        bytes,
+        "task force cached name",
+    )
+}
 
 /// CArmy::GetName140C72F00 returns the retained CNameGroupMember+0x60 string;
 /// it does not run the generator. A recorded cache is authoritative, including
@@ -93,5 +119,33 @@ fn legacy_army_name<'a>(
         })
 }
 
+/// CDivisionTemplateData::GetDisplayName140B91170 copies a nonempty authored
+/// literal, otherwise localises a nonempty fallback key for the genuine signed
+/// composition country. Unlike retained CArmy caches, these are explicit naming
+/// operands, so a literal has no recording-language guard or generator demand.
+///
+/// The caller supplies the existing exact LocalizeForCountry140BBA780 path;
+/// it is acquired lazily and never consulted for literal or known empty text.
+pub fn template_name(
+    parts: replay::rows::TemplateDisplayNameParts<'_>,
+    raw_country: i32,
+    localise_for_country: impl FnOnce(i32, &[u8]) -> Result<String, String>,
+) -> Result<String, String> {
+    if !parts.literal.is_empty() {
+        if parts.fallback_key.is_some() {
+            return Err("template display fallback demand is noncanonical".into());
+        }
+        return std::str::from_utf8(parts.literal)
+            .map(str::to_owned)
+            .map_err(|_| "template literal name is not UTF-8".into());
+    }
+    let key = parts
+        .fallback_key
+        .ok_or("template empty literal lacks fallback-key observation")?;
+    if key.is_empty() {
+        return Ok(String::new());
+    }
+    localise_for_country(raw_country, key)
+}
 #[cfg(test)]
 mod tests;

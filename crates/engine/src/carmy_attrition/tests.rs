@@ -253,14 +253,14 @@ fn fresh_attrition_acclimatization_keeps_first_maximum_and_refuses_foreign_embed
         counter_attrition: Some(123),
         ..Default::default()
     };
-    assert_eq!(acclimatization(&fixture, 0, &seed), Ok(60_000));
+    assert_eq!(fresh_acclimatization(&fixture, 0, &seed), Ok(60_000));
     header[0x20..0x28].copy_from_slice(&0x3100_u64.to_le_bytes());
     seed.acclimatization = Some(header);
-    assert_eq!(acclimatization(&fixture, 0, &seed), Ok(ONE));
+    assert_eq!(fresh_acclimatization(&fixture, 0, &seed), Ok(ONE));
     header[..8].fill(0);
     seed.acclimatization = Some(header);
     assert_eq!(
-        acclimatization(&fixture, 0, &seed),
+        fresh_acclimatization(&fixture, 0, &seed),
         Err("attrition acclimatization identity mismatch")
     );
 }

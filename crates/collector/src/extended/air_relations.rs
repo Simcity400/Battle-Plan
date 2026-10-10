@@ -35,7 +35,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 /// Pool jobs splitting the copies; slot `s` belongs to part `s % PARTS`.
 pub const PARTS: usize = 8;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     /// Staging bytes per part.
@@ -44,25 +44,8 @@ pub struct Capacities {
     countries: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 4096,
-            bytes: 16 * 1024,
-            countries: 0,
-        }
-    }
-}
-
-/// Rows per country slot presized from the registry: a few donors, wartime
-/// allies and enemies. Wars in blocs grow the buffers off-thread.
-const ROWS_PER_COUNTRY: usize = 8;
-
 impl Capacities {
     pub fn raise_for_countries(&mut self, slots: usize) {
-        let rows = crate::country_scale::rows(slots, ROWS_PER_COUNTRY);
-        crate::country_scale::raise(&mut self.rows, rows);
-        crate::country_scale::raise(&mut self.bytes, rows * 4 / PARTS);
         crate::country_scale::raise(&mut self.countries, slots);
     }
 }
@@ -204,7 +187,7 @@ impl Captured {
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(capacity.rows),
-            selection: SliceSelection::new(capacity.rows != 0),
+            selection: SliceSelection::new(true),
             parts: (0..PARTS)
                 .map(|_| Staging::with_capacity(capacity))
                 .collect(),
@@ -376,6 +359,13 @@ impl Captured {
                 self.selection
                     .scan(fingerprints, slot as u32, Some(country.generation));
             }
+        }
+        if allocation::capture_stopped() {
+            self.rows.fail(Outcome::Unavailable {
+                reason: "collector allocation failed",
+            });
+            self.selection.invalidate(fingerprints);
+            return;
         }
         fingerprints.finish_scan();
         self.selection.finish_census(fingerprints);
@@ -1008,6 +998,54 @@ pub(crate) mod hour {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_rows_and_native_selection_publish_5000_countries_then_larger_vectors() {
+        const COUNTRIES: usize = 5_000;
+        let mut capacity = Capacities::default();
+        capacity.raise_for_countries(COUNTRIES + 1);
+        assert_eq!([capacity.rows, capacity.bytes], [0; 2]);
+        let mut pack = Captured::with_capacities(&Capacities::default());
+        assert!(pack.parts.iter().all(|part| part.bytes.is_empty()));
+        let mut held = Held::new();
+        for (hour, counts) in [[3u32, 5, 5], [7, 11, 11]].into_iter().enumerate() {
+            pack.reset();
+            pack.prepare_hour(hour as i32, hour == 0);
+            for part in &mut pack.parts {
+                part.slots = (COUNTRIES + 1) as u32;
+                part.state = State::Copied;
+            }
+            let entries = counts.iter().map(|&count| count as usize).sum::<usize>();
+            for slot in 1..=COUNTRIES {
+                let part = &mut pack.parts[slot % PARTS];
+                part.staged.push(native::Staged {
+                    slot: slot as u32,
+                    country: slot + 1,
+                    counts,
+                    offset: part.bytes.len(),
+                    ..Default::default()
+                });
+                for ordinal in 0..entries {
+                    part.bytes
+                        .extend_from_slice(&((slot * 100 + ordinal) as u32).to_le_bytes());
+                }
+            }
+            pack.staged = true;
+            pack.decode_into(&mut held);
+            assert_eq!(
+                pack.outcomes(),
+                [Outcome::Rows {
+                    len: COUNTRIES * entries
+                }]
+            );
+            assert_eq!(pack.selection.read_owners().count(), COUNTRIES);
+            let last = pack.rows.rows[COUNTRIES * entries - 1];
+            assert_eq!(last.country, COUNTRIES as u32);
+            assert_eq!(last.kind, native::ENEMY);
+            assert_eq!(last.ordinal, counts[2] - 1);
+            assert_eq!(last.other, (COUNTRIES * 100 + entries - 1) as u32);
+        }
+    }
 
     #[test]
     fn a_frame_whose_parts_did_not_run_is_published_unavailable_by_the_decode() {

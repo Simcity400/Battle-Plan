@@ -140,11 +140,11 @@ pub(super) fn compare(
                 unit.parent,
                 expected.fleet,
             );
-            text(
+            conditional_name(
                 report,
                 &format!("{label}.task_force.{:#x}.name", unit.reference),
                 unit.name.as_deref(),
-                expected.name.as_deref().unwrap_or_default(),
+                expected.name.as_deref(),
             )?;
             owners(
                 report,
@@ -178,11 +178,11 @@ pub(super) fn compare(
                 .group_names
                 .get(&group.reference)
                 .ok_or_else(|| invalid("fuel demand command absent from save"))?;
-            text(
+            conditional_name(
                 report,
                 &format!("{label}.group.{:#x}.name", group.reference),
                 group.name.as_deref(),
-                expected,
+                expected.as_deref(),
             )?;
             let expected = groups
                 .get(&group.reference)
@@ -230,6 +230,26 @@ fn text(report: &mut Report, label: &str, actual: Option<&[u8]>, saved: &[u8]) -
         actual.ok_or_else(|| invalid("fuel demand stored-name capture failed"))?,
         saved,
     );
+    Ok(())
+}
+
+fn conditional_name(
+    report: &mut Report,
+    label: &str,
+    actual: Option<&[u8]>,
+    saved: Option<&[u8]>,
+) -> io::Result<()> {
+    let actual = actual.ok_or_else(|| invalid("fuel demand stored-name capture failed"))?;
+    // 140BF7010 (CUnit) / 140BE8100 (COrdersGroup) gate on stored length;
+    // 1424ADF40 emits the first-NUL prefix, including an emitted empty name.
+    let prefix = installed_content::parser::c_string(actual);
+    if prefix.len() < actual.len() {
+        report.limitation(
+            "native text serialization ends at the first NUL; captured trailing name bytes are not save-comparable",
+            label,
+        );
+    }
+    equal(report, label, (!actual.is_empty()).then_some(prefix), saved);
     Ok(())
 }
 fn owners(

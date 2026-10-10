@@ -62,6 +62,31 @@ pub struct Output<'a> {
     pub name_bytes: &'a mut [u8],
 }
 
+/// Buffers for a worker's resident-bid acquisition. Original 140E245D0 /
+/// 140E3DED0 country and action counts and 14150D430 retained name lengths
+/// size each arena before filling.
+pub struct GrowingOutput<'a> {
+    pub winners: crate::walk::Buffer<'a, u32>,
+    pub losers: crate::walk::Buffer<'a, u32>,
+    pub actions: crate::walk::Buffer<'a, Action>,
+    pub transfers: crate::walk::Buffer<'a, Transfer>,
+    pub subjects: crate::walk::Buffer<'a, Subject>,
+    pub name_bytes: crate::walk::Buffer<'a, u8>,
+}
+impl<'a> From<Output<'a>> for GrowingOutput<'a> {
+    fn from(output: Output<'a>) -> Self {
+        use crate::walk::Buffer::Fixed;
+        Self {
+            winners: Fixed(output.winners),
+            losers: Fixed(output.losers),
+            actions: Fixed(output.actions),
+            transfers: Fixed(output.transfers),
+            subjects: Fixed(output.subjects),
+            name_bytes: Fixed(output.name_bytes),
+        }
+    }
+}
+
 fn array(
     memory: &impl Memory,
     pointer: usize,
@@ -106,7 +131,7 @@ fn remember_node(seen: &mut HashSet<usize>, node: usize) -> Result<(), &'static 
 
 /// One attempt, no allocation, retries, game calls or live pointers in output.
 pub fn copy(memory: &impl Memory, base: usize, pointer: usize, output: Output<'_>) -> Snapshot {
-    copy_internal(memory, base, pointer, output, true, false)
+    copy_internal(memory, base, pointer, output.into(), true, false)
 }
 
 /// Resident pre-finalization bids, including statuses excluded from settlement.
@@ -117,12 +142,26 @@ pub fn copy_bids(
     pointer: usize,
     output: Output<'_>,
 ) -> Snapshot {
+    copy_internal(memory, base, pointer, output.into(), false, false)
+}
+
+/// Worker-only continuation from the first acquired headers, without retries.
+pub fn copy_bids_growing(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    output: GrowingOutput<'_>,
+) -> Snapshot {
     copy_internal(memory, base, pointer, output, false, false)
 }
 
 /// Off-thread sizing from backed native arrays, including rejected bids and empty turns.
 /// No payload is recorded; cached-name headers supply their variable byte demand.
 pub fn demand(memory: &impl Memory, base: usize, pointer: usize) -> Snapshot {
+    crate::allocation::advisory(|| demand_advisory(memory, base, pointer))
+}
+
+fn demand_advisory(memory: &impl Memory, base: usize, pointer: usize) -> Snapshot {
     copy_internal(
         memory,
         base,
@@ -134,7 +173,8 @@ pub fn demand(memory: &impl Memory, base: usize, pointer: usize) -> Snapshot {
             transfers: &mut [],
             subjects: &mut [],
             name_bytes: &mut [],
-        },
+        }
+        .into(),
         false,
         true,
     )
@@ -151,7 +191,7 @@ fn copy_internal(
     memory: &impl Memory,
     base: usize,
     pointer: usize,
-    mut output: Output<'_>,
+    mut output: GrowingOutput<'_>,
     settled: bool,
     measuring: bool,
 ) -> Snapshot {
@@ -190,6 +230,7 @@ fn copy_internal(
                 *count = countries.count as usize;
                 continue;
             }
+            destination.ensure(countries.count as usize)?;
             for index in 0..countries.count as usize {
                 if *count == destination.len() {
                     result.omitted = countries.count as usize - index;
@@ -270,6 +311,12 @@ fn copy_internal(
                     }
                     continue;
                 }
+                output.actions.ensure(
+                    result
+                        .actions
+                        .checked_add(actions.count as usize)
+                        .ok_or("peace action size overflow")?,
+                )?;
                 for ordinal in 0..actions.count as usize {
                     if result.actions == output.actions.len() {
                         result.omitted = actions.count as usize - ordinal;
@@ -294,6 +341,7 @@ fn copy_internal(
                                 .name_bytes
                                 .checked_add(name.len)
                                 .ok_or("peace name size overflow")?;
+                            output.name_bytes.ensure(end)?;
                             let Some(bytes) = output.name_bytes.get_mut(result.name_bytes..end)
                             else {
                                 result.required_name_bytes = name.len;
@@ -385,6 +433,14 @@ fn copy_internal(
             if measuring {
                 validate_last::<u64>(memory, participants)?;
             }
+            if !measuring && offset == conference::SUBJECT_PARTICIPANTS {
+                output.subjects.ensure(
+                    result
+                        .subjects
+                        .checked_add(participants.count as usize)
+                        .ok_or("peace subject size overflow")?,
+                )?;
+            }
             for index in 0..participants.count as usize {
                 if !measuring
                     && offset == conference::SUBJECT_PARTICIPANTS
@@ -429,6 +485,13 @@ fn copy_internal(
                 if measuring {
                     validate_last::<u64>(memory, states)?;
                     add_count(&mut result.transfers, states.count as usize)?;
+                } else {
+                    output.transfers.ensure(
+                        result
+                            .transfers
+                            .checked_add(states.count as usize)
+                            .ok_or("peace transfer size overflow")?,
+                    )?;
                 }
                 for state_index in 0..if measuring { 0 } else { states.count as usize } {
                     if result.transfers == output.transfers.len() {
@@ -463,6 +526,13 @@ fn copy_internal(
                     if measuring {
                         validate_last::<i32>(memory, states)?;
                         add_count(&mut result.transfers, states.count as usize)?;
+                    } else {
+                        output.transfers.ensure(
+                            result
+                                .transfers
+                                .checked_add(states.count as usize)
+                                .ok_or("peace transfer size overflow")?,
+                        )?;
                     }
                     for state_index in 0..if measuring { 0 } else { states.count as usize } {
                         if result.transfers == output.transfers.len() {

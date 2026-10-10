@@ -164,6 +164,7 @@ struct Identity {
 /// each combined agency walk rebuilds it, never retaining native pointers across hours.
 pub struct Catalog {
     definitions: Vec<Identity>,
+    growing: bool,
     len: usize,
     required: usize,
     prepared: bool,
@@ -177,6 +178,7 @@ impl Catalog {
             definitions: crate::allocation::owned_vec(crate::allocation::default_vec(
                 definition_capacity,
             )),
+            growing: false,
             len: 0,
             required: 0,
             prepared: false,
@@ -225,6 +227,10 @@ impl Catalog {
                     .required
                     .checked_add(members.count as usize)
                     .ok_or("agency upgrade catalog demand overflow")?;
+                if self.growing {
+                    // Database loader@140617860 retains every branch membership.
+                    crate::walk::Buffer::Growing(&mut self.definitions).ensure(self.required)?;
+                }
                 let branch_token = token(memory, tokens, branch).ok();
                 cpdx_array::pointers(
                     memory,
@@ -298,7 +304,7 @@ impl Catalog {
 }
 
 pub(crate) struct Capture<'a> {
-    output: &'a mut [Row],
+    output: crate::walk::Buffer<'a, Row>,
     catalog: &'a mut Catalog,
     len: usize,
     required_rows: usize,
@@ -312,8 +318,12 @@ pub(crate) struct Capture<'a> {
 }
 
 impl<'a> Capture<'a> {
-    pub(crate) fn new(output: &'a mut [Row], catalog: &'a mut Catalog) -> Self {
+    pub(crate) fn new_buffer(
+        output: crate::walk::Buffer<'a, Row>,
+        catalog: &'a mut Catalog,
+    ) -> Self {
         catalog.reset();
+        catalog.growing = output.is_growing();
         Self {
             output,
             catalog,
@@ -347,6 +357,7 @@ impl<'a> Capture<'a> {
                 .required_rows
                 .checked_add(acquired.count as usize)
                 .ok_or("agency upgrade row demand overflow")?;
+            self.output.ensure(self.required_rows)?;
             if acquired.count != 0 {
                 self.catalog.prepare(memory, base);
             }

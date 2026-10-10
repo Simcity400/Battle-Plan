@@ -69,10 +69,12 @@ fn sinking_titles_use_content_formatter_and_text_argument_without_an_english_pre
         Ok("Engagement: Mod port [literal]".into())
     );
     let (missing, _folder) = folder_catalogue(&[]);
-    assert_eq!(
-        title(&missing, "Mod port"),
-        Err("content does not define NAVAL_BATTLE_TITLE".into())
-    );
+    assert_eq!(title(&missing, "Mod port"), Ok("NAVAL_BATTLE_TITLE".into()));
+    let (empty, _folder) = folder_catalogue(&[(
+        "localisation/mod_l_english.yml",
+        "\u{feff}l_english:\n NAVAL_BATTLE_TITLE:0 \"\"\n",
+    )]);
+    assert_eq!(title(&empty, "Mod port"), Ok(String::new()));
 }
 
 #[test]

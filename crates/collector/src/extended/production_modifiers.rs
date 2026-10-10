@@ -1,6 +1,6 @@
 //! Daily production-hover supplement, independent of the ordinary census.
 //! Native formatter requests use the shared caller-owned tree reader. Buffers
-//! grow off-hour; a failed root is retained separately from other roots.
+//! grow on the acquisition worker; each failed root retains its original verdict.
 //! Production selects its own daily requests and retains capture pressure for
 //! off-hour growth; attrition_modifier_breakdown::demand only sizes army hovers.
 
@@ -29,7 +29,7 @@ pub const TABLES: [TableId; N] = [
 pub const READ_GROUPS: &[(&str, usize, &[usize])] =
     &[("production modifier operands and source trees", 0, &[0, 1])];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     countries: usize,
     lines: usize,
@@ -38,19 +38,6 @@ pub struct Capacities {
     nodes: usize,
     text: usize,
     stack: usize,
-}
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            countries: 512,
-            lines: 2048,
-            efficiencies: 2048 * 16,
-            requests: 512 * native::KEYS.len(),
-            nodes: 32768,
-            text: 512 * 1024,
-            stack: 64,
-        }
-    }
 }
 impl Capacities {
     pub(crate) fn raise_for_demand(&mut self, demand: native::Demand) {
@@ -66,7 +53,6 @@ impl Capacities {
 
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.countries, crate::country_scale::rows(slots, 1));
-        crate::country_scale::raise(&mut self.lines, crate::country_scale::rows(slots, 4));
         crate::country_scale::raise(
             &mut self.requests,
             crate::country_scale::rows(slots, native::KEYS.len()),
@@ -177,7 +163,7 @@ impl Captured {
         let started = qpc();
         let result = (|| {
             let mut context = None;
-            let mut inputs = native::Buffers {
+            let mut inputs = native::GrowingBuffers {
                 countries: &mut self.countries.first,
                 country_len: 0,
                 country_required: 0,
@@ -193,7 +179,7 @@ impl Captured {
                 archetypes: &mut self.archetypes.first,
                 archetype_required: 0,
             };
-            let result = native::capture(memory, base, state, &mut context, &mut inputs);
+            let result = native::capture_growing(memory, base, state, &mut context, &mut inputs);
             self.countries.len = inputs.country_len;
             self.countries.required = inputs.country_required;
             self.lines.len = inputs.line_len;
@@ -210,19 +196,19 @@ impl Captured {
                 return Ok(());
             }
             let mut trees = tree::Buffers {
-                requests: &mut self.requests.first,
+                requests: engine::walk::Buffer::Growing(&mut self.requests.first),
                 request_len: self.requests.len,
                 request_required: self.requests.required,
-                roots: &mut self.roots.first,
+                roots: engine::walk::Buffer::Growing(&mut self.roots.first),
                 root_len: 0,
                 root_required: 0,
-                nodes: &mut self.nodes.first,
+                nodes: engine::walk::Buffer::Growing(&mut self.nodes.first),
                 node_len: 0,
                 node_required: 0,
-                text: &mut self.text.first,
+                text: engine::walk::Buffer::Growing(&mut self.text.first),
                 text_len: 0,
                 text_required: 0,
-                stack: &mut self.stack.first,
+                stack: engine::walk::Buffer::Growing(&mut self.stack.first),
                 stack_required: 0,
             };
             let result = tree::capture(memory, base, &mut trees);
@@ -407,7 +393,13 @@ mod tests {
     #[test]
     fn failed_root_preserves_independent_native_sources_and_negative_factory_entries() {
         use replay::rows::TableRows;
-        let mut capacity = Capacities::default();
+        let mut capacity = Capacities {
+            lines: 1,
+            efficiencies: 2,
+            nodes: 1,
+            text: 3,
+            ..Default::default()
+        };
         capacity.raise_for_countries(2);
         let mut captured = Captured::with_capacities(&capacity);
         captured.context = Some(native::Context::default());

@@ -63,6 +63,17 @@ fn settle(store: &mut Store, ticket: Ticket) {
 }
 
 #[test]
+fn callback_demand_follows_retained_entries_without_allocator_headroom() {
+    for capacity in [8, 1500, 5000] {
+        let mut store = ready(capacity);
+        let ticket = acquire(&mut store, 1, 3);
+        assert_eq!(store.capacity_demand(), 2);
+        settle(&mut store, ticket);
+        assert_eq!(store.capacity_demand(), 2);
+    }
+}
+
+#[test]
 fn repeated_same_hour_pair_has_distinct_acquisitions_and_later_visibility() {
     let mut store = ready(2);
     let first = acquire(&mut store, -17, 2);
@@ -642,6 +653,32 @@ fn hourly_snapshot_scales_at_1500_and_5000_countries_without_callback_growth() {
         assert_eq!(pack.row().coverage, EventFeedCoverage::Complete);
         store.acknowledged(pack.publication());
         assert_eq!(store.unacknowledged(), 0);
+    }
+}
+
+#[test]
+fn worker_snapshot_keeps_first_and_later_mod_sized_events_at_five_thousand_countries() {
+    let mut store = ready(17_000);
+    let mut snapshot = Snapshot::new(0);
+    let mut settled = 0;
+    for (hour, events) in [(10, 5000), (12, 12_000)] {
+        for index in 0..events {
+            let ticket = acquire(&mut store, hour, (index % 5000) as u32);
+            settle(&mut store, ticket);
+        }
+        settled += events;
+        store
+            .snapshot_growing(&mut snapshot, boundary(7, hour + 1))
+            .unwrap();
+        let packed = snapshot.prepare_pack().unwrap();
+        assert_eq!(packed.row().coverage, EventFeedCoverage::Complete);
+        assert_eq!(packed.row().events.len(), events);
+        assert_eq!(packed.row().counts.unwrap().settled, settled as u64);
+        assert_eq!(
+            packed.row().events[events - 1].actor.id,
+            ((events - 1) % 5000) as u32
+        );
+        store.acknowledged(packed.publication());
     }
 }
 

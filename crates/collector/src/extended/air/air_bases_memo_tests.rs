@@ -21,7 +21,7 @@ fn daily_aces_are_excluded_from_hourly_memo_inputs_and_outputs() {
     }
     let bytes = kit::fixture();
     let mut memo = AirBasesMemo::default();
-    let mut job = AirBasesJob::new();
+    let mut job = AirBasesJob::fixture();
     for (index, hour) in (20..24).enumerate() {
         let active = hour == 21;
         let memory = Guard {
@@ -36,6 +36,7 @@ fn daily_aces_are_excluded_from_hourly_memo_inputs_and_outputs() {
                 game_state: kit::GAME_STATE,
                 hour,
                 force_full: false,
+                transport_admission: Default::default(),
             },
             &mut job,
         );
@@ -104,6 +105,7 @@ fn parts(cap: [usize; 5]) -> (Captured, super::super::fog::Captured) {
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
+        transport: [0; 5],
     });
     let mut fog = super::super::fog::Captured::with_capacities(&super::super::fog::Capacities {
         rows: [0, 0, 0, 0, 0, cap[3], 0],
@@ -228,10 +230,11 @@ fn memo_ace_presentation_heap_bytes_match_raw_and_typed_with_local_failure() {
     assert_eq!((portrait.culture, portrait.fallback), (None, None));
 
     let mut memo = AirBasesMemo::default();
+    let mut job = AirBasesJob::fixture();
+    stage(&mut job, &bytes);
     let (air, fog, report) = run(&mut memo, &job, context(1), CAPS);
     assert!(report.eligible && report.installed && !report.hit);
     assert_rows(&air, &fog, &direct);
-    let mut job = AirBasesJob::new();
     stage(&mut job, &bytes);
     let (air, fog, report) = run(&mut memo, &job, context(2), CAPS);
     assert!(report.compared && report.hit && !report.installed);
@@ -365,7 +368,7 @@ fn memo_reuses_complete_current_capture_in_independently_owned_frame() {
     let mut bytes = kit::fixture();
     kit::add_alias_and_rocket(&mut bytes);
     let expected = kit::direct(&kit::memory(&bytes));
-    let mut job = AirBasesJob::new();
+    let mut job = AirBasesJob::fixture();
     stage(&mut job, &bytes);
     let mut memo = AirBasesMemo::default();
     let (mut first, first_fog, report) = run(&mut memo, &job, context(1), CAPS);
@@ -388,7 +391,7 @@ fn memo_reuses_complete_current_capture_in_independently_owned_frame() {
 #[test]
 fn memo_changed_fresh_leaf_misses_and_installs_new_complete_result() {
     let mut bytes = kit::fixture();
-    let mut job = AirBasesJob::new();
+    let mut job = AirBasesJob::fixture();
     stage(&mut job, &bytes);
     let mut memo = AirBasesMemo::default();
     assert!(run(&mut memo, &job, context(1), CAPS).2.installed);
@@ -403,7 +406,7 @@ fn memo_changed_fresh_leaf_misses_and_installs_new_complete_result() {
 #[test]
 fn memo_declines_current_fault_and_admission_states() {
     let bytes = kit::fixture();
-    let mut job = AirBasesJob::new();
+    let mut job = AirBasesJob::fixture();
     for case in [0, 1, 2, 9] {
         stage(&mut job, &bytes);
         let mut memo = AirBasesMemo::default();
@@ -428,7 +431,7 @@ fn memo_declines_current_fault_and_admission_states() {
 #[test]
 fn memo_context_capacity_branch_and_missing_refresh_never_reuse_old_entry() {
     let bytes = kit::fixture();
-    let mut job = AirBasesJob::new();
+    let mut job = AirBasesJob::fixture();
     stage(&mut job, &bytes);
     for case in 0..11 {
         let mut memo = AirBasesMemo::default();
@@ -456,7 +459,7 @@ fn memo_context_capacity_branch_and_missing_refresh_never_reuse_old_entry() {
 #[test]
 fn memo_incomplete_capacity_result_cannot_seed_and_growth_requires_decode() {
     let bytes = kit::fixture();
-    let mut job = AirBasesJob::new();
+    let mut job = AirBasesJob::fixture();
     stage(&mut job, &bytes);
     // Only bases/aces/names retain fixed typed capacities. Complete raw
     // registrations supply their own storage demand before decode.
@@ -477,7 +480,7 @@ fn memo_incomplete_capacity_result_cannot_seed_and_growth_requires_decode() {
 fn memo_grows_registrations_before_keying_and_restoring_another_small_frame() {
     let bytes = kit::fixture();
     let expected = kit::direct(&kit::memory(&bytes));
-    let mut job = AirBasesJob::new();
+    let mut job = AirBasesJob::fixture();
     stage(&mut job, &bytes);
     for initial in [0, 1] {
         let mut cap = CAPS;
@@ -500,7 +503,7 @@ fn memo_grows_registrations_before_keying_and_restoring_another_small_frame() {
 fn memo_capacity_accounting_follows_growth_invalidation_move_and_drop() {
     static LOCAL: crate::raw_memory::Tracker = crate::raw_memory::Tracker::new();
     let mut bytes = kit::fixture();
-    let mut job = AirBasesJob::new();
+    let mut job = AirBasesJob::fixture();
     stage(&mut job, &bytes);
     let mut memo = AirBasesMemo::on_tracker(&LOCAL);
     assert!(run(&mut memo, &job, context(1), CAPS).2.installed);

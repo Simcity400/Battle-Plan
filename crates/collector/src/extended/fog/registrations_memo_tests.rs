@@ -70,6 +70,9 @@ fn registration_demand_growth_is_accounted_and_propagated_to_pooled_capacities()
             captured.allocated_bytes(),
             captured.registrations.rows.capacity() * size_of::<cair_base::RegistrationRow>()
                 + captured.wings.first.capacity() * size_of::<u64>()
+                + captured.carrier.bytes()
+                + captured.carrier_scratch.bytes()
+                + captured.resolved.capacity() * size_of::<cair_base::ResolvedLink>()
         );
         captured.grow(&mut capacities);
         assert_eq!(capacities.rows[5], captured.registrations.rows.len());

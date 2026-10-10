@@ -64,7 +64,7 @@ impl Viewer {
                 .expect("embedded controller")
                 .service()
                 .map_settings(&replay);
-            self.graphics = preferences.graphics;
+            self.set_embedded_graphics(preferences.graphics);
             let selection = (
                 dashboard::map_settings::campaign_key(&replay),
                 preferences.visual_mods.clone(),

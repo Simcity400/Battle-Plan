@@ -1,6 +1,7 @@
 //! Tooltip observers from the children actually presented by the land batch.
 
 use super::*;
+use crate::map::counter_tooltips::gui_authored::Authored;
 
 #[derive(Default)]
 pub(super) struct Sprite {
@@ -11,7 +12,7 @@ pub(super) struct Sprite {
 
 #[derive(Default)]
 pub(super) struct Presented {
-    pub(super) controls: Vec<(CounterControl, [f32; 4])>,
+    pub(super) controls: Vec<(CounterControl, [f32; 4], Option<Authored>)>,
     pub(super) refused: Vec<String>,
 }
 
@@ -153,7 +154,18 @@ pub(super) fn presented(
             continue;
         }
         if rect[2] > 0.0 && rect[3] > 0.0 {
-            out.controls.push((control, rect));
+            // The manual batch admits enabled buttons only (layouts::child),
+            // and applies no enabled-state overrides. Never infer a disabled
+            // selector for a form that the actual drawing path refuses.
+            if element.button().is_some_and(|button| !button.enabled) {
+                out.refused.push(format!(
+                    "{window}.{} disabled counter batch control is not admitted",
+                    element.name()
+                ));
+                continue;
+            }
+            out.controls
+                .push((control, rect, Authored::read(element, false)));
         }
     }
     out
@@ -163,18 +175,15 @@ pub(super) fn presented(
 struct Frame {
     hit: crate::map::native_gui::Hit,
     texture: [f32; 2],
-    frames: u32,
+    grid: [i32; 2],
     drawn: [f32; 2],
 }
 
 impl Frame {
     fn scaled_size(&self, scale: f32) -> [f32; 2] {
         // ContainsPoint@14222C220 multiplies the complete size by the scale,
-        // then the reciprocal frame count, all in native float precision.
-        [
-            self.texture[0] * scale * (1.0 / self.frames as f32),
-            self.texture[1] * scale,
-        ]
+        // then the reciprocal grid size, all in native float precision.
+        [0, 1].map(|axis| self.texture[axis] * scale * (1.0 / self.grid[axis] as f32))
     }
 }
 
@@ -212,7 +221,7 @@ fn sheet_frame(inputs: &CounterInputs<'_>, sheet: &SpriteSheet) -> Result<Frame,
     Ok(Frame {
         hit: sprite_hit(inputs, sheet.name.as_bytes())?,
         texture: sheet.size.map(|value| value as f32),
-        frames: sheet.frames.max(1),
+        grid: [sheet.frames.max(1) as i32, 1],
         drawn: sheet.frame_size(),
     })
 }
@@ -225,13 +234,17 @@ fn selected_frame(
     quad: &sprites::Quad,
 ) -> Result<Frame, &'static str> {
     if element.is_named("type") {
-        let name = inputs.assets.types.entries().find_map(|((name, _), cell)| {
-            (inputs.assets.types.texture == quad.texture
-                && inputs.assets.types.uv(*cell) == quad.uv)
-                .then_some(name)
-        });
-        let name = name.ok_or("hover type sprite identity unavailable")?;
-        let (texture, frames) = inputs
+        let (name, cell) = inputs
+            .assets
+            .types
+            .entries()
+            .find_map(|((name, _), cell)| {
+                (inputs.assets.types.texture == quad.texture
+                    && inputs.assets.types.uv(*cell) == quad.uv)
+                    .then_some((name, *cell))
+            })
+            .ok_or("hover type sprite identity unavailable")?;
+        let (texture, grid) = inputs
             .assets
             .types
             .source_dimensions(name)
@@ -239,8 +252,8 @@ fn selected_frame(
         return Ok(Frame {
             hit: sprite_hit(inputs, name.as_bytes())?,
             texture: texture.map(|value| value as f32),
-            frames,
-            drawn: inputs.assets.types.frame_size.map(|value| value as f32),
+            grid,
+            drawn: inputs.assets.types.frame_size(cell),
         });
     }
     if element.is_named("general_portrait") {
@@ -401,6 +414,7 @@ fn ability_controls(
                     ordinal: ability.ordinal,
                 },
                 rect,
+                Authored::read(element, false),
             ));
         }
     }
@@ -430,4 +444,77 @@ fn control(element: &native::Element, railway_gun: bool) -> CounterControl {
         }
     }
     CounterControl::Normal
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vertical_counter_hover_uses_the_native_grid_and_scale_order() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_vertical_counter_hover_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("gfx")).unwrap();
+        std::fs::write(
+            root.join("gfx/type.tga"),
+            crate::map::test_tga_rgba8(12, 60),
+        )
+        .unwrap();
+        let layers = ResolvedLayers::from_folders(&[(root.as_path(), &[][..])]).unwrap();
+        let sprites = SpriteSet::new(&[("interface/test.gfx".into(),
+            native::sprites::read_sprites(b"spriteTypes={spriteType={name=GFX_div_templ_7_small texturefile=gfx/type.tga noOfFrames=2 framedirectiony=yes}}"))]);
+        let (atlas, warnings) =
+            templates::TypeAtlas::load(&layers, &sprites, Default::default(), &mut Vec::new())
+                .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let icon = templates::TypeIcon {
+            sprite: "GFX_div_templ_7_small".into(),
+            frame: 1,
+        };
+        let cell = atlas.cell(&icon).unwrap();
+        let (texture, grid) = atlas.source_dimensions(&icon.sprite).unwrap();
+        let frame = Frame {
+            hit: crate::map::native_gui::Hit::Frame,
+            texture: texture.map(|edge| edge as f32),
+            grid,
+            drawn: atlas.frame_size(cell),
+        };
+        assert_eq!(frame.scaled_size(1.0), [12., 30.]);
+        assert_eq!(frame.scaled_size(0.75), [9., 22.5]);
+        let [w, h] = frame.scaled_size(0.75);
+        let rect = [100., 200., w, h];
+        assert!(crate::combat::contains(rect, [108., 222.]));
+        assert!(!crate::combat::contains(rect, [109., 222.]));
+        assert!(!crate::combat::contains(rect, [108., 222.5]));
+        let mut batch = sprites::Batch::default();
+        land::draw_type_icon(
+            &atlas,
+            &mut batch,
+            &Child {
+                sprite: icon.sprite.clone(),
+                at: [0.; 2],
+                scale: 0.75,
+                frame: 1,
+                rotation: 0.,
+                centered: false,
+                order: 0,
+            },
+            [100., 200.],
+            Some(&icon),
+            Some([1.; 4]),
+        );
+        assert_eq!(batch.quads[0].rect, rect);
+        assert_eq!(batch.quads[0].uv, [0., 0.5, 1., 1.]);
+        // ContainsPoint@14222C220 scales the full texture before dividing.
+        let fractional = Frame {
+            texture: [12., 31.],
+            grid: [1, 3],
+            drawn: [12., 31. / 3.],
+            ..frame
+        };
+        assert_eq!(fractional.scaled_size(0.7)[1].to_bits(), 0x40e7_7777);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

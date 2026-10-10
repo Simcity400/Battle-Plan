@@ -9,7 +9,7 @@ use crate::{
 };
 use engine::{
     Memory,
-    allocation::{copy_vec, map_slice, owned_vec, reserve, reserve_exact, vec},
+    allocation::{copy_vec, map_slice, owned_vec, reserve, reserve_exact},
     carmy_manpower_values, cbuilding, cbuilding_production_line, cbuilding_status, ccountry,
     ccountry_collaboration_data, ccountry_collaboration_status, ccountry_occupation_data,
     ccountry_occupation_status, cgame_state, cgeneral_production_line, coccupation_law,
@@ -48,7 +48,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
     ("Occupation", 5, &[5, 6, 7, 8, 9]),
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: [usize; N],
     routes: usize,
@@ -58,21 +58,49 @@ pub struct Capacities {
     equipment: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: [
-                4096, 4096, 4096, 1024, 256, 512, 1024, 1024, 2048, 1024, 2048, 1024,
-            ],
-            routes: 4096,
-            law_bytes: 16384,
-            occupied: 0,
-            group_laws: 0,
-            equipment: 0,
-        }
-    }
-}
 impl Capacities {
+    #[cfg(test)]
+    pub(super) fn for_test_buildings(rows: usize) -> Self {
+        let mut capacity = Self::default();
+        capacity.rows[..2].fill(rows);
+        capacity
+    }
+
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let rows = |outcome| match outcome {
+            Outcome::Rows { len } => Ok(len),
+            Outcome::Truncated { len, unread_rows } => len
+                .checked_add(unread_rows as usize)
+                .ok_or("construction sizing row count overflow"),
+            Outcome::Unavailable { reason } => Err(reason),
+        };
+        for (index, outcome) in [
+            (2, state_resource_entry::walk(memory, base, state, &mut [])),
+            (10, cresistance::walk(memory, base, state, &mut [])),
+        ] {
+            crate::table_capture::grow_capacity(&mut self.rows[index], rows(outcome)?);
+        }
+        let queue = cbuilding_production_line::walk(
+            memory,
+            base,
+            state,
+            cbuilding_production_line::Buffers {
+                buildings: &mut [],
+                railways: &mut [],
+                route_provinces: &mut [],
+            },
+        );
+        crate::table_capture::grow_capacity(&mut self.rows[3], rows(queue.buildings)?);
+        crate::table_capture::grow_capacity(&mut self.rows[4], rows(queue.railways)?);
+        crate::table_capture::grow_capacity(&mut self.routes, queue.required_route_len);
+        Ok(())
+    }
+
     pub(crate) fn raise_for_occupied(&mut self, entries: usize) {
         crate::country_scale::raise(&mut self.occupied, crate::country_scale::rows(entries, 1));
     }
@@ -349,6 +377,7 @@ impl Captured {
 
     /// All elapsed values are raw QPC ticks; the containing callback owns their
     /// conversion to nanoseconds and its own complete callback measurement.
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -356,6 +385,29 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
+    ) -> [u64; N] {
+        self.capture_buffers(memory, base, game_state, hour, force_full, false)
+    }
+
+    pub(crate) fn capture_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        self.capture_buffers(memory, base, game_state, hour, force_full, true)
+    }
+
+    fn capture_buffers(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        growing: bool,
     ) -> [u64; N] {
         if !self.rest_raw_mode {
             self.base_resources.reset();
@@ -387,19 +439,30 @@ impl Captured {
         }
         ticks[2] = read_accounting::with_table(TABLES[2], || {
             single(&mut self.base_resources, |output| {
-                state_resource_entry::walk(memory, base, game_state, output)
+                state_resource_entry::walk_buffer(
+                    memory,
+                    base,
+                    game_state,
+                    engine::walk::Buffer::for_worker(output, growing),
+                )
             })
         });
         let mut reads = read_accounting::table(TABLES[3]);
         let begin = qpc();
-        let queue = cbuilding_production_line::walk(
+        let queue = cbuilding_production_line::walk_buffer(
             memory,
             base,
             game_state,
-            cbuilding_production_line::Buffers {
-                buildings: &mut self.building_construction.rows,
-                railways: &mut self.railway_construction.rows,
-                route_provinces: &mut self.routes.first,
+            cbuilding_production_line::BuffersBuffer {
+                buildings: engine::walk::Buffer::for_worker(
+                    &mut self.building_construction.rows,
+                    growing,
+                ),
+                railways: engine::walk::Buffer::for_worker(
+                    &mut self.railway_construction.rows,
+                    growing,
+                ),
+                route_provinces: engine::walk::Buffer::for_worker(&mut self.routes.first, growing),
             },
         );
         self.building_construction.outcome = queue.buildings;
@@ -409,21 +472,27 @@ impl Captured {
         ticks[3] = elapsed(begin);
         reads.select(TABLES[5]);
         let begin = qpc();
-        let occupation = ccountry_occupation_status::walk_with_occupied(
+        let occupation = ccountry_occupation_status::walk_with_occupied_buffer(
             memory,
             base,
             game_state,
-            ccountry_occupation_status::Buffers {
-                settings: &mut self.settings.rows,
-                laws: &mut self.laws.rows,
-                group_laws: &mut self.group_laws.rows,
-                garrisons: &mut self.garrisons.rows,
-                manpower: &mut self.assigned_manpower.rows,
-                reserve_manpower: &mut self.reserve_manpower.rows,
-                names: &mut self.law_bytes.first,
-                equipment: &mut self.equipment.first,
+            ccountry_occupation_status::BuffersBuffer {
+                settings: engine::walk::Buffer::for_worker(&mut self.settings.rows, growing),
+                laws: engine::walk::Buffer::for_worker(&mut self.laws.rows, growing),
+                group_laws: engine::walk::Buffer::for_worker(&mut self.group_laws.rows, growing),
+                garrisons: engine::walk::Buffer::for_worker(&mut self.garrisons.rows, growing),
+                manpower: engine::walk::Buffer::for_worker(
+                    &mut self.assigned_manpower.rows,
+                    growing,
+                ),
+                reserve_manpower: engine::walk::Buffer::for_worker(
+                    &mut self.reserve_manpower.rows,
+                    growing,
+                ),
+                names: engine::walk::Buffer::for_worker(&mut self.law_bytes.first, growing),
+                equipment: engine::walk::Buffer::for_worker(&mut self.equipment.first, growing),
             },
-            &mut self.occupied.first,
+            engine::walk::Buffer::for_worker(&mut self.occupied.first, growing),
         );
         self.settings.outcome = occupation.settings;
         self.laws.outcome = occupation.laws;
@@ -441,11 +510,21 @@ impl Captured {
         ticks[5] = elapsed(begin);
         reads.select(TABLES[10]);
         ticks[10] = single(&mut self.resistance, |output| {
-            cresistance::walk(memory, base, game_state, output)
+            cresistance::walk_buffer(
+                memory,
+                base,
+                game_state,
+                engine::walk::Buffer::for_worker(output, growing),
+            )
         });
         reads.select(TABLES[11]);
         ticks[11] = single(&mut self.collaboration, |output| {
-            ccountry_collaboration_status::walk(memory, base, game_state, output)
+            ccountry_collaboration_status::walk_buffer(
+                memory,
+                base,
+                game_state,
+                engine::walk::Buffer::for_worker(output, growing),
+            )
         });
         ticks
     }
@@ -601,15 +680,17 @@ fn elapsed(begin: i64) -> u64 {
 }
 
 mod owned;
+#[cfg(test)]
+pub(crate) use owned::copy_construction_rest_refresh;
 
 pub(crate) use owned::{
     ConstructionRestCopyContext, ConstructionRestCopyReport, ConstructionRestJob,
-    copy_construction_rest_refresh,
+    copy_construction_rest_refresh_growing,
 };
 #[cfg(test)]
 use owned::{M_C_OCC, copy_construction_string};
 
-fn single<R>(rows: &mut CaptureRows<R>, mut walk: impl FnMut(&mut [R]) -> Outcome) -> u64 {
+fn single<R>(rows: &mut CaptureRows<R>, mut walk: impl FnMut(&mut Vec<R>) -> Outcome) -> u64 {
     let begin = qpc();
     rows.outcome = walk(&mut rows.rows);
     elapsed(begin)
@@ -794,3 +875,6 @@ pub(crate) mod construction_rest_test_kit;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod buildings_tests;

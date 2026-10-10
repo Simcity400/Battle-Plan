@@ -466,6 +466,30 @@ pub trait Memory {
         None
     }
 
+    /// Actual country slot zero's first authentication result in this pass.
+    /// Success and failure belong to the exact module/state and hourly lease,
+    /// independently of the positive census. Owned replay adapters copy this
+    /// scalar; observation-recording wrappers must not silently retry a failure.
+    fn authenticated_reserved_country(
+        &self,
+        _base: usize,
+        _game_state: usize,
+    ) -> Option<Result<crate::ccountry::Country, &'static str>> {
+        None
+    }
+
+    /// The same pass-local reserved result with its original slot selection.
+    /// This optional capability performs no source read. Its module/state and
+    /// quiescent lease are exactly those of authenticated_reserved_country;
+    /// failed selection/authentication must never be retried by a forwarder.
+    fn authenticated_reserved_country_observation(
+        &self,
+        _base: usize,
+        _game_state: usize,
+    ) -> Option<crate::ccountry::ReservedCountryObservation> {
+        None
+    }
+
     /// Optional raw lookup from a complete, sorted accumulator snapshot owned
     /// by this acquisition pass. Its header and entries come from the current
     /// source acquisition and remain owned for the entire lookup.

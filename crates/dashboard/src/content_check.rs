@@ -797,16 +797,9 @@ fn place_names_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(
         let subject = format!("state {id}");
         match key {
             Ok(key) => {
-                if catalogue
-                    .localised(key, crate::catalogue::View::Plain)
-                    .is_some_and(|name| name.is_empty())
-                {
-                    findings.push(Finding::new(
-                        Kind::Refused,
-                        &subject,
-                        format!("state {id}: native display name is empty"),
-                    ));
-                }
+                // 1409CC380 returns the template text even when empty;
+                // 142230940 preserves successfully localised empty text.
+                catalogue.localised(key, crate::catalogue::View::Plain);
                 take(catalogue, &subject, findings);
             }
             Err(reason) => findings.push(Finding::new(Kind::Refused, subject, reason)),
@@ -817,16 +810,9 @@ fn place_names_check(content: &Content, findings: &mut Vec<Finding>) -> Result<(
         .map_err(|error| format!("Strategic-region names unavailable: {error}"))?;
     for region in regions.regions.values() {
         let subject = format!("strategic region {}", region.id);
-        if catalogue
-            .localised(&region.name_key, crate::catalogue::View::Plain)
-            .is_some_and(|name| name.is_empty())
-        {
-            findings.push(Finding::new(
-                Kind::Refused,
-                &subject,
-                "native region display name is empty",
-            ));
-        }
+        // 1415938B0 stores the localiser's result without an empty gate;
+        // 140E0EB10 returns it, including the empty constructor default.
+        catalogue.localised(&region.name_key, crate::catalogue::View::Plain);
         take(catalogue, &subject, findings);
     }
     Ok(())
@@ -1298,6 +1284,70 @@ fn names_check(content: &Content, plain: bool, findings: &mut Vec<Finding>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn place_name_inventory_accepts_successful_empty_text_and_native_defaults() {
+        let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+            (
+                "common/defines/mod.lua",
+                "NDefines={NBuildings={MAX_BUILDING_LEVELS=15}}",
+            ),
+            (
+                "map/default.map",
+                "definitions=definition.csv provinces=provinces.bmp terrain=terrain.bmp rivers=rivers.bmp heightmap=heightmap.bmp tree_definition=trees.bmp",
+            ),
+            ("map/definition.csv", "0;0;0;0;land;false;unknown;0\n"),
+            ("history/states/empty.txt", "state={ id=11 name=EMPTY }"),
+            ("history/states/default.txt", "state={ id=12 }"),
+            ("history/states/absent.txt", "state={ id=13 name=ABSENT }"),
+            (
+                "map/strategicregions/empty.txt",
+                "strategic_region={ id=21 name=EMPTY }",
+            ),
+            (
+                "map/strategicregions/default.txt",
+                "strategic_region={ id=22 }",
+            ),
+            (
+                "map/strategicregions/absent.txt",
+                "strategic_region={ id=23 name=ABSENT }",
+            ),
+            (
+                "localisation/mod_l_english.yml",
+                "\u{feff}l_english:\n EMPTY:0 \"\"\n",
+            ),
+        ]);
+        assert_eq!(
+            catalogue
+                .cached_states()
+                .unwrap()
+                .names
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            [11, 12, 13]
+        );
+        assert_eq!(
+            installed_content::regions::read(&catalogue.content.layers)
+                .unwrap()
+                .regions
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            [21, 22, 23]
+        );
+        let content = Content::new(Arc::clone(&catalogue.content), "english");
+        for key in ["place-names", "territory-breakdown", "air-superiority"] {
+            let mut findings = Vec::new();
+            run(key, &content, &mut findings).unwrap();
+            assert!(
+                findings
+                    .iter()
+                    .all(|finding| matches!(finding.kind, Kind::Offline | Kind::Content)),
+                "{key}: {findings:?}"
+            );
+        }
+    }
 
     #[test]
     fn operative_content_checks_prepare_roster_and_keep_placements_recording_only() {

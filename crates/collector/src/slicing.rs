@@ -11,7 +11,7 @@
 //! Owners are native country IDs, canonical country slots or native state IDs,
 //! one kind per family ([`OwnerKind`]). Each family has its own
 //! [`SliceSelection`] per frame and its own [`SliceFingerprints`] store for the
-//! attachment, so country 5, slot 5 and state 5 never share a bit. Register a family in [`FAMILIES`]; the spool
+//! attachment, so country 5, slot 5 and state 5 never share storage. Register a family in [`FAMILIES`]; the spool
 //! then merges its tables by owner ([`replay::sliced::merge_slice`]).
 //!
 //! A read that was selected but not published (failed, truncated or dropped)
@@ -24,12 +24,7 @@
 //! re-aliased owner's rows leave at the next hour, not at its next slice.
 
 use replay::rows::TableId;
-
-/// Owners with a fingerprint: the engine's u16 slot range. A larger ID has
-/// no fingerprint, so nothing certifies it unchanged: it is read at every
-/// hour, and counted in status.
-pub(crate) const FINGERPRINT_OWNERS: usize = 1 << 16;
-const OWNER_WORDS: usize = FINGERPRINT_OWNERS / 64;
+use std::collections::HashMap;
 
 /// What a family's owner IDs are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,73 +175,55 @@ pub(crate) fn family_of(table: TableId) -> Option<usize> {
         .position(|family| family.tables.contains(&table))
 }
 
-fn bit(words: &[u64], owner: u32) -> bool {
-    let owner = owner as usize;
-    words
-        .get(owner / 64)
-        .is_some_and(|word| word & (1 << (owner % 64)) != 0)
-}
-
-fn set_bit(words: &mut [u64], owner: u32, value: bool) {
-    let owner = owner as usize;
-    if let Some(word) = words.get_mut(owner / 64) {
-        if value {
-            *word |= 1 << (owner % 64);
-        } else {
-            *word &= !(1 << (owner % 64));
-        }
+/// Worker/spool insertion sizes from an original observed owner occurrence,
+/// retaining ascending output without allocating an owner's entire ID domain.
+fn insert_owner(owners: &mut Vec<u32>, owner: u32) -> bool {
+    let Err(index) = owners.binary_search(&owner) else {
+        return true;
+    };
+    if engine::allocation::reserve_push_batch(owners, 1).is_err() {
+        return false;
     }
+    owners.insert(index, owner);
+    true
 }
 
-fn boxed_words(len: usize) -> std::io::Result<Box<[u64]>> {
-    let words = engine::allocation::filled(len, 0)?;
-    debug_assert_eq!(words.len(), words.capacity());
-    engine::allocation::boxed_slice(words).map_err(engine::allocation::allocation_error)
-}
-
-/// The owners one hour's read of a family covered. Preallocated per frame;
-/// no allocation on the hour.
+/// The owners one hour's worker read of a family covered. Constructors are
+/// empty; original observed owners grow storage before their read is published.
 pub(crate) struct SliceSelection {
     pub(crate) hour: i32,
     pub(crate) force_full: bool,
     /// Owners read before their slice because their fingerprint changed.
-    early: Box<[u64]>,
+    early: Vec<u32>,
     pub(crate) early_count: u32,
     /// Owners the scan saw this hour; meaningful once `census` is set.
-    seen: Box<[u64]>,
+    seen: Vec<u32>,
     /// The scan visited every live owner without a census error.
     census: bool,
     /// Owners the family's walker read this hour, when it reports them
     /// (`track_reads`): a walker that visits only some census owners stamps
     /// only those it read.
-    walked: Box<[u64]>,
+    walked: Vec<u32>,
     tracked: bool,
     /// Owners whose fingerprint was compared this hour.
     pub(crate) scanned: u32,
-    /// Owners above the fingerprint range: read at every hour.
+    /// Owners whose bookkeeping allocation could not complete.
     pub(crate) out_of_range: u32,
     /// Worker ticks spent computing fingerprints (not game-thread time).
     pub(crate) scan_ticks: u64,
 }
 
 impl SliceSelection {
-    /// `storage` false gives an allocation-free placeholder that must not scan.
-    pub(crate) fn new(storage: bool) -> Self {
-        let words = if storage { OWNER_WORDS } else { 0 };
-        let storage = boxed_words(words).and_then(|early| {
-            let seen = boxed_words(words)?;
-            let walked = boxed_words(words)?;
-            Ok((early, seen, walked))
-        });
-        let (early, seen, walked) = storage.unwrap_or_default();
+    /// Both owned packs and callback placeholders start without owner storage.
+    pub(crate) fn new(_storage: bool) -> Self {
         Self {
             hour: 0,
             force_full: true,
-            early,
+            early: Vec::new(),
             early_count: 0,
-            seen,
+            seen: Vec::new(),
             census: false,
-            walked,
+            walked: Vec::new(),
             tracked: false,
             scanned: 0,
             out_of_range: 0,
@@ -258,9 +235,10 @@ impl SliceSelection {
     pub(crate) fn reset(&mut self, hour: i32, force_full: bool) {
         self.hour = hour;
         self.force_full = force_full;
-        self.early.fill(0);
+        self.early.clear();
         self.early_count = 0;
-        self.seen.fill(0);
+        self.seen.clear();
+        self.walked.clear();
         self.census = false;
         self.tracked = false;
         self.scanned = 0;
@@ -276,33 +254,31 @@ impl SliceSelection {
         owner: u32,
         fingerprint: Option<u64>,
     ) {
-        debug_assert!(!self.early.is_empty(), "placeholder selections cannot scan");
         self.scanned += 1;
-        if owner as usize >= FINGERPRINT_OWNERS {
+        if !insert_owner(&mut self.seen, owner) {
             self.out_of_range += 1;
+            self.force_full = true;
             return;
         }
-        set_bit(&mut self.seen, owner, true);
         if fingerprints.observe(owner, fingerprint) && !self.contains(owner) {
-            set_bit(&mut self.early, owner, true);
-            self.early_count += 1;
+            if insert_owner(&mut self.early, owner) {
+                self.early_count += 1;
+            } else {
+                self.out_of_range += 1;
+                self.force_full = true;
+            }
         }
     }
 
     /// Add `owner` to this hour's read outside its slice, without a
-    /// fingerprint. An owner above the fingerprint range cannot be marked and
-    /// is counted in `out_of_range`; false then.
+    /// fingerprint. Storage grows on the same worker before publication.
     pub(crate) fn select(&mut self, owner: u32) -> bool {
-        debug_assert!(
-            !self.early.is_empty(),
-            "placeholder selections cannot select"
-        );
-        if owner as usize >= FINGERPRINT_OWNERS {
-            self.out_of_range += 1;
-            return false;
-        }
         if !self.contains(owner) {
-            set_bit(&mut self.early, owner, true);
+            if !insert_owner(&mut self.early, owner) {
+                self.out_of_range += 1;
+                self.force_full = true;
+                return false;
+            }
             self.early_count += 1;
         }
         true
@@ -311,6 +287,10 @@ impl SliceSelection {
     /// The scan visited every live owner: owners it did not see are gone, and
     /// the store forgets them, so a returning or reused ID is new at once.
     pub(crate) fn finish_census(&mut self, fingerprints: &mut SliceFingerprints) {
+        if self.out_of_range != 0 || engine::allocation::capture_stopped() {
+            self.force_full = true;
+            return;
+        }
         self.census = true;
         fingerprints.keep_only(&self.seen);
     }
@@ -327,31 +307,30 @@ impl SliceSelection {
         }
     }
 
-    /// Whether `owner` may still hold rows: seen by a complete census, above
-    /// the tracked range, or not known to be gone (no complete census).
+    /// Whether `owner` may still hold rows: seen by a complete census or not
+    /// known to be gone (no complete census).
     pub(crate) fn live(&self, owner: u32) -> bool {
-        !self.census || owner as usize >= FINGERPRINT_OWNERS || bit(&self.seen, owner)
+        !self.census || self.seen.binary_search(&owner).is_ok()
     }
 
-    /// Whether this hour's read covers `owner`. An owner above the
-    /// fingerprint range has no fingerprint and is read at every hour.
+    /// Whether this hour's read covers `owner`.
     pub(crate) fn contains(&self, owner: u32) -> bool {
-        owner as usize >= FINGERPRINT_OWNERS
-            || replay::cadence::slice_active(owner, self.hour, self.force_full)
-            || bit(&self.early, owner)
+        replay::cadence::slice_active(owner, self.hour, self.force_full)
+            || self.early.binary_search(&owner).is_ok()
     }
 
     /// This hour's walker reports the owners it read (`mark_read`); only
     /// those are read owners.
     pub(crate) fn track_reads(&mut self) {
         self.tracked = true;
-        self.walked.fill(0);
+        self.walked.clear();
     }
 
     /// The walker read `owner` this hour, rows or none.
     pub(crate) fn mark_read(&mut self, owner: u32) {
-        if (owner as usize) < FINGERPRINT_OWNERS {
-            set_bit(&mut self.walked, owner, true);
+        if !insert_owner(&mut self.walked, owner) {
+            self.out_of_range += 1;
+            self.force_full = true;
         }
     }
 
@@ -361,31 +340,17 @@ impl SliceSelection {
     pub(crate) fn read_owners(&self) -> impl Iterator<Item = u32> + '_ {
         self.seen
             .iter()
-            .enumerate()
-            .flat_map(|(index, &word)| {
-                let mut word = word;
-                std::iter::from_fn(move || {
-                    (word != 0).then(|| {
-                        let owner = (index * 64) as u32 + word.trailing_zeros();
-                        word &= word - 1;
-                        owner
-                    })
-                })
-            })
+            .copied()
             .filter(|&owner| self.contains(owner))
-            .filter(|&owner| !self.tracked || bit(&self.walked, owner))
+            .filter(|&owner| !self.tracked || self.walked.binary_search(&owner).is_ok())
     }
 
     /// This hour's read was not published (failed, truncated or dropped):
     /// every owner it selected is a change at its next scan, so the next hour
     /// reads them again.
     pub(crate) fn invalidate(&self, fingerprints: &mut SliceFingerprints) {
-        for (index, &word) in self.early.iter().enumerate() {
-            let mut word = word;
-            while word != 0 {
-                fingerprints.invalidate((index * 64) as u32 + word.trailing_zeros());
-                word &= word - 1;
-            }
+        for &owner in &self.early {
+            fingerprints.invalidate(owner);
         }
         fingerprints.stale_slices |= if self.force_full {
             u32::MAX
@@ -400,7 +365,7 @@ impl SliceSelection {
         let mut selection = Self::new(true);
         selection.reset(hour, force_full);
         for &owner in early {
-            set_bit(&mut selection.early, owner, true);
+            assert!(insert_owner(&mut selection.early, owner));
             selection.early_count += 1;
         }
         selection
@@ -410,7 +375,7 @@ impl SliceSelection {
     #[cfg(test)]
     pub(crate) fn with_census(mut self, seen: &[u32]) -> Self {
         for &owner in seen {
-            set_bit(&mut self.seen, owner, true);
+            assert!(insert_owner(&mut self.seen, owner));
         }
         self.census = true;
         self
@@ -419,30 +384,21 @@ impl SliceSelection {
 
 /// The latest change fingerprint per owner for one sliced family.
 pub(crate) struct SliceFingerprints {
-    values: Box<[u64]>,
-    /// Owners whose last scan produced a fingerprint.
-    known: Box<[u64]>,
-    /// Owners whose last scan could not read one, or whose last read was not
-    /// published: their next scan counts as a change.
-    stale: Box<[u64]>,
+    values: HashMap<u32, Fingerprint>,
     /// Slots (bit per slice) whose last read was not published; every owner
     /// of such a slice counts as a change at the next scan.
     stale_slices: u32,
 }
+struct Fingerprint {
+    value: Option<u64>,
+    stale: bool,
+}
 
 impl SliceFingerprints {
-    /// Allocated once, before the hook is installed.
+    /// Storage follows only the original owners observed by each worker scan.
     pub(crate) fn new() -> Self {
-        let storage = boxed_words(FINGERPRINT_OWNERS).and_then(|values| {
-            let known = boxed_words(OWNER_WORDS)?;
-            let stale = boxed_words(OWNER_WORDS)?;
-            Ok((values, known, stale))
-        });
-        let (values, known, stale) = storage.unwrap_or_default();
         Self {
-            values,
-            known,
-            stale,
+            values: HashMap::new(),
             stale_slices: 0,
         }
     }
@@ -450,24 +406,21 @@ impl SliceFingerprints {
     /// Forget every observation, e.g. after an interrupted job. Every owner
     /// is then new at its next scan and is read at once.
     pub(crate) fn forget(&mut self) {
-        self.known.fill(0);
-        self.stale.fill(0);
+        self.values.clear();
         self.stale_slices = 0;
     }
 
-    /// Forget every owner a complete census did not see (`seen` bit set).
-    fn keep_only(&mut self, seen: &[u64]) {
-        for (words, seen) in [&mut self.known, &mut self.stale]
-            .into_iter()
-            .flat_map(|words| words.iter_mut().zip(seen))
-        {
-            *words &= *seen;
-        }
+    /// Forget every owner a complete census did not see.
+    fn keep_only(&mut self, seen: &[u32]) {
+        self.values
+            .retain(|owner, _| seen.binary_search(owner).is_ok());
     }
 
     /// Make `owner` a change at its next scan.
     pub(crate) fn invalidate(&mut self, owner: u32) {
-        set_bit(&mut self.stale, owner, true);
+        if let Some(value) = self.values.get_mut(&owner) {
+            value.stale = true;
+        }
     }
 
     /// Record `value` (None: unreadable) for `owner`. True if the owner is new
@@ -476,25 +429,21 @@ impl SliceFingerprints {
     /// every hour until its fingerprint reads again, and that read publishes
     /// its exact rows or its failure.
     fn observe(&mut self, owner: u32, value: Option<u64>) -> bool {
-        let index = owner as usize;
-        if index >= FINGERPRINT_OWNERS {
-            return false;
-        }
-        let known = bit(&self.known, owner);
-        let stale = bit(&self.stale, owner)
+        let previous = self.values.get(&owner);
+        let changed = previous.is_none_or(|previous| previous.stale || previous.value != value)
+            || value.is_none()
             || self.stale_slices & (1 << replay::cadence::slice_of(owner)) != 0;
-        let Some(&previous) = self.values.get(index) else {
+        if previous.is_none() && engine::allocation::reserve_map(&mut self.values, 1).is_err() {
             return true;
-        };
-        set_bit(&mut self.known, owner, value.is_some());
-        set_bit(&mut self.stale, owner, value.is_none());
-        if let Some(value) = value {
-            self.values[index] = value;
         }
-        match value {
-            None => true,
-            Some(value) => stale || !known || value != previous,
-        }
+        self.values.insert(
+            owner,
+            Fingerprint {
+                value,
+                stale: value.is_none(),
+            },
+        );
+        changed
     }
 
     /// End an hour's scan: whole-slice invalidations have reached every owner.
@@ -508,84 +457,86 @@ mod tests {
     use super::*;
 
     #[test]
-    fn boxed_selection_layout_and_storage_match_pinned_recording_accounting() {
-        // Pinned e46 field shapes: Captured accounts embedded selection size.
-        #[allow(dead_code)]
-        struct OriginalSelection {
-            hour: i32,
-            force_full: bool,
-            early: Box<[u64]>,
-            early_count: u32,
-            seen: Box<[u64]>,
-            census: bool,
-            walked: Box<[u64]>,
-            tracked: bool,
-            scanned: u32,
-            out_of_range: u32,
-            scan_ticks: u64,
-        }
-        #[allow(dead_code)]
-        struct OriginalFingerprints {
-            values: Box<[u64]>,
-            known: Box<[u64]>,
-            stale: Box<[u64]>,
-            stale_slices: u32,
-        }
-        assert_eq!(
-            std::mem::size_of::<SliceSelection>(),
-            std::mem::size_of::<OriginalSelection>()
-        );
-        assert_eq!(
-            std::mem::align_of::<SliceSelection>(),
-            std::mem::align_of::<OriginalSelection>()
-        );
-        assert_eq!(
-            std::mem::size_of::<SliceFingerprints>(),
-            std::mem::size_of::<OriginalFingerprints>()
-        );
-        assert_eq!(
-            std::mem::align_of::<SliceFingerprints>(),
-            std::mem::align_of::<OriginalFingerprints>()
-        );
-        for storage in [false, true] {
-            let selection = SliceSelection::new(storage);
-            let len = if storage { OWNER_WORDS } else { 0 };
-            for words in [&selection.early, &selection.seen, &selection.walked] {
-                assert_eq!(words.len(), len);
-                assert!(words.iter().all(|&word| word == 0));
+    fn selections_and_fingerprints_start_empty_without_callback_allocation() {
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            for storage in [false, true] {
+                let selection = SliceSelection::new(storage);
+                for owners in [&selection.early, &selection.seen, &selection.walked] {
+                    assert_eq!(owners.capacity(), 0);
+                }
             }
-            let owned_bytes = [&selection.early, &selection.seen, &selection.walked]
-                .into_iter()
-                .map(|words| std::mem::size_of_val(&**words))
-                .sum::<usize>();
-            assert_eq!(owned_bytes, 3 * len * std::mem::size_of::<u64>());
-        }
-        let fingerprints = SliceFingerprints::new();
-        assert_eq!(fingerprints.values.len(), FINGERPRINT_OWNERS);
-        for words in [&fingerprints.known, &fingerprints.stale] {
-            assert_eq!(words.len(), OWNER_WORDS);
-            assert!(words.iter().all(|&word| word == 0));
-        }
-        assert!(fingerprints.values.iter().all(|&word| word == 0));
-        assert_eq!(
-            std::mem::size_of_val(&*fingerprints.values)
-                + std::mem::size_of_val(&*fingerprints.known)
-                + std::mem::size_of_val(&*fingerprints.stale),
-            (FINGERPRINT_OWNERS + 2 * OWNER_WORDS) * std::mem::size_of::<u64>()
-        );
+            assert_eq!(SliceFingerprints::new().values.capacity(), 0);
+        });
     }
 
     #[test]
-    fn exact_word_storage_transfers_to_a_box_without_reallocation() {
-        for len in [0, 1, OWNER_WORDS, FINGERPRINT_OWNERS] {
-            let words = engine::allocation::filled(len, 0_u64).unwrap();
-            assert_eq!(words.len(), words.capacity());
-            let pointer = words.as_ptr();
-            let boxed = engine::allocation::boxed_slice(words).unwrap();
-            assert_eq!(boxed.as_ptr(), pointer);
-            assert_eq!(boxed.len(), len);
-            assert!(boxed.iter().all(|&word| word == 0));
+    fn original_five_thousand_and_mod_sized_sparse_owner_occurrences_grow_before_publication() {
+        let mut selection = SliceSelection::new(false);
+        let mut fingerprints = SliceFingerprints::new();
+        for count in [5000u32, 12_000] {
+            fingerprints.forget();
+            selection.reset(0, false);
+            selection.track_reads();
+            for index in 0..count {
+                let owner = u32::MAX - index * 7919;
+                selection.scan(&mut fingerprints, owner, Some(u64::from(index)));
+                selection.mark_read(owner);
+            }
+            selection.finish_pass(&mut fingerprints, true);
+            assert_eq!(selection.out_of_range, 0);
+            assert_eq!(selection.read_owners().count(), count as usize);
+            assert_eq!(fingerprints.values.len(), count as usize);
+            assert_eq!(selection.seen.len(), count as usize);
+            let capacities = [
+                selection.early.capacity(),
+                selection.seen.capacity(),
+                selection.walked.capacity(),
+                fingerprints.values.capacity(),
+            ];
+            crate::allocation_failure_tests::with_allocations_denied(|| {
+                selection.invalidate(&mut fingerprints);
+                selection.reset(1, false);
+            });
+            for index in 0..count {
+                let owner = u32::MAX - index * 7919;
+                selection.scan(&mut fingerprints, owner, Some(u64::from(index)));
+                assert!(selection.contains(owner));
+            }
+            fingerprints.finish_scan();
+            assert_eq!(selection.read_owners().count(), count as usize);
+            assert_eq!(
+                [
+                    selection.early.capacity(),
+                    selection.seen.capacity(),
+                    selection.walked.capacity(),
+                    fingerprints.values.capacity()
+                ],
+                capacities
+            );
+            let mut prior = 0;
+            for owner in selection.read_owners() {
+                assert!(owner > prior);
+                prior = owner;
+            }
         }
+    }
+
+    #[test]
+    fn failed_owner_bookkeeping_never_certifies_a_partial_census_or_forgets_healthy_owners() {
+        let mut original = SliceSelection::new(true);
+        let mut fingerprints = SliceFingerprints::new();
+        original.scan(&mut fingerprints, 7, Some(1));
+        let mut failed = SliceSelection::new(false);
+        failed.reset(1, false);
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            failed.scan(&mut fingerprints, u32::MAX, Some(2));
+            failed.finish_census(&mut fingerprints);
+        });
+        assert!(failed.force_full && !failed.census);
+        assert!(failed.live(7));
+        assert_eq!(failed.out_of_range, 1);
+        assert!(fingerprints.values.contains_key(&7));
+        assert!(!fingerprints.values.contains_key(&u32::MAX));
     }
 
     fn scan(
@@ -636,15 +587,15 @@ mod tests {
         selection.reset(10, false);
         scan(&mut selection, &mut store, &[(1, Some(100)), (3, Some(3))]);
         assert_eq!(selection.early_count, 2);
-        // Owners above the fingerprint range are counted and read every hour.
+        // Sparse high IDs have the same fingerprint and slice semantics.
         selection.reset(11, false);
         scan(
             &mut selection,
             &mut store,
             &[(70_000, Some(1)), (70_000, Some(2))],
         );
-        assert_eq!((selection.early_count, selection.out_of_range), (0, 2));
-        assert!(selection.contains(70_000) && selection.contains(70_001));
+        assert_eq!((selection.early_count, selection.out_of_range), (1, 0));
+        assert!(selection.contains(70_000) && !selection.contains(70_001));
         // A full hour reads everyone.
         let mut full = SliceSelection::new(false);
         full.reset(10, true);
@@ -685,8 +636,7 @@ mod tests {
         assert!(selection.live(1) && selection.live(2));
         selection.finish_census(&mut store);
         assert!(selection.live(1) && !selection.live(2));
-        // Owners above the tracked range cannot be proven gone.
-        assert!(selection.live(70_000) && selection.live(80_000));
+        assert!(selection.live(70_000) && !selection.live(80_000));
         // The next hour starts without a census again.
         selection.reset(4, false);
         assert!(selection.live(2));
@@ -812,7 +762,7 @@ mod tests {
         assert_eq!(selection.early_count, 2);
         assert!(selection.contains(6) && selection.contains(30) && selection.contains(29));
         assert!(!selection.contains(7));
-        assert!(!selection.select(FINGERPRINT_OWNERS as u32));
-        assert_eq!(selection.out_of_range, 1);
+        assert!(selection.select(u32::MAX));
+        assert_eq!(selection.out_of_range, 0);
     }
 }

@@ -59,6 +59,9 @@ fn naval_marker_hover_builds_both_rosters_convoys_countries_hq_and_native_tail()
     let hits = [super::super::Hit {
         selection: super::super::Selection::Naval(19),
         rect: [1., 2., 3., 4.],
+        layer: 0,
+        order: 0,
+        supported: true,
     }];
     assert_eq!(hit(&hits, [2., 3.]), Some((19, [1., 2., 3., 4.])));
     assert_eq!(hit(&hits, [4., 3.]), None);

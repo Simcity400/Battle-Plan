@@ -1,4 +1,4 @@
-//! The hourly game thread drains native combat/result links into owned storage.
+//! The admitted acquisition worker drains native combat/result links.
 //! Replay projection runs off-thread and preserves every event, including merges.
 use crate::{
     naval_result_sources as producer,
@@ -20,6 +20,9 @@ pub struct Captured {
     rows: CaptureRows<producer::Entry>,
 }
 impl Captured {
+    pub fn vacant() -> Self {
+        Self::with_capacities(&0)
+    }
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(*c),
@@ -32,13 +35,21 @@ impl Captured {
         self.rows.allocated_bytes()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
-        *c = (*c).max(producer::capacity());
+        *c = (*c).max(producer::demand());
         grow_vec(&mut self.rows.rows, *c);
     }
-    pub fn capture(&mut self, _memory: &impl Memory, _base: usize, _state: usize) -> [u64; N] {
+    pub fn fail(&mut self, reason: &'static str) {
+        self.rows.fail(Outcome::Unavailable { reason });
+    }
+    pub fn capture_growing(
+        &mut self,
+        _memory: &impl Memory,
+        _base: usize,
+        _state: usize,
+    ) -> [u64; N] {
         self.reset();
         let start = qpc();
-        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
+        self.rows.outcome = match producer::drain_growing(&mut self.rows.rows) {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };

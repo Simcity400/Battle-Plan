@@ -155,7 +155,7 @@ impl ScoreRead {
                 self.check_baseline(frame, *baseline)?;
                 examined = 0;
             }
-            TableUpdate::Unavailable { .. } => {
+            TableUpdate::Unavailable { .. } | TableUpdate::Incompatible { .. } => {
                 self.rows.clear();
                 self.indices.clear();
                 self.active.clear();

@@ -4,6 +4,33 @@ use replay::{
     rows::{CampaignRow, CountryLinkRow, CountryRow, ProvinceRow, StateRow, TableRows},
 };
 
+#[test]
+fn territory_region_names_keep_successful_empty_text_distinct_from_failure() {
+    let (catalogue, _folder) = crate::catalogue::tests::folder_catalogue(&[
+        (
+            "map/strategicregions/mod.txt",
+            "strategic_region={id=11 name=EMPTY} strategic_region={id=12} strategic_region={id=13 name=ABSENT} strategic_region={id=14 name=REFUSED}",
+        ),
+        (
+            "localisation/mod_l_english.yml",
+            "\u{feff}l_english:\n EMPTY:0 \"\"\n REFUSED:0 \"a\u{a4}b\"\n",
+        ),
+    ]);
+    let regions = Regions::read(&catalogue).unwrap();
+    for (region, name) in regions.names[..3].iter().zip(["", "", "ABSENT"]) {
+        assert_eq!(region.name.as_deref(), Some(name));
+        assert!(region.missing.is_none());
+    }
+    assert!(regions.names[3].name.is_none());
+    assert!(regions.names[3].missing.is_some());
+    assert!(
+        regions
+            .warnings
+            .iter()
+            .any(|warning| { warning.starts_with("1 strategic region names unavailable") })
+    );
+}
+
 fn frame(hour: i32, count: u32) -> DecodedFrame {
     let mut tables = std::array::from_fn(|_| TableView::Unavailable {
         reason: "outside fixture".into(),

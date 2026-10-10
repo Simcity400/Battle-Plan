@@ -1,5 +1,4 @@
 use super::*;
-use engine::allocation::{owned_vec, vec};
 
 // ===========================================================================
 // Scheduled raw-copy split (ProjectPrograms, Projects, ProjectHistory,
@@ -57,10 +56,9 @@ const NODE_LINKS: usize = nproject_breakthrough_node::RIGHT + 8;
 /// Staged breakthrough nodes one tree walk remembers.
 const TREE_NODES: usize = 64;
 
-/// One refresh of raw project payload. The census scratch is reused across
-/// passes without allocation; growth happens on the decode side only (see
-/// `crate::decode::recycle_projects_job`).
-#[derive(Debug, Default)]
+/// One refresh of raw project payload. Acquisition workers retain the acquired
+/// prefix while growing logs and census scratch from native headers.
+#[derive(Debug)]
 pub(crate) struct ProjectsJob {
     pub log: RawLog<4>,
     pub game_state: usize,
@@ -69,7 +67,14 @@ pub(crate) struct ProjectsJob {
     /// Program status per canonical census entry, in census order.
     pub(super) statuses: Vec<usize>,
     pub(super) pointers: Vec<usize>,
+    pub(super) worker_growth: bool,
     pub(super) capacity_charge: crate::raw_memory::Charge,
+}
+
+impl Default for ProjectsJob {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -95,17 +100,14 @@ pub(super) struct ProjectCensus<'a> {
 
 impl ProjectsJob {
     pub fn new() -> Self {
-        let census = crate::country_scale::census_rows(512);
         let mut job = Self {
-            // Late-campaign worst case is about 21k projects with state
-            // machines plus history rows; both pools start above that so
-            // steady state never overflows.
-            log: RawLog::new(1 << 20, 48 << 20),
+            log: RawLog::new(0, 0),
             game_state: 0,
             active: false,
-            census: owned_vec(vec(census)),
-            statuses: owned_vec(vec(census)),
-            pointers: owned_vec(vec(32768)),
+            census: Vec::new(),
+            statuses: Vec::new(),
+            pointers: Vec::new(),
+            worker_growth: true,
             capacity_charge: crate::raw_memory::Charge::default(),
         };
         job.update_capacity_charge();
@@ -126,13 +128,20 @@ impl ProjectsJob {
         self.log.grow_for_next()
     }
 
-    /// Double every pool off the game thread until copies fit. An overflowed
-    /// accepted refresh stays unavailable; growth serves the next acquisition.
+    /// Prepare only observed shortage and live census demand off-thread.
     pub fn grow(&mut self) {
-        self.log.grow();
-        crate::raw::double_capacity(&mut self.census);
-        crate::raw::double_capacity(&mut self.statuses);
-        crate::raw::double_capacity(&mut self.pointers);
+        engine::allocation::advisory(|| {
+            self.log.grow();
+            let countries = self
+                .census
+                .len()
+                .saturating_add(1)
+                .max(crate::country_scale::census_rows(0));
+            let _ = crate::allocation::reserve_raw(&mut self.census, countries, "projects census");
+            let _ =
+                crate::allocation::reserve_raw(&mut self.statuses, countries, "project statuses");
+            let _ = engine::allocation::reserve(&mut self.pointers, 1);
+        });
         self.update_capacity_charge();
     }
 
@@ -762,6 +771,12 @@ fn copy_pass(memory: &impl Memory, base: usize, game_state: usize, job: &mut Pro
     if job.log.overflowed {
         return;
     }
+    if job.worker_growth
+        && engine::allocation::reserve(&mut job.statuses, job.census.len()).is_err()
+    {
+        job.log.overflowed = true;
+        return;
+    }
     let mut complete = read_to == countries.count;
     let shared = ProjectCensus {
         links: &links,
@@ -840,6 +855,12 @@ fn copy_census(
         return None;
     }
     let vtable = base.checked_add(ccountry::VTABLE_RVA)? as u64;
+    if log.worker_growth_enabled()
+        && engine::allocation::reserve(census, countries.count as usize).is_err()
+    {
+        log.overflowed = true;
+        return None;
+    }
     for slot in 1..countries.count {
         match copy_slot(log, memory, vtable, &countries, &links, slot) {
             Some(Some(entry)) => {
@@ -933,6 +954,9 @@ pub(crate) fn copy_projects_refresh(
     job: &mut ProjectsJob,
 ) -> ProjectsCopyReport {
     job.clear();
+    if job.worker_growth {
+        job.log.enable_worker_growth();
+    }
     job.active = ctx.active;
     if !ctx.active {
         return ProjectsCopyReport {
@@ -942,6 +966,9 @@ pub(crate) fn copy_projects_refresh(
     }
     let started = qpc();
     copy_pass(memory, ctx.base, ctx.game_state, job);
+    if job.worker_growth {
+        job.update_capacity_charge();
+    }
     ProjectsCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: [elapsed(started), 0, 0, 0],
@@ -984,33 +1011,33 @@ impl Captured {
         }
         let started = qpc();
         let recorded = crate::raw::Recorded::build(&job.log);
-        let first = nproject_cprogram::walk(
+        let first = nproject_cprogram::walk_buffer(
             &recorded,
             base,
             job.game_state,
-            &mut self.candidates,
-            &mut self.programs.rows,
-            &mut self.names.first,
+            engine::walk::Buffer::for_worker(&mut self.candidates, job.worker_growth),
+            engine::walk::Buffer::for_worker(&mut self.programs.rows, job.worker_growth),
+            engine::walk::Buffer::for_worker(&mut self.names.first, job.worker_growth),
         );
         self.programs.outcome = program_outcome(first, &self.programs.rows, &self.names.first);
         self.names.len = first.bytes_len;
         self.names.required = first.required_bytes;
         self.required_candidates = first.required_candidates;
-        let (projects, histories) = nproject_cproject::walk_with_history(
+        let (projects, histories) = nproject_cproject::walk_with_history_buffer(
             &recorded,
             base,
             job.game_state,
-            &mut self.projects.rows,
-            &mut self.history.rows,
+            engine::walk::Buffer::for_worker(&mut self.projects.rows, job.worker_growth),
+            engine::walk::Buffer::for_worker(&mut self.history.rows, job.worker_growth),
         );
         self.projects.outcome = bounded(projects, self.projects.rows.len());
         self.history.outcome = bounded(histories, self.history.rows.len());
         self.breakthroughs.outcome = bounded(
-            nproject_cbreakthrough_progress::walk(
+            nproject_cbreakthrough_progress::walk_buffer(
                 &recorded,
                 base,
                 job.game_state,
-                &mut self.breakthroughs.rows,
+                engine::walk::Buffer::for_worker(&mut self.breakthroughs.rows, job.worker_growth),
             ),
             self.breakthroughs.rows.len(),
         );
@@ -1281,6 +1308,12 @@ fn copy_programs(
         let Some(array) = Array::from_header(raw, 8) else {
             return;
         };
+        if log.worker_growth_enabled()
+            && engine::allocation::reserve(pointers, array.count as usize).is_err()
+        {
+            log.overflowed = true;
+            return;
+        }
         let mut index = 0;
         while index < array.count as usize {
             let count = (array.count as usize - index).min(64);

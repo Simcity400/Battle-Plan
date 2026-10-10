@@ -155,7 +155,7 @@ fn effective(
 fn transports(
     memory: &impl Memory,
     pool: usize,
-    arena: &mut [i64],
+    arena: &mut crate::walk::Buffer<'_, i64>,
     len: &mut usize,
     required: &mut usize,
 ) -> Result<usize, &'static str> {
@@ -180,7 +180,10 @@ fn transports(
             continue;
         }
         let speed: i64 = field(memory, variant, TRANSPORT_SPEED_STAT)?;
-        *required += 1;
+        *required = required
+            .checked_add(1)
+            .ok_or("raid transport count overflow")?;
+        arena.ensure(*required)?;
         if let Some(slot) = arena.get_mut(*len) {
             *slot = speed;
             *len += 1;
@@ -212,7 +215,7 @@ fn read_row(
     identity: (u32, u32, i32, i32, Option<i32>),
     countries: &ccountry::Reader<'_, impl Memory>,
     memo: &DefinitionMemo,
-    arena: &mut [i64],
+    arena: &mut crate::walk::Buffer<'_, i64>,
     walk: &mut Walk,
 ) -> Result<Row, &'static str> {
     let (reference_type, id, phase, outcome, end_hour) = identity;
@@ -412,13 +415,49 @@ pub fn walk(
     rows: &mut [Row],
     arena: &mut [i64],
 ) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        memo,
+        crate::walk::Buffer::Fixed(rows),
+        crate::walk::Buffer::Fixed(arena),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    memo: &DefinitionMemo,
+    rows: &mut Vec<Row>,
+    arena: &mut Vec<i64>,
+) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        memo,
+        crate::walk::Buffer::Growing(rows),
+        crate::walk::Buffer::Growing(arena),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    memo: &DefinitionMemo,
+    mut rows: crate::walk::Buffer<'_, Row>,
+    mut arena: crate::walk::Buffer<'_, i64>,
+) -> Walk {
     let mut walk = Walk {
         outcome: Outcome::Rows { len: 0 },
         transport_len: 0,
         required_transport: 0,
     };
     memo.clear();
-    let (mut len, mut unread) = (0, 0_u32);
+    let (mut len, mut unread) = (0_usize, 0_u32);
     let result = ccountry::Reader::new(memory, base, game_state).and_then(|countries| {
         each_raid(memory, base, game_state, |hour, raid| {
             if !live(raid.phase, raid.outcome, raid.end_hour, hour) {
@@ -439,10 +478,11 @@ pub fn walk(
                 identity,
                 &countries,
                 memo,
-                arena,
+                &mut arena,
                 &mut walk,
             )?;
             let fitted = walk.required_transport - before.1 == walk.transport_len - before.0;
+            rows.ensure(len.checked_add(1).ok_or("raid speed row count overflow")?)?;
             match rows.get_mut(len) {
                 Some(slot) if fitted => {
                     *slot = row;

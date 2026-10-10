@@ -19,6 +19,8 @@ use std::{
 static WATCHES: Watches = Watches::new();
 static ORIGINAL: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 static READS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+static SCENARIO_REFUSALS: [AtomicU64; engine::air_kamikaze::SCENARIO_REFUSALS.len()] =
+    [const { AtomicU64::new(0) }; engine::air_kamikaze::SCENARIO_REFUSALS.len()];
 /// Hours that copied every held history afresh, by cause: an invalidation,
 /// a larger watch table, or the hour before failing or being dropped.
 static RESTARTS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
@@ -203,6 +205,14 @@ pub fn record(counts: &crate::extended::air_histories::Counts) {
     }
 }
 
+pub(crate) fn record_scenario_refusals(
+    counts: &[u64; engine::air_kamikaze::SCENARIO_REFUSALS.len()],
+) {
+    for (target, &count) in SCENARIO_REFUSALS.iter().zip(counts) {
+        target.fetch_add(count, Ordering::Relaxed);
+    }
+}
+
 /// A verify read disagreed with the followed histories: reuse is disabled
 /// for the attachment.
 pub fn mismatch() {
@@ -235,6 +245,8 @@ pub fn status() -> impl serde::Serialize {
         "refreshed_histories": reads[3],
         "quiet_hours": reads[4],
         "mismatches": reads[5],
+        "scenario_refusals": crate::status::map(engine::air_kamikaze::SCENARIO_REFUSALS.into_iter()
+            .zip(SCENARIO_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
         "events": events,
         "watches": WATCHES.registry.status(),
         "restarts": {

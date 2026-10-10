@@ -65,10 +65,17 @@ pub enum TableView {
 /// table unchanged, so copying a [`DecodedFrame`] copies no rows. Reading goes
 /// through `Deref`; a write (`DerefMut`) copies the table first when another
 /// hour still shares it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SharedView(Arc<TableView>);
+#[derive(Clone, Debug)]
+pub struct SharedView(Arc<TableView>, Option<Hour>);
 
 impl SharedView {
+    /// Last complete acquisition witnessed by this table's own read timing.
+    /// Untimed snapshots, including carried keyframes, have unknown provenance;
+    /// uncharged shared reads cannot be certified from another table's timing.
+    pub fn sampled_at(&self) -> Option<Hour> {
+        self.1
+    }
+
     /// Whether two views are the same allocation, not just equal rows.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.0, &b.0)
@@ -81,7 +88,7 @@ impl SharedView {
 
     /// The view when this is its only holder; the shared view otherwise.
     pub fn try_unwrap(self) -> Result<TableView, Self> {
-        Arc::try_unwrap(self.0).map_err(Self)
+        Arc::try_unwrap(self.0).map_err(|shared| Self(shared, self.1))
     }
 
     /// The allocation's address, for counting distinct tables.
@@ -94,6 +101,14 @@ impl SharedView {
         ViewIdentity(Arc::downgrade(&self.0))
     }
 }
+
+impl PartialEq for SharedView {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for SharedView {}
 
 /// A [`SharedView`]'s allocation, named without holding its rows: the
 /// allocation's address cannot be reused while the identity exists, so it
@@ -123,13 +138,14 @@ impl std::ops::Deref for SharedView {
 
 impl std::ops::DerefMut for SharedView {
     fn deref_mut(&mut self) -> &mut TableView {
+        self.1 = None;
         Arc::make_mut(&mut self.0)
     }
 }
 
 impl From<TableView> for SharedView {
     fn from(view: TableView) -> Self {
-        Self(Arc::new(view))
+        Self(Arc::new(view), None)
     }
 }
 
@@ -242,6 +258,13 @@ pub enum TableUpdate {
     },
     Unavailable {
         reason: String,
+    },
+    /// Discarded incompatible source update. Retain its length for inspection;
+    /// current writers emit only the unavailable reason, never historical rows.
+    Incompatible {
+        reason: String,
+        source_format: crate::format::FormatVersion,
+        recorded_bytes: usize,
     },
 }
 

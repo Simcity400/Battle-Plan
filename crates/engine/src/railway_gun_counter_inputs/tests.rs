@@ -1,5 +1,8 @@
 use super::*;
-use crate::{carmy, cland_combat, cland_combatant, memory::SliceMemory, reference_bucket};
+use crate::{
+    carmy, cland_combat, cland_combatant, cnaval_unit_transfer, memory::SliceMemory,
+    reference_bucket,
+};
 
 const STATE: usize = 0x1000;
 const COUNTRIES: usize = 0x2000;
@@ -265,6 +268,9 @@ fn fixture() -> Vec<u8> {
         GROUP_BUCKETS,
         &[(GROUP_HANDLE, GROUP)],
     );
+    // A constructed empty std::string has inline capacity 15. Zeroed storage
+    // alone is not a valid name descriptor for the header-only sizing pass.
+    stored_name(&mut bytes, GUN, b"", 0);
     bytes
 }
 
@@ -422,6 +428,438 @@ fn eta_fixture() -> EtaFixture {
     }
 }
 
+fn fresh_capture(image: &EtaFixture, hour: Option<i32>, observation_count: usize) -> Row {
+    let mut rows = [Row::default(); 1];
+    let mut paths = [0; 3];
+    let mut roots = [(0, 0); 1];
+    let mut observations = [FreshEtaObservations::default(); 1];
+    let mut name_bytes = [0; 3];
+    let mut names = NameArena {
+        bytes: crate::walk::Buffer::Fixed(&mut name_bytes),
+        used: 0,
+        required: 0,
+        failures: 0,
+    };
+    let mut layout = None;
+    let mut scratch = TooltipScratch {
+        guns: crate::walk::Buffer::Fixed(&mut roots),
+        fresh_observations: crate::walk::Buffer::Fixed(&mut observations[..observation_count]),
+        sample_hour: hour,
+        named: crate::railway_gun_speed::NamedBonuses {
+            pointers: crate::walk::Buffer::Fixed(&mut []),
+            required: 0,
+        },
+        layout: &mut layout,
+        supply_origins: crate::walk::Buffer::Fixed(&mut []),
+        supply_origins_len: 0,
+        required_supply_origins: 0,
+    };
+    let walk = walk_with_tooltip_inputs(
+        image,
+        0,
+        STATE,
+        &mut rows,
+        &mut paths,
+        &mut cunit::FirstCombatMemo::new(1),
+        &mut names,
+        &mut scratch,
+    );
+    assert_eq!(walk.outcome, Outcome::Rows { len: 1 });
+    assert_eq!(&*scratch.guns, &[(0, 0)]);
+    assert!(
+        scratch
+            .fresh_observations
+            .iter()
+            .all(|row| *row == FreshEtaObservations::default())
+    );
+    rows[0]
+}
+
+#[test]
+fn transport_suffix_uses_original_stat_and_transfer_without_poisoning_prefix_on_leaf_fault() {
+    use crate::selected_transport_units::Transfer;
+    for fault in [
+        None,
+        Some(SUBUNIT + csub_unit_definition::TRANSPORT_WEIGHT),
+        Some(TRANSFER + cnaval_unit_transfer::SOURCE_PROVINCE),
+    ] {
+        let mut image = eta_fixture();
+        put64(
+            &mut image.memory.bytes,
+            GUN + cunit::NAVAL_TRANSFER_MEMBERSHIP,
+            TRANSFER as u64,
+        );
+        put(
+            &mut image.memory.bytes,
+            TRANSFER + cnaval_unit_transfer::ACTION_STATUS,
+            &0i32.to_le_bytes(),
+        );
+        put(
+            &mut image.memory.bytes,
+            TRANSFER + cnaval_unit_transfer::SOURCE_PROVINCE,
+            &42u32.to_le_bytes(),
+        );
+        put(
+            &mut image.memory.bytes,
+            SUBUNIT + csub_unit_definition::TRANSPORT_WEIGHT,
+            &i64::MIN.to_le_bytes(),
+        );
+        image.memory.fault = fault;
+        let row = fresh_capture(&image, Some(-17), 1);
+        assert_eq!(row.gun, GUN_HANDLE);
+        assert!(row.naval_transfer && !row.transfer_action_status);
+        let packet = row.transport.unwrap();
+        assert_eq!((packet.unit, packet.sample_hour), (GUN_HANDLE, -17));
+        assert_eq!(
+            packet.weight.is_err(),
+            fault == Some(SUBUNIT + csub_unit_definition::TRANSPORT_WEIGHT)
+        );
+        assert_eq!(
+            packet.coastal,
+            Err("selected transport class13 coast predicate unreached")
+        );
+        let Transfer::Present {
+            handle,
+            status,
+            source,
+        } = packet.transfer.unwrap()
+        else {
+            panic!("original nonnull transfer");
+        };
+        assert_eq!((handle, status), (TRANSFER_HANDLE, Ok(0)));
+        assert_eq!(
+            source.is_err(),
+            fault == Some(TRANSFER + cnaval_unit_transfer::SOURCE_PROVINCE)
+        );
+        for address in [
+            SUBUNIT + csub_unit_definition::TRANSPORT_WEIGHT,
+            TRANSFER + cnaval_unit_transfer::SOURCE_PROVINCE,
+        ] {
+            assert_eq!(
+                image
+                    .reads
+                    .borrow()
+                    .iter()
+                    .filter(|(at, _)| *at == address)
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn transport_suffix_does_not_read_unreached_source_or_nonclocked_weight() {
+    use crate::selected_transport_units::Transfer;
+    let mut image = eta_fixture();
+    put64(
+        &mut image.memory.bytes,
+        GUN + cunit::NAVAL_TRANSFER_MEMBERSHIP,
+        TRANSFER as u64,
+    );
+    put(
+        &mut image.memory.bytes,
+        TRANSFER + cnaval_unit_transfer::ACTION_STATUS,
+        &(-3i32).to_le_bytes(),
+    );
+    let row = fresh_capture(&image, Some(23), 1);
+    assert!(row.transfer_action_status);
+    assert!(matches!(
+        row.transport.unwrap().transfer,
+        Ok(Transfer::Present {
+            status: Ok(-3),
+            source: Err(_),
+            ..
+        })
+    ));
+    assert!(
+        !image
+            .reads
+            .borrow()
+            .iter()
+            .any(|(at, _)| *at == TRANSFER + cnaval_unit_transfer::SOURCE_PROVINCE)
+    );
+    let image = eta_fixture();
+    assert!(fresh_capture(&image, None, 1).transport.is_none());
+    assert!(
+        !image
+            .reads
+            .borrow()
+            .iter()
+            .any(|(at, _)| *at == SUBUNIT + csub_unit_definition::TRANSPORT_WEIGHT)
+    );
+}
+
+#[test]
+fn fresh_common_operands_reuse_success_and_failure_without_poisoning_other_fields() {
+    for fault in [
+        None,
+        Some(GUN + carmy::MOVEMENT_NUMERATOR),
+        Some(GUN + 0x338),
+        Some(GUN + 0x400),
+        Some(GUN + carmy::ORDERS_GROUP),
+    ] {
+        let mut image = eta_fixture();
+        image.memory.fault = fault;
+        let row = fresh_capture(&image, Some(-17), 1);
+        let fresh = row.fresh.expect("independent current-hour packet");
+        assert_eq!(fresh.sample_hour, -17);
+        assert_eq!(
+            fresh.maximum_speed,
+            if fault == Some(GUN + 0x338) {
+                None
+            } else {
+                Some(0)
+            }
+        );
+        assert_eq!(
+            fresh.land_supply_factor,
+            if fault == Some(GUN + 0x400) {
+                None
+            } else {
+                Some(75_000)
+            }
+        );
+        assert_eq!(
+            fresh.orders_group,
+            if fault == Some(GUN + carmy::ORDERS_GROUP) {
+                None
+            } else {
+                Some(0)
+            }
+        );
+        assert_eq!(
+            row.eta.is_some(),
+            fault.is_none() || fault == Some(GUN + carmy::ORDERS_GROUP)
+        );
+        for address in [GUN + 0x338, GUN + 0x400, GUN + carmy::ORDERS_GROUP] {
+            assert_eq!(
+                image
+                    .reads
+                    .borrow()
+                    .iter()
+                    .filter(|(at, _)| *at == address)
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(
+            row.fresh_failures.map(|failure| failure.is_some()),
+            [
+                fault == Some(GUN + 0x338),
+                fault == Some(GUN + 0x400),
+                fault == Some(GUN + carmy::ORDERS_GROUP)
+            ]
+        );
+        assert_eq!(row.name, Some((0, 3)));
+        assert!(row.supply.is_some());
+        assert_eq!(row.withdrawal, Some(0));
+    }
+}
+
+#[test]
+fn idle_ordinary_route_keeps_fresh_railway_domains_without_first_edge_reads() {
+    for fault in [Some(ORDINARY), Some(GUN + 0x338)] {
+        let mut image = eta_fixture();
+        let header_at = GUN + cunit::ORDINARY_ROUTE_DATA;
+        put(
+            &mut image.memory.bytes,
+            header_at + crate::cpdx_array::COUNT,
+            &0_u32.to_le_bytes(),
+        );
+        let header = image.memory.bytes[header_at..header_at + 16]
+            .try_into()
+            .unwrap();
+        let route = crate::cpdx_array::Array::from_header(header, 4)
+            .expect("valid idle ordinary-route header");
+        assert_eq!(route.count, 0);
+        assert_eq!(route.data, ORDINARY);
+        assert_eq!(route.element(0, 4), None);
+        assert_eq!(
+            u32::from_le_bytes(
+                image.memory.bytes[header_at + 8..header_at + 12]
+                    .try_into()
+                    .unwrap()
+            ),
+            1
+        );
+        put64(
+            &mut image.memory.bytes,
+            GUN + carmy::ORDERS_GROUP,
+            GROUP as u64,
+        );
+        image.memory.fault = fault;
+        let row = fresh_capture(&image, Some(123), 1);
+        assert_eq!((row.ordinary_len, row.alternate_len), (0, 0));
+        assert_eq!(row.eta, None);
+        let profile = row.fresh.expect("idle railway profile remains acquired");
+        assert_eq!(profile.sample_hour, 123);
+        assert_eq!(
+            profile.maximum_speed,
+            if fault == Some(GUN + 0x338) {
+                None
+            } else {
+                Some(0)
+            }
+        );
+        assert_eq!(profile.land_supply_factor, Some(75_000));
+        assert_eq!(profile.orders_group, Some(GROUP_HANDLE));
+        assert_eq!(
+            row.fresh_failures.map(|failure| failure.is_some()),
+            [fault == Some(GUN + 0x338), false, false]
+        );
+        assert_eq!(row.fresh_failure, None);
+        let reads = image.reads.borrow();
+        assert!(
+            !reads.iter().any(|&(address, len)| {
+                address < ORDINARY + 4 && address.saturating_add(len) > ORDINARY
+            }),
+            "idle route payload must remain unread, even when it refuses"
+        );
+        for address in [
+            GUN + carmy::MOVEMENT_NUMERATOR,
+            TO + cprovince::DEFINITION,
+            RAIL_INFO + rail_info::NEIGHBOR_PAIRS,
+        ] {
+            assert!(
+                !reads.iter().any(|&(at, _)| at == address),
+                "idle first-edge operand at{address:x} must remain unread"
+            );
+        }
+        assert_eq!(
+            reads.iter().filter(|&&(at, _)| at == GUN + 0x338).count(),
+            1
+        );
+        drop(reads);
+        let mut prefix = [Row::default(); 1];
+        let baseline = capture(image.memory.bytes.clone(), fault, &mut prefix, &mut []);
+        assert_eq!(
+            baseline,
+            Walk {
+                outcome: Outcome::Rows { len: 1 },
+                paths_len: 0,
+                required_paths: 0,
+            }
+        );
+        // The same native scalar/motion prefix survives the independent
+        // optional name, supply, withdrawal and current-profile suffixes.
+        assert_eq!(
+            prefix[0],
+            Row {
+                name: None,
+                supply: None,
+                supply_origins_start: 0,
+                supply_failure: None,
+                withdrawal: None,
+                fresh: None,
+                fresh_failure: None,
+                fresh_failures: [None; 3],
+                transport: None,
+                ..row
+            }
+        );
+        assert_eq!(row.name, Some((0, 3)));
+        assert!(row.supply.is_some());
+        assert_eq!(row.withdrawal, Some(0));
+    }
+}
+
+#[test]
+fn fresh_genuine_orders_group_is_independent_of_the_railway_assignee() {
+    let mut image = eta_fixture();
+    put64(
+        &mut image.memory.bytes,
+        GUN + carmy::ORDERS_GROUP,
+        GROUP as u64,
+    );
+    let row = fresh_capture(&image, Some(123), 1);
+    assert_eq!(row.assignee_group, 0);
+    assert_eq!(row.fresh.unwrap().orders_group, Some(GROUP_HANDLE));
+
+    put64(&mut image.memory.bytes, GROUP, 0);
+    image.reads.borrow_mut().clear();
+    let row = fresh_capture(&image, Some(124), 1);
+    assert_eq!(row.fresh.unwrap().orders_group, None);
+    assert!(row.fresh_failures[2].is_some());
+    assert!(row.eta.is_some());
+}
+
+#[test]
+fn stored_first_sea_edge_does_not_withhold_fresh_land_operands() {
+    let mut image = eta_fixture();
+    image.memory.bytes[DEFINITION + province_definition::TERRAIN_FLAGS] = 0;
+    // Its unavailable transport context withholds the stored edge only; a
+    // fresh route can still need land speed after that edge.
+    let row = fresh_capture(&image, Some(15), 1);
+    assert!(row.eta.is_none());
+    let fresh = row.fresh.unwrap();
+    assert_eq!(fresh.maximum_speed, Some(0));
+    assert_eq!(fresh.land_supply_factor, Some(75_000));
+    assert_eq!(row.fresh_failures, [None; 3]);
+}
+
+#[test]
+fn fresh_supply_preserves_native_lazy_branches_and_transfer_skips() {
+    for (exiled, capacity, remaining, expected, capacity_reads, remaining_reads, penalty_reads) in [
+        (true, 100_000, 50_000, 100_000, 0, 0, 0),
+        (false, 0, 50_000, 50_000, 1, 0, 1),
+        (false, 100_000, 100_000, 100_000, 1, 1, 0),
+    ] {
+        let mut image = eta_fixture();
+        image.memory.bytes[GUN + cunit::EXILED] = u8::from(exiled);
+        put64(&mut image.memory.bytes, GUN + 0x400, capacity);
+        put64(&mut image.memory.bytes, GUN + 0x410, remaining);
+        let row = fresh_capture(&image, Some(88), 1);
+        assert_eq!(row.fresh.unwrap().land_supply_factor, Some(expected));
+        for (address, count) in [
+            (GUN + 0x400, capacity_reads),
+            (GUN + 0x410, remaining_reads),
+            (0x0331_9050, penalty_reads),
+        ] {
+            assert_eq!(
+                image
+                    .reads
+                    .borrow()
+                    .iter()
+                    .filter(|(at, _)| *at == address)
+                    .count(),
+                count
+            );
+        }
+    }
+
+    let mut image = eta_fixture();
+    put64(
+        &mut image.memory.bytes,
+        GUN + cunit::NAVAL_TRANSFER_MEMBERSHIP,
+        TRANSFER as u64,
+    );
+    image.memory.fault = Some(GUN + carmy::MOVEMENT_NUMERATOR);
+    let row = fresh_capture(&image, Some(89), 1);
+    let fresh = row.fresh.unwrap();
+    assert_eq!(
+        (fresh.maximum_speed, fresh.land_supply_factor),
+        (None, None)
+    );
+    assert_eq!(fresh.orders_group, Some(0));
+    assert_eq!(row.fresh_failures, [None; 3]);
+    assert!(!image.reads.borrow().iter().any(|(address, _)| {
+        [GUN + 0x338, GUN + 0x400, GUN + 0x410, 0x0331_9050].contains(address)
+    }));
+}
+
+#[test]
+fn missing_callback_hour_or_observation_room_preserves_legacy_eta() {
+    for (hour, count) in [(None, 1), (Some(2), 0)] {
+        let image = eta_fixture();
+        let row = fresh_capture(&image, hour, count);
+        assert_eq!(row.fresh, None);
+        assert!(row.fresh_failure.is_some());
+        assert!(row.eta.is_some());
+        assert!(row.supply.is_some());
+    }
+}
+
 #[test]
 fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
     use crate::cunit_supply_inputs::{self as supply, Failure, Origin};
@@ -490,11 +928,15 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
         NameDemand {
             rows: 2,
             bytes: 6,
+            paths: 2,
             named_bonuses: 0,
             supply_origins: 3,
+            combat_references: 0,
         }
     );
     put64(&mut image.memory.bytes, GUN + 0x338, 0);
+    image.memory.bytes[GUN + cunit::WITHDRAWAL] = 0xfe;
+    image.memory.bytes[SECOND_GUN + cunit::WITHDRAWAL] = 2;
     let mut output = [Row::default(); 2];
     let mut paths = [0; 2];
     let mut name_storage = [0; 6];
@@ -508,6 +950,7 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
         (Some(GUN + 0x410), 3),
         (Some(GUN + NAME + 16), 3),
         (Some(GUN + supply::ASKED), 3),
+        (Some(GUN + cunit::WITHDRAWAL), 3),
         (Some(GUN + supply::ORIGINS), 3),
         (Some(FIRST_ORIGINS + supply::ORIGIN_REQUESTED), 3),
         (None, 1),
@@ -515,19 +958,21 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
         image.memory.fault = fault;
         image.reads.borrow_mut().clear();
         let mut names = NameArena {
-            bytes: &mut name_storage,
+            bytes: crate::walk::Buffer::Fixed(&mut name_storage),
             used: 0,
             required: 0,
             failures: 0,
         };
         let mut scratch = TooltipScratch {
-            guns: &mut guns,
+            guns: crate::walk::Buffer::Fixed(&mut guns),
+            fresh_observations: crate::walk::Buffer::Fixed(&mut []),
+            sample_hour: None,
             named: crate::railway_gun_speed::NamedBonuses {
-                pointers: &mut named,
+                pointers: crate::walk::Buffer::Fixed(&mut named),
                 required: 0,
             },
             layout: &mut layout,
-            supply_origins: &mut origins[..origin_capacity],
+            supply_origins: crate::walk::Buffer::Fixed(&mut origins[..origin_capacity]),
             supply_origins_len: 0,
             required_supply_origins: 0,
         };
@@ -543,6 +988,11 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
         );
         assert_eq!(walked.outcome, Outcome::Rows { len: 2 });
         assert_eq!((output[0].gun, output[1].gun), (GUN_HANDLE, second_handle));
+        assert_eq!(
+            output[0].withdrawal,
+            (fault != Some(GUN + cunit::WITHDRAWAL)).then_some(0xfe)
+        );
+        assert_eq!(output[1].withdrawal, Some(2));
         assert_eq!(
             output[1].eta,
             Some(EtaOperands {
@@ -617,7 +1067,7 @@ fn tooltip_suffixes_preserve_prefixes_and_independent_fragments() {
             .position(|row| *row == (GUN + supply::ASKED, 8))
             .unwrap();
         assert!(last_eta < supply_start);
-        assert_eq!(scratch.guns, &[(0, 0); 2]);
+        assert_eq!(&*scratch.guns, &[(0, 0); 2]);
     }
 }
 
@@ -656,8 +1106,10 @@ fn initial_eta_named_bonus_sizing_uses_live_headers_without_reading_bonus_payloa
         NameDemand {
             rows: 1,
             bytes: 3,
+            paths: 1,
             named_bonuses: 129,
             supply_origins: 17,
+            combat_references: 0,
         }
     );
     assert!(
@@ -680,8 +1132,10 @@ fn initial_eta_named_bonus_sizing_uses_live_headers_without_reading_bonus_payloa
         NameDemand {
             rows: 1,
             bytes: 3,
+            paths: 1,
             named_bonuses: 0,
             supply_origins: 17,
+            combat_references: 0,
         }
     );
     image.memory.fault = Some(GUN + crate::cunit_supply_inputs::ORIGINS);
@@ -690,8 +1144,10 @@ fn initial_eta_named_bonus_sizing_uses_live_headers_without_reading_bonus_payloa
         NameDemand {
             rows: 1,
             bytes: 3,
+            paths: 1,
             named_bonuses: 129,
             supply_origins: 0,
+            combat_references: 0,
         }
     );
 }
@@ -711,7 +1167,7 @@ fn stored_names_preserve_all_bytes_and_fail_independently_of_old_operands() {
         for (capacity, fault) in [(text.len(), None), (0, Some(GUN + NAME + 16)), (0, None)] {
             let mut storage = vec![0; capacity];
             let mut arena = NameArena {
-                bytes: &mut storage,
+                bytes: crate::walk::Buffer::Fixed(&mut storage),
                 used: 0,
                 required: 0,
                 failures: 0,
@@ -750,8 +1206,10 @@ fn stored_names_preserve_all_bytes_and_fail_independently_of_old_operands() {
             NameDemand {
                 rows: 1,
                 bytes: text.len(),
+                paths: 3,
                 named_bonuses: 0,
                 supply_origins: 0,
+                combat_references: 2,
             }
         );
     }
@@ -763,7 +1221,7 @@ fn names_count_full_demand_even_when_the_route_or_row_arena_is_short() {
     stored_name(&mut bytes, GUN, b"full name demand", 0x10000);
     let memory = MemoryFixture { bytes, fault: None };
     let mut arena = NameArena {
-        bytes: &mut [],
+        bytes: crate::walk::Buffer::Fixed(&mut []),
         used: 0,
         required: 0,
         failures: 0,
@@ -787,8 +1245,7 @@ fn names_count_full_demand_even_when_the_route_or_row_arena_is_short() {
     assert_eq!((arena.used, arena.required, arena.failures), (0, 16, 0));
 }
 
-#[test]
-fn stored_name_presizing_covers_every_gun_in_a_5000_country_roster() {
+fn scale_railway_fixture() -> MemoryFixture {
     const COUNT: usize = 5000;
     const SLOT_ARRAY: usize = 0x20000;
     const LINK_ARRAY: usize = 0x30000;
@@ -895,15 +1352,133 @@ fn stored_name_presizing_covers_every_gun_in_a_5000_country_roster() {
     bytes[REGISTRY
         + (MASK + 1 + overflow_distance as usize) * reference_bucket::STRIDE
         + reference_bucket::DISTANCE] = 255;
+    MemoryFixture { bytes, fault: None }
+}
+
+#[test]
+fn stored_name_presizing_covers_every_gun_in_a_5000_country_roster() {
     assert_eq!(
-        name_demand(&MemoryFixture { bytes, fault: None }, 0, STATE).unwrap(),
+        name_demand(&scale_railway_fixture(), 0, STATE).unwrap(),
         NameDemand {
-            rows: COUNT,
-            bytes: COUNT * 3,
+            rows: 5_000,
+            bytes: 15_000,
+            paths: 0,
             named_bonuses: 0,
             supply_origins: 0,
+            combat_references: 0,
         }
     );
+}
+
+#[test]
+fn growing_railway_buffers_cover_first_and_later_demand_at_5000_countries() {
+    const RECORDS: usize = 0x40000;
+    let mut memory = scale_railway_fixture();
+    array(
+        &mut memory.bytes,
+        STATE + cgame_state::PROVINCES,
+        PROVINCES,
+        1,
+    );
+    put64(
+        &mut memory.bytes,
+        SUBUNIT,
+        csub_unit_definition::VTABLE_RVA as u64,
+    );
+    put(
+        &mut memory.bytes,
+        SUBUNIT + csub_unit_definition::TOKEN,
+        &17_u32.to_le_bytes(),
+    );
+    for id in 1..=5_000 {
+        let gun = RECORDS + (id - 1) * 0x1000 + 0x400;
+        put64(&mut memory.bytes, gun + cunit::STAT_BLOCK, SUBUNIT as u64);
+        put(
+            &mut memory.bytes,
+            gun + cunit::LOGICAL_OWNER,
+            &(id as u32).to_le_bytes(),
+        );
+    }
+    let mut rows = Vec::new();
+    let mut paths = Vec::new();
+    let mut names = Vec::new();
+    let mut guns = Vec::new();
+    let mut fresh = Vec::new();
+    let mut named = Vec::new();
+    let mut origins = Vec::new();
+    let mut references = Vec::new();
+    let mut layout = None;
+    let mut memo = cunit::FirstCombatMemo::new(0);
+    for (hour, text_length, route_length) in [(1, 3, 0), (2, 513, 8_193)] {
+        if hour == 2 {
+            array(
+                &mut memory.bytes,
+                STATE + cgame_state::PROVINCES,
+                PROVINCES,
+                route_length as u32,
+            );
+            for id in 1..=5_000 {
+                let country = RECORDS + (id - 1) * 0x1000;
+                stored_name(
+                    &mut memory.bytes,
+                    country + 0x400,
+                    &vec![b'G'; text_length],
+                    country + 0xc00,
+                );
+            }
+            let route = 0x180_0000;
+            array(
+                &mut memory.bytes,
+                RECORDS + 0x400 + cunit::ORDINARY_ROUTE_DATA,
+                route,
+                route_length as u32,
+            );
+            memory.bytes[route..route + route_length * 4].fill(0);
+        }
+        let mut name_arena = NameArena {
+            bytes: Buffer::Growing(&mut names),
+            used: 0,
+            required: 0,
+            failures: 0,
+        };
+        let mut scratch = TooltipScratch {
+            guns: Buffer::Growing(&mut guns),
+            fresh_observations: Buffer::Growing(&mut fresh),
+            sample_hour: Some(hour),
+            named: crate::railway_gun_speed::NamedBonuses {
+                pointers: Buffer::Growing(&mut named),
+                required: 0,
+            },
+            layout: &mut layout,
+            supply_origins: Buffer::Growing(&mut origins),
+            supply_origins_len: 0,
+            required_supply_origins: 0,
+        };
+        let mut reference_arena = CombatReferencesArena {
+            entries: Buffer::Growing(&mut references),
+            used: 0,
+            required: 0,
+        };
+        let walk = walk_with_tooltip_and_combat_references_growing(
+            &memory,
+            0,
+            STATE,
+            &mut rows,
+            &mut paths,
+            &mut memo,
+            &mut name_arena,
+            &mut scratch,
+            &mut reference_arena,
+        );
+        assert_eq!(walk.outcome, Outcome::Rows { len: 5_000 });
+        assert_eq!(walk.paths_len, route_length);
+        assert_eq!(
+            (name_arena.used, name_arena.failures),
+            (5_000 * text_length, 0)
+        );
+        assert_eq!(rows[4_999].name.unwrap().1, text_length);
+        assert!(rows[..5_000].iter().all(|row| row.fresh_failure.is_none()));
+    }
 }
 
 #[test]
@@ -942,6 +1517,8 @@ fn captures_the_roster_gun_motion_and_first_combat_without_map_entity_state() {
             combat_role: 1,
             combat_province: 2,
             combat_count: 2,
+            combat_references: None,
+            combat_references_failure: None,
             attacking: true,
             ordinary_start: 0,
             ordinary_len: 2,
@@ -952,6 +1529,11 @@ fn captures_the_roster_gun_motion_and_first_combat_without_map_entity_state() {
             supply: None,
             supply_origins_start: 0,
             supply_failure: None,
+            fresh: None,
+            fresh_failure: None,
+            fresh_failures: [None; 3],
+            withdrawal: None,
+            transport: None,
         }
     );
     assert_eq!(paths, [2, 1, 1]);
@@ -1419,3 +2001,5 @@ fn naval_transfer_and_stat_block_need_their_identities() {
         );
     }
 }
+
+mod unit_combat_reference_tests;

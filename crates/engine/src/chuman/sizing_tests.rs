@@ -1,0 +1,252 @@
+use super::*;
+use crate::memory::SliceMemory;
+use std::cell::RefCell;
+
+const MEMORY_BASE: usize = 0x1000;
+const BASE: usize = 0x140000000;
+const GS: usize = 0x1100;
+const HUMANS: usize = 0x10000;
+
+struct World {
+    bytes: Vec<u8>,
+    countries: usize,
+    counts: usize,
+}
+
+impl World {
+    fn new(country_count: u32, player_count: u32, user_len: usize) -> Self {
+        let slots = country_count as usize + 1;
+        let countries = HUMANS + player_count as usize * STRIDE;
+        let links = countries + slots * 8;
+        let counts = links + slots * 4;
+        let objects = (counts + slots + 7) & !7;
+        let heap = objects + slots * 16;
+        let mut world = Self {
+            bytes: vec![0; heap - MEMORY_BASE + player_count as usize * (user_len + 20)],
+            countries,
+            counts,
+        };
+        world.array(GS + cgame_state::PLAYER_RECORDS, HUMANS, player_count);
+        world.array(GS + cgame_state::COUNTRIES, countries, country_count + 1);
+        world.array(GS + cgame_state::COUNTRY_LINKS, links, country_count + 1);
+        world.array(GS + cgame_state::HUMAN_STATUS, counts, country_count + 1);
+        for slot in 1..=country_count {
+            let pointer = objects + slot as usize * 16;
+            world.put(
+                countries + slot as usize * 8,
+                &(pointer as u64).to_le_bytes(),
+            );
+            world.put(links + slot as usize * 4, &slot.to_le_bytes());
+            world.put(
+                pointer,
+                &((BASE + ccountry::VTABLE_RVA) as u64).to_le_bytes(),
+            );
+            world.put(pointer + ccountry::ID, &slot.to_le_bytes());
+            world.put(counts + slot as usize, &[slot as u8]);
+        }
+        for index in 0..player_count {
+            let address = HUMANS + index as usize * STRIDE;
+            let text = heap + index as usize * (user_len + 20);
+            world.put(address, &((BASE + VTABLE_RVA) as u64).to_le_bytes());
+            world.put(address + PLAYER_KEY, &(index as i32).to_le_bytes());
+            world.put(
+                address + COUNTRY_TAG,
+                &(index % country_count + 1).to_le_bytes(),
+            );
+            world.put(address + FLAGS, &[index as u8]);
+            world.string(address + FIRST_STRING, text, user_len, index as u8);
+            world.string(address + NAME, text + user_len + 1, 18, (index + 1) as u8);
+        }
+        world
+    }
+
+    fn memory(&self) -> SliceMemory<'_> {
+        SliceMemory {
+            base: MEMORY_BASE,
+            bytes: &self.bytes,
+        }
+    }
+
+    fn put(&mut self, address: usize, value: &[u8]) {
+        self.bytes[address - MEMORY_BASE..address - MEMORY_BASE + value.len()]
+            .copy_from_slice(value);
+    }
+
+    fn array(&mut self, address: usize, data: usize, count: u32) {
+        self.put(address, &(data as u64).to_le_bytes());
+        self.put(address + 8, &count.to_le_bytes());
+        self.put(address + 12, &count.to_le_bytes());
+    }
+
+    fn string(&mut self, address: usize, source: usize, len: usize, value: u8) {
+        assert!(len > 15);
+        self.put(address, &(source as u64).to_le_bytes());
+        self.put(address + 16, &(len as u64).to_le_bytes());
+        self.put(address + 24, &(len as u64).to_le_bytes());
+        self.bytes[source - MEMORY_BASE..source - MEMORY_BASE + len].fill(value);
+    }
+}
+
+struct TraceMemory<'a> {
+    memory: SliceMemory<'a>,
+    reads: RefCell<Vec<(usize, usize)>>,
+}
+
+impl Memory for TraceMemory<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push((address, output.len()));
+        self.memory.copy(address, output)
+    }
+}
+
+#[test]
+fn cold_and_later_original_headers_grow_players_names_and_5000_country_controllers() {
+    let mut players = Vec::new();
+    let mut names = Vec::new();
+    let mut controllers = Vec::new();
+    for (countries, count, user_len) in
+        [(5_000, 5_000, 29), (5_000, 7_000, 37), (7_000, 7_000, 513)]
+    {
+        let world = World::new(countries, count, user_len);
+        let memory = TraceMemory {
+            memory: world.memory(),
+            reads: RefCell::new(Vec::new()),
+        };
+        let walked = walk_growing(&memory, BASE, GS, &mut players, &mut names);
+        assert_eq!(
+            walked.outcome,
+            Outcome::Rows {
+                len: count as usize
+            }
+        );
+        assert_eq!(walked.bytes_len, count as usize * (user_len + 18));
+        assert_eq!(walked.required_bytes, walked.bytes_len);
+        for (index, row) in players[..count as usize].iter().enumerate() {
+            assert_eq!(row.id, index as i32);
+            assert_eq!(row.user_len, user_len);
+            assert_eq!(
+                &names[row.user_start..row.user_start + row.user_len],
+                vec![index as u8; user_len]
+            );
+            assert_eq!(
+                &names[row.name_start..row.name_start + row.name_len],
+                vec![(index + 1) as u8; 18]
+            );
+        }
+        assert_eq!(
+            walk_controllers_growing(&memory, BASE, GS, &mut controllers),
+            Outcome::Rows {
+                len: countries as usize
+            }
+        );
+        for (index, row) in controllers[..countries as usize].iter().enumerate() {
+            assert_eq!(
+                *row,
+                ControllerRow {
+                    country: index as u32 + 1,
+                    count: (index + 1) as i8
+                }
+            );
+        }
+        for header in [
+            cgame_state::PLAYER_RECORDS,
+            cgame_state::HUMAN_STATUS,
+            cgame_state::COUNTRIES,
+            cgame_state::COUNTRY_LINKS,
+        ] {
+            assert_eq!(
+                memory
+                    .reads
+                    .borrow()
+                    .iter()
+                    .filter(|&&(address, _)| address == GS + header)
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn growing_players_preserve_the_original_complete_read_protocol() {
+    let world = World::new(5_000, 5_000, 29);
+    let fixed_memory = TraceMemory {
+        memory: world.memory(),
+        reads: RefCell::new(Vec::new()),
+    };
+    let growing_memory = TraceMemory {
+        memory: world.memory(),
+        reads: RefCell::new(Vec::new()),
+    };
+    let mut fixed_rows = vec![Row::default(); 5_000];
+    let mut fixed_names = vec![0; 5_000 * 47];
+    let fixed = walk(&fixed_memory, BASE, GS, &mut fixed_rows, &mut fixed_names);
+    let mut growing_rows = Vec::new();
+    let mut growing_names = Vec::new();
+    let growing = walk_growing(
+        &growing_memory,
+        BASE,
+        GS,
+        &mut growing_rows,
+        &mut growing_names,
+    );
+    assert_eq!(growing, fixed);
+    assert_eq!(growing_rows, fixed_rows);
+    assert_eq!(growing_names, fixed_names);
+    assert_eq!(*growing_memory.reads.borrow(), *fixed_memory.reads.borrow());
+    assert_eq!(
+        walk(
+            &world.memory(),
+            BASE,
+            GS,
+            &mut fixed_rows[..4_096],
+            &mut fixed_names
+        )
+        .outcome,
+        Outcome::Truncated {
+            len: 4_096,
+            unread_rows: 904
+        }
+    );
+}
+
+#[test]
+fn growing_controllers_keep_original_count_bounds_and_fixed_shortage_behavior() {
+    let mut world = World::new(5_000, 1, 29);
+    let mut rows = vec![ControllerRow::default(); 4_096];
+    assert_eq!(
+        walk_controllers(&world.memory(), BASE, GS, &mut rows),
+        Outcome::Truncated {
+            len: 4_096,
+            unread_rows: 904
+        }
+    );
+    world.put(
+        GS + cgame_state::HUMAN_STATUS + 12,
+        &5_000_u32.to_le_bytes(),
+    );
+    let memory = TraceMemory {
+        memory: world.memory(),
+        reads: RefCell::new(Vec::new()),
+    };
+    assert_eq!(
+        walk_controllers_growing(&memory, BASE, GS, &mut Vec::new()),
+        Outcome::Unavailable {
+            reason: "human controller count unreadable or outside array"
+        }
+    );
+    assert!(
+        !memory
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(address, _)| address == world.counts + 5_000)
+    );
+    assert!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(address, _)| address == world.countries + 5_000 * 8)
+    );
+}

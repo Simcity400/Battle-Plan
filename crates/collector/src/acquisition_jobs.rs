@@ -34,6 +34,12 @@ pub(crate) struct RawRequest<J, C> {
     pub payload: J,
 }
 
+pub(crate) struct OrderRootsRequest {
+    pub base: usize,
+    pub orders: crate::map_capture::Orders,
+    pub naval: naval_history::NavalJob,
+}
+
 pub(crate) struct WorldPart<J, C> {
     pub context: C,
     pub payload: J,
@@ -136,9 +142,15 @@ pub(crate) struct CharacterPortraitsRequest {
 }
 pub(crate) struct OrdinaryRequest {
     pub countries: Arc<engine::country_memory::Cache>,
+    pub unit_inputs: Option<Arc<crate::division_census::UnitInputs>>,
     pub base: usize,
     pub game_state: usize,
+    pub hour: i32,
+    pub fresh_modifier_guard: Result<(), &'static str>,
+    pub transport_admission: crate::transport_admission::Admission,
+    pub transport_modifier_guard: Result<(), &'static str>,
     pub packs: Box<crate::extended::OrdinaryPacks>,
+    pub naval_missions: crate::extended::NavalMissionLoan,
 }
 impl OrdinaryRequest {
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -146,7 +158,8 @@ impl OrdinaryRequest {
     }
 
     pub(crate) fn fail(&mut self, reason: &'static str) -> OrdinaryReport {
-        self.packs.fail(reason);
+        self.packs
+            .fail(self.hour, self.naval_missions.force_full, reason);
         OrdinaryReport
     }
 }
@@ -156,8 +169,9 @@ pub(crate) struct SlowRequest {
     pub game_state: usize,
     pub hour: i32,
     pub force_full: bool,
+    pub directed_query_admission: crate::transport_admission::Admission,
     pub packs: Box<crate::extended::SlowPacks>,
-    /// The Slow job's sliced families' fingerprint stores, loaned for this hour.
+    /// The Slow job's stability fingerprint store, loaned for this hour.
     pub stores: crate::extended::SlowStores,
 }
 /// One part of the hour's AirCountryRelations copies
@@ -179,6 +193,10 @@ pub(crate) struct AirMissionsRequest {
     pub game_state: usize,
     /// The map census the typed visitor supplied the wing identities in.
     pub parent: engine::walk::Outcome,
+    pub hour: i32,
+    pub transport_guard: Result<(), &'static str>,
+    pub transport_admission: crate::transport_admission::Admission,
+    pub transport_regions: crate::extended::transport_spotting_context::RegionLoan,
     pub pack: Box<crate::extended::air::Captured>,
     pub histories: Vec<crate::extended::air_histories::Staging>,
 }
@@ -243,26 +261,36 @@ pub(crate) struct RaidTargetsReport;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct OrdinaryReport;
 pub(crate) struct LateRequest {
+    /// The same held country snapshot used by the Orders phase.
+    pub countries: Arc<engine::country_memory::Cache>,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
     pub base: usize,
     pub game_state: usize,
     pub hour: i32,
     pub force_full: bool,
     pub packs: Box<crate::extended::LatePacks>,
+    /// Completed plans and execution scratch; a Late failure never fails
+    /// their independently acquired prefix or order execution scalars.
+    pub plans: crate::extended::plans::Captured,
     /// The attachment's held RaidAirScores table, loaned for this hour.
     pub air_scores: Box<engine::raid_air_scores::Held>,
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct LateReport;
-/// The army order census and its plan operands. No inputs, so it runs from
-/// the first dispatch burst; the Late job reads the roots it leaves.
+/// The army order census and its plan operands. Its optional child operands
+/// borrow the completed OOB copy from this same held pass; the Late job reads
+/// the roots this job leaves.
 pub(crate) struct OrdersRequest {
+    pub countries: Arc<engine::country_memory::Cache>,
     pub base: usize,
     /// This pass's game state, for the invasion preparations' countries and
     /// provinces.
     pub game_state: usize,
     pub orders: crate::map_capture::Orders,
     pub plans: crate::extended::plans::Captured,
+    /// Loan of the accepted Naval copy, returned for its ordinary decode.
+    /// An absent copy never permits a native fallback for child group inputs.
+    pub group_source: Option<naval_history::NavalJob>,
 }
 impl OrdersRequest {
     pub(crate) fn allocated_bytes(&self) -> usize {
@@ -273,6 +301,15 @@ impl OrdersRequest {
         self.orders.fail(reason);
         self.plans.fail(reason);
         OrdersReport
+    }
+}
+impl Drop for OrdersRequest {
+    fn drop(&mut self) {
+        // A drained/cancelled request or a callback unwind may bypass the
+        // normal return. Retain the existing pooled payload without copying it.
+        if let Some(payload) = self.group_source.take() {
+            crate::decode::recycle_naval_job(payload);
+        }
     }
 }
 #[derive(Clone, Copy, Default)]
@@ -344,6 +381,7 @@ pub(crate) struct IntelRequest {
     pub context: fog::IntelCopyContext,
     pub payload: fog::IntelJob,
     pub inputs: Option<Arc<crate::division_census::UnitInputs>>,
+    pub input_failure: Option<&'static str>,
 }
 pub(crate) struct CharactersRequest {
     pub context: characters::CharactersCopyContext,
@@ -392,6 +430,11 @@ pub(crate) enum Job {
     Session(SessionRequest),
     Weather(WeatherRequest),
     Radar(RadarRequest),
+    MapCombats(map_capture::CombatRequest),
+    ObserverBoundary(crate::extended::observer_boundary::ObserverBoundaryRequest),
+    FinalInputs(crate::extended::FinalInputsRequest),
+    OrderRoots(OrderRootsRequest),
+    DivisionInputs(DivisionsRequest),
     Divisions(DivisionsRequest),
     World(WorldRequest),
     Governance(GovernanceRequest),
@@ -442,6 +485,11 @@ pub(crate) enum Report {
     Session(session::SessionCopyReport),
     Weather(weather::WeatherCopyReport),
     Radar(fog::RadarCopyReport),
+    MapCombats(map_capture::CombatReport),
+    ObserverBoundary(crate::extended::observer_boundary::ObserverBoundaryReport),
+    FinalInputs(crate::extended::FinalInputsReport),
+    OrderRoots(u64),
+    DivisionInputs(bool),
     Divisions(sampling::DivisionsCopyReport),
     World(WorldReport),
     Governance(GovernanceReport),
@@ -497,6 +545,8 @@ pub(crate) enum Role {
     Session,
     Weather,
     Radar,
+    MapCombats,
+    ObserverBoundary,
     Divisions,
     World,
     Governance,
@@ -530,19 +580,8 @@ pub(crate) enum Role {
 }
 
 impl Role {
-    const fn worker_only(self) -> bool {
-        matches!(
-            self,
-            Self::Governance
-                | Self::Variants
-                | Self::Orders
-                | Self::Ordinary
-                | Self::Presentation
-                | Self::EtaInputs
-                | Self::AirRelations
-                | Self::AirMissions
-                | Self::AirHistories
-        )
+    pub(crate) const fn worker_only(self) -> bool {
+        true
     }
     /// Shared native work follows an hourly consumer in mixed families. Detail
     /// acquisition opens nested scopes when it reads its own sources.
@@ -568,6 +607,8 @@ impl Role {
             Self::Session => T::WorldTension,
             Self::Weather => T::WeatherRegions,
             Self::Radar => T::RadarCoverage,
+            Self::MapCombats => T::LandCombats,
+            Self::ObserverBoundary => T::LandEventCoverage,
             Self::Divisions => T::Divisions,
             Self::World => T::ProvinceSupply,
             Self::Governance => T::Politics,
@@ -613,7 +654,11 @@ impl Role {
     pub(crate) fn priority(self) -> u8 {
         match self {
             // The longest hourly jobs start first: the block ends when they do.
-            Self::World | Self::Governance | Self::Research | Self::ShipModels => 0,
+            Self::World
+            | Self::Governance
+            | Self::Research
+            | Self::ShipModels
+            | Self::ObserverBoundary => 0,
             Self::AirWing | Self::ShipModelDetails => 1,
             Self::Divisions
             | Self::Intel
@@ -634,6 +679,7 @@ impl Role {
             Self::Characters | Self::Naval => 3,
             // Joined with Orders, before the Late job it feeds.
             Self::Orders
+            | Self::MapCombats
             | Self::AirMissions
             | Self::Provinces
             | Self::States
@@ -663,7 +709,7 @@ impl Role {
     }
 }
 
-pub(crate) const ROLE_COUNT: usize = 49;
+pub(crate) const ROLE_COUNT: usize = 51;
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -684,6 +730,8 @@ pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Session,
     Role::Weather,
     Role::Radar,
+    Role::MapCombats,
+    Role::ObserverBoundary,
     Role::Divisions,
     Role::World,
     Role::Governance,
@@ -739,13 +787,15 @@ impl Job {
             Self::Session(..) => Role::Session,
             Self::Weather(..) => Role::Weather,
             Self::Radar(..) => Role::Radar,
-            Self::Divisions(..) => Role::Divisions,
+            Self::MapCombats(..) => Role::MapCombats,
+            Self::ObserverBoundary(..) => Role::ObserverBoundary,
+            Self::DivisionInputs(..) | Self::Divisions(..) => Role::Divisions,
             Self::World(..) => Role::World,
             Self::Governance(..) => Role::Governance,
             Self::Variants(..) => Role::Variants,
             Self::Research(..) => Role::Research,
             Self::Intel(..) => Role::Intel,
-            Self::Presentation(..) => Role::Presentation,
+            Self::FinalInputs(..) | Self::Presentation(..) => Role::Presentation,
             Self::EtaInputs(..) => Role::EtaInputs,
             Self::IntelResidual(..) => Role::IntelResidual,
             Self::SupplyTrains(..) => Role::SupplyTrains,
@@ -760,7 +810,7 @@ impl Job {
             Self::AirMissions(..) => Role::AirMissions,
             Self::AirHistories(..) => Role::AirHistories,
             Self::Late(..) => Role::Late,
-            Self::Orders(..) => Role::Orders,
+            Self::OrderRoots(..) | Self::Orders(..) => Role::Orders,
             Self::Gated(..) => Role::Gated,
             Self::ShipModels(..) => Role::ShipModels,
             Self::ShipModelDetails(..) => Role::ShipModelDetails,
@@ -929,7 +979,7 @@ pub(crate) fn run_world(
         .production
         .as_mut()
         .map_or_else(Default::default, |part| {
-            production::copy_production_rest_refresh(
+            production::copy_production_rest_refresh_growing(
                 production_memory,
                 part.context,
                 &mut part.payload,
@@ -939,9 +989,13 @@ pub(crate) fn run_world(
         .construction
         .as_mut()
         .map_or_else(Default::default, |part| {
-            construction::copy_construction_rest_refresh(memory, part.context, &mut part.payload)
+            construction::copy_construction_rest_refresh_growing(
+                memory,
+                part.context,
+                &mut part.payload,
+            )
         });
-    let economy = economy::copy_economy_rest_refresh(
+    let economy = economy::copy_economy_rest_refresh_growing(
         memory,
         request.economy.context,
         &mut request.economy.payload,
@@ -982,6 +1036,11 @@ fn run_world_shared(
     report
 }
 
+#[cfg(test)]
+pub(crate) fn run_for_test(job: &mut Job, memory: &impl engine::Memory) -> Report {
+    run_with_memory(job, memory, &SharedCalibration::default())
+}
+
 fn run_with_memory(
     job: &mut Job,
     memory: &impl engine::Memory,
@@ -991,7 +1050,7 @@ fn run_with_memory(
     let role = job.role();
     let _reads = crate::read_accounting::table(role.read_anchor());
     let report = match job {
-        Job::Characters(request) => Report::Characters(characters::copy_characters(
+        Job::Characters(request) => Report::Characters(characters::copy_characters_growing(
             memory,
             request.context,
             &mut request.payload,
@@ -1007,25 +1066,25 @@ fn run_with_memory(
         }
         Job::AirWing(request) => {
             let cached = request.countries.roster_view(memory);
-            Report::AirWing(air::copy_air_refresh(
+            Report::AirWing(air::copy_air_refresh_growing(
                 &cached,
                 request.context,
                 &mut request.payload,
             ))
         }
-        Job::AirStats(request) => Report::AirStats(air::copy_air_stats_refresh(
+        Job::AirStats(request) => Report::AirStats(air::copy_air_stats_refresh_growing(
             memory,
             request.context,
             &mut request.payload,
         )),
-        Job::AirBases(request) => Report::AirBases(air::copy_air_bases_refresh(
+        Job::AirBases(request) => Report::AirBases(air::copy_air_bases_refresh_growing(
             memory,
             request.context,
             &mut request.payload,
         )),
         Job::AirHistory(request) => {
             let cached = request.countries.roster_view(memory);
-            Report::AirHistory(air::copy_air_history_refresh(
+            Report::AirHistory(air::copy_air_history_refresh_growing(
                 &cached,
                 request.context,
                 &mut request.payload,
@@ -1035,18 +1094,20 @@ fn run_with_memory(
             // The land theatre copy resolves countries through this
             // callback's authenticated roster; ordinary reads stay native.
             let cached = request.countries.roster_view(memory);
-            Report::Naval(naval_history::copy_naval_refresh(
+            Report::Naval(naval_history::copy_naval_refresh_growing(
                 &cached,
                 request.context,
                 &mut request.payload,
             ))
         }
-        Job::Supremacy(request) => Report::Supremacy(naval_history::copy_supremacy_refresh(
-            memory,
-            request.context,
-            &mut request.payload,
-        )),
-        Job::Sunk(request) => Report::Sunk(naval_history::copy_sunk_refresh(
+        Job::Supremacy(request) => {
+            Report::Supremacy(naval_history::copy_supremacy_refresh_growing(
+                memory,
+                request.context,
+                &mut request.payload,
+            ))
+        }
+        Job::Sunk(request) => Report::Sunk(naval_history::copy_sunk_refresh_growing(
             memory,
             request.context,
             &mut request.payload,
@@ -1066,24 +1127,47 @@ fn run_with_memory(
             request.context,
             &mut request.payload,
         )),
-        Job::Lexical(request) => Report::Lexical(lexical::copy_lexical_refresh(
+        Job::Lexical(request) => Report::Lexical(lexical::copy_lexical_refresh_growing(
             memory,
             request.context,
             &mut request.payload,
         )),
-        Job::Session(request) => Report::Session(session::copy_session_refresh(
+        Job::Session(request) => Report::Session(session::copy_session_refresh_growing(
             memory,
             request.context,
             &mut request.payload,
         )),
-        Job::Weather(request) => Report::Weather(weather::copy_weather_refresh(
+        Job::Weather(request) => Report::Weather(weather::copy_weather_refresh_growing(
             memory,
             request.context,
             &mut request.payload,
         )),
         Job::Radar(request) => {
             let cached = request.countries.view(memory);
-            Report::Radar(fog::copy_radar_refresh(
+            Report::Radar(fog::copy_radar_refresh_growing(
+                &cached,
+                request.context,
+                &mut request.payload,
+            ))
+        }
+        Job::MapCombats(request) => Report::MapCombats(request.capture(memory)),
+        Job::ObserverBoundary(request) => Report::ObserverBoundary(request.capture()),
+        Job::FinalInputs(request) => {
+            let countries = Arc::clone(&request.countries);
+            let cached = countries.roster_view(memory);
+            Report::FinalInputs(request.capture(&cached))
+        }
+        Job::OrderRoots(request) => {
+            request.orders.walk_roots_growing(memory, request.base);
+            Report::OrderRoots(
+                request
+                    .naval
+                    .capture_roots_growing(request.orders.roots(), request.orders.root_outcome),
+            )
+        }
+        Job::DivisionInputs(request) => {
+            let cached = request.countries.view(memory);
+            Report::DivisionInputs(sampling::copy_divisions_inputs_refresh_growing(
                 &cached,
                 request.context,
                 &mut request.payload,
@@ -1176,13 +1260,29 @@ fn run_with_memory(
         }
         Job::Ordinary(request) => {
             let cached = request.countries.roster_view(memory);
-            request
-                .packs
-                .capture(&cached, request.base, request.game_state);
+            request.packs.capture_with_transport_admission(
+                &cached,
+                request.base,
+                request.game_state,
+                request.unit_inputs.as_deref(),
+                (request.hour, &mut request.naval_missions),
+                request.fresh_modifier_guard,
+                request
+                    .transport_admission
+                    .check(request.base, request.game_state, request.hour),
+                request.transport_modifier_guard,
+            );
             Report::Ordinary(OrdinaryReport)
         }
         Job::Slow(request) => {
             let cached = request.countries.roster_view(memory);
+            request.packs.visibility.set_directed_query_admission(
+                request.directed_query_admission.check(
+                    request.base,
+                    request.game_state,
+                    request.hour,
+                ),
+            );
             request.packs.capture(
                 &cached,
                 request.base,
@@ -1212,9 +1312,18 @@ fn run_with_memory(
                 &cached,
                 request.base,
                 request.game_state,
-                request.parent,
-                &mut request.histories,
-                &crate::history_changes::Observer,
+                air::MissionSources {
+                    parent: request.parent,
+                    histories: &mut request.histories,
+                    changes: &crate::history_changes::Observer,
+                    transport_regions: request.transport_regions.samples(request.hour),
+                    transport_guard: request.transport_guard,
+                    transport_admission: request.transport_admission.check(
+                        request.base,
+                        request.game_state,
+                        request.hour,
+                    ),
+                },
             );
             Report::AirMissions(AirMissionsReport)
         }
@@ -1267,6 +1376,7 @@ fn run_with_memory(
             Report::RaidTargets(RaidTargetsReport)
         }
         Job::Late(request) => {
+            let cached = request.countries.roster_view(memory);
             request.packs.capture(
                 memory,
                 request.base,
@@ -1276,12 +1386,21 @@ fn run_with_memory(
                 request.inputs.as_deref(),
                 &mut request.air_scores,
             );
+            let cost = request.plans.capture_unit_transports(
+                &cached,
+                request.base,
+                request.game_state,
+                request.inputs.as_deref(),
+                &request.packs.orders,
+            );
+            request.packs.ticks[replay::rows::TableId::DivisionMovement.index()] += cost;
             Report::Late(LateReport)
         }
         Job::Orders(request) => {
+            let cached = request.countries.roster_view(memory);
             request.orders.walk(memory, request.base);
             request.plans.visit(
-                memory,
+                &cached,
                 request.base,
                 request.game_state,
                 request.orders.roots(),
@@ -1289,6 +1408,9 @@ fn run_with_memory(
                 request.orders.successor_lists(),
                 request.orders.root_outcome,
                 request.orders.rows.outcome,
+                &request.orders.rows.rows[..request.orders.rows.outcome.len()],
+                &request.orders.geometry[..request.orders.geometry_len],
+                request.group_source.as_ref(),
             );
             Report::Orders(OrdersReport)
         }
@@ -1318,12 +1440,14 @@ fn run_with_memory(
         }
         Job::Provinces(request) => {
             let (base, game_state) = (request.base, request.game_state);
-            Report::Provinces(request.run(|capture| capture.walk(memory, base, game_state)))
+            Report::Provinces(request.run(|capture| capture.walk_growing(memory, base, game_state)))
         }
-        Job::Factions(request) => Report::Factions(acquisition_factions::run(request, memory)),
+        Job::Factions(request) => {
+            Report::Factions(acquisition_factions::run_growing(request, memory))
+        }
         Job::Countries(request) => Report::Countries(request.run(memory)),
-        Job::Wars(request) => Report::Wars(request.run(memory)),
-        Job::States(request) => Report::States(request.run(memory)),
+        Job::Wars(request) => Report::Wars(request.run_growing(memory)),
+        Job::States(request) => Report::States(request.run_growing(memory)),
         Job::Presentation(request) => {
             let cached = request.countries.roster_view(memory);
             let inputs = request.inputs.as_deref();
@@ -1358,12 +1482,33 @@ fn run_with_memory(
                     request.context.base,
                     request.context.game_state,
                 ),
+                engine::Memory::authenticated_reserved_country_observation(
+                    &cached,
+                    request.context.base,
+                    request.context.game_state,
+                ),
             ))
         }
         Job::Intel(request) => {
             let cached = request.countries.roster_view(memory);
-            let divisions = request.inputs.as_ref().map(|inputs| inputs.intel_sources());
-            Report::Intel(fog::copy_intel_refresh_with_divisions(
+            let divisions = Some(if let Some(reason) = request.input_failure {
+                engine::unit_viewer_entry::DivisionSources {
+                    entries: &[],
+                    outcome: engine::walk::Outcome::Unavailable { reason },
+                }
+            } else {
+                request
+                    .inputs
+                    .as_ref()
+                    .map(|inputs| inputs.intel_sources())
+                    .unwrap_or(engine::unit_viewer_entry::DivisionSources {
+                        entries: &[],
+                        outcome: engine::walk::Outcome::Unavailable {
+                            reason: "division input acquisition not supplied",
+                        },
+                    })
+            });
+            Report::Intel(fog::copy_intel_refresh_with_divisions_growing(
                 &cached,
                 request.context,
                 &mut request.payload,
@@ -1465,8 +1610,8 @@ impl Pool {
         }
         Some(completed)
     }
-    /// Execute a retained, rejected request on the callback with the same
-    /// providers and panic boundary. An accepted request must never retry here.
+    /// Execute an eligible retained, rejected request on the callback with the
+    /// same providers and panic boundary. Worker-only roles cannot run here.
     ///
     /// # Safety
     /// The admitted callback lease must remain valid throughout this call.
@@ -1528,7 +1673,15 @@ impl Pool {
 }
 
 /// Upper bound on simultaneously retained callback requests, not table capacity.
-pub(crate) const MAX_JOBS: usize = 64;
+pub(crate) const MAX_JOBS: usize = {
+    let mut count = 1;
+    let mut index = 0;
+    while index < ROLE_COUNT {
+        count += ROLES[index].jobs_per_hour();
+        index += 1;
+    }
+    count
+};
 pub(crate) struct Batch<'a> {
     pool: &'a Pool,
     tickets: [Option<Ticket>; MAX_JOBS],
@@ -1589,6 +1742,9 @@ impl Drop for Batch<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod order_group_loan_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1694,23 +1850,33 @@ mod tests {
     }
 
     fn synthetic_pool(run: impl Fn(&mut Job) -> Report + Send + Sync + 'static) -> Pool {
+        let executor = acquisition::Pool::start(1, MAX_JOBS, run).unwrap();
+        executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
         Pool {
-            executor: acquisition::Pool::start(0, MAX_JOBS, run).unwrap(),
+            executor,
             calibration: Arc::new(SharedCalibration::default()),
         }
     }
 
     #[test]
     fn every_worker_only_job_of_an_hour_has_a_reserved_slot() {
-        // Governance, Variants, Orders, Ordinary, Presentation, AirMissions,
-        // each ETA range, each relation part and each history part.
+        // Every single worker-only role and all ETA, air relation and history parts.
         assert_eq!(
             WORKER_ONLY_JOBS,
-            6 + division_eta_inputs::MAX_RANGES
-                + crate::extended::air_relations::PARTS
-                + crate::extended::air_histories::PARTS
+            ROLES
+                .iter()
+                .copied()
+                .filter(|role| role.worker_only())
+                .map(Role::jobs_per_hour)
+                .sum::<usize>()
         );
-        assert!(Role::AirMissions.worker_only());
+        assert!(
+            ROLES
+                .iter()
+                .copied()
+                .filter(|role| *role != Role::Players)
+                .all(Role::worker_only)
+        );
     }
 
     #[test]
@@ -1854,11 +2020,21 @@ mod tests {
                     });
                     let mut previous = fog::IntelJob::new();
                     let capture = Capture::new();
-                    let expected = fog::copy_intel_refresh_with_divisions(
+                    let expected = fog::copy_intel_refresh_with_divisions_growing(
                         &countries.view(&source),
                         context,
                         &mut previous,
-                        inputs.as_ref().map(|inputs| inputs.intel_sources()),
+                        Some(
+                            inputs
+                                .as_ref()
+                                .map(|inputs| inputs.intel_sources())
+                                .unwrap_or(unit_viewer_entry::DivisionSources {
+                                    entries: &[],
+                                    outcome: Outcome::Unavailable {
+                                        reason: "division input acquisition not supplied",
+                                    },
+                                }),
+                        ),
                     );
                     let expected_counts = capture.finish();
                     let expected_reads = reads.take();
@@ -1867,6 +2043,7 @@ mod tests {
                         context,
                         payload: fog::IntelJob::new(),
                         inputs: inputs.clone(),
+                        input_failure: None,
                     });
                     let capture = Capture::new();
                     let Report::Intel(actual) =
@@ -1884,8 +2061,15 @@ mod tests {
                     assert_eq!(counts, expected_counts);
                     assert_eq!(actual_reads, expected_reads);
                     assert_eq!(decoded(&request.payload), decoded(&previous));
+                    match (&request.inputs, &inputs) {
+                        (Some(retained), Some(original)) => {
+                            assert!(Arc::ptr_eq(retained, original));
+                        }
+                        (None, None) => {}
+                        _ => panic!("original division inputs must be retained"),
+                    }
                     let native = counts[TableId::UnitIntel.index()];
-                    assert!(native.spans > 0);
+                    assert_eq!(native.spans > 0, shared);
                     assert_eq!(native.record_calls > 0, shared);
                     let mut attributed = read_accounting::ZERO;
                     attributed[TableId::UnitIntel.index()] = native;
@@ -1894,10 +2078,23 @@ mod tests {
                         actual_reads
                             .iter()
                             .any(|span| authentication.contains(span)),
-                        cells == 0,
+                        shared && cells == 0,
                         "ready rosters must not repeat native country authentication",
                     );
                     let (outcome, table) = decoded(&request.payload);
+                    if !shared {
+                        let reason = "division input acquisition not supplied";
+                        assert_eq!(outcome, Outcome::Unavailable { reason });
+                        assert_eq!(
+                            table,
+                            replay::frame::TableView::Unavailable {
+                                reason: reason.to_owned(),
+                            }
+                        );
+                        assert!(actual_reads.is_empty());
+                        assert_eq!(counts, read_accounting::ZERO);
+                        continue;
+                    }
                     match faults.first() {
                         None => {
                             assert_eq!(outcome, Outcome::Rows { len: 2 });
@@ -2122,9 +2319,9 @@ mod tests {
     }
 
     #[test]
-    fn rejected_single_payload_runs_inline_once_and_returns_its_storage() {
+    fn rejected_provinces_worker_retains_its_storage_without_inline_reads() {
         for workers in [0, 1] {
-            // This immutable fixture outlives every accepted and inline read.
+            // This immutable fixture outlives every accepted read.
             // Its empty header stops the walk before any pointer can be followed.
             let source = vec![0_u8; engine::cgame_state::PROVINCES + 16];
             for (game_state, reason, reads) in [
@@ -2149,7 +2346,6 @@ mod tests {
                         payload: engine::cprovince::Capture::try_with_capacity(2, 0, 0).unwrap(),
                     })
                 };
-                let mut accepted = Some(make());
                 let mut retained = Some(make());
                 let pointer = match retained.as_ref().unwrap() {
                     Job::Provinces(request) => request.payload.rows.as_ptr(),
@@ -2158,58 +2354,62 @@ mod tests {
                 let mut batch = Batch::new(&pool);
                 // SAFETY: roots overflow or read the owned header; Batch drains
                 // all accepted jobs before the fixture can be dropped.
-                let ticket = unsafe { batch.submit(&mut accepted) }.unwrap();
+                let mut tickets = Vec::with_capacity(WORKER_ONLY_JOBS);
+                for _ in 0..WORKER_ONLY_JOBS {
+                    let mut accepted = Some(make());
+                    tickets.push(unsafe { batch.submit(&mut accepted) }.unwrap());
+                    assert!(accepted.is_none());
+                }
                 assert_eq!(
                     unsafe { batch.submit(&mut retained) },
                     Err(SubmitError::Full)
                 );
-                assert!(accepted.is_none() && retained.is_some());
-                let inline = unsafe { batch.run_inline(retained.take().unwrap()) };
-                let Job::Provinces(request) = &inline.request else {
+                assert!(retained.is_some());
+                let rejected = retained.take().unwrap();
+                assert!(rejected.role().worker_only());
+                let Job::Provinces(request) = &rejected else {
                     panic!("province request routing changed");
                 };
                 assert_eq!(request.payload.rows.as_ptr(), pointer);
                 let mut job_reads = read_accounting::ZERO;
                 job_reads[TableId::Provinces.index()] = reads;
-                let mut expected = job_reads;
+                let mut expected = read_accounting::ZERO;
                 expected[TableId::Clock.index()] = one_copy(3);
                 // Accepted work stays isolated until its separate collection.
                 assert_eq!(read_accounting::snapshot(), expected);
-                for completed in [inline, batch.finish(ticket).unwrap()] {
+                for ticket in tickets {
+                    let completed = batch.finish(ticket).unwrap();
                     assert_eq!(completed.table_reads, job_reads);
                     let Ok(Report::Provinces(report)) = completed.report else {
                         panic!("province report routing changed");
                     };
                     assert_eq!(report.result, engine::walk::Outcome::Unavailable { reason });
+                    expected[TableId::Provinces.index()] += reads;
                 }
                 let calibration = pool.calibration();
                 let counts = calibration.roles[Role::Provinces as usize].counters;
-                assert_eq!(counts.accepted, 1);
-                assert_eq!(counts.completed, 1);
+                assert_eq!(counts.accepted, WORKER_ONLY_JOBS as u64);
+                assert_eq!(counts.completed, WORKER_ONLY_JOBS as u64);
                 assert_eq!(counts.rejected, 1);
-                assert_eq!(counts.inline_completed, 1);
+                assert_eq!(counts.inline_completed, 0);
                 assert_eq!(calibration.executor.uncollected, 0);
                 drop(batch);
-                expected[TableId::Provinces.index()] += reads;
                 assert_eq!(capture.finish(), expected);
             }
         }
     }
 
-    /// A relations job carries its hour's owner slice and the family's
-    /// fingerprint store. Accepted or rejected and run inline, it runs once
-    /// and brings both back with its payload; the join returns them to the
-    /// pack, the store for the next hour and the slice read again because
-    /// the walk (here unreadable) was not published whole. The report itself
-    /// is whole, so decode publishes the tables' unavailable outcome.
+    /// Exhausting reserved worker slots retains the rejected relations payload.
+    /// Its join returns the original slice and fingerprint store and publishes
+    /// unavailable tables without callback reads or inline execution.
     #[test]
-    fn a_rejected_relations_job_runs_inline_once_and_returns_its_slice() {
+    fn a_rejected_relations_worker_returns_its_slice_without_callback_reads() {
         use crate::slicing::{SliceFingerprints, SliceSelection};
         for workers in [0, 1] {
+            let capture = Capture::new();
             let pool = Pool::start(workers, WORKER_ONLY_JOBS + 1).unwrap();
             let make = || {
-                let mut selection = SliceSelection::new(true);
-                selection.reset(5, false);
+                let selection = SliceSelection::for_test(5, false, &[7]).with_census(&[7]);
                 Job::Relations(RawRequest {
                     countries: empty_country_snapshot(),
                     // An unreadable game state: the census and the walk fail
@@ -2230,7 +2430,6 @@ mod tests {
                     },
                 })
             };
-            let mut accepted = Some(make());
             let mut retained = Some(make());
             let store = |job: &Job| match job {
                 Job::Relations(request) => {
@@ -2238,51 +2437,76 @@ mod tests {
                 }
                 _ => unreachable!(),
             };
-            let stores = [
-                store(accepted.as_ref().unwrap()),
-                store(retained.as_ref().unwrap()),
-            ];
+            let original_store = store(retained.as_ref().unwrap());
+            let Job::Relations(request) = retained.as_ref().unwrap() else {
+                unreachable!()
+            };
+            let original_selection = request.payload.selection.as_ref().unwrap();
+            let selected: Vec<_> = (0..32)
+                .map(|owner| original_selection.contains(owner))
+                .collect();
             let mut batch = Batch::new(&pool);
             // SAFETY: the walks fail on the unreadable game state; Batch
             // drains every accepted job before this frame ends.
-            let ticket = unsafe { batch.submit(&mut accepted) }.unwrap();
+            let mut tickets = Vec::new();
+            for _ in 0..WORKER_ONLY_JOBS {
+                let mut accepted = Some(make());
+                tickets.push(unsafe { batch.submit(&mut accepted) }.unwrap());
+            }
             assert_eq!(
                 unsafe { batch.submit(&mut retained) },
                 Err(SubmitError::Full)
             );
-            let inline = unsafe { batch.run_inline(retained.take().unwrap()) };
-            for (completed, store) in [
-                (inline, stores[1]),
-                (batch.finish(ticket).unwrap(), stores[0]),
-            ] {
-                let Job::Relations(request) = completed.request else {
-                    panic!("relations request routing changed");
-                };
-                let Ok(Report::Relations(report)) = completed.report else {
-                    panic!("relations report routing changed");
-                };
-                assert!(!request.payload.published());
-                let mut pack = intel::Captured::vacant();
-                let (fingerprints, payload) = pack.join_relations(request.payload, report, None);
-                // The job's own store comes back, and its slice is the pack's.
+            let Job::Relations(request) = retained.take().unwrap() else {
+                panic!("relations request routing changed");
+            };
+            let reason = "acquisition worker stopped before completion";
+            assert!(!request.payload.published());
+            let mut pack = intel::Captured::vacant();
+            let (fingerprints, payload) = pack.join_relations(
+                request.payload,
+                intel::RelationsCopyReport::default(),
+                Some(reason),
+            );
+            assert_eq!(
+                fingerprints
+                    .as_deref()
+                    .map(|store| store as *const SliceFingerprints),
+                Some(original_store)
+            );
+            assert_eq!(
+                (0..32)
+                    .map(|owner| pack.relations_selection().contains(owner))
+                    .collect::<Vec<_>>(),
+                selected
+            );
+            assert_eq!(
+                pack.relations_selection().read_owners().collect::<Vec<_>>(),
+                [7]
+            );
+            let Err(job) = payload else {
+                panic!("a rejected worker payload must be recycled");
+            };
+            assert!(job.selection.is_none() && job.fingerprints.is_none());
+            assert!(pack.relations_raw_mode, "no typed fallback read");
+            pack.fail_relations_capture([true; 2], reason);
+            for index in [13, 14] {
                 assert_eq!(
-                    fingerprints
-                        .as_deref()
-                        .map(|store| store as *const SliceFingerprints),
-                    Some(store)
+                    pack.outcomes()[index],
+                    engine::walk::Outcome::Unavailable { reason }
                 );
-                let Ok(job) = payload else {
-                    panic!("a whole report goes to decode")
-                };
-                assert!(job.selection.is_none() && job.fingerprints.is_none());
-                assert!(pack.relations_raw_mode, "no typed fallback read");
+            }
+            assert_eq!(read_accounting::snapshot(), read_accounting::ZERO);
+            for ticket in tickets {
+                assert!(batch.finish(ticket).is_some());
             }
             let counts = pool.calibration().roles[Role::Relations as usize].counters;
-            assert_eq!(counts.accepted, 1);
-            assert_eq!(counts.completed, 1);
+            assert_eq!(counts.accepted, WORKER_ONLY_JOBS as u64);
+            assert_eq!(counts.completed, WORKER_ONLY_JOBS as u64);
             assert_eq!(counts.rejected, 1);
-            assert_eq!(counts.inline_completed, 1);
+            assert_eq!(counts.inline_completed, 0);
             drop(batch);
+            assert_eq!(capture.finish(), read_accounting::ZERO);
         }
     }
 
@@ -2292,7 +2516,10 @@ mod tests {
         accounted_read(TableId::Clock, 2);
         let calls = Arc::new(AtomicU64::new(0));
         let observed = Arc::clone(&calls);
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = Mutex::new(wait);
         let pool = synthetic_pool(move |_| {
+            assert!(wait.lock().unwrap().recv().is_err());
             observed.fetch_add(1, Ordering::Relaxed);
             accounted_read(TableId::ProductionLines, 3);
             accounted_read(TableId::Focus, 4);
@@ -2301,6 +2528,9 @@ mod tests {
         let countries = empty_country_snapshot();
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             let mut batch = Batch::new(&pool);
+            // Drop the sender before Batch drains during unwind. The worker
+            // cannot panic and stop admission until all three jobs were queued.
+            let _release = release;
             for _ in 0..3 {
                 let mut request = world_request();
                 request.countries = Arc::clone(&countries);

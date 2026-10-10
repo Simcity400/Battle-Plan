@@ -176,6 +176,87 @@ fn value(country: usize, series: u32, archetype: u32) -> i64 {
     }
 }
 
+#[test]
+fn worker_sizes_5000_country_roster_without_reading_native_excluded_countries() {
+    const COUNTRY_POINTERS: usize = 0x500_0000;
+    const COUNTRY_LINKS: usize = 0x501_0000;
+    const HUMAN_COUNTS: usize = 0x502_0000;
+    const AUTONOMY_FLAGS: usize = 0x503_0000;
+    let mut fixture = Fixture::new(3);
+    fixture.array(GAME + cgame_state::COUNTRIES, COUNTRY_POINTERS, 5_001);
+    fixture.array(GAME + cgame_state::COUNTRY_LINKS, COUNTRY_LINKS, 5_001);
+    fixture.array(GAME + cgame_state::HUMAN_STATUS, HUMAN_COUNTS, 5_001);
+    fixture.array(GAME + cgame_state::AUTONOMOUS_STATUS, AUTONOMY_FLAGS, 5_001);
+    fixture.bytes(HUMAN_COUNTS, &vec![0; 5_001]);
+    fixture.bytes(AUTONOMY_FLAGS, &vec![1; 5_001]);
+    fixture.bytes(HUMAN_COUNTS + 1, &[1]);
+    fixture.bytes(AUTONOMY_FLAGS + 3, &[0]);
+    fixture.pointer(COUNTRY_POINTERS, 0);
+    fixture.u32(COUNTRY_LINKS, 0);
+    for slot in 1..=5_000 {
+        let pointer = match slot {
+            1 => HUMAN.0,
+            2 => AI.0,
+            3 => MANUAL.0,
+            _ => 0x600_0000 + slot as usize * 0x2000,
+        };
+        fixture.pointer(COUNTRY_POINTERS + slot as usize * 8, pointer);
+        fixture.u32(COUNTRY_LINKS + slot as usize * 4, slot);
+        fixture.pointer(pointer, BASE + ccountry::VTABLE_RVA);
+        fixture.u32(pointer + ccountry::ID, slot);
+    }
+    assert_eq!(row_demand(&fixture, BASE, GAME), Ok(15_000));
+    let mut output = Vec::new();
+    assert_eq!(
+        walk_growing(&fixture, BASE, GAME, &mut output),
+        Outcome::Rows { len: 6 }
+    );
+    assert_eq!((output[2].country, output[2].archetype), (1, 2));
+    assert_eq!((output[5].country, output[5].archetype), (3, 2));
+}
+
+#[test]
+fn worker_grows_from_mod_archetype_headers_on_first_and_later_samples() {
+    let mut output = Vec::new();
+    for count in [5_000_u32, 8_191] {
+        let mut fixture = Fixture::new(0);
+        fixture.array(DATABASE + database::ARCHETYPES, LIST, count);
+        for index in 0..count {
+            let pointer = TYPES + index as usize * TYPE_STRIDE;
+            fixture.pointer(LIST + index as usize * 8, pointer);
+            fixture.pointer(pointer, BASE + cequipment_type::VTABLE_RVA);
+            fixture.u32(pointer + cequipment_type::TOKEN, token(index));
+            fixture.u32(pointer + cequipment_type::STOCKPILE_INDEX, index);
+            fixture.bytes(pointer + cequipment_type::IS_ARCHETYPE, &[1]);
+        }
+        for (owner_index, (country, _, region)) in [HUMAN, MANUAL].into_iter().enumerate() {
+            for series in [STOCK_SERIES, BALANCE_SERIES] {
+                let history = Fixture::history(region, series);
+                let values = 0x300_0000
+                    + owner_index * 0x10_0000
+                    + (series - STOCK_SERIES) as usize * 0x8_0000;
+                fixture.u32(history + cloop_history::FIELD_COUNT, count);
+                fixture.array(history + 0x400, values, count);
+                for index in 0..count {
+                    fixture.i64(values + index as usize * 8, value(country, series, index));
+                }
+            }
+        }
+        assert_eq!(
+            walk_growing(&fixture, BASE, GAME, &mut output),
+            Outcome::Rows {
+                len: 2 * count as usize
+            }
+        );
+        assert_eq!(output[count as usize - 1].archetype, count - 1);
+        assert_eq!(output[2 * count as usize - 1].country, MANUAL.1);
+        assert_eq!(
+            output[2 * count as usize - 1].stock_raw,
+            value(MANUAL.0, STOCK_SERIES, count - 1)
+        );
+    }
+}
+
 fn expected(country: (usize, u32, usize), archetype: u32) -> Row {
     Row {
         country: country.1,

@@ -117,6 +117,7 @@ impl Viewer {
             behind,
             playing: self.playing,
             perspective: self.perspective.clone(),
+            show_allied_plans: self.graphics.show_allied_plans,
             counters: self.counter_view.clone(),
             view,
             // Not the hour on screen after a seek, which may be to that hour.
@@ -333,7 +334,7 @@ impl Viewer {
                         current: &raid_frame,
                     },
                 );
-                self.shown = Some(ShownHour {
+                retired.push(self.shown.replace(ShownHour {
                     epoch,
                     branch,
                     hour,
@@ -347,7 +348,8 @@ impl Viewer {
                     limitations: Default::default(),
                     snow: Default::default(),
                     header: Default::default(),
-                });
+                    borders: None,
+                }));
                 return Ok(());
             }
         };
@@ -475,23 +477,17 @@ impl Viewer {
             uploaded.borders = Some(borders.id);
         }
         laps.lap("border_classes");
-        // weather: an hour whose grid equals the one on the GPU writes nothing.
+        // Equal snapshots preserve local refresh history; discontinuities reset it.
         let same_snow = uploaded.snow_mud.as_ref().is_some_and(|had| {
             Arc::ptr_eq(had, &snow_mud)
                 || had.width == snow_mud.width
                     && had.height == snow_mud.height
                     && had.texels == snow_mud.texels
                     && had.province_snow == snow_mud.province_snow
+                    && had.refresh == snow_mud.refresh
         });
-        if !same_snow {
-            scene.set_snow_mud(
-                &state.device,
-                &state.queue,
-                &snow_mud.texels,
-                snow_mud.width,
-                snow_mud.height,
-                &snow_mud.province_snow,
-            )?;
+        if !same_snow || continuity == map::presentation::Continuity::Reset {
+            scene.set_snow_mud(&state.device, &state.queue, &snow_mud, continuity)?;
             uploaded.snow_mud = Some(Arc::clone(&snow_mud));
         }
         laps.lap("snow_upload");
@@ -507,6 +503,7 @@ impl Viewer {
         laps.lap("fog_upload");
         retired.push(self.placements.replace(names));
         self.placements_at = Some((branch, hour));
+        let counter_view = overlay.counter_view().clone();
         retired.push(self.prepared_overlay.replace(overlay));
         retired.push(self.overlay_tables.replace((
             branch,
@@ -521,7 +518,9 @@ impl Viewer {
             pixels: view.viewport,
             ui_scale: view.ui_scale,
             perspective: self.perspective.clone(),
-            counter_settings: self.counter_view.settings,
+            counter_settings: counter_view.settings,
+            selected: counter_view.selected,
+            hovered: counter_view.hovered,
         });
         self.overlay_fraction = None;
         let shown = ShownHour {
@@ -537,6 +536,7 @@ impl Viewer {
             political_build: political.layers.build,
             limitations,
             header,
+            borders: Some((Arc::clone(&political), Arc::clone(&borders))),
             snow: (
                 snow_mud.summary,
                 [snow_mud.width, snow_mud.height],
@@ -545,6 +545,15 @@ impl Viewer {
         };
         self.animation_seek = false;
         retired.push(self.shown.replace(shown));
+        // A refused render can leave the previous hour's province list unread.
+        // Supersede it only after every fallible upload succeeded; selection and
+        // map-icon pools remain owned by this view, and unconsumed forces survive.
+        self.counter_view
+            .presentation
+            .schedule()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .cancel_pending();
         retired.push((political, borders, rails, buildings, snow_mud, intel));
         laps.lap("apply_end");
         Ok(())

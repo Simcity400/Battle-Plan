@@ -218,7 +218,7 @@ fn collect_typed(memory: &impl Memory, capacity: &Capacities) -> Split {
 }
 
 fn collect(memory: &impl Memory) -> Split {
-    collect_typed(memory, &Capacities::default())
+    collect_typed(memory, &Capacities::fixture())
 }
 
 pub(crate) fn direct(memory: &impl Memory) -> Split {
@@ -236,10 +236,10 @@ pub(crate) fn split(memory: &impl Memory) -> (Split, AirWingCopyReport, AirWingJ
         naval_limit: 4096,
         game_score: false,
     };
-    let mut first = AirWingJob::new();
+    let mut first = AirWingJob::fixture();
     let report = super::copy_air_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&Capacities::fixture());
     let mut ticks = [0u64; 2];
     super::decode_air_payload(&mut captured, &first, &mut ticks);
     (
@@ -272,7 +272,7 @@ pub(crate) fn split_with(
         naval_limit: 4096,
         game_score: false,
     };
-    let mut first = AirWingJob::new();
+    let mut first = AirWingJob::fixture();
     let report = super::copy_air_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     let mut captured = Captured::with_capacities(capacity);
@@ -297,6 +297,7 @@ pub(crate) fn direct_truncated(memory: &impl Memory) -> Split {
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
+        transport: [0; 5],
     };
     collect_typed(memory, &capacity)
 }
@@ -312,7 +313,7 @@ pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, AirWingCopyReport
         naval_limit: 4096,
         game_score: false,
     };
-    let mut first = AirWingJob::new();
+    let mut first = AirWingJob::fixture();
     let report = super::copy_air_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     let capacity = Capacities {
@@ -321,6 +322,7 @@ pub(crate) fn split_truncated(memory: &impl Memory) -> (Split, AirWingCopyReport
         wings: 8192,
         sorties: Default::default(),
         scores: Default::default(),
+        transport: [0; 5],
     };
     let mut captured = Captured::with_capacities(&capacity);
     let mut ticks = [0u64; 2];

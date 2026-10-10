@@ -1,4 +1,4 @@
-//! Hourly drain of owned damage events; conversion never follows game pointers.
+//! Worker drain of owned damage events; conversion never follows game pointers.
 use crate::{
     building_bombing as producer,
     sampling::qpc,
@@ -19,6 +19,9 @@ pub struct Captured {
     rows: CaptureRows<producer::Entry>,
 }
 impl Captured {
+    pub fn vacant() -> Self {
+        Self::with_capacities(&0)
+    }
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(*c),
@@ -35,10 +38,18 @@ impl Captured {
         *c = (*c).max(producer::capacity());
         grow_vec(&mut self.rows.rows, *c);
     }
-    pub fn capture(&mut self, _memory: &impl Memory, _base: usize, _state: usize) -> [u64; N] {
+    pub fn fail(&mut self, reason: &'static str) {
+        self.rows.fail(Outcome::Unavailable { reason });
+    }
+    pub fn capture_growing(
+        &mut self,
+        _memory: &impl Memory,
+        _base: usize,
+        _state: usize,
+    ) -> [u64; N] {
         self.reset();
         let started = qpc();
-        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
+        self.rows.outcome = match producer::drain_growing(&mut self.rows.rows) {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };

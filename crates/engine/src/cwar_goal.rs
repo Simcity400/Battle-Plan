@@ -64,8 +64,40 @@ pub fn walk(
     output: &mut [Row],
     states: &mut [u32],
 ) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(states),
+    )
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut Vec<Row>,
+    states: &mut Vec<u32>,
+) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(states),
+    )
+}
+
+fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut output: crate::walk::Buffer<'_, Row>,
+    mut states: crate::walk::Buffer<'_, u32>,
+) -> Walk {
     let mut len = 0;
-    let mut state_len = 0;
+    let mut state_len = 0_usize;
     let mut required = Demand::default();
     let result = (|| {
         let countries = ccountry::Reader::new(memory, base, state)?;
@@ -100,6 +132,7 @@ pub fn walk(
                 .rows
                 .checked_add(goals.count as usize)
                 .ok_or("owned wargoal row demand overflow")?;
+            output.ensure(required.rows)?;
             cpdx_array::pointers(
                 memory,
                 goals,
@@ -120,6 +153,11 @@ pub fn walk(
                         .states
                         .checked_add(source.count as usize)
                         .ok_or("owned wargoal state demand overflow")?;
+                    states.ensure(
+                        state_len
+                            .checked_add(source.count as usize)
+                            .ok_or("owned wargoal state demand overflow")?,
+                    )?;
                     if len == output.len()
                         || source.count as usize > states.len().saturating_sub(state_len)
                     {

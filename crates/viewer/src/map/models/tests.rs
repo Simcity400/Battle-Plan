@@ -544,6 +544,7 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
         key,
         entity_animation::Clock {
             time: 1.4,
+            phase: None,
             requests,
         },
     );
@@ -558,7 +559,16 @@ fn aircraft_callbacks_with_geometry(meshed: bool) {
         assert_eq!(drops.len(), 2);
         assert_eq!(drops[0].definition.particle.as_deref(), Some("drop"));
         assert_eq!(drops[0].definition.light.as_deref(), Some("lamp"));
-        assert_eq!(drops[0].transform.translation, [10., 22., 30.]);
+        // 14226EF30 asks the mesh before entity locators. The meshed
+        // actor's matching joint has no played palette, so 1422621F0
+        // leaves this event at the root; the dummy child still attaches
+        // through the authored entity locator (14226E490).
+        let drop_position = if meshed {
+            [10., 20., 30.]
+        } else {
+            [10., 22., 30.]
+        };
+        assert_eq!(drops[0].transform.translation, drop_position);
         assert!((drops[0].age - 0.05).abs() < 1e-5, "{}", drops[0].age);
         assert_eq!(drops[1].definition.particle.as_deref(), Some("glow"));
         assert_eq!(drops[1].transform.translation, [10., 22., 30.]);

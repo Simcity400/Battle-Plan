@@ -222,6 +222,51 @@ mod tests {
     };
 
     #[test]
+    fn deletion_flights_balance_before_native_early_return_and_reentry() {
+        struct Probe {
+            native_entries: usize,
+            native_flights: usize,
+        }
+        extern "system" fn native(probe: *mut Probe, reenter: usize) -> *mut Probe {
+            let state = unsafe { &mut *probe };
+            state.native_entries += 1;
+            state.native_flights |= ACTIVE.load(Ordering::SeqCst);
+            if reenter == 0 {
+                return probe;
+            }
+            // Like the native deleting destructor@1401C9080, return the
+            // receiver; its tail-entered body owns no DLL return address.
+            unsafe { invoke(probe, 0) }
+        }
+        unsafe fn invoke(probe: *mut Probe, reenter: usize) -> *mut Probe {
+            let entry: unsafe extern "system" fn(*mut Probe, usize) -> *mut Probe =
+                unsafe { std::mem::transmute(world_delete_entry as *const ()) };
+            unsafe { entry(probe, reenter) }
+        }
+        struct Original(usize);
+        impl Drop for Original {
+            fn drop(&mut self) {
+                DELETE_ORIGINAL.store(self.0, Ordering::SeqCst);
+            }
+        }
+        let _guard = crate::hook::FAMILY_TEST.lock().unwrap();
+        let _original =
+            Original(DELETE_ORIGINAL.swap(native as *const () as usize, Ordering::SeqCst));
+        assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+        for reenter in [0, 1] {
+            let mut probe = Probe {
+                native_entries: 0,
+                native_flights: 0,
+            };
+            let result = unsafe { invoke(&mut probe, reenter) };
+            assert_eq!(result, &mut probe as *mut Probe);
+            assert_eq!(probe.native_entries, reenter + 1);
+            assert_eq!(probe.native_flights, 0);
+            assert_eq!(ACTIVE.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
     fn deleting_stub_unwinds_to_the_original_caller_stack() {
         let entry = world_delete_entry as *const () as usize;
         assert_eq!(

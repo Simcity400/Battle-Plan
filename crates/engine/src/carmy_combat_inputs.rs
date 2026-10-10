@@ -3,14 +3,10 @@
 
 use crate::{Memory, carmy, cpdx_array::Array, csub_unit_definition, cunit, read, read_slice};
 
-/// Explicit bound, exceeding it makes this division unavailable.
-pub const MODIFIER_LIMIT: usize = 256;
 /// Stat-block armour and piercing operands, consumed together by 1415CA660.
 pub const ARMOUR: usize = 0x298;
 /// Anti-air operand passed to 141297FD0 by 1415CA660.
 pub const AIR_ATTACK: usize = 0x220;
-/// Width getter140C6E270 traverses one term per native subunit type/count.
-pub const WIDTH_TERM_LIMIT: usize = 64;
 /// The division's `CNameGroupMember`: 140C72F00 returns its generated +0x60
 /// name, which committed 1415BA240 and reserve 1415BAC10 entries draw.
 pub const NAME_GROUP_MEMBER: usize = 0x340;
@@ -148,6 +144,36 @@ pub fn capture_stats(
     groups: &mut crate::cname_group_member::GroupKeys,
     names: &mut crate::cname_group_member::Names<'_>,
 ) -> Result<Row, &'static str> {
+    let mut arena = crate::cname_group_member::NameArena {
+        bytes: crate::walk::Buffer::Fixed(names.bytes),
+        len: names.len,
+        required: names.required,
+    };
+    let result = capture_stats_buffer(
+        memory,
+        base,
+        sources,
+        pointer,
+        expected_handle,
+        groups,
+        &mut arena,
+    );
+    names.len = arena.len;
+    names.required = arena.required;
+    result
+}
+
+/// 1415C7E00's original division operands, retaining worker growth through
+/// 1409B5640 naming without another name-header observation.
+pub fn capture_stats_buffer(
+    memory: &impl Memory,
+    base: usize,
+    sources: &mut crate::combat_sources::Sources,
+    pointer: usize,
+    expected_handle: u64,
+    groups: &mut crate::cname_group_member::GroupKeys,
+    names: &mut crate::cname_group_member::NameArena<'_>,
+) -> Result<Row, &'static str> {
     let identity = bytes::<8>(memory, pointer, 0)?;
     let expected_vtable = base
         .checked_add(carmy::VTABLE_RVA)
@@ -251,7 +277,7 @@ fn naming(
     base: usize,
     member: u64,
     groups: &mut crate::cname_group_member::GroupKeys,
-    names: &mut crate::cname_group_member::Names<'_>,
+    names: &mut crate::cname_group_member::NameArena<'_>,
 ) -> Result<Option<crate::cname_group_member::Inputs>, &'static str> {
     use crate::cname_group_member::Naming;
     let member = usize::try_from(member)
@@ -259,7 +285,7 @@ fn naming(
         .filter(|p| *p != 0)
         .ok_or("land combat division name pointer invalid")?;
     Ok(
-        match crate::cname_group_member::inputs(memory, base, member, groups, names)? {
+        match crate::cname_group_member::read_inputs(memory, base, member, groups, names, false)? {
             Naming::Row(row) => Some(row),
             Naming::DoesNotFit => None,
         },
@@ -349,6 +375,17 @@ pub fn capture_exile(
     pointer: usize,
     tags: &mut [u32],
 ) -> Result<Exile, &'static str> {
+    capture_exile_buffer(memory, countries, pointer, crate::walk::Buffer::Fixed(tags))
+}
+
+/// 14129FAD0/14129FB60 consume these lists in full. Growing worker storage
+/// reserves from their original headers before copying either payload.
+pub fn capture_exile_buffer(
+    memory: &impl Memory,
+    countries: &crate::ccountry::Reader<'_, impl Memory>,
+    pointer: usize,
+    mut tags: crate::walk::Buffer<'_, u32>,
+) -> Result<Exile, &'static str> {
     let template =
         u64::from_le_bytes(bytes::<8>(memory, pointer, carmy::STANDARD_TEMPLATE)?) as usize;
     if template == 0 {
@@ -413,7 +450,7 @@ pub fn capture_exile(
     )?;
     let (core_count, occupier_count) = (cores.count as usize, occupiers.count as usize);
     let required = core_count + occupier_count;
-    if required > tags.len() {
+    if !tags.ensure(required)? {
         return Ok(Exile::DoesNotFit { required });
     }
     copy_tags(memory, cores, &mut tags[..core_count])?;
@@ -432,6 +469,24 @@ pub fn capture_modifiers(
     expected_handle: u64,
     modifiers: &mut [Modifier],
 ) -> Result<usize, &'static str> {
+    capture_modifiers_buffer(
+        memory,
+        base,
+        pointer,
+        expected_handle,
+        crate::walk::Buffer::Fixed(modifiers),
+    )
+}
+
+/// 1415CA660 traverses the complete +170/+17C vector. Its acquired signed
+/// count alone sizes worker storage; a chosen modifier limit is not native.
+pub fn capture_modifiers_buffer(
+    memory: &impl Memory,
+    base: usize,
+    pointer: usize,
+    expected_handle: u64,
+    mut modifiers: crate::walk::Buffer<'_, Modifier>,
+) -> Result<usize, &'static str> {
     let identity = bytes::<8>(memory, pointer, 0)?;
     let handle = bytes::<8>(memory, pointer, cunit::HANDLE)?;
     if pointer == 0
@@ -446,10 +501,7 @@ pub fn capture_modifiers(
     let array =
         Array::from_header(header, 24).ok_or("land combat division modifier header invalid")?;
     let count = array.count as usize;
-    if count > MODIFIER_LIMIT {
-        return Err("land combat division modifier bound exceeded");
-    }
-    if count > modifiers.len() {
+    if !modifiers.ensure(count)? {
         return Err("land combat division modifier arena full");
     }
     let mut batch = [0_u8; 64 * 24];
@@ -489,6 +541,26 @@ pub fn capture_context(
     pointer: usize,
     expected_handle: u64,
     terms: &mut [WidthTerm],
+) -> Result<ContextRow, &'static str> {
+    capture_context_buffer(
+        memory,
+        base,
+        countries,
+        sources,
+        pointer,
+        expected_handle,
+        crate::walk::Buffer::Fixed(terms),
+    )
+}
+
+pub fn capture_context_buffer(
+    memory: &impl Memory,
+    base: usize,
+    countries: &crate::ccountry::Reader<'_, impl Memory>,
+    sources: &mut crate::combat_sources::Sources,
+    pointer: usize,
+    expected_handle: u64,
+    mut terms: crate::walk::Buffer<'_, WidthTerm>,
 ) -> Result<ContextRow, &'static str> {
     use crate::{ccountry, combat_sources::share};
     let verified = sources
@@ -574,8 +646,7 @@ pub fn capture_context(
             template_width(memory, base, template_pointer, &mut sources.width_arena)
         })?;
         template_handle = width.handle;
-        // Main refuses a full arena before reading any term.
-        if width.count > terms.len() {
+        if !terms.ensure(width.count)? {
             return Err("land combat width term arena full");
         }
         let run = width.terms?;
@@ -667,32 +738,37 @@ fn template_width(
     let array =
         Array::from_header(term_header, 16).ok_or("land combat width term header invalid")?;
     let count = array.count as usize;
-    if count > WIDTH_TERM_LIMIT {
-        return Err("land combat width term bound exceeded");
-    }
     let start = arena.len();
     let terms = (|| {
         crate::allocation::reserve_push_batch(arena, count).map_err(|_| "allocation failed")?;
-        let mut packed = [0; WIDTH_TERM_LIMIT * 16];
-        if !read_slice(memory, array.data, &mut packed[..count * 16]) {
-            return Err("land combat width terms unreadable");
-        }
-        for input in packed[..count * 16].chunks_exact(16) {
-            let subunit = u64::from_le_bytes(input[..8].try_into().unwrap()) as usize;
-            let raw = bytes::<12>(memory, subunit, 0)?;
-            if subunit == 0
-                || Some(u64::from_le_bytes(raw[..8].try_into().unwrap()))
-                    != base
-                        .checked_add(csub_unit_definition::VTABLE_RVA)
-                        .map(|p| p as u64)
-            {
-                return Err("land combat width subunit identity mismatch");
+        // 140C6E270 visits every template +C0/+CC entry. A bounded copy batch
+        // controls stack use, not the native number of subunit occurrences.
+        let mut packed = [0; 64 * 16];
+        for first in (0..count).step_by(64) {
+            let batch = (count - first).min(64);
+            let address = array
+                .element(first as u32, 16)
+                .ok_or("land combat width term address overflow")?;
+            if !read_slice(memory, address, &mut packed[..batch * 16]) {
+                return Err("land combat width terms unreadable");
             }
-            arena.push(WidthTerm {
-                subunit: u32::from_le_bytes(raw[8..].try_into().unwrap()),
-                count: i32::from_le_bytes(input[8..12].try_into().unwrap()),
-                width: i64::from_le_bytes(bytes(memory, subunit, 0x58)?),
-            });
+            for input in packed[..batch * 16].chunks_exact(16) {
+                let subunit = u64::from_le_bytes(input[..8].try_into().unwrap()) as usize;
+                let raw = bytes::<12>(memory, subunit, 0)?;
+                if subunit == 0
+                    || Some(u64::from_le_bytes(raw[..8].try_into().unwrap()))
+                        != base
+                            .checked_add(csub_unit_definition::VTABLE_RVA)
+                            .map(|p| p as u64)
+                {
+                    return Err("land combat width subunit identity mismatch");
+                }
+                arena.push(WidthTerm {
+                    subunit: u32::from_le_bytes(raw[8..].try_into().unwrap()),
+                    count: i32::from_le_bytes(input[8..12].try_into().unwrap()),
+                    width: i64::from_le_bytes(bytes(memory, subunit, 0x58)?),
+                });
+            }
         }
         Ok(crate::combat_sources::Run { start, len: count })
     })();
@@ -718,7 +794,8 @@ pub(crate) struct TemplateWidth {
     terms: Result<crate::combat_sources::Run, &'static str>,
 }
 
-/// Complete bounded accumulator census in64-entry copies, shared across keys.
+/// 140551820 searches the signed +C count with no chosen count limit. This
+/// existing raw census retains that full extent in64-entry copies.
 fn context_modifiers(
     memory: &impl Memory,
     pointer: usize,
@@ -726,9 +803,6 @@ fn context_modifiers(
     let header = bytes::<16>(memory, pointer, 0)?;
     let array =
         Array::from_header(header, 16).ok_or("land combat context modifier header invalid")?;
-    if array.count > 4096 {
-        return Err("land combat context modifier bound exceeded");
-    }
     let mut output = [ContextModifier::default(); 3];
     let mut packed = [0; 64 * 16];
     let mut previous = 0;

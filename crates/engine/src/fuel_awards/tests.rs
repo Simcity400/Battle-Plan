@@ -191,7 +191,8 @@ fn live_census_at_5000_includes_null_air_countries_and_all_name_bytes() {
         demand(&memory, 0, STATE).unwrap(),
         Demand {
             entries: 10000,
-            names: 40000
+            names: 40000,
+            name_stride: 8
         }
     );
     assert_eq!(demand(&memory, 0, 0).unwrap(), Demand::default());

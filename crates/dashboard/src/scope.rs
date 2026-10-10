@@ -107,7 +107,6 @@ pub struct RecordedScopes {
     /// Faction membership with each member's order (`CFaction+0x58`).
     faction_members: Vec<FactionMemberRow>,
     faction_members_complete: bool,
-    links_complete: bool,
     /// Character script token, folded as the lexer folds a token (the
     /// lookup is by token ID), to its ids with their countries' slots
     /// (`Characters.name_token_id` through `LexicalTokens`).
@@ -170,10 +169,6 @@ impl RecordedScopes {
             .iter()
             .map(|link| (link.id, link.canonical_slot))
             .collect();
-        let links_complete = matches!(
-            &*frame.tables[tables::CountryLinks::ID.index()],
-            TableView::Complete(_)
-        );
         let countries_complete = matches!(
             &*frame.tables[tables::Countries::ID.index()],
             TableView::Complete(_)
@@ -266,7 +261,6 @@ impl RecordedScopes {
             overlords,
             faction_members: faction_members.to_vec(),
             faction_members_complete,
-            links_complete,
             characters: by_token,
             characters_complete,
             owned,
@@ -469,49 +463,68 @@ impl RecordedScopes {
         self.links.get(&link).copied()
     }
 
-    /// The first country of this country's faction. `None` means it has no
-    /// faction; an incomplete membership or link read remains unknown.
-    /// The game takes the first `CFaction+0x58` member (14146BB30,
-    /// 1403D9390); FactionMembers records that order as `ordinal`.
-    pub fn faction_leader(&self, slot: u32) -> Result<Option<u32>, String> {
-        let Some(member) = self
+    /// The actual country's faction. Country0 uses its retained +0x290 getter.
+    pub(crate) fn faction(&self, slot: u32) -> Result<Option<u64>, String> {
+        if slot == 0 {
+            return self.original_tags.reserved_faction();
+        }
+        if let Some(member) = self
             .faction_members
             .iter()
-            .find(|row| self.slot(row.country) == Some(slot))
-        else {
-            let gap = &self.gaps["FactionMembers"];
-            if !self.faction_members_complete {
-                return Err(format!(
-                    "the faction of country slot {slot} is unknown: FactionMembers {gap}"
-                ));
-            }
-            if !self.links_complete
-                && let Some(row) = self
-                    .faction_members
-                    .iter()
-                    .find(|row| self.slot(row.country).is_none())
-            {
-                return Err(format!(
-                    "the faction of country slot {slot} is unknown: a FactionMembers row's country link {} resolves to no country: CountryLinks {}",
-                    row.country, self.gaps["CountryLinks"]
-                ));
-            }
-            return Ok(None);
-        };
-        let leader = self
+            .find(|row| row.country != 0 && self.slot(row.country) == Some(slot))
+        {
+            return Ok(Some(member.faction));
+        }
+        if !self.faction_members_complete {
+            return Err(format!(
+                "the faction of country slot {slot} is unknown: FactionMembers {}",
+                self.gaps["FactionMembers"]
+            ));
+        }
+        if let Some(row) = self
             .faction_members
             .iter()
-            .find(|row| row.faction == member.faction && row.ordinal == 0)
+            .find(|row| row.country != 0 && self.slot(row.country).is_none())
+        {
+            return Err(format!(
+                "the faction of country slot {slot} is unknown: a FactionMembers row's country link {} resolves to no country: CountryLinks {}",
+                row.country, self.gaps["CountryLinks"]
+            ));
+        }
+        Ok(None)
+    }
+
+    /// The exact first member's own raw country word (CFaction+0x58 ordinal0).
+    /// Literal raw0 is an authenticated Country0 member, never a null placeholder.
+    pub(crate) fn faction_first_raw(&self, faction: u64) -> Result<u32, String> {
+        self.faction_members
+            .iter()
+            .find(|row| row.faction == faction && row.ordinal == 0)
+            .map(|row| row.country)
             .ok_or_else(|| {
                 format!(
-                    "faction {} has no first member: FactionMembers {}",
-                    member.faction, self.gaps["FactionMembers"]
+                    "faction {faction} has no first member: FactionMembers {}",
+                    self.gaps["FactionMembers"]
                 )
-            })?;
-        self.slot(leader.country).map(Some).ok_or_else(|| {
+            })
+    }
+
+    pub(crate) fn faction_leader_raw(&self, slot: u32) -> Result<Option<u32>, String> {
+        self.faction(slot)?
+            .map(|faction| self.faction_first_raw(faction))
+            .transpose()
+    }
+
+    /// Existing scalar API: retain its ordinary link resolution. Scope and text
+    /// select their distinct literal-zero behavior through faction_leader_raw.
+    pub fn faction_leader(&self, slot: u32) -> Result<Option<u32>, String> {
+        let Some(raw) = self.faction_leader_raw(slot)? else {
+            return Ok(None);
+        };
+        self.slot(raw).map(Some).ok_or_else(|| {
             format!(
-                "the leader link {} of faction {} resolves to no country: CountryLinks {}",
-                leader.country, member.faction, self.gaps["CountryLinks"]
+                "the faction leader link {raw} resolves to no country: CountryLinks {}",
+                self.gaps["CountryLinks"]
             )
         })
     }
@@ -710,23 +723,32 @@ impl RecordedScopes {
                     self.describe(other)
                 ))),
             },
-            // 14146BB30 clears the target's validity when no faction exists;
-            // 14138F160 then makes the context trigger false. A directly
-            // carried faction comes from scope:faction, which is refused by
-            // name before this keyword in the current viewer contexts.
-            Keyword::FactionLeader => match this()? {
-                Target::Country(slot) => match self.faction_leader(slot).map_err(Missing)? {
-                    Some(leader) => Ok(Target::Country(leader)),
-                    None => Err(Nothing(format!(
-                        "{name}: {} has no faction",
-                        self.describe(Target::Country(slot))
-                    ))),
-                },
-                other => Err(Nothing(format!(
-                    "{name}: {} has no faction",
-                    self.describe(other)
-                ))),
-            },
+            // 14146BB30 has no country-presence gate on this fallback. Known
+            // clearing state/character/empty scopes ask actual Country0's faction.
+            // A directly carried faction remains outside these supported carriers.
+            Keyword::FactionLeader => {
+                let slot = match context.this {
+                    Some(Target::Country(slot)) => slot,
+                    Some(Target::State(_) | Target::Character(_)) | None => 0,
+                };
+                let Some(raw) = self.faction_leader_raw(slot).map_err(Missing)? else {
+                    return Err(Nothing(format!(
+                        "{name}: the resolved country has no faction"
+                    )));
+                };
+                if raw == 0 {
+                    // set_country(0, clear=1) leaves validity, but no carried kinds.
+                    Ok(Target::State(crate::triggers::NULL_STATE))
+                } else {
+                    // Positive raw aliases remain country carriers, even at slot0.
+                    self.slot(raw).map(Target::Country).ok_or_else(|| {
+                        Missing(format!(
+                            "{name}: faction leader link {raw} has no CountryLinks row: {}",
+                            self.gaps["CountryLinks"]
+                        ))
+                    })
+                }
+            }
             Keyword::Occupied | Keyword::Character | Keyword::Operation | Keyword::Opponent => {
                 Err(Missing(format!(
                     "{name}: this scope is set by the running script and is not recorded"
@@ -771,6 +793,10 @@ impl Names for RecordedScopes {
             .any(|prefix| text.eq_ignore_ascii_case(prefix))
     }
 }
+
+#[cfg(test)]
+#[path = "scope/faction_zero_tests.rs"]
+mod faction_zero_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {

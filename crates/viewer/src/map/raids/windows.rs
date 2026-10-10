@@ -224,32 +224,22 @@ impl PreparedRaids {
                 continue;
             }
             count += 1;
-            if let (Some(key), Some(frame)) = (&placed.icon.tooltip, frame) {
-                for part in drawn
-                    .layout
-                    .parts
-                    .iter()
-                    .filter(|part| part.path == frame.path)
-                {
-                    if let native_gui::PartKind::Sprite { geometry, .. } = &part.kind {
-                        hits.push(tooltips::Hit {
-                            origin: [
-                                geometry.rect[0] + drawn.origin[0] as f32,
-                                geometry.rect[1] + drawn.origin[1] as f32,
-                            ],
-                            size: [geometry.rect[2], geometry.rect[3]],
-                            key: key.clone(),
-                        });
-                    } else {
-                        let why = native_gui::Refusal {
-                            path: part.path.clone(),
-                            kind: native_gui::RefusalKind::MissingInput,
-                            detail: "raid-frame hover geometry for this drawable is not reproduced"
-                                .into(),
-                        };
-                        gui_windows::count_refused(&mut report.reasons, WINDOW, &[why]);
-                    }
-                }
+            if let (Some(key), Some(frame)) = (&placed.icon.tooltip, frame)
+                && let Some(hit) = gui_windows::hit_rectangle(
+                    frame,
+                    &drawn.layout,
+                    drawn.origin,
+                    context.resources,
+                    &mut report.reasons,
+                )
+            {
+                hits.push(tooltips::Hit {
+                    origin: [hit.rect[0], hit.rect[1]],
+                    size: [hit.rect[2], hit.rect[3]],
+                    key: key.clone(),
+                    layer: sprites::layer(priority, ordinal as u32, 0),
+                    supported: hit.supported,
+                });
             }
         }
         count
@@ -432,6 +422,7 @@ mod tests {
             assets: &assets,
             frame: &frame,
             ours: if offer { 1 } else { 0 },
+            nato: false,
             key: &hit.key,
             loc: &loc,
             recorded_language: &loc.language,
@@ -756,6 +747,7 @@ mod tests {
                 assets: &assets,
                 frame: &frame,
                 ours: 1,
+                nato: false,
                 key: &hit.key,
                 loc: &loc,
                 recorded_language: &loc.language,
@@ -786,6 +778,7 @@ mod tests {
             assets: &assets,
             frame: &frame,
             ours: 1,
+            nato: false,
             key: &key(1),
             loc: &loc,
             recorded_language: &loc.language,

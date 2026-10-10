@@ -3,10 +3,7 @@
 //! the selected IDs to the same applied-ID list as speed/ahead bonuses.
 //! EC0360/EC03D0 allocate both kinds from status's shared +13c ID counter.
 use crate::{
-    Memory,
-    climited_use_tech_bonus::Value,
-    msvc_string::{Descriptor, Text},
-    read,
+    Memory, climited_use_tech_bonus::Value, msvc_string::Descriptor, read, research_inputs::Text,
 };
 
 pub const VTABLE_RVA: usize = 0x0295_e4c0;
@@ -18,6 +15,7 @@ pub(crate) fn value(
     memory: &impl Memory,
     pointer: usize,
     id: i32,
+    growing: bool,
 ) -> Result<(Value, i64), &'static str> {
     let descriptor = Descriptor::read(
         memory,
@@ -25,9 +23,7 @@ pub(crate) fn value(
             .checked_add(NAME)
             .ok_or("cost bonus address overflow")?,
     )?;
-    let mut name = Text::<512>::default();
-    descriptor.copy(memory, &mut name.bytes)?;
-    name.len = descriptor.len;
+    let name = Text::from_descriptor(memory, descriptor, growing)?;
     let reduction = read::<i64>(
         memory,
         pointer

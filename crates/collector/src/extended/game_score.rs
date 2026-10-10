@@ -144,6 +144,8 @@ impl AirCountry {
 /// strategic-air, base-registration or wing-payload walk is introduced.
 pub(crate) struct AirInputs {
     enabled: bool,
+    growing: bool,
+    allocation_failure: Option<&'static str>,
     countries: Vec<AirCountry>,
     required_countries: usize,
     required_wings: usize,
@@ -170,6 +172,8 @@ impl AirInputs {
     fn new(enabled: bool, countries: usize, sites: usize, wings: usize) -> Self {
         Self {
             enabled,
+            growing: false,
+            allocation_failure: None,
             countries: owned_vec(engine::allocation::default_vec(countries)),
             required_countries: 0,
             required_wings: 0,
@@ -180,12 +184,14 @@ impl AirInputs {
     }
     pub(crate) fn for_wing_job(wings: usize) -> Self {
         let [sites, observed_wings] = arena_hints();
-        Self::new(
+        let mut inputs = Self::new(
             false,
             crate::country_scale::census_rows(0),
             sites,
             wings.max(observed_wings),
-        )
+        );
+        inputs.growing = true;
+        inputs
     }
     pub(crate) fn presize(&mut self) {
         let [sites, wings] = arena_hints();
@@ -194,10 +200,15 @@ impl AirInputs {
         grow_vec(&mut self.wings.rows, wings);
     }
     pub(crate) fn wing_limit(&self) -> Option<usize> {
-        self.enabled.then_some(self.wings.rows.len())
+        self.enabled.then_some(if self.growing {
+            usize::MAX
+        } else {
+            self.wings.rows.len()
+        })
     }
     pub(crate) fn begin(&mut self, enabled: bool) {
         self.enabled = enabled;
+        self.allocation_failure = None;
         self.countries.fill(AirCountry::default());
         self.required_countries = 0;
         self.required_wings = 0;
@@ -226,8 +237,24 @@ impl AirInputs {
         self.required_countries = self.required_countries.max(slot_index.saturating_add(1));
         // Short storage still visits every owner and counts every site's header demand.
         let start = self.sites.len;
-        let read =
-            native::read_first_sites(memory, base, slot, entry, &mut self.sites.first[start..]);
+        let read = if self.growing {
+            if let Err(error) =
+                engine::walk::Buffer::Growing(&mut self.countries).ensure(self.required_countries)
+            {
+                self.allocation_failure = Some(error);
+                self.wings.outcome = Outcome::Unavailable { reason: error };
+                return;
+            }
+            native::read_first_sites_buffer(
+                memory,
+                base,
+                slot,
+                entry,
+                engine::walk::Buffer::Growing(&mut self.sites.first).suffix(start),
+            )
+        } else {
+            native::read_first_sites(memory, base, slot, entry, &mut self.sites.first[start..])
+        };
         self.sites.required = self.sites.required.saturating_add(read.required);
         self.sites.len = self.sites.len.saturating_add(read.len);
         if let Some(destination) = self.countries.get_mut(slot_index) {
@@ -245,6 +272,14 @@ impl AirInputs {
         }
         self.required_wings = self.required_wings.saturating_add(1);
         let len = self.written_wings;
+        if self.growing
+            && let Err(reason) =
+                engine::walk::Buffer::Growing(&mut self.wings.rows).ensure(self.required_wings)
+        {
+            self.allocation_failure = Some(reason);
+            self.wings.outcome = Outcome::Unavailable { reason };
+            return;
+        }
         if let Some(destination) = self.wings.rows.get_mut(len) {
             *destination = native::read_wing(memory, pointer, row);
             self.written_wings = len + 1;
@@ -252,6 +287,10 @@ impl AirInputs {
     }
     pub(crate) fn finish(&mut self, parent: Outcome) {
         if !self.enabled {
+            return;
+        }
+        if let Some(reason) = self.allocation_failure {
+            self.wings.fail(Outcome::Unavailable { reason });
             return;
         }
         let required = match parent {
@@ -419,7 +458,7 @@ impl Captured {
         }
         let mut reads = crate::read_accounting::table(TABLES[0]);
         let started = qpc();
-        let capture = native::walk_country_inputs(
+        let capture = native::walk_country_inputs_growing(
             memory,
             base,
             state,

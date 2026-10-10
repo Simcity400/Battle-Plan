@@ -98,6 +98,7 @@ pub(crate) struct Census {
     bytes: u64,
     core_roots: Option<CoreRoots>,
     core_captured: bool,
+    growing: bool,
 }
 impl Default for Census {
     fn default() -> Self {
@@ -120,10 +121,18 @@ impl Default for Census {
             bytes: 0,
             core_roots: None,
             core_captured: false,
+            growing: false,
         }
     }
 }
 impl Census {
+    pub(crate) fn new_worker() -> Self {
+        Self {
+            unit_inputs: Some(Arc::new(UnitInputs::new(0))),
+            ..Self::default()
+        }
+    }
+    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             counts: engine::allocation::owned_vec(engine::allocation::default_vec(
@@ -164,6 +173,7 @@ impl Census {
         self.bytes = 0;
         self.core_roots = None;
         self.core_captured = false;
+        self.growing = false;
     }
     pub fn allocated_bytes(&self) -> u64 {
         crate::raw_memory::vector_bytes(&self.counts)
@@ -178,14 +188,20 @@ impl Census {
     pub fn payload_bytes(&self) -> u64 {
         self.bytes
     }
+    pub(crate) fn growing(&self) -> bool {
+        self.growing
+    }
+    pub(crate) fn country_count(&self) -> usize {
+        self.required_counts
+    }
     pub(crate) fn counts_need_growth(&self) -> bool {
         self.required_counts > self.counts.len()
     }
     pub fn initialized(&self) -> bool {
         self.entries.capacity() != 0
     }
-    pub(crate) fn source_capacity(&self) -> usize {
-        self.sources.capacity()
+    pub(crate) fn source_requirement(&self) -> usize {
+        self.required.max(self.sources.len())
     }
     pub(crate) fn unit_inputs(&self) -> Option<&Arc<UnitInputs>> {
         self.unit_inputs.as_ref()
@@ -197,10 +213,7 @@ impl Census {
         if !crate::table_capture::grow_vec(&mut self.counts, counts) {
             return;
         }
-        let target = self
-            .required
-            .max(self.entries.capacity().saturating_mul(2))
-            .max(8192);
+        let target = self.required;
         let additional = target.saturating_sub(self.entries.len());
         if engine::allocation::reserve_exact(&mut self.entries, additional).is_err() {
             return;
@@ -214,10 +227,7 @@ impl Census {
             }
             // The overflowed census kept counting every remaining roster, so
             // one step reaches the observed requirement.
-            let slots = self
-                .required_slots
-                .max(inputs.roster_slots.capacity().saturating_mul(2))
-                .max(16384);
+            let slots = self.required_slots;
             let additional = slots.saturating_sub(inputs.roster_slots.len());
             if engine::allocation::reserve_exact(&mut inputs.roster_slots, additional).is_err() {
                 return;
@@ -296,6 +306,7 @@ impl Census {
         }
         complete(len, self.entries.len() - len)
     }
+    #[cfg(test)]
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize, capacity: usize) {
         self.capture_inputs(memory, base, state);
         self.capture_core(memory, capacity);
@@ -303,9 +314,30 @@ impl Census {
     /// Publish the immutable native input packet before acquiring private core
     /// dependencies. The owning callback may lease it to other jobs as soon as
     /// this method returns; those jobs must finish before `clear` or `grow`.
+    pub(crate) fn capture_inputs_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) {
+        self.capture_inputs_mode(memory, base, state, true);
+    }
     pub(crate) fn capture_inputs(&mut self, memory: &impl Memory, base: usize, state: usize) {
+        self.capture_inputs_mode(memory, base, state, false);
+    }
+    fn capture_inputs_mode(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        growing: bool,
+    ) {
         self.clear();
         let counted = crate::division_detail::CountedMemory::new(memory);
+        self.growing = growing;
+        if growing && self.unit_inputs.is_none() {
+            self.unit_inputs = Some(Arc::new(UnitInputs::new(0)));
+        }
         let result = self.capture_inputs_inner(&counted, base, state);
         self.bytes = counted.bytes();
         if let Err(reason) = result {
@@ -357,7 +389,11 @@ impl Census {
         let reader = ccountry::Reader::new(memory, base, state)?;
         let [countries, links] = reader.arrays();
         self.required_counts = links.count as usize;
-        if self.counts.len() < self.required_counts {
+        // CGameState::PreHourlyUpdate@1401D8120 uses the live country roster.
+        // This worker keeps the original header even when a load outgrows hints.
+        if self.growing {
+            engine::walk::Buffer::Growing(&mut self.counts).ensure(self.required_counts)?;
+        } else if self.counts.len() < self.required_counts {
             self.counts_error = Some("division coverage country capacity exhausted");
         }
         let countries = Countries { countries, links };
@@ -410,6 +446,20 @@ impl Census {
                 "division roster unreadable or invalid",
             )?;
             self.required_slots = self.required_slots.saturating_add(roster.count as usize);
+            // GetDivisionArray@1406C25B0 returns this original +290 header.
+            if self.growing {
+                let inputs = self
+                    .unit_inputs
+                    .as_mut()
+                    .and_then(Arc::get_mut)
+                    .ok_or("division input packet still leased")?;
+                engine::allocation::reserve(&mut inputs.roster_slots, roster.count as usize)
+                    .map_err(|_| "division roster allocation failed")?;
+                engine::allocation::reserve(&mut inputs.seeds, roster.count as usize)
+                    .map_err(|_| "division seed allocation failed")?;
+                engine::allocation::reserve(&mut self.entries, roster.count as usize)
+                    .map_err(|_| "division census allocation failed")?;
+            }
             if counting {
                 self.required = self.required.saturating_add(roster.count as usize);
                 continue;
@@ -540,7 +590,17 @@ impl Census {
                 return Ok(());
             }
         };
-        let take = self.entries.len().min(capacity);
+        let take = if self.growing {
+            self.entries.len()
+        } else {
+            self.entries.len().min(capacity)
+        };
+        if self.growing {
+            engine::allocation::reserve(&mut self.rows, take)
+                .map_err(|_| "division row allocation failed")?;
+            engine::allocation::reserve(&mut self.sources, take)
+                .map_err(|_| "division source allocation failed")?;
+        }
         if take > self.rows.capacity() || take > self.sources.capacity() {
             self.overflowed = true;
             return Err("division owned scalar capacity exhausted");

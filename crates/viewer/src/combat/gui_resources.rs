@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) struct GuiAssets {
     sprites: BTreeSet<Vec<u8>>,
     portraits: BTreeMap<Vec<u8>, SpriteSheet>,
-    portrait_time: Option<u32>,
+    portrait_stamp: Option<(u32, u64)>,
     flags: BTreeMap<String, Result<i32, String>>,
     selectors: BTreeMap<i32, String>,
 }
@@ -58,14 +58,15 @@ impl GuiAssets {
         Self {
             sprites,
             portraits: BTreeMap::new(),
-            portrait_time: None,
+            portrait_stamp: None,
             flags,
             selectors,
         }
     }
 
-    pub(crate) fn refresh_portraits(&mut self, assets: &Assets, time: f32) {
-        if self.portrait_time == Some(time.to_bits()) {
+    pub(crate) fn refresh_portraits(&mut self, assets: &Assets, time: f32, texture_version: u64) {
+        let stamp = (time.to_bits(), texture_version);
+        if self.portrait_stamp == Some(stamp) {
             return;
         }
         self.portraits = assets.portrait_sheets(
@@ -75,7 +76,9 @@ impl GuiAssets {
                 .chain(&self.sprites)
                 .map(Vec::as_slice),
         );
-        self.portrait_time = Some(time.to_bits());
+        // ResolveLeaderPortrait@140B3A100 replaces the drawable with its decoded
+        // artwork. A fixed-clock export still has to publish newly loaded sheets.
+        self.portrait_stamp = Some(stamp);
     }
 }
 

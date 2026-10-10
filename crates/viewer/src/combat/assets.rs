@@ -47,6 +47,8 @@ pub struct Assets {
     pub naval_defines: Option<installed_content::naval_combat_defines::Defines>,
     /// 14195C7D0's NNavy operands, loaded from the matching content stack.
     pub(super) naval_escape_defines: Result<super::naval_escape::Defines, String>,
+    /// 141DED2F0's loss-equipment tint, read through 140857260/14073E680.
+    pub(super) naval_result_pride_color: Result<[f32; 4], String>,
     pub(super) naval_escape_screening: super::naval_escape::Screening,
     pub(super) naval_air_groups: super::naval_air_groups::Content,
     /// 141D8A3B0's six weather-event static accumulators, in event order.
@@ -80,6 +82,11 @@ pub struct Assets {
     pub warnings: Vec<String>,
 }
 impl Assets {
+    pub(crate) fn movement_terrain(
+        &self,
+    ) -> Result<Arc<installed_content::terrain::TerrainDefinitions>, String> {
+        self.land_terrain.clone()
+    }
     pub(crate) fn sub_units(&self) -> Result<&installed_content::unit_leader::SubUnits, &str> {
         self.commander_tooltips.sub_units()
     }
@@ -690,6 +697,15 @@ impl Assets {
         for (key, texture) in tactics.pictures() {
             direct.sprites.push(texture_sprite(key.to_owned(), texture));
         }
+        // 1406B3BD0/1406B0A70 leave the singleton picture empty. 141C5DD20
+        // keeps its authored drawable unless that empty picture's path exists.
+        let null_picture = "gfx/interface/landcombat/tactics/.dds";
+        if layers.has_file(null_picture)? {
+            direct.sprites.push(texture_sprite(
+                super::tactics::NULL_PICTURE.into(),
+                null_picture.into(),
+            ));
+        }
         files.push(("combat runtime textures".into(), direct));
         let registry = Registry::from_files(files);
         let mut wanted = BTreeSet::new();
@@ -728,6 +744,8 @@ impl Assets {
                 // 1417DAA40 resolves the air icon by country/archetype/sprite
                 // at runtime, outside the authored .gui resource names.
                 || name.starts_with(b"GFX_navalcombat_air_icon_")
+                // CNavalCombatResultsAirSurvivorItem, 141DF1660.
+                || name.starts_with(b"GFX_navalcombat_air_small_icon_")
                 || (name.starts_with(b"GFX_unit_")
                     && (name.ends_with(b"_icon_medium") || name.ends_with(b"_icon_medium_black")))
                 || name.starts_with(b"combat_tactic:")
@@ -998,6 +1016,7 @@ impl Assets {
             convoy_weapon_bound,
             naval_defines,
             naval_escape_defines,
+            naval_result_pride_color: super::naval_results::pride_color(defines),
             naval_escape_screening,
             naval_air_groups,
             naval_weather_modifiers,

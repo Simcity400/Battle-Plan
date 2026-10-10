@@ -1,10 +1,17 @@
-//! Normal land-counter tooltip: 1418C00D0 -> 140C6AC80. Missing reached inputs are refused.
+//! Native map-counter tooltips. Missing reached inputs are refused by their line.
 
 mod ability;
 mod attrition;
+mod carrier_summary;
 mod children;
+pub(super) mod gui_authored;
 mod railway_gun;
 mod supply;
+pub mod task_force;
+mod task_force_children;
+pub mod task_force_port;
+pub(crate) mod task_force_port_mission;
+mod task_force_summary;
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -38,6 +45,8 @@ pub struct Timing {
 #[derive(Default)]
 pub struct Cache {
     held: Option<(CounterHover, bool, Arc<Tooltip>)>,
+    naval: Option<(task_force::Hover, bool, Arc<Tooltip>)>,
+    port: Option<(task_force_port::Hover, bool, Arc<Tooltip>)>,
     source: Option<(Arc<document::Content>, Arc<DecodedFrame>, Arc<Vision>)>,
 }
 
@@ -64,12 +73,75 @@ impl Cache {
             && held.ours == hover.ours
             && held.hidden == hover.hidden
             && held.railway_gun == hover.railway_gun
+            && held.authored == hover.authored
         {
             return Arc::clone(text);
         }
         let text = Arc::new(build(content, frame, hover, vision, nato));
+        self.naval = None;
+        self.port = None;
         self.source = Some((Arc::clone(content), Arc::clone(frame), Arc::clone(vision)));
         self.held = Some((hover.clone(), nato, Arc::clone(&text)));
+        text
+    }
+
+    pub fn request_task_force(
+        &mut self,
+        content: &Arc<document::Content>,
+        frame: &Arc<DecodedFrame>,
+        hover: &task_force::Hover,
+        vision: &Arc<Vision>,
+        nato: bool,
+    ) -> Arc<Tooltip> {
+        if let Some((held_content, held_frame, held_vision)) = &self.source
+            && Arc::ptr_eq(content, held_content)
+            && Arc::ptr_eq(frame, held_frame)
+            && Arc::ptr_eq(vision, held_vision)
+            && let Some((held, held_nato, text)) = &self.naval
+            && *held_nato == nato
+            && held.control == hover.control
+            && held.members == hover.members
+            && held.coarse == hover.coarse
+            && held.ours == hover.ours
+            && held.hidden == hover.hidden
+            && held.authored == hover.authored
+        {
+            return Arc::clone(text);
+        }
+        let text = Arc::new(Batch::new(content, frame, vision, nato).build_task_force(hover));
+        self.held = None;
+        self.port = None;
+        self.source = Some((Arc::clone(content), Arc::clone(frame), Arc::clone(vision)));
+        self.naval = Some((hover.clone(), nato, Arc::clone(&text)));
+        text
+    }
+
+    pub fn request_task_force_port(
+        &mut self,
+        content: &Arc<document::Content>,
+        frame: &Arc<DecodedFrame>,
+        hover: &task_force_port::Hover,
+        vision: &Arc<Vision>,
+        nato: bool,
+    ) -> Arc<Tooltip> {
+        if let Some((held_content, held_frame, held_vision)) = &self.source
+            && Arc::ptr_eq(content, held_content)
+            && Arc::ptr_eq(frame, held_frame)
+            && Arc::ptr_eq(vision, held_vision)
+            && let Some((held, held_nato, text)) = &self.port
+            && *held_nato == nato
+            && held.control == hover.control
+            && held.members == hover.members
+            && held.metadata == hover.metadata
+            && held.authored == hover.authored
+        {
+            return Arc::clone(text);
+        }
+        let text = Arc::new(Batch::new(content, frame, vision, nato).build_task_force_port(hover));
+        self.held = None;
+        self.naval = None;
+        self.source = Some((Arc::clone(content), Arc::clone(frame), Arc::clone(vision)));
+        self.port = Some((hover.clone(), nato, Arc::clone(&text)));
         text
     }
 }
@@ -621,50 +693,195 @@ pub fn build(
     vision: &Vision,
     nato: bool,
 ) -> Tooltip {
-    let context = Context {
-        nato,
-        content: Some(content),
-        dig_in_factor: content.counters.dig_in_factor.clone(),
-        loc: &content.names.localisation,
-        recorded_language: &content.recorded_language,
-        icons: &content.icons.combat,
-        names: &content.icons.combat.division_names,
-        units: &content.province_hover.units,
-        supply_grace: content.counters.supply_grace.clone(),
-        comms_max_distance: content.counters.comms_max_distance.clone(),
-        frame,
-        vision,
-        links: frame
-            .complete::<tables::CountryLinks>()
-            .map_err(|e| e.to_string()),
-    };
-    build_context(&context, input, nato)
+    Batch::new(content, frame, vision, nato).build(input)
 }
 
-fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Tooltip {
-    if let Some(out) = children::specific(context, input) {
+/// Counter inventory shares lazy arrival indexes for its immutable frame.
+pub struct Batch<'a> {
+    context: Context<'a>,
+    arrival: super::division_eta::CounterQueries<'a>,
+}
+
+impl<'a> Batch<'a> {
+    pub fn new(
+        content: &'a document::Content,
+        frame: &'a DecodedFrame,
+        vision: &'a Vision,
+        nato: bool,
+    ) -> Self {
+        let context = Context {
+            nato,
+            content: Some(content),
+            dig_in_factor: content.counters.dig_in_factor.clone(),
+            loc: &content.names.localisation,
+            recorded_language: &content.recorded_language,
+            icons: &content.icons.combat,
+            names: &content.icons.combat.division_names,
+            units: &content.province_hover.units,
+            supply_grace: content.counters.supply_grace.clone(),
+            comms_max_distance: content.counters.comms_max_distance.clone(),
+            frame,
+            vision,
+            links: frame
+                .complete::<tables::CountryLinks>()
+                .map_err(|e| e.to_string()),
+        };
+        Self {
+            context,
+            arrival: super::division_eta::CounterQueries::new(content, frame),
+        }
+    }
+
+    pub fn build(&self, input: &CounterHover) -> Tooltip {
+        build_context(
+            &self.context,
+            input,
+            self.context.nato,
+            |unit, ours| match unit {
+                ArrivalUnit::Division(movement) => self.arrival.remaining(movement, ours, false),
+                ArrivalUnit::Railway(gun) => self.arrival.railway_remaining(gun, ours, false),
+            },
+        )
+    }
+
+    pub fn build_task_force(&self, input: &task_force::Hover) -> Tooltip {
+        task_force::build(&self.context, input, |movement, ours| {
+            self.arrival.task_force_remaining(movement, ours, false)
+        })
+    }
+
+    pub fn build_task_force_port(&self, input: &task_force_port::Hover) -> Tooltip {
+        task_force_port::build(&self.context, input)
+    }
+}
+
+enum ArrivalUnit<'a> {
+    Division(&'a DivisionMovementRow),
+    Railway(&'a replay::rows::RailwayGunCounterInputRow),
+}
+
+fn build_context(
+    context: &Context<'_>,
+    input: &CounterHover,
+    nato: bool,
+    arrival_remaining: impl FnOnce(ArrivalUnit<'_>, bool) -> Result<i64, String>,
+) -> Tooltip {
+    // The active-ability item has its own handler, not CUnitCounterItem's
+    // representative-reference gate (1418BFCE0 versus 1418C00D0).
+    if matches!(
+        input.control,
+        super::counters::CounterControl::Ability { .. }
+    ) && let Some(out) = children::specific(context, input)
+    {
         return out;
     }
     let mut out = Tooltip::default();
-    if input.railway_gun {
-        out = railway_gun::build(context, input);
+    let resolved = input.members.first().map_or(Ok(false), |first| {
+        if input.railway_gun {
+            context
+                .frame
+                .complete::<tables::RailwayGunCounterInputs>()
+                .map(|rows| rows.binary_search_by_key(first, |row| row.gun).is_ok())
+                .map_err(|error| error.to_string())
+        } else {
+            context
+                .frame
+                .complete::<tables::Divisions>()
+                .map(|rows| rows.binary_search_by_key(first, |row| row.id).is_ok())
+                .map_err(|error| error.to_string())
+        }
+    });
+    match resolved {
+        Ok(false) => {
+            if let Some(authored) = &input.authored {
+                authored.fallback(context, &mut out);
+            }
+            return out;
+        }
+        Err(reason) => {
+            refuse(&mut out, "representative", reason);
+            return out;
+        }
+        Ok(true) => (),
+    }
+    if let Some(out) = children::specific(context, input) {
+        return out;
+    }
+    let (mut out, handled) = if input.railway_gun {
+        let (mut out, handled) = railway_gun::build(context, input, |gun, ours| {
+            arrival_remaining(ArrivalUnit::Railway(gun), ours)
+        });
         children::append(context, input, &mut out);
-        return out;
+        (out, handled)
+    } else {
+        build_divisions(context, input, nato, arrival_remaining)
+    };
+    // Class 0 and 13 summaries, next-location text, HQ and late supply/order
+    // fragments never set [RBP+1120]. Detailed ETA formatting alone does;
+    // coarse counters always handle (1418C1917). Text presence is not a flag.
+    if !input.coarse
+        && let Some(authored) = &input.authored
+    {
+        match handled {
+            Ok(false) => authored.fallback(context, &mut out),
+            Ok(true) => (),
+            Err(_) => refuse(
+                &mut out,
+                "authored tooltip dispatch",
+                "arrival operands are unavailable, so the native handled result is unknown",
+            ),
+        }
     }
-    if input.members.is_empty() {
-        return out;
+    out
+}
+
+/// GetLastRouteProvince@140BED8F0 resolves before either ownership branch,
+/// including the foreign branch which will query only its first edge.
+fn ordinary_destination(context: &Context<'_>, path: &[u32], count: u32) -> Result<bool, String> {
+    if path.len() != count as usize {
+        return Err("ordinary route count does not match its captured path".into());
     }
-    if let Err(reason) = &context.links {
-        refuse(&mut out, "inputs", reason.clone());
-        return out;
-    }
+    let Some(&last) = path.last().filter(|&&last| last != 0) else {
+        return Ok(false);
+    };
+    let provinces = context
+        .frame
+        .complete::<tables::Provinces>()
+        .map_err(|error| error.to_string())?;
+    Ok(provinces.binary_search_by_key(&last, |row| row.id).is_ok())
+}
+
+fn build_divisions(
+    context: &Context<'_>,
+    input: &CounterHover,
+    nato: bool,
+    arrival_remaining: impl FnOnce(ArrivalUnit<'_>, bool) -> Result<i64, String>,
+) -> (Tooltip, Result<bool, String>) {
+    let mut out = Tooltip::default();
     let frame = context.frame;
     let vision = context.vision;
     let canonical = |raw| context.slot(raw).ok();
+    let divisions = match frame.complete::<tables::Divisions>() {
+        Ok(rows) => rows,
+        Err(error) => {
+            let reason = error.to_string();
+            refuse(&mut out, "division census", reason.clone());
+            return (out, Err(reason));
+        }
+    };
+    // The first representative was resolved strictly by the dispatcher.
+    // Generic gather1418C1D05 and coarse119C skip later unresolved refs;
+    // those refs neither become unknown-intel units nor alter composition.
+    let members: Vec<_> = input
+        .members
+        .iter()
+        .copied()
+        .filter(|id| divisions.binary_search_by_key(id, |row| row.id).is_ok())
+        .collect();
     if input.coarse {
-        match context.known(&input.members) {
+        match context.known(&members) {
             Ok(known) => {
-                let unknown = input.members.len().wrapping_sub(known.len()) as i32;
+                let unknown = members.len().wrapping_sub(known.len()) as i32;
                 append(
                     &mut out,
                     context,
@@ -676,42 +893,40 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
             }
             Err(reason) => refuse(&mut out, "intel header/stat eligibility", reason),
         }
-        return out;
+        return (out, Ok(true));
     }
     let first = input.members[0];
+    let mut handled = Ok(false);
     // 1418C1983/140BE8C70 test the first member's route and +1E8 target before both lines.
     match context.movement(first) {
         Ok(movement) if movement.path_total as i32 > 0 && movement.target == 0 => {
-            let arrival = (|| {
+            let arrival: Result<Option<counter_eta::Arrival>, String> = (|| {
                 if !input.ours && input.hidden {
-                    return Ok(String::new());
+                    return Ok(None);
                 }
-                let remaining = input
-                    .remaining
-                    .ok_or_else(|| format!("division {first} ETA is unavailable"))?;
-                counter_eta::arrival(remaining).map_or_else(
-                    || Ok(String::new()),
-                    |arrival| {
-                        counter_eta::sentence(context.loc, &arrival, input.ours)
-                            .map(|text| format!("{text}\n"))
-                    },
-                )
+                if !ordinary_destination(context, &movement.path, movement.path_total)? {
+                    return Ok(None);
+                }
+                let remaining = arrival_remaining(ArrivalUnit::Division(movement), input.ours)?;
+                Ok(Some(counter_eta::map_arrival(remaining)))
             })();
-            let before = out.body.len();
-            append(&mut out, context, true, "arrival", arrival);
-            if !out.body[before..]
-                .trim_matches(['\n', '\t', '\r', ' '])
-                .is_empty()
-            {
-                // 140BED3A0 fills the cache; 140BE9902 seeds five updates,
-                // and 140BF08E0 in 140BF0300 decrements each entry's lifetime.
-                refuse(
-                    &mut out,
-                    "destination ETA",
-                    "uses the stored route (the division panel's value); the native counter's \
-                     client-UI path-cache cost filled by hover/selection queries, retained for \
-                     five unit updates, is unrecorded",
-                );
+            match arrival {
+                Ok(Some(arrival)) => {
+                    handled = Ok(true);
+                    append(
+                        &mut out,
+                        context,
+                        true,
+                        "arrival",
+                        counter_eta::sentence(context.loc, &arrival, input.ours)
+                            .map(|text| format!("{text}\n")),
+                    );
+                }
+                Ok(None) => (),
+                Err(reason) => {
+                    refuse(&mut out, "arrival", reason.clone());
+                    handled = Err(reason);
+                }
             }
             let next = (|| {
                 if input.members.len() != input.timing.len() {
@@ -721,6 +936,9 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
                     .members
                     .iter()
                     .zip(input.timing.iter())
+                    // Match timing by original ordinal before omitting a
+                    // complete-census dangling ref (1418C21E0..221D).
+                    .filter(|(id, _)| divisions.binary_search_by_key(*id, |row| row.id).is_ok())
                     .map(|(&id, timing)| {
                         let division = context.division(id)?;
                         let movement = context.movement(id)?;
@@ -732,12 +950,15 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
             append(&mut out, context, true, "next location", next);
         }
         Ok(_) => (),
-        Err(reason) => refuse(&mut out, "movement", reason),
+        Err(reason) => {
+            refuse(&mut out, "movement", reason.clone());
+            handled = Err(reason);
+        }
     }
-    match context.known(&input.members) {
+    match context.known(&members) {
         Ok(known) => {
-            let unknown = input.members.len().wrapping_sub(known.len()) as i32;
-            let prepared = units::prepare_members(frame, &input.members, &canonical, vision);
+            let unknown = members.len().wrapping_sub(known.len()) as i32;
+            let prepared = units::prepare_members(frame, &members, &canonical, vision);
             append(
                 &mut out,
                 context,
@@ -746,7 +967,7 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
                 counts(context.loc, known.len() as i32, unknown, false),
             );
             let disclosed = prepared.as_ref().ok().map(|prepared| prepared.disclosed);
-            if input.members.len() == 1 {
+            if members.len() == 1 {
                 if !known.is_empty() {
                     append(
                         &mut out,
@@ -801,7 +1022,7 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
                 );
             }
             // Single undisclosed (140C6C3E0) and zero-known (140C6A690) never reach supply.
-            if !known.is_empty() && (input.members.len() != 1 || disclosed == Some(true)) {
+            if !known.is_empty() && (members.len() != 1 || disclosed == Some(true)) {
                 let values = known
                     .iter()
                     .map(|&id| Ok((context.division(id)?, context.status(id)?)))
@@ -811,9 +1032,10 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
                     context,
                     true,
                     "organisation/strength",
-                    values.as_ref().map_err(Clone::clone).and_then(|values| {
-                        statistics(context.loc, input.members.len() == 1, values)
-                    }),
+                    values
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|values| statistics(context.loc, members.len() == 1, values)),
                 );
                 append(
                     &mut out,
@@ -845,7 +1067,7 @@ fn build_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Too
     if !out.body.is_empty() && out.title.ends_with('\n') {
         out.title.pop();
     }
-    out
+    (out, handled)
 }
 
 #[cfg(test)]
@@ -855,7 +1077,7 @@ mod tests {
     use replay::rows::{
         ClockRow, CountryAppearanceRow, CountryLinkRow, CountryRow, DivisionTemplateIconRow,
         DivisionTemplateRow, LandCombatDivisionRow, LexicalTokenRow, NameOperands, PoliticsRow,
-        Recorded, TableRows, TemplateSubunit,
+        ProvinceRow, Recorded, TableRows, TemplateSubunit,
     };
 
     fn loc() -> Localisation {
@@ -872,6 +1094,7 @@ mod tests {
             ("UNIT_COUNTER_TOOLTIP", "unit $DIVISION|H$"),
             ("DIVISION_TEMPLATE_HEADER", "$AMOUNT$ $TEMPLATE$ $COUNTRY$"),
             ("UNIT_MOVING_DAYS_HOURS", "arrival $DAYS$d $HOURS$h"),
+            ("UNIT_MOVING_HOURS", "arrival $HOURS$h"),
             (
                 "UNIT_MOVING_DAYS_HOURS_NONPLAYER",
                 "other arrival $DAYS$d $HOURS$h",
@@ -887,6 +1110,13 @@ mod tests {
 
     fn frame(named: bool) -> DecodedFrame {
         let mut frame = test_frame(600);
+        put(
+            &mut frame,
+            TableRows::Provinces(vec![ProvinceRow {
+                id: 4,
+                ..Default::default()
+            }]),
+        );
         put(
             &mut frame,
             TableRows::Countries(vec![CountryRow {
@@ -1026,6 +1256,16 @@ mod tests {
         frame
     }
 
+    // Formatting fixtures supply an explicit duration; production always runs the fresh query.
+    fn fixture_context(context: &Context<'_>, input: &CounterHover, nato: bool) -> Tooltip {
+        build_context(context, input, nato, |unit, _| match unit {
+            ArrivalUnit::Division(movement) => input
+                .remaining
+                .ok_or_else(|| format!("division {} ETA is unavailable", movement.division)),
+            ArrivalUnit::Railway(_) => Err("fresh railway ETA is unavailable".into()),
+        })
+    }
+
     fn tooltip(
         frame: &DecodedFrame,
         members: &[u64],
@@ -1066,10 +1306,11 @@ mod tests {
                 kind: Some(2),
             })
             .collect::<Vec<_>>();
-        build_context(
+        fixture_context(
             &context,
             &CounterHover {
                 control: crate::map::counters::CounterControl::Normal,
+                authored: None,
                 rect: [0.0; 4],
                 members: members.to_vec().into(),
                 coarse,
@@ -1177,10 +1418,11 @@ mod tests {
                     .complete::<tables::CountryLinks>()
                     .map_err(|e| e.to_string()),
             };
-            build_context(
+            fixture_context(
                 &context,
                 &CounterHover {
                     control: crate::map::counters::CounterControl::Normal,
+                    authored: None,
                     rect: [0.0; 4],
                     members: vec![1].into(),
                     timing: vec![Timing {
@@ -1283,16 +1525,8 @@ mod tests {
             named.body,
             "arrival 1d 5h\nnext 2h\n\norg 10/20\nstr 50%\n2\u{13}unit_Foot_icon_small|1 "
         );
-        assert_eq!(named.refused.len(), 2);
-        assert_eq!(named.refused.values().copied().sum::<usize>(), 2);
-        assert_eq!(
-            named
-                .refused
-                .iter()
-                .find(|(key, _)| key.starts_with("counter destination ETA:"))
-                .map(|(_, &count)| count),
-            Some(1)
-        );
+        assert_eq!(named.refused.len(), 1);
+        assert_eq!(named.refused.values().copied().sum::<usize>(), 1);
         assert_eq!(
             named
                 .refused
@@ -1385,6 +1619,7 @@ mod tests {
         for coarse in [false, true] {
             let hover = CounterHover {
                 control: crate::map::counters::CounterControl::Normal,
+                authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
                 timing: vec![].into(),
@@ -1394,7 +1629,7 @@ mod tests {
                 remaining: None,
                 ours: true,
             };
-            let out = build_context(&context, &hover, false);
+            let out = fixture_context(&context, &hover, false);
             assert_eq!(out.title, "");
             assert_eq!(out.body, "");
             assert_eq!(out.refused.len(), 1);
@@ -1430,10 +1665,11 @@ mod tests {
                 .complete::<tables::CountryLinks>()
                 .map_err(|e| e.to_string()),
         };
-        build_context(
+        fixture_context(
             &context,
             &CounterHover {
                 control: crate::map::counters::CounterControl::Normal,
+                authored: None,
                 rect: [0.0; 4],
                 members: members.to_vec().into(),
                 timing: vec![
@@ -1668,7 +1904,7 @@ mod tests {
                 .keys()
                 .next()
                 .unwrap()
-                .contains("client-UI path-cache")
+                .contains("fresh railway ETA is unavailable")
         );
         other.ordinary_path.clear();
         put(
@@ -1781,7 +2017,7 @@ mod tests {
                 .map(|(_, &count)| count),
             Some(1)
         );
-        assert_eq!(detailed.refused.len(), 2);
+        assert_eq!(detailed.refused.len(), 1);
         assert!(
             detailed
                 .refused
@@ -1842,15 +2078,13 @@ mod tests {
             let vision = Vision::sharing(ours, [1]);
             let visible = tooltip(&frame, &[1], false, false, &vision);
             let hidden = tooltip(&frame, &[1], false, true, &vision);
-            let limitations = |out: &Tooltip| {
-                out.refused
-                    .iter()
-                    .filter(|(key, _)| key.starts_with("counter destination ETA:"))
-                    .map(|(_, &count)| count)
-                    .sum::<usize>()
-            };
-            assert_eq!(limitations(&visible), 1);
-            assert_eq!(limitations(&hidden), usize::from(ours == 1));
+            for out in [&visible, &hidden] {
+                assert!(
+                    !out.refused
+                        .keys()
+                        .any(|key| key.starts_with("counter destination ETA:"))
+                );
+            }
             if ours == 1 {
                 assert_eq!(hidden.body, visible.body);
             } else {
@@ -1870,13 +2104,14 @@ mod tests {
     }
 
     #[test]
-    fn destination_eta_limitation_requires_a_displayed_line() {
+    fn derived_arrival_is_formatted_without_the_obsolete_cache_limitation() {
         let vision = Vision::sharing(1, []);
         let names = installed_content::division_names::Database::default();
         let units = Err("unused".into());
         for (remaining, moving, replacement) in [
             (Some(2_900_000), true, None),
             (Some(0), true, None),
+            (Some(-2_900_000), true, None),
             (None, true, None),
             (Some(2_900_000), false, None),
             (Some(2_900_000), true, Some("@AAA")),
@@ -1918,6 +2153,7 @@ mod tests {
             };
             let hover = CounterHover {
                 control: crate::map::counters::CounterControl::Normal,
+                authored: None,
                 rect: [0.0; 4],
                 members: vec![1].into(),
                 timing: vec![Timing {
@@ -1931,18 +2167,720 @@ mod tests {
                 remaining,
                 ours: true,
             };
-            let out = build_context(&context, &hover, false);
-            let count: usize = out
-                .refused
-                .iter()
-                .filter(|(key, _)| key.starts_with("counter destination ETA:"))
-                .map(|(_, &count)| count)
-                .sum();
-            assert_eq!(
-                count,
-                usize::from(remaining == Some(2_900_000) && moving && replacement.is_none())
+            let out = fixture_context(&context, &hover, false);
+            assert!(
+                !out.refused
+                    .keys()
+                    .any(|key| key.starts_with("counter destination ETA:"))
             );
-            assert_eq!(count == 1, out.body.starts_with("arrival"));
+            assert_eq!(
+                out.body.starts_with("arrival 1d 5h\n"),
+                remaining == Some(2_900_000) && moving && replacement.is_none()
+            );
+            if moving && replacement.is_none() {
+                match remaining {
+                    Some(0) => assert!(out.body.starts_with("arrival 0h\n")),
+                    Some(-2_900_000) => assert!(out.body.starts_with("arrival -29h\n")),
+                    _ => (),
+                }
+            }
+            assert_eq!(
+                out.refused
+                    .get("counter arrival: division 1 ETA is unavailable")
+                    .copied()
+                    .unwrap_or(0),
+                usize::from(remaining.is_none() && moving)
+            );
+            assert_eq!(
+                out.refused
+                    .keys()
+                    .any(|key| key.starts_with("counter arrival:") && key.contains("flag")),
+                remaining == Some(2_900_000) && moving && replacement == Some("@AAA")
+            );
+        }
+    }
+
+    #[test]
+    fn arrival_query_runs_once_only_for_eligible_detail() {
+        use crate::map::counters::CounterControl as Control;
+
+        let loc = loc();
+        let vision = Vision::sharing(1, []);
+        let names = installed_content::division_names::Database::default();
+        let units = Err("unused".into());
+        let cases = [
+            ("detail", false, false, true, 1, 0, Control::Normal, 1),
+            ("own hidden", false, true, true, 1, 0, Control::Normal, 1),
+            (
+                "foreign visible",
+                false,
+                false,
+                false,
+                1,
+                0,
+                Control::Normal,
+                1,
+            ),
+            ("coarse", true, false, true, 1, 0, Control::Normal, 0),
+            (
+                "foreign hidden",
+                false,
+                true,
+                false,
+                1,
+                0,
+                Control::Normal,
+                0,
+            ),
+            ("no route", false, false, true, 0, 0, Control::Normal, 0),
+            (
+                "target present",
+                false,
+                false,
+                true,
+                1,
+                4,
+                Control::Normal,
+                0,
+            ),
+            (
+                "ability",
+                false,
+                false,
+                true,
+                1,
+                0,
+                Control::Ability {
+                    country: 11,
+                    ordinal: 0,
+                },
+                0,
+            ),
+            (
+                "defending area",
+                false,
+                false,
+                true,
+                1,
+                0,
+                Control::DefendingArea,
+                0,
+            ),
+            ("action", false, false, true, 1, 0, Control::Action, 0),
+            ("attrition", false, false, true, 1, 0, Control::Attrition, 0),
+            ("dig in", false, false, true, 1, 0, Control::DigIn, 0),
+            ("no orders", false, false, true, 1, 0, Control::NoOrders, 0),
+            (
+                "leader enroute",
+                false,
+                false,
+                true,
+                1,
+                0,
+                Control::LeaderEnroute,
+                0,
+            ),
+        ];
+        for (case, coarse, hidden, ours, path_total, target, control, expected_calls) in cases {
+            let mut frame = frame(true);
+            put(
+                &mut frame,
+                TableRows::DivisionMovement(vec![DivisionMovementRow {
+                    division: 1,
+                    path_total,
+                    path: if path_total == 0 { vec![] } else { vec![4] },
+                    target,
+                    ..Default::default()
+                }]),
+            );
+            let context = Context {
+                nato: false,
+                content: None,
+                dig_in_factor: Err("unused".into()),
+                loc: &loc,
+                recorded_language: &loc.language,
+                icons: &crate::combat::binding::NoIcons,
+                names: &names,
+                units: &units,
+                supply_grace: Ok(4),
+                comms_max_distance: Ok(100),
+                frame: &frame,
+                vision: &vision,
+                links: frame
+                    .complete::<tables::CountryLinks>()
+                    .map_err(|error| error.to_string()),
+            };
+            let hover = CounterHover {
+                control,
+                authored: None,
+                rect: [0.0; 4],
+                members: vec![1].into(),
+                timing: vec![Timing {
+                    next: Some(100_001),
+                    kind: Some(2),
+                }]
+                .into(),
+                coarse,
+                hidden,
+                railway_gun: false,
+                // A legacy hover duration must not provide the arrival query's result.
+                remaining: None,
+                ours,
+            };
+            let mut calls = 0;
+            let out = build_context(&context, &hover, false, |unit, query_ours| {
+                calls += 1;
+                let ArrivalUnit::Division(movement) = unit else {
+                    panic!("unexpected railway query: {case}");
+                };
+                assert_eq!(movement.division, 1, "{case}");
+                assert_eq!(query_ours, ours, "{case}");
+                Ok(2_900_000)
+            });
+            assert_eq!(calls, expected_calls, "{case}");
+            assert_eq!(
+                out.body.starts_with(if ours {
+                    "arrival 1d 5h\n"
+                } else {
+                    "other arrival 1d 5h\n"
+                }),
+                expected_calls == 1,
+                "{case}"
+            );
+            assert_eq!(
+                out.refused
+                    .keys()
+                    .filter(|key| key.starts_with("counter arrival:"))
+                    .count(),
+                0,
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_generic_skips_dangling_later_refs_without_losing_timing_ordinals_or_repeats() {
+        let dangling = (1_u64 << 32) | 1;
+        let mut frame = frame(true);
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(
+                [1, 2]
+                    .into_iter()
+                    .map(|gun| replay::rows::RailwayGunCounterInputRow {
+                        ordinary_path: vec![4],
+                        ..railway_row(gun, b"Gun", 5)
+                    })
+                    .collect(),
+            ),
+        );
+        let base = loc();
+        let railway = railway_loc();
+        let loc: Localisation = base
+            .iter()
+            .chain(railway.iter())
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect();
+        let names = installed_content::division_names::Database::default();
+        let units = Err("unused composition".into());
+        let known = Vision::sharing(1, []);
+        let mixed = Vision::sharing(2, []).with_truncated_unit_intel([(1, 2), (2, 0)]);
+        let build = |frame: &DecodedFrame,
+                     vision: &Vision,
+                     railway_gun,
+                     coarse,
+                     members: &[u64],
+                     timing: &[Timing]| {
+            let context = Context {
+                nato: false,
+                content: None,
+                dig_in_factor: Err("unused".into()),
+                loc: &loc,
+                recorded_language: &loc.language,
+                icons: &crate::combat::binding::NoIcons,
+                names: &names,
+                units: &units,
+                supply_grace: Ok(4),
+                comms_max_distance: Ok(100),
+                frame,
+                vision,
+                links: frame
+                    .complete::<tables::CountryLinks>()
+                    .map_err(|error| error.to_string()),
+            };
+            let input = CounterHover {
+                control: crate::map::counters::CounterControl::Normal,
+                authored: None,
+                rect: [0.0; 4],
+                members: members.to_vec().into(),
+                timing: timing.to_vec().into(),
+                remaining: None,
+                ours: vision.ours() == 1,
+                coarse,
+                hidden: false,
+                railway_gun,
+            };
+            build_context(&context, &input, false, |_, _| Ok(100_001))
+        };
+        let first = Timing {
+            next: Some(500_000),
+            kind: Some(2),
+        };
+        let second = Timing {
+            next: Some(100_001),
+            kind: Some(2),
+        };
+        // The missing ref's deliberately unreadable timing must not be paired
+        // with the surviving second member by zipping after filtering IDs.
+        let missing = Timing {
+            next: None,
+            kind: None,
+        };
+        for railway_gun in [false, true] {
+            for coarse in [false, true] {
+                let baseline = build(
+                    &frame,
+                    &known,
+                    railway_gun,
+                    coarse,
+                    &[1, 2],
+                    &[first, second],
+                );
+                let skipped = build(
+                    &frame,
+                    &known,
+                    railway_gun,
+                    coarse,
+                    &[1, dangling, 2],
+                    &[first, missing, second],
+                );
+                assert_eq!(skipped, baseline, "class13={railway_gun} coarse={coarse}");
+                if !coarse {
+                    assert!(skipped.body.contains("next 2h\n\n"), "{}", skipped.body);
+                }
+            }
+            let repeated = build(&frame, &known, railway_gun, true, &[1, dangling, 2, 2], &[]);
+            assert_eq!(
+                repeated.title,
+                if railway_gun {
+                    "3 guns\n"
+                } else {
+                    "3 divisions\n"
+                }
+            );
+            assert!(repeated.refused.is_empty());
+            let baseline = build(&frame, &mixed, railway_gun, true, &[1, 2], &[]);
+            let skipped = build(&frame, &mixed, railway_gun, true, &[1, dangling, 2], &[]);
+            assert_eq!(
+                skipped, baseline,
+                "class13={railway_gun} actual unknown intel"
+            );
+            assert_eq!(
+                skipped.title,
+                if railway_gun {
+                    "partly known\n1 guns\n"
+                } else {
+                    "partly known\n1 divisions\n"
+                }
+            );
+            assert!(skipped.refused.is_empty());
+            // Later-ref skips never relax the first representative gate.
+            let absent_first = build(&frame, &known, railway_gun, true, &[dangling, 1], &[]);
+            assert_eq!(absent_first, Tooltip::default());
+            let mut incomplete = frame.clone();
+            let table = if railway_gun {
+                replay::rows::TableId::RailwayGunCounterInputs
+            } else {
+                replay::rows::TableId::Divisions
+            };
+            *incomplete.tables[table.index()] = replay::frame::TableView::Unavailable {
+                reason: "fixture incomplete unit census".into(),
+            };
+            let unresolved = build(
+                &incomplete,
+                &known,
+                railway_gun,
+                true,
+                &[1, dangling, 2],
+                &[],
+            );
+            assert!(unresolved.title.is_empty() && unresolved.body.is_empty());
+            assert_eq!(unresolved.refused.len(), 1);
+            assert!(
+                unresolved
+                    .refused
+                    .keys()
+                    .any(|reason| reason.starts_with("counter representative:")
+                        && reason.contains("fixture incomplete unit census"))
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_authored_fallback_follows_the_class_zero_and_thirteen_handler_result() {
+        use crate::map::counters::CounterControl as Control;
+        use replay::rows::{ArmyIconInputRow, RailwayGunCounterInputRow};
+        use std::cell::Cell;
+
+        let parsed = installed_content::gui::native::read(
+            br#"guiTypes = {
+            iconType = { name = child pdx_tooltip = RAW_TITLE pdx_tooltip_delayed = RAW_BODY }
+        }"#,
+        );
+        let authored = gui_authored::Authored::read(parsed.template("child").unwrap(), false);
+        let names = installed_content::division_names::Database::default();
+        let units = Err("unused composition".into());
+        for railway_gun in [false, true] {
+            for (case, coarse, hidden, ours, path, control, remaining, expected_calls, fallback) in [
+                (
+                    "stationary",
+                    false,
+                    false,
+                    true,
+                    vec![],
+                    Control::Normal,
+                    Ok(0),
+                    0,
+                    Some(true),
+                ),
+                (
+                    "absent representative",
+                    true,
+                    false,
+                    true,
+                    vec![],
+                    Control::Normal,
+                    Ok(0),
+                    0,
+                    Some(true),
+                ),
+                (
+                    "empty representative",
+                    true,
+                    false,
+                    true,
+                    vec![],
+                    Control::Normal,
+                    Ok(0),
+                    0,
+                    Some(true),
+                ),
+                (
+                    "foreign hidden",
+                    false,
+                    true,
+                    false,
+                    vec![4],
+                    Control::Normal,
+                    Ok(0),
+                    0,
+                    Some(true),
+                ),
+                (
+                    "zero ETA",
+                    false,
+                    false,
+                    true,
+                    vec![4],
+                    Control::Normal,
+                    Ok(0),
+                    1,
+                    Some(false),
+                ),
+                (
+                    "negative ETA",
+                    false,
+                    false,
+                    true,
+                    vec![4],
+                    Control::Normal,
+                    Ok(-100_000),
+                    1,
+                    Some(false),
+                ),
+                (
+                    "visible foreign zero ETA",
+                    false,
+                    false,
+                    false,
+                    vec![4],
+                    Control::Normal,
+                    Ok(0),
+                    1,
+                    Some(false),
+                ),
+                (
+                    "visible foreign negative ETA",
+                    false,
+                    false,
+                    false,
+                    vec![4],
+                    Control::Normal,
+                    Ok(-100_000),
+                    1,
+                    Some(false),
+                ),
+                (
+                    "ETA artwork unavailable",
+                    false,
+                    false,
+                    true,
+                    vec![4],
+                    Control::Normal,
+                    Ok(0),
+                    1,
+                    Some(false),
+                ),
+                (
+                    "unresolved final province",
+                    false,
+                    false,
+                    false,
+                    vec![999],
+                    Control::Normal,
+                    Ok(0),
+                    0,
+                    Some(true),
+                ),
+                (
+                    "null final province",
+                    false,
+                    false,
+                    false,
+                    vec![0],
+                    Control::Normal,
+                    Ok(0),
+                    0,
+                    Some(true),
+                ),
+                (
+                    "partial route",
+                    false,
+                    false,
+                    true,
+                    vec![4],
+                    Control::Normal,
+                    Ok(0),
+                    0,
+                    None,
+                ),
+                (
+                    "coarse",
+                    true,
+                    false,
+                    true,
+                    vec![],
+                    Control::Normal,
+                    Ok(0),
+                    0,
+                    Some(false),
+                ),
+                (
+                    "early handler",
+                    false,
+                    false,
+                    true,
+                    vec![4],
+                    Control::DefendingArea,
+                    Ok(0),
+                    0,
+                    Some(false),
+                ),
+                (
+                    "late invalid orders",
+                    false,
+                    false,
+                    true,
+                    vec![],
+                    Control::InvalidOrders,
+                    Ok(0),
+                    0,
+                    Some(true),
+                ),
+                (
+                    "late supply",
+                    false,
+                    false,
+                    true,
+                    vec![],
+                    Control::Supply,
+                    Ok(0),
+                    0,
+                    Some(true),
+                ),
+                (
+                    "inactive leader control",
+                    false,
+                    false,
+                    true,
+                    vec![],
+                    Control::LeaderEnroute,
+                    Ok(0),
+                    0,
+                    Some(true),
+                ),
+                (
+                    "query unavailable",
+                    false,
+                    false,
+                    true,
+                    vec![4],
+                    Control::Normal,
+                    Err("fresh query refused".into()),
+                    1,
+                    None,
+                ),
+            ] {
+                let mut frame = frame(true);
+                put(
+                    &mut frame,
+                    TableRows::DivisionMovement(vec![DivisionMovementRow {
+                        division: 1,
+                        path_total: path.len() as u32
+                            + u32::from(case == "partial route" && !railway_gun),
+                        path: path.clone(),
+                        ..Default::default()
+                    }]),
+                );
+                put(
+                    &mut frame,
+                    TableRows::RailwayGunCounterInputs(vec![RailwayGunCounterInputRow {
+                        gun: 1,
+                        roster_owner: 11,
+                        province: 3,
+                        ordinary_path: path,
+                        name: Recorded::Value(Some(b"Gun".to_vec())),
+                        ..Default::default()
+                    }]),
+                );
+                put(
+                    &mut frame,
+                    TableRows::ArmyIconInputs(vec![ArmyIconInputRow {
+                        division: 1,
+                        separate_counter: 0,
+                        ..Default::default()
+                    }]),
+                );
+                let base = loc();
+                let loc: Localisation = base
+                    .iter()
+                    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                    .chain(
+                        [
+                            ("UNIT_MOVING_HOURS_NONPLAYER", "other arrival $HOURS$h"),
+                            ("RAW_TITLE", "$VALUE$ authored title"),
+                            ("RAW_BODY", "$VALUE$ authored body"),
+                            ("UNITS_DEFENDING_AREA", ""),
+                        ]
+                        .into_iter()
+                        .chain(
+                            (case == "ETA artwork unavailable")
+                                .then_some(("UNIT_MOVING_HOURS", "@MISSING")),
+                        )
+                        .map(|(key, value)| (key.to_owned(), value.to_owned())),
+                    )
+                    .collect();
+                let vision = Vision::sharing(if ours { 1 } else { 2 }, [1]);
+                let context = Context {
+                    nato: false,
+                    content: None,
+                    dig_in_factor: Err("unused".into()),
+                    loc: &loc,
+                    recorded_language: &loc.language,
+                    icons: &crate::combat::binding::NoIcons,
+                    names: &names,
+                    units: &units,
+                    supply_grace: Ok(4),
+                    comms_max_distance: Ok(100),
+                    frame: &frame,
+                    vision: &vision,
+                    links: frame
+                        .complete::<tables::CountryLinks>()
+                        .map_err(|error| error.to_string()),
+                };
+                // Class 13's captured path is complete by its row contract;
+                // class 0 also has an independent count and can expose truncation.
+                if case == "partial route" && railway_gun {
+                    continue;
+                }
+                let members: Arc<[u64]> = match case {
+                    "absent representative" => vec![999].into(),
+                    "empty representative" => Arc::from([]),
+                    _ => vec![1].into(),
+                };
+                let input = CounterHover {
+                    control,
+                    authored: authored.clone(),
+                    rect: [0.0; 4],
+                    remaining: None,
+                    ours,
+                    coarse,
+                    hidden,
+                    railway_gun,
+                    members,
+                    timing: vec![Timing {
+                        next: Some(100_001),
+                        kind: Some(2),
+                    }]
+                    .into(),
+                };
+                let calls = Cell::new(0);
+                let out = build_context(&context, &input, false, |unit, query_ours| {
+                    calls.set(calls.get() + 1);
+                    assert_eq!(matches!(unit, ArrivalUnit::Railway(_)), railway_gun);
+                    assert_eq!(query_ours, ours);
+                    remaining.clone()
+                });
+                assert_eq!(calls.get(), expected_calls, "{case} class13={railway_gun}");
+                if let Some(expected) = match case {
+                    "visible foreign zero ETA" => Some("other arrival 0h\n"),
+                    "visible foreign negative ETA" => Some("other arrival -1h\n"),
+                    _ => None,
+                } {
+                    assert!(
+                        out.body.starts_with(expected),
+                        "{case} class13={railway_gun}: {}",
+                        out.body
+                    );
+                }
+                if case == "ETA artwork unavailable" {
+                    let line = if railway_gun {
+                        "counter railway gun arrival:"
+                    } else {
+                        "counter arrival:"
+                    };
+                    assert!(
+                        out.refused.keys().any(|reason| reason.starts_with(line)),
+                        "{case} class13={railway_gun}"
+                    );
+                }
+                if fallback == Some(true) {
+                    assert_eq!(
+                        out.title, "$VALUE$ authored title\n",
+                        "{case} class13={railway_gun}"
+                    );
+                    assert_eq!(
+                        out.body, "$VALUE$ authored body\n",
+                        "{case} class13={railway_gun}"
+                    );
+                } else {
+                    assert!(
+                        !out.title.contains("authored title"),
+                        "{case} class13={railway_gun}"
+                    );
+                    assert!(
+                        !out.body.contains("authored body"),
+                        "{case} class13={railway_gun}"
+                    );
+                }
+                assert_eq!(
+                    out.refused
+                        .keys()
+                        .any(|key| key.contains("authored tooltip dispatch")),
+                    fallback.is_none(),
+                    "{case} class13={railway_gun}"
+                );
+            }
         }
     }
 

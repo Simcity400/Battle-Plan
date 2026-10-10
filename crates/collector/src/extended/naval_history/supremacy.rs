@@ -24,8 +24,8 @@ const SUPREMACY_MASK: u32 = 0x01;
 const SUPREMACY_MIRROR_BATCH: usize = 32;
 
 /// One hour of raw supremacy payload. Flat pools recycle capacities and the
-/// steady state allocates on neither thread; growth happens on the decode
-/// side only (see `crate::decode::recycle_supremacy_job`).
+/// steady state reuses storage. Worker logs grow before each original request;
+/// decode grows from the complete accepted payload.
 #[derive(Debug, Default)]
 pub(crate) struct SupremacyJob {
     pub log: RawLog<SUPREMACY_N>,
@@ -35,10 +35,13 @@ pub(crate) struct SupremacyJob {
 
 impl SupremacyJob {
     pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[cfg(test)]
+    pub(super) fn fixture() -> Self {
         Self {
-            // Late-campaign worst case is 49 supremacy rows (appendix
-            // census); both pools start above that so steady state never
-            // overflows (see the worst-case caps test).
+            // Explicit raw storage for fixed synthetic fault/read fixtures.
             log: RawLog::new(1 << 12, 1 << 20),
             game_state: 0,
             active: false,
@@ -97,6 +100,7 @@ fn sspan(
 /// One structural copy pass: region roster, per-region identity with its
 /// dominance container, and every value vector as one bulk span. The job is
 /// cleared on entry so pooled refreshes never accumulate spans across hours.
+#[cfg(test)]
 fn copy_supremacy_pass(
     job: &mut SupremacyJob,
     memory: &impl engine::Memory,
@@ -104,8 +108,32 @@ fn copy_supremacy_pass(
     game_state: usize,
     ticks: &mut [u64; SUPREMACY_N],
 ) {
+    copy_supremacy_pass_mode(job, memory, base, game_state, ticks, false);
+}
+
+fn copy_supremacy_pass_growing(
+    job: &mut SupremacyJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    ticks: &mut [u64; SUPREMACY_N],
+) {
+    copy_supremacy_pass_mode(job, memory, base, game_state, ticks, true);
+}
+
+fn copy_supremacy_pass_mode(
+    job: &mut SupremacyJob,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+    ticks: &mut [u64; SUPREMACY_N],
+    growing: bool,
+) {
     let _reads = read_accounting::table(TableId::NavalSupremacy);
     job.clear();
+    if growing {
+        job.log.enable_worker_growth();
+    }
     job.active = true;
     job.game_state = game_state;
     // Value vectors are bulk spans (see above); the flag is set up front so
@@ -292,6 +320,25 @@ fn copy_supremacy_tables(
 }
 
 /// Acquire one owned hourly supremacy payload.
+pub(crate) fn copy_supremacy_refresh_growing(
+    memory: &impl Memory,
+    ctx: SupremacyCopyContext,
+    job: &mut SupremacyJob,
+) -> SupremacyCopyReport {
+    if !replay::cadence::should_walk(TableId::NavalSupremacy, ctx.hour, ctx.force_full) {
+        job.clear();
+        return SupremacyCopyReport::default();
+    }
+    let mut ticks = [0u64; SUPREMACY_N];
+    copy_supremacy_pass_growing(job, memory, ctx.base, ctx.game_state, &mut ticks);
+    SupremacyCopyReport {
+        raw_ok: !job.log.overflowed,
+        copy_ticks: ticks,
+        raw_bytes: job.log.raw_bytes,
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn copy_supremacy_refresh(
     memory: &impl Memory,
     ctx: SupremacyCopyContext,
@@ -334,12 +381,16 @@ impl Captured {
         }
         let recorded = crate::raw::Recorded::build(&job.log);
         let started = qpc();
-        let walked = cnaval_region_dominance::walk(
-            &recorded,
-            base,
-            job.game_state,
-            &mut self.supremacy.rows,
-        );
+        let walked = if job.log.worker_growth_enabled() {
+            cnaval_region_dominance::walk_growing(
+                &recorded,
+                base,
+                job.game_state,
+                &mut self.supremacy.rows,
+            )
+        } else {
+            cnaval_region_dominance::walk(&recorded, base, job.game_state, &mut self.supremacy.rows)
+        };
         self.supremacy.outcome = bounded(walked, self.supremacy.rows.len());
         decode_ticks[0] += elapsed(started);
         self.supremacy_raw_mode = false;

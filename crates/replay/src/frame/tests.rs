@@ -107,6 +107,120 @@ fn unchanged_tables_are_shared_and_a_delta_copies_on_write() {
     assert_eq!(second.tables[countries], next.tables[countries]);
 }
 
+#[test]
+fn timed_equal_acquisition_advances_origin_without_copying_carried_rows() {
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let index = TableId::Campaign.index();
+    let first = decoder
+        .apply(&encoder.encode(source(1, 0), true).unwrap())
+        .unwrap();
+    let refreshed = decoder
+        .apply(&encoder.encode(source(1, 1), false).unwrap())
+        .unwrap();
+    assert!(SharedView::ptr_eq(
+        &first.tables[index],
+        &refreshed.tables[index]
+    ));
+    assert_eq!(first.tables[index], refreshed.tables[index]);
+    assert_eq!(first.tables[index].sampled_at(), Some(0));
+    assert_eq!(refreshed.tables[index].sampled_at(), Some(1));
+
+    let mut carried = encoder.encode(source(1, 2), false).unwrap();
+    carried.metrics.table_ns[index] = 0;
+    let carried = decoder.apply(&carried).unwrap();
+    assert!(SharedView::ptr_eq(
+        &refreshed.tables[index],
+        &carried.tables[index]
+    ));
+    assert_eq!(carried.tables[index].sampled_at(), Some(1));
+    let mut edited = carried.tables[index].clone();
+    let _ = &mut *edited;
+    assert_eq!(edited.sampled_at(), None);
+    assert_eq!(carried.tables[index].sampled_at(), Some(1));
+}
+
+#[test]
+fn untimed_keyframes_and_branch_changes_do_not_invent_acquisition_origins() {
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let index = TableId::Campaign.index();
+    decoder
+        .apply(&encoder.encode(source(1, 0), true).unwrap())
+        .unwrap();
+    for (branch, hour) in [(1, 1), (2, 0)] {
+        let mut frame = encoder.encode(source(branch, hour), true).unwrap();
+        frame.metrics.table_ns[index] = 0;
+        let decoded = decoder.apply(&frame).unwrap();
+        assert_eq!(decoded.tables[index].sampled_at(), None);
+    }
+    let mut frame = encoder.encode(source(2, 1), false).unwrap();
+    frame.metrics.table_ns[index] = 0;
+    assert_eq!(
+        decoder.apply(&frame).unwrap().tables[index].sampled_at(),
+        None
+    );
+}
+
+#[test]
+fn changed_rows_need_their_own_timing_to_certify_an_acquisition_origin() {
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    let index = TableId::Countries.index();
+    decoder
+        .apply(&encoder.encode(source(1, 0), true).unwrap())
+        .unwrap();
+    let mut changed = source(1, 1);
+    change_country(&mut changed, 5);
+    let mut frame = encoder.encode(changed, false).unwrap();
+    assert!(matches!(frame.tables[index], TableUpdate::Delta { .. }));
+    frame.metrics.table_ns[index] = 0;
+    assert_eq!(
+        decoder.apply(&frame).unwrap().tables[index].sampled_at(),
+        None
+    );
+    let decoded = decoder
+        .apply(&encoder.encode(source(1, 2), false).unwrap())
+        .unwrap();
+    assert_eq!(decoded.tables[index].sampled_at(), Some(2));
+}
+
+#[test]
+fn timed_failed_partial_and_unselected_updates_have_no_acquisition_origin() {
+    let index = TableId::Countries.index();
+    let mut encoder = FrameEncoder::new();
+    let mut decoder = FrameDecoder::new();
+    decoder
+        .apply(&encoder.encode(source(1, 0), true).unwrap())
+        .unwrap();
+    for hour in 1..=3 {
+        let mut frame = encoder.encode(source(1, hour), false).unwrap();
+        frame.tables[index] = match hour {
+            1 => TableUpdate::Unavailable {
+                reason: "failed walk".into(),
+            },
+            2 => TableUpdate::Unchanged { baseline: 1 },
+            _ => {
+                let TableView::Complete(rows) = source(1, hour).tables[index].clone().into_inner()
+                else {
+                    unreachable!()
+                };
+                TableUpdate::Truncated { rows, missing: 1 }
+            }
+        };
+        assert_eq!(
+            decoder.apply(&frame).unwrap().tables[index].sampled_at(),
+            None
+        );
+    }
+    let mut selected = FrameDecoder::for_tables(&[TableId::Campaign]);
+    let frame = encoder.encode(source(2, 0), true).unwrap();
+    assert_eq!(
+        selected.apply(&frame).unwrap().tables[index].sampled_at(),
+        None
+    );
+}
+
 fn shared_input(source: DecodedFrame) -> FrameInput {
     let mut input: FrameInput = source.into();
     input.tables = input.tables.map(|input| match input {
@@ -979,6 +1093,8 @@ fn province(id: u32, controller: u32) -> ProvinceRow {
         fort_positive: 0,
         move_gate: 0,
         port_sea: 0,
+        attack: Default::default(),
+        selected_areas: Default::default(),
     }
 }
 

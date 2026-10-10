@@ -32,7 +32,7 @@ fn stored_air_wing_names_presize_and_handoff_at_5000_countries() {
         .resize(5000, engine::cair_wing::Row::default());
     let mut job = air::AirWingJob::new();
     job.names.resize(demand, 0);
-    let report = air::copy_air_refresh(
+    let report = air::copy_air_refresh_growing(
         &memory,
         air::AirWingCopyContext {
             base: world.base,
@@ -48,7 +48,7 @@ fn stored_air_wing_names_presize_and_handoff_at_5000_countries() {
     assert!(report.raw_ok);
     assert_eq!(job.map_outcome, Outcome::Rows { len: 5000 });
     assert_eq!((job.names_len, job.name_failures), (demand, 0));
-    map.install_owned_air(&job);
+    map.install_owned_air(&mut job);
     assert_eq!(map.air_wings.outcome, Outcome::Rows { len: 5000 });
     assert_eq!(map.air_wing_names_len, demand);
     for (ordinal, row) in map.air_wings.rows[..5000].iter().enumerate() {
@@ -219,6 +219,9 @@ fn unit_scale_orders() {
                 map.orders.successor_lists(),
                 map.orders.root_outcome,
                 map.orders.rows.outcome,
+                &map.orders.rows.rows[..map.orders.rows.outcome.len()],
+                &map.orders.geometry[..map.orders.geometry_len],
+                None,
             );
             plans.capture();
             plans.grow(&mut capacities);
@@ -234,6 +237,9 @@ fn unit_scale_orders() {
                 map.orders.successor_lists(),
                 map.orders.root_outcome,
                 map.orders.rows.outcome,
+                &map.orders.rows.rows[..map.orders.rows.outcome.len()],
+                &map.orders.geometry[..map.orders.geometry_len],
+                None,
             );
             plans.capture();
             assert_eq!(
@@ -450,7 +456,7 @@ fn unit_scale_capture() {
             shape,
             map.air_wings.allocated_bytes(),
             || {
-                map.install_owned_air(&job);
+                map.install_owned_air(&mut job);
                 assert_eq!(map.air_wings.outcome, Outcome::Rows { len: shape.wings });
             },
         );

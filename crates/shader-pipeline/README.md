@@ -7,6 +7,7 @@ Shared executable PdxShader backend for map passes and native GUI. [installed_co
 | Module | Responsibility |
 |---|---|
 | [library.rs](src/library.rs) | Content-scoped effects, renderer globals and lazy technique/define variants. |
+| [artwork.rs](src/artwork.rs) | Isolated native sprite shader output for dashboard PNGs, with content-scoped sources and native register/texture binds. |
 | [lib.rs](src/lib.rs), [source.rs](src/source.rs) | Compiler discovery, compilation, reflection and stage/register contracts. |
 | [cache.rs](src/cache.rs) | Persistent compiled payloads and diagnostics; owns the compiler/translation ABI. |
 | [gpu.rs](src/gpu.rs), [gpu/arena.rs](src/gpu/arena.rs) | Device-local pipelines, state lowering, bindings and staged uploads. |
@@ -29,6 +30,8 @@ Missing effect files and undeclared techniques select `None`, preserving native 
 `gpu::Pass` accepts caller vertex/instance layouts, topology, targets, multisampling, culling and depth/stencil. Authored blend, depth/stencil and raster states lower independently: consumers may retain an engine-forced state for one while using authored states for others. Constant/texture slots have independent vertex/pixel namespaces; use `binding(slot, stage)`. Vertex reflection preserves float/signed/unsigned kinds. Callers own vertex/index buffers, draw order, viewport, scissor, stencil reference and blend constants.
 
 `Stream` retains the native program and input declaration, sampler/texture/constant bindings, strides and independent render-state handles. Null program selection changes neither program nor declaration; later buffer binds can still change individual strides. Explicit null textures sample zero; missing bindings refuse. Scoped `inherit_bindings` copies state without sharing later mutations. `prepare_pass`/`prepare_native_pass` return the cached pipeline, resource bindings and required dynamic state; they do not establish submission order or infer absent native inputs.
+
+A single-layer 2D SRV sampled as a cube reproduces the native hardware GPU's zero result, without reshaping the image or changing the retained binding for later 2D draws. Native D3D11 software-driver results for this invalid binding are device-dependent; 2D reflection textures carry a viewer diagnostic. Binding errors name the selected effect and technique.
 
 Use one `gpu::Arena` per frame being encoded. Reset before the next frame; flush before submitting commands that reference staged uploads, including earlier text-bake submissions. Bindings remain valid until reset. `Arena::write` also defers caller-buffer writes until flush. Upload constant blocks and fetched/repacked streams, not whole native allocation capacities. Pipeline/bind-group caches avoid per-draw buffer/group creation and retire unused groups after a frame.
 

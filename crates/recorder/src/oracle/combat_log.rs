@@ -255,8 +255,9 @@ pub(super) fn state(frame: &DecodedFrame, report: &mut Report) -> io::Result<()>
 /// Division totals are saved by CArmy::Serialize@140C80E00. That writer does
 /// not persist the +0xc0 parent: COrdersGroup::Serialize@140BE8100 writes
 /// member.unit references instead (save::naval_history::OrdersGroup.members).
-/// CTheatre::Serialize@140EED430 emits its army/army-group rosters. Grouping
-/// assumes every live army is in those theatres; completeness is unproven.
+/// CTheatre::Serialize@140EED430 emits its army/army-group rosters. Regular
+/// member rosters supply the inferred split. Only a proved unsaved slot-zero regular
+/// group's reciprocal members qualify the inferred split; totals stay exact.
 pub(super) fn division_census(
     frame: &DecodedFrame,
     saved: &Save,
@@ -264,6 +265,7 @@ pub(super) fn division_census(
     report: &mut Report,
 ) -> io::Result<()> {
     let mut actual: BTreeMap<&[u8], (u32, u32)> = BTreeMap::new();
+    report.record_country_emissions(saved);
     for row in complete::<tables::DivisionCensus>(frame)? {
         let tag = required_country_tag(row.country, links)?;
         let counts = actual.entry(tag).or_default();
@@ -276,9 +278,35 @@ pub(super) fn division_census(
             .checked_add(row.ungrouped)
             .ok_or_else(|| invalid("division ungrouped count overflow"))?;
     }
-    let expected = saved_division_counts(saved)?;
+    let mut omitted = BTreeSet::new();
+    report.attempt("DivisionCensus omitted-group qualification", |_| {
+        omitted = super::naval_history::omitted_regular_group_units(
+            frame,
+            &saved.naval_history,
+            saved.country_emissions.as_deref(),
+        )?;
+        Ok(())
+    });
+    let expected = saved_division_counts(saved, &omitted)?;
     let mut compared = 0;
-    for (tag, (grouped, ungrouped)) in expected {
+    for (tag, (grouped, ungrouped, qualified)) in expected {
+        if saved.country_emissions.as_ref().is_some_and(|emissions| {
+            emissions.iter().any(|emission| {
+                emission.identity.actual == installed_content::save::ActualCountry::Reserved
+                    && emission.identity.tag.as_slice() == tag
+            })
+        }) {
+            // This object has no canonical DivisionCensus row. Its saved
+            // operands stay in the full save and receive a named refusal.
+            report.failed_comparisons.insert(
+                format!(
+                    "reserved country {} DivisionCensus",
+                    String::from_utf8_lossy(tag)
+                ),
+                "admitted reserved country division totals have no canonical capture".into(),
+            );
+            continue;
+        }
         let label = format!("{}.division_census", String::from_utf8_lossy(tag));
         let Some((recorded_grouped, recorded_ungrouped)) = actual.remove(tag) else {
             report.difference(label, "absent country row", "saved country present");
@@ -292,11 +320,28 @@ pub(super) fn division_census(
                 u64::from(grouped) + u64::from(ungrouped),
             );
         }
-        if recorded_grouped != grouped {
-            report.difference(format!("{label}.grouped"), recorded_grouped, grouped);
+        // These exact members are grouped in the reciprocal current tables,
+        // but their omitted definition would otherwise infer saved ungrouped.
+        // Compare every remaining member instead of waiving the country's split.
+        match recorded_grouped.checked_sub(qualified) {
+            Some(remaining) if remaining == grouped => {}
+            Some(remaining) => report.difference(format!("{label}.grouped"), remaining, grouped),
+            None => report.difference(
+                format!("{label}.grouped"),
+                recorded_grouped,
+                format!("at least {qualified} certified omitted-group members"),
+            ),
         }
-        if recorded_ungrouped != ungrouped {
-            report.difference(format!("{label}.ungrouped"), recorded_ungrouped, ungrouped);
+        let inferred_ungrouped = ungrouped - qualified;
+        if recorded_ungrouped != inferred_ungrouped {
+            report.difference(
+                format!("{label}.ungrouped"),
+                recorded_ungrouped,
+                inferred_ungrouped,
+            );
+        }
+        if qualified != 0 {
+            report.limitation("certified omitted slot-zero regular groups have no serialized parent membership; only their reciprocally joined saved divisions are excluded from the inferred grouping split, while totals and all remaining memberships stay exact", format!("{label}: {qualified} certified omitted-group members"));
         }
         compared += 1;
     }
@@ -309,13 +354,19 @@ pub(super) fn division_census(
     }
     report.compared("DivisionCensus", compared);
     report.limitation(
-        "CArmy::Serialize@140C80E00 omits +0xc0; COrdersGroup::Serialize@140BE8100 saves member.unit instead. CTheatre::Serialize@140EED430 emits its army/army-group rosters. Grouped counts assume every live army appears in saved land theatres; completeness is unproven, and any missing membership remains a difference",
-        "DivisionCensus: total, grouped and ungrouped counts compared through saved army member vectors; absent definitions mean empty membership",
+        "CArmy::Serialize@140C80E00 omits +0xc0; COrdersGroup::Serialize@140BE8100 saves member.unit instead. Only certified unsaved slot-zero regular-group members qualify that inference; any other missing membership remains a difference",
+        "DivisionCensus: total, grouped and ungrouped counts compared through saved army member vectors; only the named certified omitted members qualify the inferred split",
     );
     Ok(())
 }
 
-fn saved_division_counts(saved: &Save) -> io::Result<BTreeMap<&[u8], (u32, u32)>> {
+/// Grouped, inferred ungrouped, and the exact qualified subset of ungrouped.
+type SavedDivisionCounts<'a> = BTreeMap<&'a [u8], (u32, u32, u32)>;
+
+fn saved_division_counts<'a>(
+    saved: &'a Save,
+    omitted: &BTreeSet<u64>,
+) -> io::Result<SavedDivisionCounts<'a>> {
     let definitions = saved
         .naval_history
         .theatre_countries
@@ -334,10 +385,10 @@ fn saved_division_counts(saved: &Save) -> io::Result<BTreeMap<&[u8], (u32, u32)>
             }
         }
     }
-    let mut expected: BTreeMap<&[u8], (u32, u32)> = saved
+    let mut expected: SavedDivisionCounts<'_> = saved
         .countries
         .keys()
-        .map(|tag| (tag.as_slice(), (0, 0)))
+        .map(|tag| (tag.as_slice(), (0, 0, 0)))
         .collect();
     for division in saved.divisions.values() {
         let owner = division
@@ -351,6 +402,9 @@ fn saved_division_counts(saved: &Save) -> io::Result<BTreeMap<&[u8], (u32, u32)>
             counts.0 += 1;
         } else {
             counts.1 += 1;
+            if omitted.contains(&division.id) {
+                counts.2 += 1;
+            }
         }
     }
     Ok(expected)
@@ -375,7 +429,7 @@ pub(super) fn lend_lease(
     let mut count = 0;
     let mut zeros = 0;
     let mut omits_zero: BTreeSet<(&[u8], u32, u8)> = BTreeSet::new();
-    for (tag, country) in &saved.economy.countries {
+    for (tag, country) in report.canonical_countries(&saved.economy.countries) {
         for exchange in country.lend_lease.iter().flatten() {
             let id = (exchange.id >> 32) as u32;
             for (kind, pool) in [

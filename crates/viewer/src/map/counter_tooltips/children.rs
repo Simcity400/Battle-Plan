@@ -1,7 +1,7 @@
 //! `1418C00D0` child matches use the primary control offsets plus 0x18.
 
 use super::*;
-use crate::map::{counter_action, counters::CounterControl, railway_gun_counter, visibility};
+use crate::map::{counter_action, counters::CounterControl, railway_gun_counter};
 
 pub(super) fn specific(context: &Context<'_>, input: &CounterHover) -> Option<Tooltip> {
     if input.coarse {
@@ -39,13 +39,30 @@ pub(super) fn specific(context: &Context<'_>, input: &CounterHover) -> Option<To
             super::append(&mut out, context, false, "dig in", dig_in(context, input))
         }
         CounterControl::NoOrders => no_orders(context, input, &mut out),
-        CounterControl::LeaderEnroute => super::append(
-            &mut out,
-            context,
-            false,
-            "leader withdrawing",
-            leader_enroute(context, input),
-        ),
+        CounterControl::LeaderEnroute if !input.railway_gun => {
+            match leader_enroute_eligible(context, input) {
+                Ok(false) => return None,
+                Ok(true) => super::append(
+                    &mut out,
+                    context,
+                    false,
+                    "leader withdrawing",
+                    leader_enroute(context, input),
+                ),
+                Err(reason) => {
+                    refuse(&mut out, "leader withdrawing", reason);
+                    // The cached class-zero eligibility could not be decided;
+                    // never substitute an authored fallback for that unknown.
+                    if input.authored.is_some() {
+                        refuse(
+                            &mut out,
+                            "authored tooltip dispatch",
+                            "leader withdrawing operands are unavailable, so the native handled result is unknown",
+                        );
+                    }
+                }
+            }
+        }
         _ => return None,
     }
     Some(out)
@@ -82,8 +99,18 @@ fn dig_in(context: &Context<'_>, input: &CounterHover) -> Result<String, String>
             ],
         );
     }
+    let divisions = context
+        .frame
+        .complete::<tables::Divisions>()
+        .map_err(|error| error.to_string())?;
     let mut values = Vec::with_capacity(input.members.len());
     for &id in input.members.iter() {
+        // Multi1418C0C87..0Dxx skips an unresolved contribution, but divides
+        // by the original member count. Keep its zero in that denominator.
+        if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
+            values.push(0);
+            continue;
+        }
         let status = context.status(id)?;
         values.push(if status.entrenchment > 0 {
             (status.entrenchment.wrapping_mul(factor(status)?) / 100_000).wrapping_mul(define()?)
@@ -96,9 +123,9 @@ fn dig_in(context: &Context<'_>, input: &CounterHover) -> Result<String, String>
     localise(context.loc, "DIG_IN_AVG", &[("DIG", Arg::Fixed5(value))])
 }
 
-fn leader_enroute(context: &Context<'_>, input: &CounterHover) -> Result<String, String> {
+fn leader_enroute_eligible(context: &Context<'_>, input: &CounterHover) -> Result<bool, String> {
     let Some(&id) = input.members.first() else {
-        return Ok(String::new());
+        return Ok(false);
     };
     // The hover tests the first Army's cached +0x630 byte, independently
     // of the group's +0x19B glyph and HQ-suffix gates (1418C093F..0954).
@@ -110,9 +137,15 @@ fn leader_enroute(context: &Context<'_>, input: &CounterHover) -> Result<String,
         .binary_search_by_key(&id, |row| row.division)
         .map(|index| &icons[index])
         .map_err(|_| format!("ArmyIconInputs division {id} is absent"))?;
-    if icon.separate_counter == 0 {
-        return Ok(String::new());
-    }
+    // 1418C093F..09D5 falls through to the generic callback when this is zero.
+    Ok(icon.separate_counter != 0)
+}
+
+fn leader_enroute(context: &Context<'_>, input: &CounterHover) -> Result<String, String> {
+    let id = *input
+        .members
+        .first()
+        .ok_or("leader withdrawing counter has no member")?;
     let group = context.division(id)?.orders_group;
     let group = context.orders_group(group)?;
     let operands = context.group_input(group.handle)?;
@@ -149,7 +182,22 @@ fn no_orders(context: &Context<'_>, input: &CounterHover, out: &mut Tooltip) {
     let mut missing = false;
     let mut border_unknown = None;
     let mut orders_unknown = None;
+    let divisions = context.frame.complete::<tables::Divisions>();
     for &id in input.members.iter() {
+        if divisions
+            .as_ref()
+            .is_ok_and(|rows| rows.binary_search_by_key(&id, |row| row.id).is_err())
+        {
+            // Unlike the other member loops,0F5F/0F69 ->0F8F/0F92 dereferences
+            // a null native pointer. The loop never short-circuits on earlier
+            // positives, and emits final fragments only after every member.
+            refuse(
+                out,
+                "no-orders native callback",
+                format!("unresolved full reference {id} reaches the native invalid-pointer path"),
+            );
+            return;
+        }
         let result: Result<Option<bool>, String> = (|| {
             let group = context.division(id)?.orders_group;
             if group == 0 {
@@ -206,11 +254,12 @@ fn railway_warning(context: &Context<'_>, input: &CounterHover) -> Result<String
         .map_err(|error| error.to_string())?;
     let mut unknown = None;
     for &id in input.members.iter() {
+        // 1418C106A..107D skips complete-census dangling gun references.
+        let Ok(index) = rows.binary_search_by_key(&id, |row| row.gun) else {
+            continue;
+        };
+        let row = &rows[index];
         let warning: Result<bool, String> = (|| {
-            let row = rows
-                .binary_search_by_key(&id, |row| row.gun)
-                .map(|index| &rows[index])
-                .map_err(|_| format!("RailwayGunCounterInputs gun {id} is absent"))?;
             if !row.ordinary_path.is_empty() || row.naval_transfer != 0 || row.exiled != 0 {
                 return Ok(false);
             }
@@ -229,23 +278,17 @@ fn railway_warning(context: &Context<'_>, input: &CounterHover) -> Result<String
                 .frame
                 .complete::<tables::RailCooldowns>()
                 .map_err(|error| error.to_string())?;
-            let cooldown = cooldowns
+            let rail = cooldowns
                 .binary_search_by_key(&row.province, |row| row.province)
-                .map(|index| cooldowns[index].cooldown_ticks)
+                .map(|index| &cooldowns[index])
                 .map_err(|_| format!("RailCooldowns province {} is absent", row.province))?;
-            let edges = context
-                .frame
-                .complete::<tables::RailEdges>()
-                .map_err(|error| error.to_string())?;
-            let first = edges.partition_point(|edge| edge.from < row.province);
-            let count = edges[first..].partition_point(|edge| edge.from == row.province);
             railway_gun_counter::location_warning(
                 row,
                 land,
-                Some(railway_gun_counter::RailStatus {
-                    neighbor_pairs: count,
-                    cooldown_ticks: cooldown,
-                }),
+                Some(railway_gun_counter::RailStatus::read(
+                    rail,
+                    context.frame.hour,
+                )?),
             )
             .ok_or_else(|| "railway gun location eligibility is unavailable".to_owned())
         })();
@@ -266,9 +309,17 @@ fn railway_warning(context: &Context<'_>, input: &CounterHover) -> Result<String
 }
 
 fn stack_attrition(context: &Context<'_>, input: &CounterHover) -> Result<String, String> {
+    let divisions = context
+        .frame
+        .complete::<tables::Divisions>()
+        .map_err(|error| error.to_string())?;
     let mut count = 0_i32;
     let mut maximum = 0_i64;
     for &id in input.members.iter() {
+        // Multi1418C0B18..0B24 skips an unresolved reference before the getter.
+        if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
+            continue;
+        }
         let status = context.status(id)?;
         if status.attrition_value > status.attrition_threshold {
             count = count.wrapping_add(1);
@@ -291,13 +342,8 @@ fn actions(context: &Context<'_>, input: &CounterHover) -> Result<String, String
         .iter()
         .map(|row| (row.id, row.canonical_slot))
         .collect::<BTreeMap<_, _>>();
-    let relations = visibility::Relations::read(context.frame, &links);
-    let hostility = counter_action::DestinationHostility::read(
-        context.frame,
-        &links,
-        relations.as_ref().map_err(|e| *e),
-    )
-    .map_err(|e| e.to_string())?;
+    let hostility = counter_action::DestinationHostility::read(context.frame, &links)
+        .map_err(|e| e.to_string())?;
     let mut counts = [0_i32; 13];
     if input.railway_gun {
         let rows = context
@@ -305,10 +351,11 @@ fn actions(context: &Context<'_>, input: &CounterHover) -> Result<String, String
             .complete::<tables::RailwayGunCounterInputs>()
             .map_err(|e| e.to_string())?;
         for &id in input.members.iter() {
-            let row = rows
-                .binary_search_by_key(&id, |row| row.gun)
-                .map(|i| &rows[i])
-                .map_err(|_| format!("RailwayGunCounterInputs gun {id} is absent"))?;
+            // 1418C3A80 skips unresolved full refs before incrementing a bucket.
+            let Ok(index) = rows.binary_search_by_key(&id, |row| row.gun) else {
+                continue;
+            };
+            let row = &rows[index];
             let enemy = hostility.destination_enemy(
                 &row.ordinary_path,
                 row.ordinary_path.len() as u32,
@@ -318,9 +365,16 @@ fn actions(context: &Context<'_>, input: &CounterHover) -> Result<String, String
             counts[usize::from(code)] = counts[usize::from(code)].wrapping_add(1);
         }
     } else {
+        let divisions = context
+            .frame
+            .complete::<tables::Divisions>()
+            .map_err(|error| error.to_string())?;
         let actions = counter_action::Actions::read(context.frame, &hostility, None)
             .map_err(|e| e.to_string())?;
         for &id in input.members.iter() {
+            if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
+                continue;
+            }
             let code = actions.get(id).map_err(str::to_owned)?;
             counts[usize::from(code)] = counts[usize::from(code)].wrapping_add(1);
         }
@@ -417,7 +471,16 @@ pub(super) fn append(context: &Context<'_>, input: &CounterHover, out: &mut Tool
 }
 
 fn invalid_orders(context: &Context<'_>, input: &CounterHover) -> Result<String, String> {
+    let divisions = context
+        .frame
+        .complete::<tables::Divisions>()
+        .map_err(|error| error.to_string())?;
     for &id in input.members.iter() {
+        // Late1418C3900..3935 resolves each original full ref before reading
+        // the warning byte. Only a complete census proves a dangling skip.
+        if divisions.binary_search_by_key(&id, |row| row.id).is_err() {
+            continue;
+        }
         let status = context.status(id)?;
         if status.invalid_orders == 0 {
             continue;
@@ -460,18 +523,30 @@ mod tests {
             metrics: Default::default(),
             tables: TableId::ALL.map(|table| TableView::Complete(TableRows::empty(table)).into()),
         };
+        *frame.tables[TableId::Divisions.index()] = TableView::Complete(TableRows::Divisions(
+            [1, 2, 3]
+                .into_iter()
+                .map(|id| DivisionRow {
+                    id,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
         let vision = Vision::sharing(1, []);
         let names = installed_content::division_names::Database::default();
         let units = Err("unused".into());
         let hover = CounterHover {
             control: CounterControl::InvalidOrders,
+            authored: None,
             rect: [0.0; 4],
             remaining: None,
             coarse: false,
             hidden: false,
             railway_gun: false,
             ours: false,
-            members: vec![1, 2, 3].into(),
+            // Generation-distinct dangling ref between resolved operands must
+            // not hide the later warning or become an invented unknown unit.
+            members: vec![1, (1_u64 << 32) | 1, 2, 3].into(),
             timing: Arc::from([]),
         };
         for (reason, expected) in [(7, "\nweak"), (i32::MIN, "\n"), (0, "\n")] {
@@ -511,6 +586,29 @@ mod tests {
             };
             assert_eq!(invalid_orders(&context, &hover).unwrap(), expected);
         }
+        *frame.tables[TableId::Divisions.index()] = TableView::Unavailable {
+            reason: "fixture incomplete division census".into(),
+        };
+        let context = Context {
+            nato: false,
+            content: None,
+            dig_in_factor: Err("unused".into()),
+            loc: &loc,
+            recorded_language: &loc.language,
+            icons: &crate::combat::binding::NoIcons,
+            names: &names,
+            units: &units,
+            supply_grace: Err("unused".into()),
+            comms_max_distance: Err("unused".into()),
+            frame: &frame,
+            vision: &vision,
+            links: Ok(&[]),
+        };
+        assert!(
+            invalid_orders(&context, &hover)
+                .unwrap_err()
+                .contains("fixture incomplete division census")
+        );
     }
 
     #[test]
@@ -544,6 +642,18 @@ mod tests {
         .into_iter()
         .collect();
         let mut frame = test_frame(0);
+        put(
+            &mut frame,
+            TableRows::Divisions(
+                [1, 2, 3]
+                    .into_iter()
+                    .map(|id| DivisionRow {
+                        id,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
         put(
             &mut frame,
             TableRows::DivisionStatus(vec![
@@ -586,6 +696,7 @@ mod tests {
         };
         let mut hover = CounterHover {
             control: CounterControl::DigIn,
+            authored: None,
             rect: [0.0; 4],
             remaining: None,
             coarse: false,
@@ -601,6 +712,8 @@ mod tests {
         );
         hover.members = vec![1, 2].into();
         assert_eq!(dig_in(&context, &hover).unwrap(), "mean 73.47385");
+        hover.members = vec![1, (1_u64 << 32) | 1, 2].into();
+        assert_eq!(dig_in(&context, &hover).unwrap(), "mean 48.98256");
         hover.members = vec![2].into();
         assert!(dig_in(&context, &hover).is_err());
         hover.members = vec![2, 3].into();
@@ -609,6 +722,133 @@ mod tests {
             ..context
         };
         assert_eq!(dig_in(&context, &hover).unwrap(), "mean 0.00000");
+    }
+
+    #[test]
+    fn early_attrition_actions_and_railway_warning_skip_only_proven_dangling_members() {
+        use crate::map::{test_frame, test_put as put};
+        use replay::rows::{RailwayGunCounterInputRow, TableId, TableRows};
+        let loc: Localisation = [
+            (
+                "ATTRITION_SOME_UNITS".into(),
+                "$COUNT$ attrition $MAX|%0$".into(),
+            ),
+            (
+                "ACTION_UNIT_STANDING_STILL".into(),
+                "$COUNT$ standing".into(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let mut frame = test_frame(0);
+        put(
+            &mut frame,
+            TableRows::Divisions(
+                [1, 2]
+                    .into_iter()
+                    .map(|id| DivisionRow {
+                        id,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        put(
+            &mut frame,
+            TableRows::DivisionStatus(
+                [1, 2]
+                    .into_iter()
+                    .map(|division| DivisionStatusRow {
+                        division,
+                        attrition_value: if division == 1 { 60_000 } else { 0 },
+                        attrition_threshold: 50_000,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(
+                [1, 2]
+                    .into_iter()
+                    .map(|gun| RailwayGunCounterInputRow {
+                        gun,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        let names = installed_content::division_names::Database::default();
+        let units = Err("unused".into());
+        let vision = Vision::sharing(1, []);
+        let input = CounterHover {
+            control: CounterControl::Attrition,
+            authored: None,
+            rect: [0.0; 4],
+            remaining: None,
+            ours: true,
+            coarse: false,
+            hidden: false,
+            railway_gun: false,
+            members: vec![1, (1_u64 << 32) | 1, 2].into(),
+            timing: Arc::from([]),
+        };
+        let render = |frame: &DecodedFrame, control| {
+            let context = Context {
+                nato: false,
+                content: None,
+                dig_in_factor: Err("unused".into()),
+                loc: &loc,
+                recorded_language: &loc.language,
+                icons: &crate::combat::binding::NoIcons,
+                names: &names,
+                units: &units,
+                supply_grace: Err("unused".into()),
+                comms_max_distance: Err("unused".into()),
+                frame,
+                vision: &vision,
+                links: Ok(&[]),
+            };
+            let input = CounterHover {
+                railway_gun: control != CounterControl::Attrition,
+                control,
+                ..input.clone()
+            };
+            match control {
+                CounterControl::Attrition => stack_attrition(&context, &input),
+                CounterControl::Action => actions(&context, &input),
+                _ => railway_warning(&context, &input),
+            }
+        };
+        assert_eq!(
+            render(&frame, CounterControl::Attrition).unwrap(),
+            "1 attrition 60%"
+        );
+        assert_eq!(
+            render(&frame, CounterControl::Action).unwrap(),
+            "2 standing\n"
+        );
+        // These resolved guns are in transfer, so location topology is not
+        // reached. A dangling neighbor must not turn the known false into Err.
+        let mut guns = frame
+            .complete::<tables::RailwayGunCounterInputs>()
+            .unwrap()
+            .to_vec();
+        for gun in &mut guns {
+            gun.naval_transfer = 1;
+        }
+        put(&mut frame, TableRows::RailwayGunCounterInputs(guns));
+        assert_eq!(render(&frame, CounterControl::NoOrders).unwrap(), "");
+        *frame.tables[TableId::RailwayGunCounterInputs.index()] =
+            replay::frame::TableView::Unavailable {
+                reason: "fixture incomplete gun census".into(),
+            };
+        assert!(
+            render(&frame, CounterControl::NoOrders)
+                .unwrap_err()
+                .contains("fixture incomplete gun census")
+        );
     }
 
     #[test]
@@ -694,6 +934,7 @@ mod tests {
         };
         let mut hover = CounterHover {
             control: CounterControl::NoOrders,
+            authored: None,
             rect: [0.0; 4],
             remaining: None,
             coarse: false,
@@ -707,6 +948,18 @@ mod tests {
         no_orders(&context, &hover, &mut out);
         assert_eq!(out.title, "borderorders");
         assert!(out.refused.is_empty()); // Both existential branches are proven.
+        let dangling = (1_u64 << 32) | 1;
+        for members in [vec![1, dangling, 2], vec![1, 2, dangling]] {
+            hover.members = members.into();
+            let mut out = Tooltip::default();
+            no_orders(&context, &hover, &mut out);
+            assert!(out.title.is_empty()); // No final fragments precede the invalid reach.
+            assert_eq!(out.refused.values().sum::<usize>(), 1);
+            assert!(out.refused.keys().any(|reason| {
+                reason.starts_with("counter no-orders native callback:")
+                    && reason.contains("native invalid-pointer path")
+            }));
+        }
         hover.members = vec![1, 3, 4].into();
         let mut out = Tooltip::default();
         no_orders(&context, &hover, &mut out);
@@ -784,17 +1037,40 @@ mod tests {
                 ..Default::default()
             }]),
         );
-        for (days, withdrawing, expected, suffix) in [
-            (Recorded::Value(Some(1)), 1, "cached one 1", "cached one 1"),
+        for (days, withdrawing, cached, expected, suffix) in [
+            (
+                Recorded::Value(Some(1)),
+                1,
+                1,
+                Some("cached one 1"),
+                "cached one 1",
+            ),
             (
                 Recorded::Value(Some(2)),
                 1,
-                "cached many 2",
+                1,
+                Some("cached many 2"),
                 "cached many 2",
             ),
-            (Recorded::Value(Some(1)), 0, "cached one 1", "cached"),
-            (Recorded::NotRecorded, 1, "", "cached"),
+            (
+                Recorded::Value(Some(1)),
+                0,
+                1,
+                Some("cached one 1"),
+                "cached",
+            ),
+            (Recorded::NotRecorded, 1, 1, Some(""), "cached"),
+            // Native +630 zero declines this child arm, even if +19B is set.
+            (Recorded::Value(Some(1)), 1, 0, None, "cached one 1"),
         ] {
+            put(
+                &mut frame,
+                TableRows::ArmyIconInputs(vec![ArmyIconInputRow {
+                    division: 1,
+                    separate_counter: cached,
+                    ..Default::default()
+                }]),
+            );
             put(
                 &mut frame,
                 TableRows::OrdersGroupCounterInputs(vec![OrdersGroupCounterInputRow {
@@ -822,6 +1098,7 @@ mod tests {
             };
             let hover = CounterHover {
                 control: CounterControl::LeaderEnroute,
+                authored: None,
                 rect: [0.0; 4],
                 remaining: None,
                 coarse: false,
@@ -831,12 +1108,14 @@ mod tests {
                 members: vec![1, 2, 3].into(),
                 timing: Arc::from([]),
             };
-            let out = specific(&context, &hover).unwrap();
-            assert_eq!(out.title, expected);
-            assert_eq!(
-                out.refused.is_empty(),
-                !matches!(days, Recorded::NotRecorded)
-            );
+            let out = specific(&context, &hover);
+            assert_eq!(out.as_ref().map(|out| out.title.as_str()), expected);
+            if let Some(out) = out {
+                assert_eq!(
+                    out.refused.is_empty(),
+                    !matches!(days, Recorded::NotRecorded)
+                );
+            }
             let mut out = Tooltip::default();
             context.hq(&mut out, &[1]);
             assert_eq!(out.title, suffix);

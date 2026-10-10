@@ -190,6 +190,32 @@ fn memory(bytes: &[u8]) -> SliceMemory<'_> {
     }
 }
 
+#[test]
+fn trait_demand_counts_every_repeated_experience_token_beyond_old_row_capacity() {
+    const COUNT: usize = 55_001;
+    let mut bytes = fixture(VTABLE_RVA);
+    bytes.resize(XP_ARRAY + COUNT * 16, 0);
+    vector(&mut bytes, TRAIT_EXPERIENCE_DATA, XP_ARRAY, COUNT as u32);
+    for ordinal in 0..COUNT {
+        u64_at(
+            &mut bytes,
+            XP_ARRAY + ordinal * 16,
+            (ADDRESS + SECOND_TRAIT) as u64,
+        );
+    }
+    assert_eq!(
+        trait_demand(&memory(&bytes), IMAGE, ADDRESS, 0x8000_0001, true),
+        Ok(TraitDemand {
+            rows: COUNT,
+            bytes: COUNT * 5
+        })
+    );
+    assert_eq!(
+        trait_demand(&memory(&bytes), IMAGE, ADDRESS, 0x8000_0001, false),
+        Ok(TraitDemand { rows: 2, bytes: 10 })
+    );
+}
+
 struct TracedMemory<'a> {
     memory: SliceMemory<'a>,
     guards: Cell<usize>,

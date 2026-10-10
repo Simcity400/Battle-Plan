@@ -148,6 +148,29 @@ pub(super) fn context(
     region: usize,
     out: &mut Buffers<'_>,
 ) -> Result<(usize, Context), &'static str> {
+    if out.context_slots.is_growing() {
+        let required = out
+            .contexts
+            .len
+            .checked_add(1)
+            .and_then(|count| count.checked_mul(2))
+            .and_then(usize::checked_next_power_of_two)
+            .ok_or("fuel demand context index size overflow")?;
+        let before = out.context_slots.len();
+        out.context_slots.ensure(required)?;
+        if out.context_slots.len() != before {
+            out.context_slots.fill(0);
+            let mask = out.context_slots.len() - 1;
+            // Reindex original owned contexts, retaining cached failures without live retries.
+            for (index, context) in out.contexts.rows[..out.contexts.len].iter().enumerate() {
+                let mut bucket = (context.pointer >> 4).wrapping_mul(0x9e37_79b9) & mask;
+                while out.context_slots[bucket] != 0 {
+                    bucket = (bucket + 1) & mask;
+                }
+                out.context_slots[bucket] = index + 1;
+            }
+        }
+    }
     // Current pack only. The sampling callback has joined weather jobs; a
     // reused region owns every raw operand and its failure from this boundary.
     let mut bucket = 0;

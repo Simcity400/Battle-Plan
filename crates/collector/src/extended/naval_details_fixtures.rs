@@ -721,6 +721,76 @@ impl Memory for LiveShape {
     }
 }
 
-pub(crate) fn capture_live_shape(captured: &mut crate::extended::Captured) {
-    captured.naval_details.capture(&live_shape(), IMAGE, STATE);
+/// Status fixtures independently exercise a fixed breakdown reader after
+/// acquiring its source rows, keeping deliberate arena refusals observable.
+pub(crate) fn capture_live_shape_fixed_breakdown(captured: &mut crate::extended::Captured) {
+    use engine::{
+        naval_ship_modifier_breakdown as breakdown,
+        walk::{Buffer, Outcome},
+    };
+    let memory = live_shape();
+    let c = &mut captured.naval_details;
+    let retained = (
+        std::mem::take(&mut c.breakdown_requests.first),
+        std::mem::take(&mut c.breakdown_roots.first),
+        std::mem::take(&mut c.breakdown_nodes.first),
+        std::mem::take(&mut c.breakdown_text.first),
+        std::mem::take(&mut c.breakdown_depth.first),
+    );
+    let mut capacity = super::Capacities::default();
+    capacity.raise_for_live_breakdowns(breakdown::demand(&memory, IMAGE, STATE).unwrap());
+    c.try_grow_hint(&capacity).unwrap();
+    c.capture(&memory, IMAGE, STATE);
+    (
+        c.breakdown_requests.first,
+        c.breakdown_roots.first,
+        c.breakdown_nodes.first,
+        c.breakdown_text.first,
+        c.breakdown_depth.first,
+    ) = retained;
+    let (Outcome::Rows { len: combats }, Outcome::Rows { len: members }) =
+        (c.details.outcome, c.ships.outcome)
+    else {
+        panic!("fixed breakdown fixture requires complete source rows")
+    };
+    let mut buffers = breakdown::Buffers {
+        requests: Buffer::Fixed(&mut c.breakdown_requests.first),
+        request_len: 0,
+        request_required: 0,
+        roots: Buffer::Fixed(&mut c.breakdown_roots.first),
+        root_len: 0,
+        root_required: 0,
+        nodes: Buffer::Fixed(&mut c.breakdown_nodes.first),
+        node_len: 0,
+        node_required: 0,
+        text: Buffer::Fixed(&mut c.breakdown_text.first),
+        text_len: 0,
+        text_required: 0,
+        stack: Buffer::Fixed(&mut c.breakdown_depth.first),
+        stack_required: 0,
+    };
+    c.breakdown_outcome = match breakdown::capture(
+        &memory,
+        IMAGE,
+        STATE,
+        &c.details.rows[..combats],
+        &c.ships.rows[..members],
+        &c.planes.first[..c.planes.len],
+        &c.weapon_sources.first[..c.weapon_sources.len],
+        &mut buffers,
+    ) {
+        Ok(()) => Outcome::Rows {
+            len: buffers.root_len,
+        },
+        Err(reason) => Outcome::Unavailable { reason },
+    };
+    c.breakdown_requests.len = buffers.request_len;
+    c.breakdown_requests.required = buffers.request_required;
+    c.breakdown_roots.len = buffers.root_len;
+    c.breakdown_roots.required = buffers.root_required;
+    c.breakdown_nodes.len = buffers.node_len;
+    c.breakdown_nodes.required = buffers.node_required;
+    c.breakdown_text.len = buffers.text_len;
+    c.breakdown_text.required = buffers.text_required;
+    c.breakdown_depth.required = buffers.stack_required;
 }

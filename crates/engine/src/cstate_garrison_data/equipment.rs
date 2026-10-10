@@ -18,13 +18,17 @@ pub struct Row {
 }
 
 pub struct Arena<'a> {
-    pub rows: &'a mut [Row],
+    pub rows: crate::walk::Buffer<'a, Row>,
     pub len: usize,
     pub required: usize,
 }
 
 impl<'a> Arena<'a> {
+    #[cfg(test)]
     pub fn new(rows: &'a mut [Row]) -> Self {
+        Self::new_buffer(crate::walk::Buffer::Fixed(rows))
+    }
+    pub fn new_buffer(rows: crate::walk::Buffer<'a, Row>) -> Self {
         Self {
             rows,
             len: 0,
@@ -47,6 +51,7 @@ impl<'a> Arena<'a> {
             .required
             .checked_add(count)
             .ok_or("garrison equipment demand overflow")?;
+        self.rows.ensure(self.required)?;
         if count > self.rows.len() - self.len {
             return Ok(None);
         }
@@ -242,6 +247,22 @@ mod tests {
             );
         }
         (bytes, required, equipment)
+    }
+
+    #[test]
+    fn initial_growing_equipment_arena_keeps_all_mod_sized_requirements() {
+        let (bytes, _, _) = fixture(5000);
+        let memory = SliceMemory {
+            base: START,
+            bytes: &bytes,
+        };
+        let mut rows = Vec::new();
+        let mut arena = Arena::new_buffer(crate::walk::Buffer::Growing(&mut rows));
+        assert_eq!(arena.capture(&memory, 0, START), Ok(Some((0, 5000))));
+        assert_eq!(arena.len, 5000);
+        assert_eq!(arena.required, 5000);
+        assert_eq!(arena.rows[4999].required_raw, 104999);
+        assert_eq!(Arena::new(&mut []).capture(&memory, 0, START), Ok(None));
     }
 
     #[test]

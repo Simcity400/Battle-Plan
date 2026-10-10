@@ -47,6 +47,42 @@ pub fn walk_portraits(
     entries: &mut [crate::character_portrait_entry::Row],
     walk: PortraitWalk<'_>,
 ) -> crate::cprovince::UnitOrderWalk {
+    walk_portraits_buffer(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Fixed(output),
+        crate::walk::Buffer::Fixed(entries),
+        walk,
+    )
+}
+
+pub fn walk_portraits_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut Vec<PortraitRow>,
+    entries: &mut Vec<crate::character_portrait_entry::Row<crate::capture_text::Owned>>,
+    walk: PortraitWalk<'_>,
+) -> crate::cprovince::UnitOrderWalk {
+    walk_portraits_buffer(
+        memory,
+        base,
+        state,
+        crate::walk::Buffer::Growing(output),
+        crate::walk::Buffer::Growing(entries),
+        walk,
+    )
+}
+
+fn walk_portraits_buffer<T: crate::capture_text::Value>(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut output: crate::walk::Buffer<'_, PortraitRow>,
+    mut entries: crate::walk::Buffer<'_, crate::character_portrait_entry::Row<T>>,
+    walk: PortraitWalk<'_>,
+) -> crate::cprovince::UnitOrderWalk {
     let PortraitWalk {
         part,
         parts,
@@ -72,6 +108,9 @@ pub fn walk_portraits(
         let mut missing = 0;
         let first = (count * part / parts) as u32;
         let last = (count * (part + 1) / parts) as u32;
+        // 1406AE170/1406AE080 bound the complete roster; 141389960 appends
+        // portrait entries dynamically. Grow once from each original control.
+        output.ensure((last - first) as usize)?;
         let mut hinted = first;
         for index in first..last {
             if let Some(identities) = identities {
@@ -106,11 +145,11 @@ pub fn walk_portraits(
                 header,
                 crate::character_portrait_entry::STRIDE,
             )
-            .filter(|a| a.count <= 128)
-            .ok_or("character portrait array invalid or exceeds128 entries")?;
+            .ok_or("character portrait array invalid")?;
             required = required
                 .checked_add(a.count as usize)
                 .ok_or("character portrait entry count overflow")?;
+            entries.ensure(required)?;
             if len == output.len() || a.count as usize > entries.len().saturating_sub(used) {
                 missing += 1;
                 continue;
@@ -163,7 +202,7 @@ pub fn walk_portraits(
                     hinted += 1;
                 }
                 let mut current = crate::character_portrait_entry::Row::default();
-                crate::character_portrait_entry::read(
+                crate::character_portrait_entry::read_buffer(
                     memory,
                     a.element(n, crate::character_portrait_entry::STRIDE)
                         .ok_or("character portrait entry overflow")?,

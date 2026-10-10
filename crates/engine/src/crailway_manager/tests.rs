@@ -1,6 +1,8 @@
 use super::*;
 use crate::{cpdx_array, memory::SliceMemory};
 
+mod selected_inputs_tests;
+
 const MEMORY_BASE: usize = 0x1000;
 
 fn put(bytes: &mut [u8], offset: usize, value: impl AsRef<[u8]>) {
@@ -164,6 +166,123 @@ fn eta_fixture() -> EtaMemory {
 }
 
 #[test]
+fn rail_building_supplement_keeps_old_rows_faults_and_capacity_independent() {
+    let mut memory = eta_fixture();
+    let mut cooldowns = [info::Row::default(); 2];
+    let mut edges = [edge::Row::default(); 3];
+    let old = walk(&memory, 0, MEMORY_BASE, &mut cooldowns, &mut edges);
+    let expected_cooldowns = cooldowns;
+    let expected_edges = edges;
+    for capacity in [0, 1, 2] {
+        let mut buildings = vec![fresh_inputs::RailwayBuildingRow::default(); capacity];
+        let result = walk_with_buildings(
+            &memory,
+            0,
+            MEMORY_BASE,
+            &mut cooldowns,
+            &mut edges,
+            &mut buildings,
+        );
+        assert_eq!(result.rows, old);
+        assert_eq!(cooldowns, expected_cooldowns);
+        assert_eq!(edges, expected_edges);
+        assert_eq!(result.required, 2);
+        assert_eq!(result.buildings.len(), capacity);
+        if capacity != 0 {
+            assert_eq!(buildings[0].province, 1);
+            assert_eq!(
+                buildings[0].building,
+                Ok(Some(fresh_inputs::RailwayBuildingState {
+                    building: Some(fresh_inputs::RailwayBuildingHealth {
+                        level: 4,
+                        healthy: 2,
+                        partial: Some(5_000_000),
+                    }),
+                }))
+            );
+        }
+        if capacity == 2 {
+            assert_eq!(buildings[1].building, Ok(None));
+        } else {
+            assert_eq!(
+                result.buildings,
+                Outcome::Truncated {
+                    len: capacity,
+                    unread_rows: (2 - capacity) as u32,
+                }
+            );
+        }
+    }
+    memory.refused = Some(0x4000 + crate::cbuilding::PARTIAL_HEALTH);
+    let mut buildings = [fresh_inputs::RailwayBuildingRow::default(); 2];
+    let result = walk_with_buildings(
+        &memory,
+        0,
+        MEMORY_BASE,
+        &mut cooldowns,
+        &mut edges,
+        &mut buildings,
+    );
+    assert_eq!(result.rows, old);
+    assert_eq!(cooldowns, expected_cooldowns);
+    assert_eq!(edges, expected_edges);
+    assert!(buildings[0].building.is_err());
+    assert_eq!(buildings[1].building, Ok(None));
+    assert_eq!(result.buildings, Outcome::Rows { len: 2 });
+
+    memory.refused = None;
+    put(
+        &mut memory.bytes,
+        0x1080 + info::BUILDING_STATUS,
+        0_u64.to_le_bytes(),
+    );
+    let result = walk_with_buildings(
+        &memory,
+        0,
+        MEMORY_BASE,
+        &mut cooldowns,
+        &mut edges,
+        &mut buildings,
+    );
+    assert!(matches!(result.rows.provinces, Outcome::Unavailable { .. }));
+    assert!(matches!(result.buildings, Outcome::Unavailable { .. }));
+    assert_eq!(result.required, 1);
+}
+
+#[test]
+fn zero_capacity_rail_supplement_has_the_legacy_read_trace() {
+    struct Observed<'a> {
+        inner: &'a EtaMemory,
+        reads: std::cell::RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Observed<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, output.len()));
+            self.inner.copy(address, output)
+        }
+    }
+    let memory = eta_fixture();
+    let observed = Observed {
+        inner: &memory,
+        reads: Default::default(),
+    };
+    let mut cooldowns = [info::Row::default(); 2];
+    let mut edges = [edge::Row::default(); 3];
+    let old = walk(&observed, 0, MEMORY_BASE, &mut cooldowns, &mut edges);
+    let expected = observed.reads.take();
+    let result = walk_with_buildings(
+        &observed,
+        0,
+        MEMORY_BASE,
+        &mut cooldowns,
+        &mut edges,
+        &mut [],
+    );
+    assert_eq!(result.rows, old);
+    assert_eq!(observed.reads.take(), expected);
+    assert_eq!(result.required, 2);
+}
+#[test]
 fn hourly_rail_speed_reuse_preserves_direction_capacity_faults_and_refresh() {
     struct Observed<'a> {
         inner: &'a EtaMemory,
@@ -204,13 +323,7 @@ fn hourly_rail_speed_reuse_preserves_direction_capacity_faults_and_refresh() {
     assert_eq!(memo.get(&observed, 0, MEMORY_BASE, 0x1900, 0x1600), reverse);
     assert_eq!(
         observed.reads.take(),
-        [
-            0x1600,
-            0x1600 + cprovince::ID,
-            0x1540 + 8,
-            0x1600 + cprovince::STATE,
-            0x1500 + 2 * 8
-        ]
+        [0x1600 + cprovince::STATE, 0x1500 + 2 * 8]
     );
     // Every cold fault preserves the ordinary reader's result and prefix.
     for address in reads {
@@ -400,11 +513,7 @@ fn eta_infrastructure_uses_healthy_levels_and_native_maximum_precedence() {
                 expected
             );
             let warm = observed.reads.take();
-            if capacity != 0 {
-                assert_eq!(warm, [0x1600 + cprovince::STATE]);
-            } else {
-                assert_eq!(warm.len(), direct_reads.len());
-            }
+            assert_eq!(warm, [0x1600 + cprovince::STATE]);
             memo.clear();
             assert_eq!(
                 MovementSpeeds::infrastructure(
@@ -921,7 +1030,7 @@ fn compare_reused_edge_scratch(
             scratch,
             pairs,
             province,
-            &mut rows,
+            &mut Buffer::Fixed(&mut rows),
             &mut progress
         ),
         fresh_scratch_reference_edges(
@@ -1051,4 +1160,66 @@ fn reused_edge_scratch_keeps_invalid_prefixes_and_overflow_independent_of_old_by
         &mut scratch,
     );
     compare_reused_edge_scratch(&bytes, None, provinces, pairs, 68, 0, &mut scratch);
+}
+
+#[test]
+fn railway_worker_retains_five_thousand_original_edge_and_province_dependencies() {
+    const QUERIES: usize = 5_001;
+    const SLOTS: usize = QUERIES + 2;
+    const INFO_TABLE: usize = 0x100000;
+    const ROSTER: usize = 0x110000;
+    const PROVINCES: usize = 0x200000;
+    let mut source = eta_fixture();
+    source.bytes.resize(PROVINCES + SLOTS * 0x400, 0);
+    array(
+        &mut source.bytes,
+        0x400 + PROVINCE_INFO_TABLE,
+        INFO_TABLE as u64,
+        SLOTS as u32,
+        SLOTS as u32,
+    );
+    array(
+        &mut source.bytes,
+        cgame_state::PROVINCES,
+        ROSTER as u64,
+        SLOTS as u32,
+        SLOTS as u32,
+    );
+    for id in 1..SLOTS {
+        let pointer = PROVINCES + id * 0x400;
+        put(
+            &mut source.bytes,
+            ROSTER - MEMORY_BASE + id * 8,
+            (pointer as u64).to_le_bytes(),
+        );
+        put(
+            &mut source.bytes,
+            pointer - MEMORY_BASE,
+            (cprovince::VTABLE_RVA as u64).to_le_bytes(),
+        );
+        put(
+            &mut source.bytes,
+            pointer - MEMORY_BASE + cprovince::ID,
+            (id as u32).to_le_bytes(),
+        );
+    }
+    let mut memo = MovementSpeeds::new(1);
+    let to = PROVINCES + (SLOTS - 1) * 0x400;
+    for id in 1..=QUERIES {
+        let from = PROVINCES + id * 0x400;
+        assert_eq!(memo.get(&source, 0, MEMORY_BASE, from, to), Ok(200_000));
+    }
+    assert_eq!(memo.entries.len(), QUERIES);
+    assert_eq!(memo.inputs.identities.len(), QUERIES + 1);
+    // Repeated late dependencies use their original successful observation.
+    source.refused = Some(PROVINCES + QUERIES * 0x400);
+    assert_eq!(
+        memo.get(&source, 0, MEMORY_BASE, PROVINCES + QUERIES * 0x400, to),
+        Ok(200_000)
+    );
+    memo.clear();
+    assert!(
+        memo.get(&source, 0, MEMORY_BASE, PROVINCES + QUERIES * 0x400, to)
+            .is_err()
+    );
 }

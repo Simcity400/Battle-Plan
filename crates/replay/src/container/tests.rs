@@ -364,6 +364,204 @@ fn rebuild(replay: &Replay, prefix: Vec<u8>, index: &[BlockIndex]) -> Vec<u8> {
 }
 
 #[test]
+fn size_driven_blocks_preserve_every_hour_value_origin_and_metric() {
+    use crate::rows::{CountryRow, LexicalTokenRow, SliceReadRow};
+
+    let mut encoder = FrameEncoder::new();
+    let mut input = vec![
+        Record::SessionStart(session(1)),
+        Record::BranchStart(branch(1, 1)),
+    ];
+    let mut expected = Vec::new();
+    let mut original_raw_bytes = 4;
+    for hour in 1..=20 {
+        let mut decoded = source(1, hour);
+        *decoded.tables[TableId::Countries.index()] = TableView::Complete(TableRows::Countries(
+            (0..5_000)
+                .map(|id| CountryRow {
+                    id,
+                    canonical_slot: id,
+                    command_power_raw: i64::from(hour) * -100_001,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        *decoded.tables[TableId::LexicalTokens.index()] =
+            TableView::Complete(TableRows::LexicalTokens(vec![LexicalTokenRow {
+                token: 0,
+                literal: vec![hour as u8; 64 * 1024],
+            }]));
+        *decoded.tables[TableId::SliceReads.index()] =
+            TableView::Complete(TableRows::SliceReads(vec![SliceReadRow {
+                table: TableId::ResearchInputs.index() as u32,
+                owner: 4_999,
+                sample_hour: 1,
+            }]));
+        *decoded.tables[TableId::Provinces.index()] = TableView::Unavailable {
+            reason: "synthetic guarded read failure".into(),
+        };
+        decoded.metrics.total_ns = hour as u64;
+        decoded.metrics.table_ns[TableId::Countries.index()] = hour as u64 * 2;
+        let frame = encoder.encode(decoded.clone(), false).unwrap();
+        let mut payload = Vec::new();
+        frame.encode(&mut payload).unwrap();
+        original_raw_bytes += payload.len() + 4;
+        assert_eq!(frame.keyframe, hour == 1);
+        expected.push(decoded);
+        input.push(Record::Frame(frame));
+    }
+    // Exercise the production overflow path with a small bound instead of
+    // allocating a gigabyte in a unit test.
+    let limit = 512 * 1024;
+    assert!(original_raw_bytes > limit);
+    let mut observed = Vec::new();
+    let replay = Replay::from_record_slices(
+        CAMPAIGN.into(),
+        &[&input],
+        &mut |frame, decoded, sizes| {
+            assert_eq!(sizes, frame.table_encoded_sizes()?);
+            observed.push(decoded.clone());
+            Ok(())
+        },
+        None,
+        limit,
+    )
+    .unwrap();
+    assert!(replay.index.len() > 1);
+    assert!(
+        replay
+            .index
+            .iter()
+            .all(|block| block.raw_length <= limit as u64)
+    );
+    assert_eq!(observed, expected);
+    let reopened = Replay::open(replay.bytes().to_vec()).unwrap();
+    let mut count = 0;
+    for block in &reopened.index {
+        let frames = reopened.read_block(block).unwrap();
+        assert!(frames[0].keyframe);
+        assert!(frames.iter().skip(1).all(|frame| !frame.keyframe));
+        let mut decoder = FrameDecoder::new();
+        for frame in frames {
+            assert_eq!(decoder.advance(&frame).unwrap(), &expected[count]);
+            count += 1;
+        }
+    }
+    assert_eq!(count, expected.len());
+    for decoded in &expected {
+        assert!(
+            matches!(reopened.seek(1, decoded.hour).unwrap(), SeekResult::Frame(actual) if *actual == *decoded)
+        );
+    }
+}
+
+#[test]
+fn size_driven_blocks_check_framing_and_refuse_unrepresentable_hours() {
+    let input = records(1, &[1, 2]);
+    let Record::Frame(first) = &input[2] else {
+        unreachable!()
+    };
+    let mut payload = Vec::new();
+    first.encode(&mut payload).unwrap();
+    let mut block = RawBlock::new(first);
+    let exact = payload.len() + 8;
+    assert!(!block.fits(payload.len(), exact - 1));
+    assert!(block.fits(payload.len(), exact));
+    block.push_payload(first, &payload, exact).unwrap();
+    assert!(!block.fits(usize::MAX, MAX_BLOCK_RAW_BYTES));
+    assert!(
+        Replay::from_record_slices(
+            CAMPAIGN.into(),
+            &[&input],
+            &mut |_, _, _| Ok(()),
+            None,
+            exact - 1
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("single replay frame")
+    );
+
+    let mut input = input;
+    let Record::Frame(last) = &mut input[3] else {
+        unreachable!()
+    };
+    last.tables[TableId::Provinces.index()] = TableUpdate::Truncated {
+        rows: TableRows::Provinces(vec![]),
+        missing: 7,
+    };
+    let error = Replay::from_record_slices(
+        CAMPAIGN.into(),
+        &[&input],
+        &mut |_, _, _| Ok(()),
+        None,
+        exact,
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(error.contains("Provinces"), "{error}");
+    assert!(error.contains("7 missing rows"), "{error}");
+}
+
+#[test]
+fn recovered_frame_reader_matches_in_memory_finalize_and_append() {
+    let segments = [(
+        3,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records: records(1, &[1, 2, 3]),
+            valid_bytes: 99,
+            damage: None,
+        },
+    )];
+    let mut restored = Vec::new();
+    let replay = Replay::from_recovered_with_reader(
+        CAMPAIGN.into(),
+        &segments,
+        |number, frame| {
+            restored.push((number, frame.hour));
+            Ok(frame.clone())
+        },
+        |_, _, _| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(restored, [(3, 1), (3, 2), (3, 3)]);
+    assert_eq!(
+        replay.bytes(),
+        Replay::from_recovered(CAMPAIGN.into(), &segments)
+            .unwrap()
+            .bytes()
+    );
+    let next = [(
+        8,
+        Recovery {
+            format: Some(FormatVersion::CURRENT),
+            records: records(2, &[4, 5]),
+            valid_bytes: 100,
+            damage: Some("synthetic tail damage".into()),
+        },
+    )];
+    let appended = replay
+        .append_recovered_with_reader(&next, |_, frame| Ok(frame.clone()), |_, _, _| Ok(()))
+        .unwrap();
+    assert_eq!(
+        appended.bytes(),
+        replay.append_recovered(&next).unwrap().bytes()
+    );
+    assert!(
+        Replay::from_recovered_with_reader(
+            CAMPAIGN.into(),
+            &segments,
+            |_, _| { Err(io::Error::from(io::ErrorKind::OutOfMemory)) },
+            |_, _, _| Ok(())
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn history_preserves_exact_hours_and_parentage_across_blocks_and_sessions() {
     let mut first = records(1, &[1, 3, 721]);
     first.push(Record::Gap(Gap {
@@ -657,7 +855,7 @@ fn seek_rejects_an_intermediate_campaign_change_even_when_target_is_valid() {
     }
     let mut prefix = replay.bytes[..replay.header_end].to_vec();
     let mut index = Vec::new();
-    append_blocks(&mut prefix, &mut index, &[raw]).unwrap();
+    append_blocks(&mut prefix, &mut index, &[raw.compress().unwrap()]).unwrap();
     let malformed = Replay::open(rebuild(&replay, prefix, &index)).unwrap();
     assert!(matches!(
         malformed.seek(1, 1).unwrap(),

@@ -23,9 +23,9 @@ fn invalid(reason: &'static str) -> io::Error {
 #[derive(Debug, Default)]
 pub(super) struct AirRegistrySources {
     pub(super) bases: BTreeMap<u64, AirBaseRow>,
-    /// A stateless base's host task-force roster owner, when the host resolves.
+    /// A base's host task-force roster owner, when the host resolves.
     pub(super) host_owners: BTreeMap<u64, u32>,
-    /// Stateless bases whose host ship resolves with a null task force.
+    /// Bases whose host ship resolves with a null task force.
     pub(super) hosts_without_task_force: BTreeSet<u64>,
 }
 
@@ -57,6 +57,7 @@ impl AirRegistrySources {
                     host: row.host.unwrap_or(0),
                     // Only the roster records capacity; the map does not use it.
                     capacity: 0,
+                    carrier: replay::rows::Recorded::NotRecorded,
                 },
                 None => manager
                     .and_then(|rows| {

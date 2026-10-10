@@ -19,7 +19,8 @@ use std::{
 use engine::{
     PINNED_BUILD,
     build::hash_executable,
-    cdlc_manager::{self, Descriptor, mounts_match},
+    capture_text::Owned as Descriptor,
+    cdlc_manager::{self, mounts_match},
     province_definition::{MovementCensus, read_movement_census},
     walk::Outcome,
 };
@@ -113,7 +114,7 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
     let memory = ProcessMemory(&process.handle);
     let mut mounts =
         vec![Descriptor::default(); cdlc_manager::observe_counts(&memory, base).mounts];
-    let outcome = cdlc_manager::observe_search_path(&memory, base, &mut mounts);
+    let outcome = cdlc_manager::observe_search_path_owned(&memory, base, &mut mounts, true);
     verify_content_order(
         content.order_note.as_deref(),
         outcome,
@@ -363,13 +364,15 @@ fn compare(census: &MovementCensus, map: &MovementMap) -> Report {
                 report.differ(province, at, "neighbour_id", game.id, content.to);
                 continue;
             }
-            if game.crossing_kind != content.kind {
+            if Some(game.crossing_kind) != content.kind {
                 report.differ(
                     province,
                     at,
                     "crossing_kind",
                     game.crossing_kind,
-                    content.kind,
+                    content
+                        .kind
+                        .map_or_else(|| "unavailable".into(), |kind| kind.to_string()),
                 );
             }
             if game.flag != u8::from(content.no_midpoint) {
@@ -636,7 +639,7 @@ mod tests {
     fn an_unproved_content_load_order_is_refused_before_comparing() {
         let mount = |path: &[u8]| {
             let mut text = Descriptor::default();
-            text.bytes[..path.len()].copy_from_slice(path);
+            text.bytes.extend_from_slice(path);
             text.len = path.len();
             text
         };

@@ -66,6 +66,10 @@ impl<R: Default> CaptureRows<R> {
     }
 
     pub fn grow(&mut self, capacity: &mut usize) {
+        // Worker acquisitions can already own rows beyond the previous floor.
+        // Publish that original demand to every recycled/idle frame as well.
+        grow_capacity(capacity, self.failed_len);
+        grow_capacity(capacity, self.outcome.len());
         if self.failed_len > 0 && self.failed_len >= capacity.saturating_sub(*capacity / 4) {
             let required = capacity.saturating_add(1);
             grow_capacity(capacity, required);
@@ -141,7 +145,7 @@ impl<T: Default> Arena<T> {
     }
 
     pub fn grow(&mut self, capacity: &mut usize) {
-        grow_capacity(capacity, self.required);
+        grow_capacity(capacity, self.required.max(self.len));
         if self.len > 0 && self.len >= capacity.saturating_sub(*capacity / 4) {
             grow_capacity(capacity, capacity.saturating_add(1));
         }
@@ -156,6 +160,26 @@ impl<T: Default> Arena<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_grown_complete_and_failed_rows_raise_all_recycled_storage() {
+        for failed in [false, true] {
+            let mut rows = CaptureRows::<u32>::new(2);
+            grow_vec(&mut rows.rows, 40000);
+            rows.outcome = Outcome::Rows { len: 40000 };
+            if failed {
+                rows.fail(Outcome::Unavailable {
+                    reason: "publication failed",
+                });
+            }
+            let mut capacity = 2;
+            rows.grow(&mut capacity);
+            let mut idle = CaptureRows::<u32>::new(2);
+            idle.grow(&mut capacity);
+            assert!(capacity >= 40000);
+            assert!(idle.rows.len() >= 40000);
+        }
+    }
 
     #[test]
     fn sizing_hint_reserve_failure_preserves_lengths_and_retries() {

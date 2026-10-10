@@ -1,4 +1,4 @@
-//! The owning hourly game thread drains the bounded hook log before its tick.
+//! The admitted acquisition worker drains the bounded native hook log.
 //! Conversion and aggregation use only frame-owned rows on the spool thread.
 use crate::{
     equipment_destruction as producer,
@@ -28,6 +28,9 @@ pub struct Captured {
     deletion_unavailable: Option<&'static str>,
 }
 impl Captured {
+    pub fn vacant() -> Self {
+        Self::with_capacities(&0)
+    }
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             rows: CaptureRows::new(*c),
@@ -42,13 +45,32 @@ impl Captured {
         self.rows.allocated_bytes()
     }
     pub fn grow(&mut self, c: &mut Capacities) {
-        *c = (*c).max(producer::capacity());
+        *c = (*c).max(producer::demand());
         grow_vec(&mut self.rows.rows, *c);
     }
+    pub fn fail(&mut self, reason: &'static str) {
+        self.rows.fail(Outcome::Unavailable { reason });
+        self.deletion_unavailable = Some(reason);
+    }
+    #[cfg(test)]
     pub fn capture(&mut self, _memory: &impl Memory, _base: usize, _state: usize) -> [u64; N] {
+        self.capture_with(|rows| producer::drain(rows))
+    }
+    pub fn capture_growing(
+        &mut self,
+        _memory: &impl Memory,
+        _base: usize,
+        _state: usize,
+    ) -> [u64; N] {
+        self.capture_with(producer::drain_growing)
+    }
+    fn capture_with(
+        &mut self,
+        drain: impl FnOnce(&mut Vec<producer::Entry>) -> Result<usize, &'static str>,
+    ) -> [u64; N] {
         self.reset();
         let start = qpc();
-        self.rows.outcome = match producer::drain(&mut self.rows.rows) {
+        self.rows.outcome = match drain(&mut self.rows.rows) {
             Ok(len) => Outcome::Rows { len },
             Err(reason) => Outcome::Unavailable { reason },
         };

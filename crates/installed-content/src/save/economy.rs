@@ -182,10 +182,21 @@ pub struct Purchase {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Supply {
     /// Present system with omitted child collections is empty: 14121C6D0
-    /// emits each of these three collections precisely when its count != 0.
+    /// emits each collection precisely when its count != 0.
     pub motorization: Vec<Motorization>,
     pub disrupted: Vec<Disrupted>,
     pub foreign_homebases: Vec<ForeignHomebase>,
+    pub temp_nodes: Vec<TemporaryNode>,
+}
+
+/// `temp_nodes` (0x4CFA), emitted in array order by 14121C9EB..14121CB16.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TemporaryNode {
+    /// Repeated provinces stay separate: 1412143C0 selects the first match.
+    pub ordinal: u32,
+    pub province: i32,
+    /// Status +0x60 is saved as Boolean truth by 1424AE850 -> 1424AFDC0.
+    pub base: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -678,6 +689,24 @@ fn parse_supply(items: &[Item]) -> io::Result<Supply> {
             });
         }
     }
+    if let Some(value) = field(items, b"temp_nodes")? {
+        for (ordinal, entry) in block(value)?.iter().enumerate() {
+            if entry.key.is_some() {
+                return Err(invalid("temporary supply node must be an anonymous block"));
+            }
+            let fields = block(&entry.value)?;
+            supply.temp_nodes.push(TemporaryNode {
+                ordinal: u32::try_from(ordinal)
+                    .map_err(|_| invalid("temporary supply node ordinal exceeds u32"))?,
+                // 14121CA9B/14121CAC0 always emit province/base, including zero/no.
+                province: required_integer(fields, b"province")?,
+                base: boolean(
+                    field(fields, b"base")?
+                        .ok_or_else(|| invalid("temporary supply node lacks base"))?,
+                )?,
+            });
+        }
+    }
     if let Some(value) = field(items, b"foreign_homebase_nodes")? {
         for (ordinal, entry) in block(value)?.iter().enumerate() {
             if entry.key.is_some() {
@@ -888,8 +917,16 @@ fn parse_supply_root(items: &[Item]) -> io::Result<Option<BTreeMap<Vec<u8>, Supp
 }
 
 pub fn parse(items: &[Item]) -> io::Result<Pack> {
+    parse_with_countries(items, super::CountriesView::from_root(items)?)
+}
+
+pub(super) fn parse_with_countries(
+    items: &[Item],
+    countries: super::CountriesView<'_>,
+) -> io::Result<Pack> {
+    let country_items = countries.required()?;
     let mut countries = BTreeMap::new();
-    for item in required_block(items, b"countries")? {
+    for item in country_items {
         let tag = item
             .key
             .as_deref()

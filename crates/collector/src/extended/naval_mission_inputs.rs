@@ -22,6 +22,7 @@ use engine::{
     Memory, ccountry, cfleet, creference_registry, cstrategic_navy_manager, cweather_manager,
     modifier_accumulator::{self as accumulator, Value},
     naval_mission_inputs::{self as inputs, COUNTRY_KEYS, MISSION_KINDS, Operands},
+    transport_ledger_observation as transport_native,
     walk::Outcome,
 };
 use replay::{
@@ -50,7 +51,7 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
 /// Indices of the `naval_missions` sliced family's tables in [`TABLES`].
 pub(crate) const SLICED: [usize; 2] = [2, 3];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     task_forces: usize,
     headquarters: usize,
@@ -59,29 +60,102 @@ pub struct Capacities {
     ledgers: usize,
     /// The ledgers' registrations.
     entries: usize,
+    receivers: usize,
     /// Country rows and the walk's named-country scratch (up to three per task force).
     countries: usize,
     commanders: usize,
     hubs: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        // Starting sizes only: every buffer grows to the live demand off the capture.
-        Self {
-            task_forces: 512,
-            headquarters: 256,
-            census: 2048,
-            ledgers: 1024,
-            entries: 4096,
-            countries: 256,
-            commanders: 512,
-            hubs: 512,
-        }
-    }
-}
-
 impl Capacities {
+    /// Native attach/cadence demand; no sampled values or retry witness.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        use engine::{cpdx_array::Array, ctask_force};
+        let countries = ccountry::Reader::new(memory, base, state)?;
+        let mut tasks = 0_usize;
+        let mut selected = 0_usize;
+        let mut headquarters = 0_usize;
+        cfleet::visit_task_forces(memory, base, &countries, |event| {
+            let cfleet::Visit::TaskForce(visit, _) = event else {
+                return Ok(());
+            };
+            tasks = tasks
+                .checked_add(1)
+                .ok_or("naval mission census demand overflow")?;
+            if MISSION_KINDS.contains(&visit.kind) {
+                selected = selected
+                    .checked_add(1)
+                    .ok_or("naval mission row demand overflow")?;
+                // CUnit::CalcStat@140C296B0 reaches every attached HQ occurrence.
+                let attached = visit
+                    .task
+                    .checked_add(ctask_force::ATTACHED_HEADQUARTERS)
+                    .and_then(|at| Array::read(memory, at, 8))
+                    .ok_or("task-force headquarters sizing header unreadable")?;
+                headquarters = headquarters
+                    .checked_add(attached.count as usize)
+                    .ok_or("naval mission HQ demand overflow")?;
+            }
+            Ok(())
+        })?;
+        self.census = self.census.max(tasks);
+        self.task_forces = self.task_forces.max(selected);
+        self.headquarters = self.headquarters.max(headquarters);
+        self.countries = self
+            .countries
+            .max(countries.count().saturating_sub(1) as usize);
+        self.commanders = self.commanders.max(
+            selected
+                .checked_add(
+                    headquarters
+                        .checked_mul(4)
+                        .ok_or("naval mission commander sizing overflow")?,
+                )
+                .ok_or("naval mission commander sizing overflow")?,
+        );
+        let mut ledgers = 0_usize;
+        let mut entries = 0_usize;
+        let mut hubs = 0_usize;
+        for slot in 1..countries.count() {
+            let Some(owner) = countries.at(slot)? else {
+                continue;
+            };
+            let navy = cstrategic_navy_manager::navy(memory, base, state, owner)?;
+            inputs::ledger_regions(memory, navy, |_, ledger| {
+                ledgers = ledgers
+                    .checked_add(1)
+                    .ok_or("naval mission ledger sizing overflow")?;
+                entries = entries
+                    .checked_add(ledger.count as usize)
+                    .ok_or("naval mission occurrence sizing overflow")?;
+                Ok(())
+            })?;
+            let count = inputs::navy_hubs(memory, navy, &mut [])?;
+            hubs = hubs
+                .checked_add(count)
+                .ok_or("naval mission hub sizing overflow")?;
+        }
+        self.ledgers = self.ledgers.max(ledgers);
+        self.entries = self.entries.max(entries);
+        self.receivers = self.receivers.max(entries);
+        self.hubs = self.hubs.max(hubs);
+        Ok(())
+    }
+
+    pub(crate) fn raise_for_transport(
+        &mut self,
+        demand: super::transport_mission_shared::Capacities,
+    ) {
+        self.ledgers = self.ledgers.max(demand.ledgers);
+        self.entries = self.entries.max(demand.occurrences);
+        self.receivers = self.receivers.max(demand.receivers);
+    }
+
     /// A family row per country slot at most. Never lowers.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         self.countries = self.countries.max(crate::country_scale::rows(slots, 1));
@@ -104,6 +178,8 @@ struct TaskForce {
 struct Member {
     task: usize,
     id: u64,
+    mission_header: Option<Result<[u8; 16], &'static str>>,
+    mission_owner: Option<Result<u32, &'static str>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -133,6 +209,7 @@ struct CommanderRow {
 }
 
 pub struct Captured {
+    growing: bool,
     task_forces: CaptureRows<TaskForce>,
     headquarters: Arena<u64>,
     census: Arena<Member>,
@@ -140,6 +217,8 @@ pub struct Captured {
     entries: Arena<u64>,
     /// One ledger's mission pointers; as long as the registration arena.
     scratch: Vec<usize>,
+    nullable: Vec<u64>,
+    pub(crate) transport: super::transport_receivers::Captured,
     countries: CaptureRows<CountryRow>,
     hubs: Arena<u32>,
     commanders: CaptureRows<CommanderRow>,
@@ -222,12 +301,15 @@ impl Captured {
     fn build(capacity: &Capacities, storage: bool) -> Self {
         let size = |count| if storage { count } else { 0 };
         Self {
+            growing: false,
             task_forces: CaptureRows::new(size(capacity.task_forces)),
             headquarters: Arena::new(size(capacity.headquarters)),
             census: Arena::new(size(capacity.census)),
             ledgers: CaptureRows::new(size(capacity.ledgers)),
             entries: Arena::new(size(capacity.entries)),
             scratch: owned_vec(filled(size(capacity.entries), 0)),
+            nullable: owned_vec(filled(size(capacity.entries), 0)),
+            transport: super::transport_receivers::Captured::new(size(capacity.receivers)),
             countries: CaptureRows::new(size(capacity.countries)),
             hubs: Arena::new(size(capacity.hubs)),
             commanders: CaptureRows::new(size(capacity.commanders)),
@@ -260,6 +342,7 @@ impl Captured {
         self.task_forces.reset();
         self.headquarters.reset();
         self.census.reset();
+        self.transport.reset();
         self.ledgers.reset();
         self.entries.reset();
         self.countries.reset();
@@ -276,6 +359,8 @@ impl Captured {
             + self.ledgers.allocated_bytes()
             + self.entries.allocated_bytes()
             + self.scratch.capacity() * size_of::<usize>()
+            + self.nullable.capacity() * size_of::<u64>()
+            + self.transport.allocated_bytes()
             + self.countries.allocated_bytes()
             + self.hubs.allocated_bytes()
             + self.commanders.allocated_bytes()
@@ -304,6 +389,15 @@ impl Captured {
         {
             return;
         }
+        if self.nullable.len() < capacity.entries
+            && resize_default(&mut self.nullable, capacity.entries).is_err()
+        {
+            return;
+        }
+        // A short memo sees only the first missing receiver in each ledger.
+        // The original registration count bounds every mission and receiver.
+        grow_capacity(&mut capacity.receivers, self.entries.required);
+        self.transport.grow(&mut capacity.receivers);
         self.countries.grow(&mut capacity.countries);
         self.hubs.grow(&mut capacity.hubs);
         self.commanders.grow(&mut capacity.commanders);
@@ -344,10 +438,36 @@ impl Captured {
         self.countries.fail(outcome(2));
         self.commanders.fail(outcome(3));
         self.selection.reset(hour, force_full);
+        self.transport.retire();
+        self.census.first.fill(Member::default());
+        self.scratch.fill(0);
     }
 
     /// One hour's read. Every table is refreshed every hour; the sliced tables read the
     /// countries the hour and, with a store, the changed fingerprints select.
+    pub fn capture_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        fingerprints: Option<&mut SliceFingerprints>,
+    ) -> [u64; N] {
+        self.capture_impl(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints,
+            None,
+            None,
+            true,
+        )
+    }
+
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -357,15 +477,162 @@ impl Captured {
         force_full: bool,
         fingerprints: Option<&mut SliceFingerprints>,
     ) -> [u64; N] {
+        self.capture_impl(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints,
+            None,
+            None,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_with_transport_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        fingerprints: Option<&mut SliceFingerprints>,
+        holder: &mut super::country_naval_movement_inputs::Captured,
+        shared: &mut super::transport_mission_shared::Shared,
+    ) -> [u64; N] {
+        shared.begin_growing(hour, holder.physical_count());
+        let started = qpc();
+        // One original manager selection belongs to this entire mission loan.
+        // Failed selectors/headers cannot be retried by the strict borrower.
+        let weather;
+        {
+            let _reads = crate::read_accounting::table(TableId::ReservedCountryNaming);
+            weather = cweather_manager::Reader::new(memory, base, game_state);
+            shared.capture_naval_search_with_weather(
+                memory,
+                base,
+                game_state,
+                weather.as_ref().map_err(|reason| *reason),
+            );
+        }
+        let graph_ticks = elapsed(started);
+        let mut ticks = self.capture_impl(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints,
+            Some((holder, &mut *shared)),
+            Some(weather.as_ref().map_err(|reason| *reason)),
+            true,
+        );
+        shared.finish_weather_union();
+        ticks[1] += graph_ticks;
+        // Receiver certificates alone continue into the original counter pass.
+        // Ledger pointers and original headers have no later consumer.
+        self.census.first.fill(Member::default());
+        self.scratch.fill(0);
+        ticks
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_with_transport(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        fingerprints: Option<&mut SliceFingerprints>,
+        holder: &mut super::country_naval_movement_inputs::Captured,
+        shared: &mut super::transport_mission_shared::Shared,
+    ) -> [u64; N] {
+        shared.begin(hour, holder.physical_count());
+        let started = qpc();
+        // One original manager selection belongs to this entire mission loan.
+        // Failed selectors/headers cannot be retried by the strict borrower.
+        let weather;
+        {
+            let _reads = crate::read_accounting::table(TableId::ReservedCountryNaming);
+            weather = cweather_manager::Reader::new(memory, base, game_state);
+            shared.capture_naval_search_with_weather(
+                memory,
+                base,
+                game_state,
+                weather.as_ref().map_err(|reason| *reason),
+            );
+        }
+        let graph_ticks = elapsed(started);
+        let mut ticks = self.capture_impl(
+            memory,
+            base,
+            game_state,
+            hour,
+            force_full,
+            fingerprints,
+            Some((holder, &mut *shared)),
+            Some(weather.as_ref().map_err(|reason| *reason)),
+            false,
+        );
+        shared.finish_weather_union();
+        ticks[1] += graph_ticks;
+        // Receiver certificates alone continue into the original counter pass.
+        // Ledger pointers and original headers have no later consumer.
+        self.census.first.fill(Member::default());
+        self.scratch.fill(0);
+        ticks
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_impl<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        fingerprints: Option<&mut SliceFingerprints>,
+        mut transport: Option<(
+            &mut super::country_naval_movement_inputs::Captured,
+            &mut super::transport_mission_shared::Shared,
+        )>,
+        weather: Option<Result<&cweather_manager::Reader<'_, M>, &'static str>>,
+        growing: bool,
+    ) -> [u64; N] {
         self.reset();
+        self.growing = growing;
         self.selection.reset(hour, force_full);
         let mut ticks = [0; N];
         let started = qpc();
+        let mut original_failure = None;
         let walked = {
             let _reads = crate::read_accounting::table(TABLES[0]);
             ccountry::Reader::new(memory, base, game_state).and_then(|countries| {
-                self.task_forces.outcome = self.walk(memory, base, &countries)?;
-                self.read_weather(memory, base, game_state)?;
+                let result = self.walk(memory, base, &countries).and_then(|outcome| {
+                    self.task_forces.outcome = outcome;
+                    self.read_weather(
+                        memory,
+                        base,
+                        game_state,
+                        transport.as_mut().map(|(_, shared)| {
+                            (
+                                &mut **shared,
+                                weather.unwrap_or(Err("transport original weather reader missing")),
+                            )
+                        }),
+                    )
+                });
+                if let Err(reason) = result {
+                    if transport.is_none() {
+                        return Err(reason);
+                    }
+                    original_failure = Some(reason);
+                    self.fail_all(reason);
+                }
                 Ok(countries)
             })
         };
@@ -374,13 +641,29 @@ impl Captured {
             Ok(countries) => countries,
             Err(reason) => {
                 self.fail_all(reason);
+                if let Some((_, shared)) = transport.as_mut() {
+                    shared.fail(reason);
+                }
                 return ticks;
             }
         };
         let started = qpc();
         self.ledgers.outcome = {
             let _reads = crate::read_accounting::table(TABLES[1]);
-            if self.census.required > self.census.first.len() {
+            if let Some((holder, shared)) = transport {
+                self.read_transport_ledgers(
+                    memory,
+                    base,
+                    &countries,
+                    holder,
+                    shared,
+                    original_failure,
+                )
+                .unwrap_or_else(|reason| {
+                    shared.fail(reason);
+                    Outcome::Unavailable { reason }
+                })
+            } else if self.census.required > self.census.first.len() {
                 // The growth follows the walk's demand.
                 Outcome::Unavailable {
                     reason: "naval mission ledger census truncated",
@@ -391,6 +674,9 @@ impl Captured {
             }
         };
         ticks[1] = elapsed(started);
+        if original_failure.is_some() {
+            return ticks;
+        }
         if !matches!(self.task_forces.outcome, Outcome::Rows { .. })
             || self.named.required > self.named.first.len()
         {
@@ -445,16 +731,25 @@ impl Captured {
         let headquarters = &mut self.headquarters;
         let census = &mut self.census;
         let named = &mut self.named;
-        let mut len = 0;
+        let mut len = 0_usize;
         cfleet::visit_task_forces(memory, base, countries, |event| {
             let cfleet::Visit::TaskForce(visit, _) = event else {
                 return Ok(());
             };
             census.required += 1;
+            if self.growing {
+                engine::walk::Buffer::Growing(&mut census.first).ensure(census.required)?;
+                engine::walk::Buffer::Growing(rows).ensure(
+                    len.checked_add(1)
+                        .ok_or("naval mission row demand overflow")?,
+                )?;
+            }
             if let Some(member) = census.first.get_mut(census.len) {
                 *member = Member {
                     task: visit.task,
                     id: visit.id,
+                    mission_header: None,
+                    mission_owner: None,
                 };
                 census.len += 1;
             }
@@ -470,16 +765,27 @@ impl Captured {
                 return Ok(());
             }
             let fits = rows.len() > len;
-            let row = inputs::read_task_force(
+            let mut original_header = None;
+            let mut original_owner = None;
+            let observed = inputs::read_task_force_transport_observed_buffer(
                 memory,
                 base,
                 visit,
-                if fits {
-                    &mut headquarters.first[headquarters.len..]
+                if self.growing {
+                    engine::walk::Buffer::GrowingFrom(&mut headquarters.first, headquarters.len)
+                } else if fits {
+                    engine::walk::Buffer::Fixed(&mut headquarters.first[headquarters.len..])
                 } else {
-                    &mut []
+                    engine::walk::Buffer::Fixed(&mut [])
                 },
-            )?;
+                &mut original_header,
+                &mut original_owner,
+            );
+            if let Some(member) = census.first.get_mut(census.required - 1) {
+                member.mission_header = original_header;
+                member.mission_owner = original_owner;
+            }
+            let row = observed?;
             headquarters.required = headquarters.required.saturating_add(row.headquarters);
             // Preserve raw owners even when not linked; only the family's country census
             // needs a resolved reference. Playback names the missing link when it uses it.
@@ -492,6 +798,14 @@ impl Captured {
                 .flatten()
             {
                 named.required += 1;
+                if self.growing && named.required > named.first.len() {
+                    {
+                        let additional = named.required - named.first.len();
+                        reserve(&mut named.first, additional)
+                    }
+                    .map_err(|_| "capture buffer allocation failed")?;
+                    named.first.resize(named.required, NO_COUNTRY);
+                }
                 if let Some(entry) = named.first.get_mut(named.len) {
                     *entry = country;
                     named.len += 1;
@@ -525,8 +839,16 @@ impl Captured {
         memory: &M,
         base: usize,
         game_state: usize,
+        mut original: Option<(
+            &mut super::transport_mission_shared::Shared,
+            Result<&cweather_manager::Reader<'_, M>, &'static str>,
+        )>,
     ) -> Result<(), &'static str> {
         let rows = self.task_forces.outcome.len();
+        if self.growing {
+            engine::walk::Buffer::Growing(&mut self.keys).ensure(rows)?;
+            engine::walk::Buffer::Growing(&mut self.weather).ensure(rows)?;
+        }
         let mut located = 0;
         for task_force in &self.task_forces.rows[..rows] {
             if task_force.row.region != 0 {
@@ -538,11 +860,21 @@ impl Captured {
             return Ok(());
         }
         let regions = distinct(&mut self.keys[..located], |key| key);
-        let weather = cweather_manager::Reader::new(memory, base, game_state)?;
+        let standalone;
+        let weather = if let Some((_, weather)) = &original {
+            *weather
+        } else {
+            standalone = cweather_manager::Reader::new(memory, base, game_state);
+            standalone.as_ref().map_err(|reason| *reason)
+        };
         for index in 0..regions {
             let region = self.keys[index] as u32;
             let mut values = [Value::default(); 4];
-            inputs::region_weather(memory, &weather, region, &mut values)?;
+            if let Some((shared, original_weather)) = original.as_mut() {
+                values = shared.original_strict_weather(memory, base, region, *original_weather)?;
+            } else {
+                inputs::region_weather(memory, weather?, region, &mut values)?;
+            }
             self.weather[index] = (region, values);
         }
         let known = &self.weather[..regions];
@@ -569,7 +901,7 @@ impl Captured {
     ) -> Result<Outcome, &'static str> {
         let census = &mut self.census.first[..self.census.len];
         census.sort_unstable_by_key(|member| member.task);
-        let mut len = 0;
+        let mut len = 0_usize;
         let mut unread = 0_u32;
         for slot in 1..countries.count() {
             let Some(owner) = countries.at(slot)? else {
@@ -578,6 +910,20 @@ impl Captured {
             let pointer = cstrategic_navy_manager::navy(memory, base, game_state, owner)?;
             let mut map = None;
             inputs::ledger_regions(memory, pointer, |region, ledger| {
+                if self.growing {
+                    engine::walk::Buffer::Growing(&mut self.scratch)
+                        .ensure(ledger.count as usize)?;
+                    engine::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
+                        len.checked_add(1)
+                            .ok_or("naval mission ledger row demand overflow")?,
+                    )?;
+                    engine::walk::Buffer::Growing(&mut self.entries.first).ensure(
+                        self.entries
+                            .len
+                            .checked_add(ledger.count as usize)
+                            .ok_or("naval mission ledger demand overflow")?,
+                    )?;
+                }
                 let count = inputs::ledger(memory, ledger, &mut self.scratch)?;
                 self.entries.required = self.entries.required.saturating_add(count);
                 if len == self.ledgers.rows.len()
@@ -631,6 +977,262 @@ impl Captured {
             })?;
         }
         Ok(finish(len, unread))
+    }
+
+    /// The SAME original ledger pass serves the strict icon rows and native
+    /// nullable transport occurrences. Physical manager order and controls are
+    /// borrowed from country_counters; no owner/navy getter or second pass.
+    fn read_transport_ledgers<M: Memory>(
+        &mut self,
+        memory: &M,
+        base: usize,
+        countries: &ccountry::Reader<'_, M>,
+        holder: &mut super::country_naval_movement_inputs::Captured,
+        shared: &mut super::transport_mission_shared::Shared,
+        original_failure: Option<&'static str>,
+    ) -> Result<Outcome, &'static str> {
+        let count = holder.physical_count()?;
+        let original_attempts_complete = self.census.required <= self.census.first.len();
+        let census = &mut self.census.first[..self.census.len];
+        census.sort_unstable_by_key(|member| member.task);
+        let mut strict_error = original_failure
+            .or((!original_attempts_complete).then_some("naval mission ledger census truncated"));
+        let mut len = 0_usize;
+        let mut unread = 0_u32;
+        let (mut observer, receiver_error) = match if self.growing {
+            self.transport.observer_growing(memory, base)
+        } else {
+            self.transport.observer(memory, base)
+        } {
+            Ok(observer) => (Some(observer), None),
+            Err(reason) => {
+                shared.refuse_receivers(reason);
+                (None, Some(reason))
+            }
+        };
+        for index in 0..count {
+            let slot = u32::try_from(index).map_err(|_| "transport physical navy slot overflow")?;
+            let owner = if strict_error.is_some() || slot == 0 || slot >= countries.count() {
+                None
+            } else {
+                match countries.at(slot) {
+                    Ok(owner) => owner,
+                    Err(reason) => {
+                        strict_error.get_or_insert(reason);
+                        None
+                    }
+                }
+            };
+            let original = holder.borrow_navy(slot).and_then(|inputs| {
+                let strict_owner = owner.map(|owner| {
+                    inputs.observe_owner(memory).and_then(|raw| {
+                        if countries.resolve(raw)?.pointer != owner.pointer {
+                            return Err("navy identity or owner mismatch");
+                        }
+                        Ok(())
+                    })
+                });
+                Ok((
+                    inputs.present,
+                    inputs.ledger_navy()?,
+                    inputs.take_ledger_regions(),
+                    inputs.take_access_modes(),
+                    strict_owner,
+                ))
+            });
+            let (present, pointer, outer, access_modes, strict_owner) = match original {
+                Ok(original) => original,
+                Err(reason) => {
+                    shared.navy(slot, false, Err(reason));
+                    if owner.is_some() {
+                        strict_error.get_or_insert(reason);
+                    }
+                    continue;
+                }
+            };
+            if let Some(Err(reason)) = strict_owner {
+                strict_error.get_or_insert(reason);
+            }
+            shared.navy(slot, present, outer.map(|outer| outer.count));
+            shared.access_modes(memory, access_modes);
+            let outer = match outer {
+                Ok(outer) => outer,
+                Err(reason) => {
+                    shared.refuse_ledgers(reason);
+                    if owner.is_some() {
+                        strict_error.get_or_insert(reason);
+                    }
+                    continue;
+                }
+            };
+            let mut presence = None;
+            let result = inputs::ledger_regions_in(memory, outer, |region, ledger| {
+                if self.growing {
+                    engine::walk::Buffer::Growing(&mut self.scratch)
+                        .ensure(ledger.count as usize)?;
+                    engine::walk::Buffer::Growing(&mut self.nullable)
+                        .ensure(ledger.count as usize)?;
+                    engine::walk::Buffer::Growing(&mut self.ledgers.rows).ensure(
+                        len.checked_add(1)
+                            .ok_or("naval mission ledger row demand overflow")?,
+                    )?;
+                    engine::walk::Buffer::Growing(&mut self.entries.first).ensure(
+                        self.entries
+                            .len
+                            .checked_add(ledger.count as usize)
+                            .ok_or("naval mission ledger demand overflow")?,
+                    )?;
+                }
+                let observation =
+                    transport_native::observe_ledger(memory, ledger, &mut self.scratch);
+                let required = observation.required;
+                self.entries.required = self.entries.required.saturating_add(required);
+                let original_nullable = observation.nullable.and_then(|count| {
+                    let output = self
+                        .nullable
+                        .get_mut(..count)
+                        .ok_or("transport occurrence scratch arena exhausted")?;
+                    for (at, &mission) in self.scratch[..count].iter().enumerate() {
+                        let original_header = mission
+                            .checked_sub(engine::ctask_force::NAVAL_MISSION)
+                            .and_then(|task| {
+                                census
+                                    .binary_search_by_key(&task, |member| member.task)
+                                    .ok()
+                            })
+                            .map(|index| census[index].mission_header)
+                            .unwrap_or_else(|| {
+                                (!original_attempts_complete).then_some(Err(
+                                    "transport original mission header attempt coverage exhausted",
+                                ))
+                            });
+                        let original_owner = mission
+                            .checked_sub(engine::ctask_force::NAVAL_MISSION)
+                            .and_then(|task| {
+                                census
+                                    .binary_search_by_key(&task, |member| member.task)
+                                    .ok()
+                            })
+                            .map(|index| census[index].mission_owner)
+                            .unwrap_or_else(|| {
+                                (!original_attempts_complete).then_some(Err(
+                                    "transport original mission owner attempt coverage exhausted",
+                                ))
+                            });
+                        output[at] = match observer.as_mut() {
+                            Some(observer) => observer.observe_transport(
+                                mission,
+                                original_header,
+                                original_owner,
+                            )?,
+                            None if mission == 0 => 0,
+                            None => {
+                                return Err(receiver_error
+                                    .unwrap_or("transport receiver observer unavailable"));
+                            }
+                        };
+                    }
+                    Ok(count)
+                });
+                shared.ledger(
+                    region,
+                    required,
+                    original_nullable.map(|count| &self.nullable[..count]),
+                );
+                // An independent nullable refusal cannot change the original
+                // strict icon result, its row capacities or first failure.
+                if strict_error.is_none()
+                    && let Some(owner) = owner
+                {
+                    match observation.strict {
+                        Err(reason) => {
+                            strict_error = Some(reason);
+                        }
+                        Ok(count) => {
+                            if len == self.ledgers.rows.len()
+                                || count > self.entries.first.len().saturating_sub(self.entries.len)
+                            {
+                                unread = unread.saturating_add(1);
+                            } else {
+                                for (at, &mission) in self.scratch[..count].iter().enumerate() {
+                                    let member = mission
+                                        .checked_sub(engine::ctask_force::NAVAL_MISSION)
+                                        .and_then(|task| {
+                                            census
+                                                .binary_search_by_key(&task, |member| member.task)
+                                                .ok()
+                                        })
+                                        .map(|index| census[index]);
+                                    let Some(member) = member else {
+                                        strict_error = Some(
+                                            "navy ledger names a task force outside the fleet census",
+                                        );
+                                        break;
+                                    };
+                                    self.entries.first[self.entries.len + at] = member.id;
+                                }
+                                if strict_error.is_none() {
+                                    let map = match presence {
+                                        Some(map) => Ok(map),
+                                        None => inputs::PresenceMap::read(memory, pointer)
+                                            .inspect(|map| presence = Some(*map)),
+                                    };
+                                    let counted = map.and_then(|map| map.presence(memory, region));
+                                    match counted {
+                                        Ok(counted) => {
+                                            self.ledgers.rows[len] = LedgerRow {
+                                                owner: owner.id,
+                                                region,
+                                                first: self.entries.len,
+                                                count,
+                                                ring: counted.is_some(),
+                                                counted: counted.unwrap_or_default(),
+                                            };
+                                            self.entries.len += count;
+                                            len += 1;
+                                        }
+                                        Err(reason) => strict_error = Some(reason),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            });
+            if let Err(reason) = result {
+                shared.refuse_ledgers(reason);
+                if owner.is_some() {
+                    strict_error.get_or_insert(reason);
+                }
+            }
+        }
+        shared.retain_access_demand(holder.known_access_modes());
+        // The original icon pass required a navy for every positive canonical
+        // country. Preserve its first failure before checking missing tail
+        // slots; native null/empty managers remain valid for transport alone.
+        if strict_error.is_none() {
+            for slot in (u32::try_from(count).unwrap_or(u32::MAX).max(1))..countries.count() {
+                match countries.at(slot) {
+                    Ok(Some(_)) => {
+                        strict_error = Some("navy manager country outside array");
+                        break;
+                    }
+                    Err(reason) => {
+                        strict_error = Some(reason);
+                        break;
+                    }
+                    Ok(None) => {}
+                }
+            }
+        }
+        let required = observer.as_ref().map_or(0, |observer| observer.required());
+        drop(observer);
+        self.transport.finish_identities(required);
+        match strict_error {
+            Some(reason) => Ok(Outcome::Unavailable { reason }),
+            None => Ok(finish(len, unread)),
+        }
     }
 
     /// The rows of one roster country, contiguous in walk order.
@@ -716,12 +1318,26 @@ impl Captured {
         country: ccountry::Country,
         (len, unread): &mut (usize, u32),
     ) -> Result<(), &'static str> {
+        if self.growing {
+            engine::walk::Buffer::Growing(&mut self.countries.rows).ensure(
+                len.checked_add(1)
+                    .ok_or("naval mission country row demand overflow")?,
+            )?;
+        }
         let Some(row) = self.countries.rows.get_mut(*len) else {
             *unread = unread.saturating_add(1);
             return Ok(());
         };
         let navy = cstrategic_navy_manager::navy(memory, base, game_state, country)?;
-        let count = inputs::navy_hubs(memory, navy, &mut self.hubs.first[self.hubs.len..])?;
+        let count = inputs::navy_hubs_buffer(
+            memory,
+            navy,
+            if self.growing {
+                engine::walk::Buffer::GrowingFrom(&mut self.hubs.first, self.hubs.len)
+            } else {
+                engine::walk::Buffer::Fixed(&mut self.hubs.first[self.hubs.len..])
+            },
+        )?;
         self.hubs.required = self.hubs.required.saturating_add(count);
         if self.hubs.len + count > self.hubs.first.len() {
             *unread = unread.saturating_add(1);
@@ -747,6 +1363,25 @@ impl Captured {
         resolve: inputs::Resolve<'_>,
         (len, unread): &mut (usize, u32),
     ) -> Result<(), &'static str> {
+        if self.growing {
+            let bound = self.task_forces.outcome.len().max(self.headquarters.len);
+            engine::walk::Buffer::Growing(&mut self.keys).ensure(bound)?;
+            let additional = self
+                .task_forces
+                .outcome
+                .len()
+                .checked_add(
+                    self.headquarters
+                        .len
+                        .checked_mul(4)
+                        .ok_or("naval mission commander demand overflow")?,
+                )
+                .ok_or("naval mission commander demand overflow")?;
+            engine::walk::Buffer::Growing(&mut self.commanders.rows).ensure(
+                len.checked_add(additional)
+                    .ok_or("naval mission commander row demand overflow")?,
+            )?;
+        }
         let owned = Self::owned(Self::task_forces(&self.task_forces), slot);
         let headquarters = &self.headquarters.first;
         let characters = |task_force: &TaskForce| {

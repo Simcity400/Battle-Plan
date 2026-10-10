@@ -132,6 +132,10 @@ pub(super) fn recorded_table_counts(
 
 #[derive(Debug, Default)]
 pub(super) struct Report {
+    /// Admitted whole-save occurrences, preserving physical order and repeats.
+    /// Ordinary country censuses use only their authenticated canonical owners.
+    pub(super) country_emissions: Option<Vec<installed_content::save::SavedCountryEmission>>,
+    pub(super) canonical_country_tags: Option<BTreeSet<Vec<u8>>>,
     /// Queried at output time, after all content-dependent comparisons.
     pub(super) content_reads: Option<installed_content::content::UncoveredReads>,
     /// Positive game-thread costs identify refresh groups actually walked,
@@ -198,6 +202,54 @@ pub(super) struct Report {
 }
 
 impl Report {
+    pub(super) fn record_country_emissions(&mut self, save: &installed_content::save::Save) {
+        self.country_emissions.clone_from(&save.country_emissions);
+        self.canonical_country_tags = save.country_emissions.as_ref().map(|emissions| {
+            emissions
+                .iter()
+                .filter(|emission| {
+                    matches!(
+                        emission.identity.actual,
+                        installed_content::save::ActualCountry::Canonical(_)
+                    )
+                })
+                .map(|emission| emission.identity.tag.clone())
+                .collect()
+        });
+    }
+
+    /// Return owned iteration storage so comparisons may mutate the report
+    /// while borrowing the save. Without admission, retain the strict full census.
+    pub(super) fn canonical_countries<'a, T>(
+        &self,
+        countries: &'a BTreeMap<Vec<u8>, T>,
+    ) -> Vec<(&'a Vec<u8>, &'a T)> {
+        countries
+            .iter()
+            .filter(|(tag, _)| {
+                self.canonical_country_tags
+                    .as_ref()
+                    .is_none_or(|tags| tags.contains(tag.as_slice()))
+            })
+            .collect()
+    }
+
+    pub(super) fn refuse_uncaptured_reserved_operands(&mut self) {
+        let tags: BTreeSet<_> = self
+            .country_emissions
+            .iter()
+            .flatten()
+            .filter(|emission| emission.identity.actual == installed_content::save::ActualCountry::Reserved)
+            .map(|emission| emission.identity.tag.clone())
+            .collect();
+        for tag in tags {
+            self.failed_comparisons.insert(
+                format!("reserved country {} uncaptured save operands", String::from_utf8_lossy(&tag)),
+                "the admitted reserved country has no canonical country capture; original_tag, positional intel and certified land theatres are compared separately, but its other saved country operands remain unverified".into(),
+            );
+        }
+    }
+
     pub(super) fn content_warning(&self) -> Option<String> {
         self.content_reads
             .as_ref()

@@ -219,6 +219,67 @@ fn division_dependencies_and_later_pool_headers_are_preserved() {
     );
 }
 
+#[test]
+fn filtered_worker_division_equipment_grows_for_mod_pools_without_roster_growth() {
+    const COUNTRIES: usize = 5_000;
+    const DATA: usize = 0xc000;
+    let sources: Vec<_> = (0..COUNTRIES)
+        .map(|index| DivisionSource {
+            pointer: 0x3000,
+            division: ((index as u64 + 1) << 32) | 0x1269,
+            country: index as u32 + 1,
+            ..Default::default()
+        })
+        .collect();
+    let pool = sources[0].pointer + carmy::EQUIPMENT_POOL;
+    let mut bytes = stockpile_fixture();
+    bytes.resize(DATA + 17 * equipment_entry::STRIDE, 0);
+    p64(&mut bytes, pool, VTABLE_RVA as u64);
+    for ordinal in 0..17 {
+        p64(&mut bytes, DATA + ordinal * equipment_entry::STRIDE, 0xa000);
+        p64(
+            &mut bytes,
+            DATA + ordinal * equipment_entry::STRIDE + 8,
+            ordinal as u64,
+        );
+    }
+    let mut rows = vec![DivisionRow::default(); 1];
+    for entries in [3, 17] {
+        array(&mut bytes, pool + ITEMS, DATA, entries);
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            walk_divisions_where_growing(&memory, 0, &sources, |_| true, &mut rows),
+            Outcome::Rows {
+                len: COUNTRIES * entries as usize
+            }
+        );
+        let last = &rows[COUNTRIES * entries as usize - 1];
+        assert_eq!(
+            (last.country, last.ordinal),
+            (COUNTRIES as u32, entries - 1)
+        );
+    }
+    let memory = SliceMemory {
+        base: 0,
+        bytes: &bytes,
+    };
+    assert!(
+        matches!(walk_divisions_where(&memory, 0, &sources, |_| true, &mut rows[..1]),
+        Outcome::Truncated { unread_rows, .. } if unread_rows == (COUNTRIES * 17 - 1) as u32)
+    );
+    let rejected = DivisionSource {
+        pointer: usize::MAX,
+        ..Default::default()
+    };
+    assert_eq!(
+        walk_divisions_where_growing(&memory, 0, &[rejected], |_| false, &mut rows),
+        Outcome::Rows { len: 0 }
+    );
+}
+
 /// Deterministic cost proxy for a division's equipment bank. The previous
 /// shape read each entry's sixteen bytes and then its variant identity in
 /// two separate guarded copies, so the live 15,965-row table cost about

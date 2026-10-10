@@ -31,9 +31,9 @@ fn timed_ideas_keep_stored_days_order_and_live_demand_at_5000_countries() {
             bytes: 50_000
         })
     );
-    let mut rows = vec![TimedIdeaRow::default(); 10_000];
-    let mut tokens = vec![0; 50_000];
-    let walk = walk_timed_ideas(
+    let mut rows = Vec::new();
+    let mut tokens = Vec::new();
+    let walk = walk_timed_ideas_growing(
         &world.memory(),
         BASE,
         world.game_state(),
@@ -41,7 +41,7 @@ fn timed_ideas_keep_stored_days_order_and_live_demand_at_5000_countries() {
         &mut tokens,
     );
     assert_eq!(walk.outcome, Outcome::Rows { len: 10_000 });
-    for (index, row) in rows.iter().enumerate() {
+    for (index, row) in rows[..10_000].iter().enumerate() {
         assert_eq!(
             (row.country, row.ordinal),
             (index as u32 / 2 + 1, index as u32 % 2)
@@ -67,6 +67,60 @@ fn timed_ideas_keep_stored_days_order_and_live_demand_at_5000_countries() {
         }
     );
     assert_eq!(short.required_bytes, 50_000);
+    for country in 1..=5_000 {
+        let status = crate::read::<u64>(
+            &world.memory(),
+            world.object(country) + ccountry::POLITICAL_STATUS,
+        )
+        .unwrap() as usize;
+        let old = crate::read::<u64>(&world.memory(), status + TIMED_IDEAS).unwrap() as usize;
+        let idea = crate::read::<u64>(&world.memory(), old + 8).unwrap();
+        let entries = world.alloc(10 * TIMED_IDEA_STRIDE);
+        world.array(status + TIMED_IDEAS, entries, 10);
+        for ordinal in 0..10 {
+            let entry = entries + ordinal * TIMED_IDEA_STRIDE;
+            world.u64(entry, (BASE + TIMED_IDEA_VTABLE_RVA) as u64);
+            world.u64(entry + 8, idea);
+            world.put(entry + 16, &(-(ordinal as i32)).to_le_bytes());
+        }
+    }
+    assert!(rows.len() < 50_000);
+    assert!(tokens.len() < 250_000);
+    assert_eq!(
+        walk_timed_ideas(
+            &world.memory(),
+            BASE,
+            world.game_state(),
+            &mut rows[..10_000],
+            &mut tokens[..50_000]
+        )
+        .outcome,
+        Outcome::Truncated {
+            len: 10_000,
+            unread_rows: 40_000
+        }
+    );
+    let later = walk_timed_ideas_growing(
+        &world.memory(),
+        BASE,
+        world.game_state(),
+        &mut rows,
+        &mut tokens,
+    );
+    assert_eq!(later.outcome, Outcome::Rows { len: 50_000 });
+    assert_eq!(later.bytes_len, 250_000);
+    assert_eq!(later.required_bytes, 250_000);
+    for (index, row) in rows[..50_000].iter().enumerate() {
+        assert_eq!(
+            (row.country, row.ordinal),
+            (index as u32 / 10 + 1, index as u32 % 10)
+        );
+        assert_eq!(row.days, -(index as i32 % 10));
+        assert_eq!(
+            &tokens[row.token_start..row.token_start + row.token_len],
+            b"idea\xff"
+        );
+    }
     let status = crate::read::<u64>(
         &world.memory(),
         world.object(1) + ccountry::POLITICAL_STATUS,

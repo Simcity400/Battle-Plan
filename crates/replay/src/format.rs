@@ -158,6 +158,124 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_refusal_sets_are_exact_for_every_published_format() {
+        assert_eq!(FORMAT_VERSION, 101);
+        for version in PROVEN_FROM..=FORMAT_VERSION {
+            if version == RETIRED_FORMAT {
+                assert!(FormatVersion::read(version).is_err());
+                continue;
+            }
+            let format = FormatVersion::read(version).unwrap();
+            let mut expected = Vec::new();
+            if version <= 100 {
+                expected.extend([
+                    TableId::ResearchTechnologies,
+                    TableId::TechnologyDefinitions,
+                ]);
+            }
+            if version <= 99 {
+                expected.extend([
+                    TableId::CountryProductionModifiers,
+                    TableId::ProductionLineModifiers,
+                    TableId::CountryExperienceGains,
+                    TableId::CountryGameScoreInputs,
+                    TableId::AirWingGameScoreStats,
+                    TableId::GameScoreMultipliers,
+                    TableId::AgencyUpgradeLevels,
+                    TableId::OperationCompletions,
+                    TableId::CountryPowerDaily,
+                    TableId::CountryPowerChanges,
+                    TableId::CountryPowerDailyCosts,
+                    TableId::GovernmentChanges,
+                    TableId::PoliticsCaptureCoverage,
+                    TableId::WarOwnedRelations,
+                    TableId::WarRelationGoals,
+                    TableId::WarOverviewCountries,
+                    TableId::WarNameRules,
+                    TableId::PeaceSettlements,
+                    TableId::PeaceBids,
+                    TableId::DivisionEquipmentDeletions,
+                    TableId::DivisionLandInputs,
+                    TableId::LandCombatResults,
+                    TableId::DestroyedDivisions,
+                    TableId::LandEventCoverage,
+                    TableId::NavalResultSources,
+                    TableId::AirLossEvents,
+                    TableId::BuildingBombingDamage,
+                    TableId::AirDailyRoster,
+                    TableId::EventFeedHistory,
+                    TableId::RocketProductionOutput,
+                ]);
+            }
+            if version <= 98 {
+                expected.extend([
+                    TableId::TimedIdeas,
+                    TableId::DecisionRandomItems,
+                    TableId::CapturedOperativeReferences,
+                    TableId::ReservedCountryNaming,
+                    TableId::AttritionModifierBreakdowns,
+                ]);
+            }
+            if version <= 97 {
+                expected.extend([TableId::AvailableAdvisors, TableId::OwnedWargoals]);
+            }
+            if version <= 93 {
+                expected.push(TableId::RaidTooltipOperands);
+            }
+            expected.sort_unstable_by_key(|table| table.index());
+            assert_eq!(
+                TableId::ALL
+                    .into_iter()
+                    .filter(|&table| format.table_refusal(table).is_some())
+                    .collect::<Vec<_>>(),
+                expected,
+                "format {version}",
+            );
+            for table in expected {
+                assert!(
+                    format
+                        .table_refusal(table)
+                        .unwrap()
+                        .starts_with(&format!("{table:?} ")),
+                    "format {version}, {table:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn format101_preserves_published_air_and_oracle_prefixes() {
+        for version in PROVEN_FROM..FORMAT_VERSION {
+            if version == RETIRED_FORMAT {
+                continue;
+            }
+            let format = FormatVersion::read(version).unwrap();
+            for (table, fields, gaps) in [
+                (TableId::AirNavalPatrolHistories, 2, 1),
+                (TableId::NavalBases, 5, 1),
+                (
+                    TableId::ConstructionLineOutput,
+                    if version == 100 { 14 } else { 13 },
+                    if version == 100 { 1 } else { 2 },
+                ),
+            ] {
+                assert!(
+                    format.table_refusal(table).is_none(),
+                    "format {version}, {table:?}"
+                );
+                assert_eq!(format.fields(table), fields, "format {version}, {table:?}");
+                assert_eq!(
+                    format.field_gaps(table).count(),
+                    gaps,
+                    "format {version}, {table:?}"
+                );
+                assert_eq!(FormatVersion::CURRENT.fields(table), table.field_count());
+                assert_eq!(FormatVersion::CURRENT.field_gaps(table).count(), 0);
+            }
+        }
+    }
+
+    #[test]
     fn compatibility_meaning_change_refuses_same_layout() {
         let format = FormatVersion::read(93).unwrap();
         let table = TableId::RaidTooltipOperands;
@@ -190,7 +308,7 @@ mod tests {
     fn game_score_catalog_introductions_keep_previous_tables_readable() {
         for version in [
             crate::rows::compatibility::RECORDER_INPUTS_FORMAT - 1,
-            FORMAT_VERSION - 1,
+            crate::rows::compatibility::GAME_SCORE_FORMAT - 1,
         ] {
             let previous = FormatVersion::read(version).unwrap();
             assert!(
@@ -207,7 +325,8 @@ mod tests {
                 assert_eq!(
                     previous.table_refusal(table).unwrap(),
                     format!(
-                        "{table:?} not recorded at format {version} (introduced at format {FORMAT_VERSION})"
+                        "{table:?} not recorded at format {version} (introduced at format {})",
+                        crate::rows::compatibility::GAME_SCORE_FORMAT,
                     ),
                 );
                 assert!(FormatVersion::CURRENT.table_refusal(table).is_none());

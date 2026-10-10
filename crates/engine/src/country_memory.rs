@@ -11,14 +11,6 @@ use std::{cell::RefCell, sync::Arc};
 use crate::{Memory, ccountry, cpdx_array::Array};
 
 const MAX_BYTES: usize = 32;
-const MAX_PROBES: usize = 16;
-/// Smallest filter; larger caches get four filter bits per cell so a mod-sized
-/// census (tens of thousands of countries) keeps a useful rejection rate.
-const FILTER_WORDS: usize = 256;
-/// Distinct census reads per country slot, rounded up: the pointer, vtable,
-/// identity and up to three link words, with headroom for the doubling rule.
-const READS_PER_COUNTRY: usize = 8;
-
 #[derive(Clone, Copy)]
 struct Entry {
     address: usize,
@@ -71,6 +63,7 @@ pub struct Cache {
     roster_base: usize,
     roster_game_state: usize,
     roster_arrays: [Array; 2],
+    reserved: Option<ccountry::ReservedCountryObservation>,
 }
 
 impl Cache {
@@ -118,7 +111,8 @@ impl Cache {
                 .checked_next_power_of_two()
                 .ok_or_else(crate::allocation::oom)?
         };
-        let words = (cells / 16).max(FILTER_WORDS);
+        // One rejection-filter bit per storage cell, rounded to its word width.
+        let words = cells.div_ceil(u64::BITS as usize);
         Ok(Self {
             entries: crate::allocation::boxed_slice(crate::allocation::filled(
                 cells,
@@ -126,7 +120,7 @@ impl Cache {
             )?)?,
             filter: crate::allocation::boxed_slice(crate::allocation::filled(words, 0)?)?,
             front_filter: crate::allocation::boxed_slice(crate::allocation::filled(words, 0)?)?,
-            filter_mask: words * u64::BITS as usize - 1,
+            filter_mask: (words * u64::BITS as usize).saturating_sub(1),
             lengths: 0,
             len: 0,
             observed_reads: 0,
@@ -136,6 +130,7 @@ impl Cache {
             roster_base: 0,
             roster_game_state: 0,
             roster_arrays: [Array { data: 0, count: 0 }; 2],
+            reserved: None,
         })
     }
 
@@ -153,8 +148,11 @@ impl Cache {
     /// The result never falls below `minimum`; growth stays with the caller.
     pub fn cells_for_countries(slots: usize, minimum: usize) -> usize {
         slots
-            .saturating_mul(READS_PER_COUNTRY)
-            .saturating_mul(2)
+            // 140BA6240: each slot reaches its pointer, vtable and identity,
+            // plus links for the object id, physical slot and canonical slot;
+            // the two original array headers are independent observations.
+            .saturating_mul(6)
+            .saturating_add(2)
             .max(minimum)
             .checked_next_power_of_two()
             .unwrap_or(usize::MAX)
@@ -174,6 +172,7 @@ impl Cache {
             + std::mem::size_of_val(&self.roster_base)
             + std::mem::size_of_val(&self.roster_game_state)
             + std::mem::size_of_val(&self.roster_arrays)
+            + std::mem::size_of_val(&self.reserved)
     }
 
     /// Forget every previous observation and perform one direct country census.
@@ -196,17 +195,51 @@ impl Cache {
         self.roster_len = 0;
         self.roster_base = base;
         self.roster_game_state = game_state;
+        self.reserved = None;
+        if let Some(slot) = self.roster.first_mut() {
+            *slot = None;
+        }
         let result = {
             let recording = RecordingMemory {
                 source,
                 cache: RefCell::new(&mut *self),
             };
             (|| {
-                let countries = ccountry::Reader::new(&recording, base, game_state)?;
+                let country_array = game_state
+                    .checked_add(crate::cgame_state::COUNTRIES)
+                    .and_then(|address| Array::read(&recording, address, 8))
+                    .ok_or("country array unreadable or invalid");
+                // Publish actual slot zero before unrelated links can fail.
+                // These optional reads must not poison positive seed status.
+                let root = match country_array {
+                    Ok(array) => ccountry::cached_reserved_observation(source, base, game_state)
+                        .unwrap_or_else(|| {
+                            ccountry::observe_reserved_from_array(source, base, array)
+                        }),
+                    Err(reason) => ccountry::ReservedCountryObservation::from_result(Err(reason)),
+                };
+                {
+                    let mut cache = recording.cache.borrow_mut();
+                    cache.reserved = Some(root);
+                    if let Some(slot) = cache.roster.first_mut() {
+                        *slot = root.result().ok();
+                    }
+                }
+                let country_array = country_array?;
+                let links = game_state
+                    .checked_add(crate::cgame_state::COUNTRY_LINKS)
+                    .and_then(|address| Array::read(&recording, address, 4))
+                    .ok_or("country links unreadable or invalid")?;
+                let countries = ccountry::Reader::from_arrays(
+                    &recording,
+                    base,
+                    game_state,
+                    [country_array, links],
+                )?;
                 for slot in 1..countries.count() {
                     // read_at is the same census before at's pure alias
                     // filter. Retain aliases for resolve's canonical check.
-                    let country = countries.read_at(slot)?;
+                    let country = countries.read_physical_at(slot)?;
                     if let Some(entry) = recording.cache.borrow_mut().roster.get_mut(slot as usize)
                     {
                         *entry = country;
@@ -300,7 +333,7 @@ impl Cache {
             return None;
         }
         let first = hash & (self.entries.len() - 1);
-        for probe in 0..MAX_PROBES.min(self.entries.len()) {
+        for probe in 0..self.entries.len() {
             let entry = &self.entries[(first + probe) & (self.entries.len() - 1)];
             if entry.len == 0 {
                 return None;
@@ -330,7 +363,7 @@ impl Cache {
             let hash = Self::hash(address, bytes.len());
             let first = hash & (self.entries.len() - 1);
             let mask = self.entries.len() - 1;
-            for probe in 0..MAX_PROBES.min(self.entries.len()) {
+            for probe in 0..self.entries.len() {
                 let entry = &mut self.entries[(first + probe) & mask];
                 if entry.len == 0 {
                     entry.address = address;
@@ -365,6 +398,26 @@ struct RecordingMemory<'a, M> {
 }
 
 impl<M: Memory> Memory for RecordingMemory<'_, M> {
+    fn authenticated_reserved_country(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<Result<ccountry::Country, &'static str>> {
+        self.authenticated_reserved_country_observation(base, game_state)
+            .map(ccountry::ReservedCountryObservation::result)
+    }
+
+    fn authenticated_reserved_country_observation(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<ccountry::ReservedCountryObservation> {
+        let cache = self.cache.borrow();
+        (base == cache.roster_base && game_state == cache.roster_game_state)
+            .then_some(cache.reserved)
+            .flatten()
+    }
+
     fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
         let value = self.source.read_scalar::<T>(address);
         let mut cache = self.cache.borrow_mut();
@@ -431,6 +484,25 @@ impl<M: Memory, const CACHED_BYTES: bool> CountryMemory<'_, M, CACHED_BYTES> {
 }
 
 impl<M: Memory, const CACHED_BYTES: bool> Memory for CountryMemory<'_, M, CACHED_BYTES> {
+    fn authenticated_reserved_country(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<Result<ccountry::Country, &'static str>> {
+        self.authenticated_reserved_country_observation(base, game_state)
+            .map(ccountry::ReservedCountryObservation::result)
+    }
+
+    fn authenticated_reserved_country_observation(
+        &self,
+        base: usize,
+        game_state: usize,
+    ) -> Option<ccountry::ReservedCountryObservation> {
+        (base == self.cache.roster_base && game_state == self.cache.roster_game_state)
+            .then_some(self.cache.reserved)
+            .flatten()
+    }
+
     #[inline]
     fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
         if CACHED_BYTES && let Some(entry) = self.cache.find(address, size_of::<T>()) {

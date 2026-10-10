@@ -18,6 +18,8 @@ pub use arena::{Arena, Slice};
 
 pub struct Pipeline {
     pub pipeline: wgpu::RenderPipeline,
+    label: String,
+    null_cube: Option<wgpu::TextureView>,
     /// Constant and texture layouts; the samplers are fixed per pipeline.
     layouts: [wgpu::BindGroupLayout; 2],
     samplers: wgpu::BindGroup,
@@ -655,6 +657,11 @@ impl Pipeline {
         });
         Ok(Self {
             pipeline,
+            label: format!("effect {effect:?}, technique {:?}", technique.name),
+            null_cube: textures
+                .iter()
+                .any(|(_, kind)| *kind == super::TextureKind::Cube)
+                .then(|| null_texture(device, super::TextureKind::Cube)),
             layouts: [constants, textures_layout],
             samplers,
             buffers,
@@ -706,6 +713,35 @@ impl Pipeline {
 
     /// `bindings` with the caller's lookups by `binding(slot, stage)`.
     pub fn bind_with<'a>(
+        &'a self,
+        arena: &Arena,
+        constants: impl Fn(u32) -> Option<&'a [u8]>,
+        textures: impl Fn(u32) -> Option<&'a wgpu::TextureView>,
+    ) -> Result<Bindings, String> {
+        let sampled = |key| {
+            let view = textures(key)?;
+            // load_dds@142410030 and create_texture@1423FB4F0 use only the DDS cube flag;
+            // texture_sampler_binder@1424005A0 binds that SRV without reshaping it.
+            // The native hardware GPU samples a 2D SRV through TextureCube as zero.
+            // Preserve the caller's view: a later Texture2D draw still reads its texels.
+            if let Some(zero) = &self.null_cube
+                && self
+                    .textures
+                    .iter()
+                    .any(|(slot, kind)| *slot == key && *kind == super::TextureKind::Cube)
+                && view.texture().dimension() == wgpu::TextureDimension::D2
+                && view.texture().depth_or_array_layers() == 1
+            {
+                Some(zero)
+            } else {
+                Some(view)
+            }
+        };
+        self.bind(arena, constants, sampled)
+            .map_err(|reason| format!("{}: {reason}", self.label))
+    }
+
+    fn bind<'a>(
         &self,
         arena: &Arena,
         constants: impl Fn(u32) -> Option<&'a [u8]>,
@@ -750,7 +786,7 @@ impl Pipeline {
                         })
                     })
                     .clone()?;
-                return variant.bind_with(arena, constants, textures);
+                return variant.bind(arena, constants, textures);
             }
         }
         // Compilation refuses registers past D3D11's, so both lists fit their arrays.
@@ -904,6 +940,36 @@ impl Pipeline {
         pass.set_vertex_buffer(0, draw.vertices.slice());
         pass.draw(0..draw.count, 0..1);
     }
+}
+
+/// DX11 reads explicit null SRVs as zero; WebGPU zero-initialises resources.
+pub(crate) fn null_texture(device: &wgpu::Device, kind: super::TextureKind) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("native null texture"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: if kind == super::TextureKind::Cube {
+                6
+            } else {
+                1
+            },
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: if kind == super::TextureKind::D3 {
+            wgpu::TextureDimension::D3
+        } else {
+            wgpu::TextureDimension::D2
+        },
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(kind.view()),
+        ..Default::default()
+    })
 }
 
 /// Validation and out-of-memory errors while creating a GPU object, as a named failure.

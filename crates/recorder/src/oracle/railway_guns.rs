@@ -10,11 +10,66 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
         r.compared("RailwayGunCounterInputs", validate(frame)?);
         compare_saved(frame, save, r)?;
         r.limitation(
-            "The save omits naval transfer, exile, retreat, the CUnit combat vector (its count, the first combat's side and province, and the attacking byte), the assignee pointer, the stat definition and its maximum strength, the received-supply ratio and the railway building level at the gun; its combat list is the gun's own reference array, compared by its stored count (+0x42C); compare the rest against paused memory at the sampled hour",
+            "The save omits naval transfer, the CUnit combat vector (its count, the first combat's side and province, and the attacking byte), the assignee pointer, the stat definition and its maximum strength, the received-supply ratio and the railway building level at the gun; retreat is not compared by this oracle; its combat list is the gun's own reference array, compared by its stored count (+0x42C); compare the rest against paused memory at the sampled hour",
             "RailwayGunCounterInputs live-only operands",
         );
         Ok(())
     });
+    report.attempt("RailwayGunCounterInputs fresh", |r| compare_fresh(frame, r));
+}
+
+fn compare_fresh(frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
+    let rows = frame.complete::<tables::RailwayGunCounterInputs>()?;
+    for row in rows {
+        let label = format!("RailwayGunCounterInputs {}.fresh", row.gun);
+        let Some(packet) = report.recorded(&row.fresh, "RailwayGunCounterInputs.fresh", &label)
+        else {
+            continue;
+        };
+        let Some(packet) = packet else {
+            report.difference(
+                &label,
+                "unavailable",
+                "required current-hour railway-gun packet",
+            );
+            continue;
+        };
+        check(
+            report,
+            &format!("{label}.sample_hour"),
+            packet.sample_hour,
+            frame.hour,
+        );
+        if packet.sample_hour != frame.hour {
+            continue;
+        }
+        if row.naval_transfer == 0 {
+            for (name, missing) in [
+                ("maximum_speed", packet.maximum_speed.is_none()),
+                ("land_supply_factor", packet.land_supply_factor.is_none()),
+            ] {
+                if missing {
+                    report.difference(
+                        format!("{label}.{name}"),
+                        "unavailable",
+                        "required land getter operand",
+                    );
+                }
+            }
+        } else {
+            report.limitation("nonnull native transfer selects transport and does not reach land maximum-speed or land-supply getters", &label);
+        }
+        if packet.orders_group.is_none() {
+            report.difference(
+                format!("{label}.orders_group"),
+                "unavailable",
+                "required genuine CUnit group identity",
+            );
+        }
+        report.limitation("fresh variant maximum speed and composed land-supply factor are runtime getters, independently of saved equipment or strength; the genuine CUnit+0xC0 group is distinct from the railway assignee and has no proved text-save join in this comparison", &label);
+    }
+    report.compared("RailwayGunCounterInputs.fresh", rows.len());
+    Ok(())
 }
 
 /// Joins every gun's references to the same hour's complete censuses.
@@ -152,14 +207,11 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
                 &saved.name,
             ),
             replay::rows::Recorded::Value(Some(name)) => {
-                // BF7010 omits empty names. 1424AF5A0 emits a C string;
-                // post-NUL captured suffixes remain differences, never trimmed.
-                check(
-                    report,
-                    &format!("{label}.name"),
-                    (!name.is_empty()).then_some(name.as_slice()),
-                    saved.name.as_deref(),
-                );
+                // CRailwayGun::Serialize@140E78CF0 delegates to CUnit's
+                // 140BF7010, which gates +0x248 on stored length +0x258.
+                let label = format!("{label}.name");
+                let name = (!name.is_empty()).then(|| super::serialized_text(report, &label, name));
+                check(report, &label, name, saved.name.as_deref());
             }
         }
         for (field, raw, expected) in [
@@ -228,6 +280,33 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             row.strategic_redeployment != 0,
             saved.strategic_redeployment,
         );
+        // E78CF0 delegates to the same secondary CUnit receiver. BF7010
+        // writes token 0x2D0D `exile` only for nonzero primary+0x2AE.
+        check(
+            report,
+            &format!("{label}.exiled truth"),
+            row.exiled != 0,
+            saved.exile,
+        );
+        if let Some(value) = report.recorded(
+            &row.withdrawal,
+            "RailwayGunCounterInputs.withdrawal",
+            format!("{label}.withdrawal"),
+        ) {
+            match value {
+                Some(raw) => check(
+                    report,
+                    &format!("{label}.withdrawal"),
+                    *raw != 0,
+                    saved.withdrawal,
+                ),
+                None => report.difference(
+                    format!("{label}.withdrawal: guarded read refusal"),
+                    "unavailable",
+                    saved.withdrawal,
+                ),
+            }
+        }
         report.scalar(
             &label,
             "current_strength",
@@ -256,6 +335,7 @@ fn compare_saved(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::
             "absent",
         );
     }
+    report.limitation("CUnit::Serialize@140BF7010 saves withdraw only as zero/nonzero truth, not raw nonzero byte identity", "RailwayGunCounterInputs.withdrawal raw byte");
     Ok(())
 }
 
@@ -279,6 +359,7 @@ mod tests {
             province: 2,
             subunit_token: 1,
             name: replay::rows::Recorded::Value(Some(Vec::new())),
+            withdrawal: replay::rows::Recorded::Value(Some(0)),
             // Native route cells are raw; nothing here requires known provinces.
             alternate_path: vec![u32::MAX],
             ..Default::default()
@@ -326,6 +407,8 @@ mod tests {
             support_attack: None,
             full_path: vec![u32::MAX],
             strategic_redeployment: false,
+            exile: false,
+            withdrawal: false,
             strength: Decimal::parse(b"0").unwrap(),
             combats: vec![],
             country_intel: Vec::new(),
@@ -442,8 +525,83 @@ mod tests {
     }
 
     #[test]
-    fn saved_names_compare_all_bytes_empty_omission_and_capture_failures() {
-        let differences = |actual, saved| {
+    fn saved_withdrawal_compares_truth_and_does_not_hide_prefix_differences() {
+        use replay::rows::Recorded::{NotRecorded, Value};
+        for (value, expected, differences) in [
+            (Value(Some(0)), false, 0),
+            (Value(Some(255)), true, 0),
+            (Value(Some(2)), false, 1),
+            (Value(None), false, 1),
+            (NotRecorded, true, 0),
+        ] {
+            let frame = with(|row| row.withdrawal = value);
+            let (_, mut save, _, _) = super::super::tests::fixture();
+            save.railway_guns.insert(
+                GUN,
+                save::RailwayGun {
+                    withdrawal: expected,
+                    ..saved_gun()
+                },
+            );
+            let mut report = Report::default();
+            compare_saved(&frame, &save, &mut report).unwrap();
+            assert_eq!(
+                report.differences.len(),
+                differences,
+                "{:?}",
+                report.differences
+            );
+            assert!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|reason| reason.contains("zero/nonzero truth"))
+            );
+            save.railway_guns.get_mut(&GUN).unwrap().path.push(99);
+            let mut report = Report::default();
+            compare_saved(&frame, &save, &mut report).unwrap();
+            assert_eq!(
+                report.differences.len(),
+                differences + 1,
+                "{:?}",
+                report.differences
+            );
+        }
+    }
+
+    #[test]
+    fn saved_exile_compares_truth_and_preserves_existing_path_differences() {
+        for (raw, expected, differences) in
+            [(0, false, 0), (1, true, 0), (0, true, 1), (1, false, 1)]
+        {
+            let frame = with(|row| row.exiled = raw);
+            let (_, mut saved, _, _) = super::super::tests::fixture();
+            saved.railway_guns.insert(
+                GUN,
+                save::RailwayGun {
+                    exile: expected,
+                    ..saved_gun()
+                },
+            );
+            let mut report = Report::default();
+            compare_saved(&frame, &saved, &mut report).unwrap();
+            assert_eq!(report.differences.len(), differences);
+            saved.railway_guns.get_mut(&GUN).unwrap().path.push(99);
+            let mut report = Report::default();
+            compare_saved(&frame, &saved, &mut report).unwrap();
+            assert_eq!(report.differences.len(), differences + 1);
+            assert!(
+                report
+                    .differences
+                    .iter()
+                    .any(|difference| difference.contains("ordinary_path"))
+            );
+        }
+    }
+
+    #[test]
+    fn saved_names_compare_first_nul_empty_omission_and_capture_failures() {
+        let run = |actual, saved| {
             let frame = with(|row| row.name = actual);
             let (_, mut save, _, _) = super::super::tests::fixture();
             save.railway_guns.insert(
@@ -455,25 +613,199 @@ mod tests {
             );
             let mut report = Report::default();
             compare_saved(&frame, &save, &mut report).unwrap();
-            report.differences
+            report
         };
         use replay::rows::Recorded::{NotRecorded, Value};
         let name = vec![0xff, b'\\', b'"', b'G'];
-        assert!(differences(Value(Some(name.clone())), Some(name)).is_empty());
-        assert!(differences(Value(Some(Vec::new())), None).is_empty());
-        assert!(differences(NotRecorded, None).is_empty());
+        assert!(
+            run(Value(Some(name.clone())), Some(name))
+                .differences
+                .is_empty()
+        );
+        assert!(run(Value(Some(Vec::new())), None).differences.is_empty());
+        assert!(run(NotRecorded, None).differences.is_empty());
+        for name in [b"G\0!".as_slice(), b"\0!".as_slice()] {
+            let report = run(
+                Value(Some(name.to_vec())),
+                Some(installed_content::parser::c_string(name).to_vec()),
+            );
+            assert!(report.differences.is_empty(), "{:?}", report.differences);
+            assert_eq!(
+                report
+                    .limitations
+                    .values()
+                    .flatten()
+                    .filter(|field| field.ends_with(".name"))
+                    .count(),
+                1
+            );
+        }
         for (actual, saved) in [
             (Value(None), None),
             (Value(Some(Vec::new())), Some(Vec::new())),
             (Value(Some(b"G".to_vec())), None),
-            // The native C-string writer truncates; the captured suffix is
-            // still a save difference rather than a waived/truncated capture.
-            (Value(Some(vec![b'G', 0, b'!'])), Some(b"G".to_vec())),
+            (Value(Some(b"\0!".to_vec())), None),
+            (Value(Some(b"G\0!".to_vec())), Some(b"X".to_vec())),
         ] {
-            let found = differences(actual, saved);
+            let found = run(actual, saved).differences;
             assert_eq!(found.len(), 1, "{found:?}");
             assert!(found[0].contains("name"), "{found:?}");
         }
+    }
+
+    #[test]
+    fn fresh_railway_packets_preserve_transfer_gates_and_prefix_differences() {
+        use replay::rows::{FreshRailwayCounterEta, Recorded};
+        let mut frame = fixture();
+        let packet = FreshRailwayCounterEta {
+            sample_hour: frame.hour,
+            maximum_speed: Some(i64::MIN),
+            land_supply_factor: Some(i64::MAX),
+            orders_group: Some(0),
+        };
+        let row = RailwayGunCounterInputRow {
+            ordinary_path: vec![1],
+            fresh: Recorded::Value(Some(packet)),
+            ..gun()
+        };
+        let mut run = |row: RailwayGunCounterInputRow| {
+            put(&mut frame, TableRows::RailwayGunCounterInputs(vec![row]));
+            let mut report = Report::default();
+            compare_fresh(&frame, &mut report).unwrap();
+            report
+        };
+        assert!(run(row.clone()).differences.is_empty());
+        for change in [
+            (|packet: &mut FreshRailwayCounterEta| packet.maximum_speed = None)
+                as fn(&mut FreshRailwayCounterEta),
+            |packet| packet.land_supply_factor = None,
+            |packet| packet.orders_group = None,
+        ] {
+            let mut packet = packet;
+            change(&mut packet);
+            assert_eq!(
+                run(RailwayGunCounterInputRow {
+                    fresh: Recorded::Value(Some(packet)),
+                    ..row.clone()
+                })
+                .differences
+                .len(),
+                1
+            );
+        }
+        let transfer = FreshRailwayCounterEta {
+            maximum_speed: None,
+            land_supply_factor: None,
+            ..packet
+        };
+        assert!(
+            run(RailwayGunCounterInputRow {
+                naval_transfer: 1,
+                fresh: Recorded::Value(Some(transfer)),
+                ..row.clone()
+            })
+            .differences
+            .is_empty()
+        );
+        assert_eq!(
+            run(RailwayGunCounterInputRow {
+                naval_transfer: 1,
+                fresh: Recorded::Value(Some(FreshRailwayCounterEta {
+                    orders_group: None,
+                    ..transfer
+                })),
+                ..row.clone()
+            })
+            .differences
+            .len(),
+            1
+        );
+        assert_eq!(
+            run(RailwayGunCounterInputRow {
+                fresh: Recorded::Value(Some(FreshRailwayCounterEta {
+                    sample_hour: packet.sample_hour - 1,
+                    ..packet
+                })),
+                ..row.clone()
+            })
+            .differences
+            .len(),
+            1
+        );
+        assert_eq!(
+            run(RailwayGunCounterInputRow {
+                fresh: Recorded::Value(None),
+                ..row.clone()
+            })
+            .differences
+            .len(),
+            1
+        );
+        // The genuine CUnit group and fresh profile are captured even while idle.
+        let idle_refusal = run(RailwayGunCounterInputRow {
+            ordinary_path: vec![],
+            fresh: Recorded::Value(None),
+            ..row.clone()
+        });
+        assert_eq!(
+            idle_refusal.differences.len(),
+            1,
+            "{:?}",
+            idle_refusal.differences
+        );
+        assert!(
+            idle_refusal.differences[0].contains(&format!("RailwayGunCounterInputs {GUN}.fresh"))
+        );
+        assert!(idle_refusal.outcome().is_err());
+        assert!(
+            run(RailwayGunCounterInputRow {
+                ordinary_path: vec![],
+                ..row.clone()
+            })
+            .differences
+            .is_empty()
+        );
+        let historical = run(RailwayGunCounterInputRow {
+            fresh: Recorded::NotRecorded,
+            ..row.clone()
+        });
+        assert!(historical.differences.is_empty());
+        assert_eq!(
+            historical.limitations["RailwayGunCounterInputs.fresh not recorded"],
+            vec![format!("RailwayGunCounterInputs {GUN}.fresh")],
+        );
+        put(
+            &mut frame,
+            TableRows::RailwayGunCounterInputs(vec![RailwayGunCounterInputRow {
+                ordinary_path: vec![2],
+                fresh: Recorded::Value(None),
+                ..row
+            }]),
+        );
+        let (_, mut saved, _, _) = super::super::tests::fixture();
+        saved.railway_guns.insert(
+            GUN,
+            save::RailwayGun {
+                path: vec![1],
+                ..saved_gun()
+            },
+        );
+        let mut report = Report::default();
+        compare_saved(&frame, &saved, &mut report).unwrap();
+        compare_fresh(&frame, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 2);
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("ordinary_path"))
+        );
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains(".fresh"))
+        );
     }
 
     /// W2: a spawned gun supporting two combats saves both in its reference

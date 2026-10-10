@@ -509,6 +509,12 @@ fn routes_mark_which_stack_kinds_are_native() {
     let timing = crate::map::division_eta::MovementContent {
         map: MovementMap::from_parts::<ProvinceTerrain>(&[]),
         defines: Default::default(),
+        rail: Ok(installed_content::movement::RailMovementDefines {
+            speed: [0; 4],
+            maximum_level: 0,
+        }),
+        naval: Err("unrelated naval defines are unavailable".into()),
+        task_force_terrain: Err("unrelated task-force terrain is unavailable".into()),
     };
     let etas = crate::map::division_eta::Etas::read(&frame, Some(&timing)).unwrap();
     // An empty recorded route derives zero; the other members have no ETA operands.

@@ -4,6 +4,7 @@
 //! and each country's strategic navy supplies its region access modes.
 //! Each input fails alone, except that one diplomacy pass produces both
 //! RelationLinks and CountryWars; the viewer derives fog per country.
+use super::country_directed_wars as directed;
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -24,7 +25,22 @@ use replay::{
 };
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
+static RUNTIME_SCALAR_REFUSALS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+pub(crate) fn runtime_scalars_data() -> impl serde::Serialize {
+    crate::status::map(
+        engine::political_runtime_scalars::NAMES
+            .into_iter()
+            .enumerate()
+            .map(|(index, name)| (name, RUNTIME_SCALAR_REFUSALS[index].load(Relaxed))),
+    )
+}
 static INSTANT_DECISIONS_REFUSALS: AtomicU64 = AtomicU64::new(0);
+static TRANSPORT_SUBJECT_REFUSALS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn transport_subject_data() -> impl serde::Serialize {
+    crate::status::status!({ "transport current subject access refused":
+        TRANSPORT_SUBJECT_REFUSALS.load(Relaxed) })
+}
 
 pub(crate) fn instant_decisions_data() -> impl serde::Serialize {
     let refused = INSTANT_DECISIONS_REFUSALS.load(Relaxed);
@@ -47,7 +63,7 @@ pub const TABLES: [TableId; N] = [
 ];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     countries: usize,
     states: usize,
@@ -56,24 +72,69 @@ pub struct Capacities {
     /// Enemy links of every war row.
     war_links: usize,
     naval_access: usize,
-}
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            countries: 256,
-            states: 1024,
-            links: 2048,
-            wars: 256,
-            war_links: 2048,
-            naval_access: 1024,
-        }
-    }
+    directed: directed::Capacities,
+    queries: usize,
 }
 impl Capacities {
+    /// Advisory live demand at attach and the input-demand cadence.
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        use crate::country_scale::{raise, table_demand::rows};
+        let mut failure = None;
+        let mut accept = |capacity: &mut usize, outcome: Outcome| match rows(outcome) {
+            Ok(count) => raise(capacity, count),
+            Err(reason) => {
+                failure.get_or_insert(reason);
+            }
+        };
+        let (countries, slots) = native::countries(memory, base, state, &mut []);
+        accept(&mut self.countries, countries);
+        self.raise_for_countries(slots);
+        accept(
+            &mut self.states,
+            native::states(memory, base, state, &mut []),
+        );
+        accept(
+            &mut self.naval_access,
+            cstrategic_navy::access_modes(memory, base, state, &mut []),
+        );
+        let mut resolver = crelation_status::Resolver::default();
+        let (links, directed) = crelation_status::links_observed_transport_demands(
+            memory,
+            base,
+            state,
+            &mut [],
+            crelation_status::WarOutput {
+                rows: &mut [],
+                countries: &mut [],
+            },
+            &mut resolver,
+            Some(crelation_status::DirectedWarOutput {
+                owners: &mut [],
+                cells: &mut [],
+            }),
+            0,
+            &[],
+        );
+        accept(&mut self.links, links.links);
+        accept(&mut self.wars, links.wars);
+        raise(&mut self.war_links, links.required_countries);
+        raise(&mut self.directed.owners, directed.required_owners);
+        raise(&mut self.directed.cells, directed.required_cells);
+        self.queries = self.queries.max(crate::directed_war_queries::demand());
+        failure.map_or(Ok(()), Err)
+    }
+
     /// At most one modifier or war row per country slot; relation links and
     /// war links start at the same size and grow from observed demand. Never
     /// lowers a capacity.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
+        self.directed.raise_for_countries(slots);
+        self.queries = self.queries.max(slots);
         self.countries = self.countries.max(slots);
         self.links = self.links.max(slots);
         self.wars = self.wars.max(slots);
@@ -88,16 +149,20 @@ struct FeatureInputs {
     human_ai: u8,
     weather_suspend: Option<[u8; 2]>,
     instant_decisions: Option<u8>,
+    runtime_scalars: replay::rows::PoliticalRuntimeScalars,
 }
 
 pub struct Captured {
+    directed: directed::Captured,
+    queries: Arena<engine::directed_war_queries::Demand>,
+    query_admission: Result<(), &'static str>,
     dlc_mask: CaptureRows<FeatureInputs>,
     local_player: CaptureRows<[u32; 2]>,
     countries: CaptureRows<native::CountryRow>,
     states: CaptureRows<native::StateRow>,
     links: CaptureRows<crelation_status::LinkRow>,
-    /// Country authentication cache for the link walk, sized by `grow` from
-    /// the headers the last walk saw; the walk itself never allocates.
+    /// Country authentication cache, grown on workers from the original
+    /// country/link headers before the sparse pass.
     resolver: crelation_status::Resolver,
     wars: CaptureRows<crelation_status::WarRow>,
     war_links: Arena<u32>,
@@ -109,6 +174,7 @@ pub struct Captured {
 
 impl Captured {
     pub(crate) fn fail_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
+        self.directed.fail(reason);
         self.dlc_mask
             .fail(super::failed_capture(TABLES[0], hour, force_full, reason));
         self.countries
@@ -128,6 +194,9 @@ impl Captured {
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self {
+            directed: directed::Captured::new(Default::default()),
+            queries: Arena::new(0),
+            query_admission: Err("directed war query original callback witness unavailable"),
             dlc_mask: CaptureRows::new(0),
             local_player: CaptureRows::new(0),
             countries: CaptureRows::new(0),
@@ -144,6 +213,9 @@ impl Captured {
 
     pub fn with_capacities(capacity: &Capacities) -> Self {
         Self {
+            directed: directed::Captured::new(capacity.directed),
+            queries: Arena::new(capacity.queries),
+            query_admission: Err("directed war query original callback witness unavailable"),
             dlc_mask: CaptureRows::new(1),
             local_player: CaptureRows::new(1),
             countries: CaptureRows::new(capacity.countries),
@@ -158,6 +230,8 @@ impl Captured {
         }
     }
     pub fn reset(&mut self) {
+        self.directed.reset();
+        self.queries.reset();
         self.weather_suspend_failure = None;
         self.dlc_mask.reset();
         self.local_player.reset();
@@ -173,7 +247,9 @@ impl Captured {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.local_player.allocated_bytes()
+        self.directed.allocated_bytes()
+            + self.queries.allocated_bytes()
+            + self.local_player.allocated_bytes()
             + self.dlc_mask.allocated_bytes()
             + self.countries.allocated_bytes()
             + self.states.allocated_bytes()
@@ -185,6 +261,12 @@ impl Captured {
     }
     pub fn grow(&mut self, capacity: &mut Capacities) {
         capacity.raise_for_countries(self.slots);
+        self.queries.required = self
+            .queries
+            .required
+            .max(crate::directed_war_queries::demand());
+        self.queries.grow(&mut capacity.queries);
+        self.directed.grow(&mut capacity.directed);
         self.countries.grow(&mut capacity.countries);
         self.states.grow(&mut capacity.states);
         self.links.grow(&mut capacity.links);
@@ -196,6 +278,7 @@ impl Captured {
         self.naval_access.grow(&mut capacity.naval_access);
     }
 
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -203,6 +286,30 @@ impl Captured {
         game_state: usize,
         hour: i32,
         force_full: bool,
+    ) -> [u64; N] {
+        self.capture_storage(memory, base, game_state, hour, force_full, false)
+    }
+
+    /// Worker-owned rows and arenas grow from original headers before publication.
+    pub fn capture_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        self.capture_storage(memory, base, game_state, hour, force_full, true)
+    }
+
+    fn capture_storage(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+        growing: bool,
     ) -> [u64; N] {
         self.reset();
         let mut ticks = [0; N];
@@ -231,10 +338,27 @@ impl Captured {
             let started = qpc();
             match index {
                 0 => {
+                    let globals = engine::political_runtime_scalars::capture(memory, base, hour);
+                    let values = globals.values.map(|value| value.ok());
+                    for (index, value) in globals.values.iter().enumerate() {
+                        if value.is_err() {
+                            RUNTIME_SCALAR_REFUSALS[index].fetch_add(1, Relaxed);
+                        }
+                    }
+                    let runtime_scalars = replay::rows::PoliticalRuntimeScalars {
+                        sample_hour: globals.sample_hour,
+                        river_small: values[0],
+                        river_large: values[1],
+                        night: values[2],
+                        fort: values[3],
+                        move_strength_threshold: values[4],
+                        move_organisation_threshold: values[5],
+                    };
                     self.dlc_mask.outcome =
                         match native::dlc_mask(memory, base).and_then(|dlc_mask| {
                             Ok(FeatureInputs {
                                 dlc_mask,
+                                runtime_scalars,
                                 human_ai: native::human_ai(memory, base)?,
                                 instant_decisions: native::instant_decisions(memory, base)
                                     .inspect_err(|_| {
@@ -259,19 +383,34 @@ impl Captured {
                         };
                 }
                 1 => {
-                    (self.countries.outcome, self.slots) =
+                    (self.countries.outcome, self.slots) = if growing {
+                        native::countries_growing(
+                            memory,
+                            base,
+                            game_state,
+                            &mut self.countries.rows,
+                        )
+                    } else {
                         native::countries(memory, base, game_state, &mut self.countries.rows)
+                    }
                 }
                 2 => {
-                    self.states.outcome =
+                    self.states.outcome = if growing {
+                        native::states_growing(memory, base, game_state, &mut self.states.rows)
+                    } else {
                         native::states(memory, base, game_state, &mut self.states.rows)
+                    }
                 }
                 5 => {
-                    self.naval_access.outcome = cstrategic_navy::access_modes(
+                    self.naval_access.outcome = cstrategic_navy::access_modes_buffer(
                         memory,
                         base,
                         game_state,
-                        &mut self.naval_access.rows,
+                        if growing {
+                            engine::walk::Buffer::Growing(&mut self.naval_access.rows)
+                        } else {
+                            engine::walk::Buffer::Fixed(&mut self.naval_access.rows)
+                        },
                     )
                 }
                 6 => {
@@ -285,18 +424,77 @@ impl Captured {
                         };
                 }
                 _ => {
-                    let walk = crelation_status::links(
-                        memory,
-                        base,
-                        game_state,
-                        &mut self.links.rows,
-                        crelation_status::WarOutput {
-                            rows: &mut self.wars.rows,
-                            countries: &mut self.war_links.first,
-                        },
-                        &mut self.resolver,
-                    );
+                    self.directed.begin(hour);
+                    // The callback verdict is copied before dispatch, never
+                    // reconstructed from a worker's TLS. Completed graphics
+                    // and the same world protect these fresh borrowed cells.
+                    let query_world = crate::world_lifetime::token();
+                    if growing
+                        && let Err(reason) = engine::walk::Buffer::Growing(&mut self.queries.first)
+                            .ensure(crate::directed_war_queries::demand())
+                    {
+                        self.directed.fail(reason);
+                        self.links.outcome = Outcome::Unavailable { reason };
+                        self.wars.outcome = Outcome::Unavailable { reason };
+                        ticks[index] = qpc().saturating_sub(started).max(0) as u64;
+                        continue;
+                    }
+                    let requests = crate::directed_war_queries::drain(&mut self.queries.first);
+                    self.queries.required = requests.required;
+                    self.queries.len = if self.query_admission.is_ok() && requests.reason.is_none()
+                    {
+                        requests.len
+                    } else {
+                        if self.query_admission.is_err() && requests.len != 0 {
+                            crate::directed_war_queries::refuse_admission();
+                        }
+                        0
+                    };
+                    let (walk, directed) = if growing {
+                        crelation_status::links_observed_transport_demands_growing(
+                            memory,
+                            base,
+                            game_state,
+                            &mut self.links.rows,
+                            crelation_status::WarBuffers {
+                                rows: engine::walk::Buffer::Growing(&mut self.wars.rows),
+                                countries: engine::walk::Buffer::Growing(&mut self.war_links.first),
+                            },
+                            &mut self.resolver,
+                            Some(self.directed.output_growing()),
+                            hour,
+                            &self.queries.first[..self.queries.len],
+                        )
+                    } else {
+                        crelation_status::links_observed_transport_demands(
+                            memory,
+                            base,
+                            game_state,
+                            &mut self.links.rows,
+                            crelation_status::WarOutput {
+                                rows: &mut self.wars.rows,
+                                countries: &mut self.war_links.first,
+                            },
+                            &mut self.resolver,
+                            Some(self.directed.output()),
+                            hour,
+                            &self.queries.first[..self.queries.len],
+                        )
+                    };
+                    ORDERED_ENEMY_REFUSALS.fetch_add(u64::from(walk.ordered_refusals), Relaxed);
+                    self.directed.finish(directed);
+                    if self.queries.len != 0 && !crate::world_lifetime::current(query_world) {
+                        self.directed
+                            .fail("directed war query world changed during fresh acquisition");
+                    }
                     self.links.outcome = walk.links;
+                    if let Outcome::Rows { len } | Outcome::Truncated { len, .. } = walk.links {
+                        for row in &self.links.rows[..len] {
+                            if row.transport_subject.is_none_or(|value| value.is_err()) {
+                                TRANSPORT_SUBJECT_REFUSALS.fetch_add(1, Relaxed);
+                            }
+                        }
+                    }
                     self.wars.outcome = walk.wars;
                     self.war_links.len = walk.countries_len;
                     self.war_links.required = walk.required_countries;
@@ -305,6 +503,14 @@ impl Captured {
             ticks[index] = qpc().saturating_sub(started).max(0) as u64;
         }
         ticks
+    }
+
+    pub(crate) fn directed_wars(&self) -> &directed::Captured {
+        &self.directed
+    }
+
+    pub(crate) fn set_directed_query_admission(&mut self, admission: Result<(), &'static str>) {
+        self.query_admission = admission;
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {
@@ -329,6 +535,7 @@ impl Captured {
                     human_ai: r.human_ai,
                     weather_suspend: replay::rows::Recorded::Value(r.weather_suspend),
                     instant_decisions: replay::rows::Recorded::Value(r.instant_decisions),
+                    runtime_scalars: replay::rows::Recorded::Value(r.runtime_scalars),
                 },
             ),
             table::<tables::CountryVisibility, _>(
@@ -351,6 +558,21 @@ impl Captured {
                     country: r.country,
                     target_index: r.target,
                     links: r.links,
+                    transport_subject: replay::rows::Recorded::Value(
+                        r.transport_subject.and_then(Result::ok).map(|value| {
+                            replay::rows::TransportSubjectAccess {
+                                sample_hour: value.sample_hour,
+                                complete_owner: value.complete_owner,
+                                target_raw: value.target_raw,
+                                subject: value.subject.map(|subject| {
+                                    replay::rows::ZeroSubjectInputs {
+                                        relation_type: subject.relation_type,
+                                        parties: subject.parties,
+                                    }
+                                }),
+                            }
+                        }),
+                    ),
                 }
             }),
             self.wars_table(),
@@ -393,9 +615,20 @@ impl Captured {
             can_occupy_non_war: r.can_occupy_non_war,
             enemies_read: u8::from(r.enemies_read),
             enemies: owned_vec(copy_vec(span(r.enemies_start, r.enemies_len).unwrap())),
+            ordered: replay::rows::Recorded::Value(r.ordered.and_then(|(start, len)| {
+                Some(replay::rows::OrderedEnemyInputs {
+                    sample_hour: r.ordered_hour?,
+                    entries: owned_vec(copy_vec(span(start, len)?)),
+                })
+            })),
         })
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+static ORDERED_ENEMY_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) fn ordered_enemy_data() -> impl serde::Serialize {
+    crate::status::status!({"ordered_diplomacy_enemy_capture_refused":ORDERED_ENEMY_REFUSALS.load(Relaxed)})
+}

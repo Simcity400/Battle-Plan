@@ -30,17 +30,26 @@ pub(crate) struct CaptureReport {
     pub ticks: [u64; N],
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     arena: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 8192,
-            arena: 16384,
-        }
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        // 1406AE170 serializes both character rosters; 141389960 retains
+        // every portrait entry. Empty outputs count their original headers.
+        let acquired =
+            ccharacter::walk_portraits(memory, base, state, &mut [], &mut [], Default::default());
+        let count = crate::country_scale::table_demand::rows(acquired.outcome)?;
+        crate::table_capture::grow_capacity(&mut self.rows, count.div_ceil(PARTS));
+        crate::table_capture::grow_capacity(&mut self.arena, acquired.required);
+        Ok(())
     }
 }
 /// The roster is walked as this many contiguous shares, each its own pool job.
@@ -56,7 +65,7 @@ struct Certificate {
 /// One share of the roster: its rows and their portrait entries.
 pub struct Part {
     rows: CaptureRows<ccharacter::PortraitRow>,
-    arena: Arena<engine::character_portrait_entry::Row>,
+    arena: Arena<engine::character_portrait_entry::Row<engine::capture_text::Owned>>,
     cache: engine::portrait_cache::Cache,
     plan: crate::snapshot_plan::SnapshotPlan,
     certified: Option<Certificate>,
@@ -97,6 +106,12 @@ impl Part {
     pub(crate) fn allocated_bytes(&self) -> usize {
         self.rows.allocated_bytes()
             + self.arena.allocated_bytes()
+            + self
+                .arena
+                .first
+                .iter()
+                .map(|entry| entry.identity.allocated_bytes())
+                .sum::<usize>()
             + self.cache.allocated_bytes()
             + self.plan.allocated_bytes()
     }
@@ -139,6 +154,7 @@ impl Part {
         census: Option<&engine::ccharacter_manager::PortraitCensus>,
         observer: &dyn engine::portrait_cache::Changes,
     ) -> u64 {
+        self.plan.enable_worker_growth();
         let _reads = crate::read_accounting::table(TableId::CharacterPortraits);
         let begin = qpc();
         self.reset();
@@ -185,7 +201,7 @@ impl Part {
             return ticks;
         }
         let observation = cfg!(feature = "portrait_changes").then_some((&mut self.cache, observer));
-        let acquired = ccharacter::walk_portraits(
+        let acquired = ccharacter::walk_portraits_growing(
             &self.plan.view(memory),
             context.base,
             context.game_state,
@@ -283,6 +299,7 @@ impl Captured {
 
     /// Run the existing hourly capture on its owning thread. The frame reset
     /// must precede dispatch, just as it precedes direct capture.
+    #[cfg(test)]
     pub(crate) fn capture_owned(
         &mut self,
         memory: &impl Memory,
@@ -307,6 +324,7 @@ impl Captured {
 
     /// Whole-roster capture on the calling thread, for a callback that never
     /// dispatched the parts.
+    #[cfg(test)]
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize) -> [u64; N] {
         let context = CaptureContext {
             base,
@@ -547,6 +565,7 @@ mod owned_tests {
             entry.size = 1;
             entry.is_set = 255;
             entry.kind = 1;
+            entry.identity.bytes.resize(201, 0);
             entry.identity.bytes[..3].copy_from_slice(&[0xff, 0, b'a']);
             entry.identity.len = 3;
         }
@@ -576,10 +595,10 @@ mod owned_tests {
             capture.table_inputs(Some(&mut projection))[0],
             TableInput::ComparedEqual(_)
         ));
-        let original = capture.parts[0].arena.first[0];
+        let original = capture.parts[0].arena.first[0].clone();
         for field in 0..6 {
             let entry = &mut capture.parts[0].arena.first[0];
-            *entry = original;
+            *entry = original.clone();
             match field {
                 0 => entry.category ^= 1,
                 1 => entry.size ^= 1,
@@ -605,7 +624,7 @@ mod owned_tests {
             };
             assert_eq!(rows, expected[1..]);
         }
-        capture.parts[0].arena.first[0] = original;
+        capture.parts[0].arena.first[0] = original.clone();
         capture.parts[0].rows.rows[0].portraits[1] = 0;
         assert!(matches!(
             capture.table_inputs(Some(&mut projection))[0],

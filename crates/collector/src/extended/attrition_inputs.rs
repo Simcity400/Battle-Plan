@@ -9,7 +9,7 @@ use crate::{
 use engine::{
     Memory,
     allocation::{collect_vec, copy_vec, owned_vec},
-    attrition_modifier_breakdown as tree, carmy, carmy_attrition as native, cname_group_member,
+    attrition_modifier_breakdown as tree, carmy, carmy_attrition as native,
     walk::Outcome,
 };
 use replay::{
@@ -130,6 +130,8 @@ impl Captured {
         self.outcome = Outcome::Unavailable { reason };
     }
 
+    // Keep the native context and independently acquired packets explicit at the call site.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -138,9 +140,14 @@ impl Captured {
         seeds: &[carmy::DivisionSeed],
         outcome: Outcome,
         status: &carmy::StatusPacket,
+        attack: Option<&engine::selected_attack::UnitsPacket>,
     ) {
         self.reset();
         self.rows.required = outcome.len();
+        if !grow_vec(&mut self.rows.first, outcome.len()) {
+            self.fail("attrition row allocation failed");
+            return;
+        }
         if !matches!(outcome, Outcome::Rows { .. })
             || outcome.len() > seeds.len()
             || outcome.len() > self.rows.first.len()
@@ -151,7 +158,14 @@ impl Captured {
             return;
         }
         for (index, seed) in seeds[..outcome.len()].iter().enumerate() {
-            let inputs = native::capture(memory, base, state, seed, status.exercising_at(index));
+            let inputs = native::capture_with_acclimatization(
+                memory,
+                base,
+                state,
+                seed,
+                status.exercising_at(index),
+                attack.and_then(|packet| packet.acclimatization(seed.division)),
+            );
             let (terrain_name, name_failure) = match inputs.terrain {
                 Ok(Some(terrain)) => match terrain
                     .name
@@ -165,6 +179,10 @@ impl Captured {
             for source in inputs.sources.iter().flatten().flatten() {
                 let at = self.requests.required;
                 self.requests.required = self.requests.required.saturating_add(1);
+                if !grow_vec(&mut self.requests.first, self.requests.required) {
+                    self.fail("attrition request allocation failed");
+                    return;
+                }
                 if let Some(slot) = self.requests.first.get_mut(at) {
                     *slot = tree::Request {
                         accumulator: source.accumulator,
@@ -189,19 +207,19 @@ impl Captured {
             return;
         }
         let mut buffers = tree::Buffers {
-            requests: &mut self.requests.first,
+            requests: engine::walk::Buffer::Growing(&mut self.requests.first),
             request_len: self.requests.len,
             request_required: self.requests.required,
-            roots: &mut self.roots.first,
+            roots: engine::walk::Buffer::Growing(&mut self.roots.first),
             root_len: 0,
             root_required: 0,
-            nodes: &mut self.nodes.first,
+            nodes: engine::walk::Buffer::Growing(&mut self.nodes.first),
             node_len: 0,
             node_required: 0,
-            text: &mut self.text.first,
+            text: engine::walk::Buffer::Growing(&mut self.text.first),
             text_len: 0,
             text_required: 0,
-            stack: &mut self.stack,
+            stack: engine::walk::Buffer::Growing(&mut self.stack),
             stack_required: 0,
         };
         let result = tree::capture(memory, base, &mut buffers);
@@ -227,14 +245,13 @@ impl Captured {
         memory: &impl Memory,
         address: usize,
     ) -> Result<[usize; 2], &'static str> {
-        let mut names = cname_group_member::Names {
-            bytes: &mut self.terrain_text.first,
-            len: self.terrain_text.len,
-            required: self.terrain_text.required,
-        };
-        let result = native::copy_terrain_name(memory, address, &mut names);
-        self.terrain_text.required = names.required;
-        let (start, len) = result?.ok_or("attrition terrain text arena capacity exceeded")?;
+        let (start, len) = native::copy_terrain_name_growing(
+            memory,
+            address,
+            &mut self.terrain_text.first,
+            self.terrain_text.len,
+            &mut self.terrain_text.required,
+        )?;
         self.terrain_text.len = start + len;
         Ok([start, len])
     }
@@ -504,6 +521,31 @@ impl Work {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_text_growth_keeps_five_thousand_first_native_labels() {
+        let mut bytes = vec![0; 32];
+        bytes[..8].copy_from_slice(&0x1020u64.to_le_bytes());
+        bytes[16..24].copy_from_slice(&300u64.to_le_bytes());
+        bytes[24..32].copy_from_slice(&300u64.to_le_bytes());
+        bytes.extend_from_slice(&[b'T'; 300]);
+        bytes.push(0);
+        let memory = engine::memory::SliceMemory {
+            base: 0x1000,
+            bytes: &bytes,
+        };
+        let mut capture = Captured::new(Capacities::default());
+        for index in 0..5_000 {
+            assert_eq!(capture.copy_name(&memory, 0x1000), Ok([index * 300, 300]));
+        }
+        assert_eq!(capture.terrain_text.len, 5_000 * 300);
+        assert_eq!(capture.terrain_text.required, 5_000 * 300);
+        assert!(
+            capture.terrain_text.first[..capture.terrain_text.len]
+                .iter()
+                .all(|&byte| byte == b'T')
+        );
+    }
     use replay::rows::TableRows;
 
     fn inputs() -> native::Inputs {

@@ -56,6 +56,10 @@ pub(crate) struct Observations {
 
 impl Observations {
     pub fn new(controls: usize, bytes: usize) -> Self {
+        engine::allocation::advisory(|| Self::try_new(controls, bytes))
+    }
+
+    fn try_new(controls: usize, bytes: usize) -> Self {
         let mut control_rows = Vec::new();
         let mut expected = Vec::new();
         let mut hints = Vec::new();
@@ -139,6 +143,10 @@ impl Observations {
     }
 
     pub fn grow_for_next(&mut self) {
+        engine::allocation::advisory(|| self.grow_hints());
+    }
+
+    fn grow_hints(&mut self) {
         if self.required_controls > self.controls.capacity() {
             let additional = self.required_controls - self.controls.len();
             if engine::allocation::reserve_exact(&mut self.controls, additional).is_err() {
@@ -320,8 +328,7 @@ impl<const N: usize> CapturePlan<N> {
         raw_bytes: [u64; N],
         len: usize,
     ) {
-        if self
-            .try_prepare(observations, has_bulk, raw_bytes, len)
+        if engine::allocation::advisory(|| self.try_prepare(observations, has_bulk, raw_bytes, len))
             .is_err()
         {
             // A failed compilation never installs partial geometry.

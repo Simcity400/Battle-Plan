@@ -2,6 +2,11 @@
 use installed_content::mesh::{Animation, JointPose, NativeJoint};
 use std::io;
 
+mod locators;
+pub use locators::{
+    Binding, Locator, LookupMode, binary as binary_locators, entity as entity_locators, lookup,
+};
+
 pub type Matrix = [[f32; 4]; 4];
 pub const IDENTITY: Matrix = [
     [1., 0., 0., 0.],
@@ -34,7 +39,13 @@ pub fn scale(value: f32) -> Matrix {
 /// The importer scale is baked into positions and skeleton translations only.
 #[derive(Debug, Clone)]
 pub struct Source {
+    /// Native registered pdxmesh kind (0x180), independent of joint count.
+    pub pdxmesh: bool,
     pub skeleton: Vec<NativeJoint>,
+    /// Retained registration order, including duplicate names.
+    pub entity_locators: Vec<Locator>,
+    /// Imported source order, including duplicate names.
+    pub binary_locators: Vec<Locator>,
     pub mesh_scale: f32,
     pub entity_scale: f32,
     pub frozen: Option<std::sync::Arc<Animation>>,
@@ -64,15 +75,25 @@ fn parent_world(
         .native
         .as_ref()
         .ok_or_else(|| "native parent actor source unavailable".to_owned())?;
-    let joint_index = source
-        .skeleton
-        .iter()
-        .position(|j| j.name == *joint)
-        .ok_or_else(|| format!("native attachment joint {joint:?} unavailable"))?;
-    let pose = actor.pose.as_ref().map_err(Clone::clone)?;
+    let mode = if node.native.as_ref().is_some_and(|child| child.pdxmesh) {
+        LookupMode::Attachment
+    } else {
+        LookupMode::AttachmentDummy
+    };
+    // The native miss logs once at attachment creation and leaves type zero,
+    // which follows the parent root instead of removing the child.
+    let local = lookup(source, joint, mode).map_or(Ok(IDENTITY), |binding| {
+        binding.local(
+            actor
+                .pose
+                .as_ref()
+                .map(|pose| Some(pose.joints.as_slice()))
+                .map_err(Clone::clone),
+        )
+    })?;
     Ok(multiply(
         *actor.world.as_ref().map_err(Clone::clone)?,
-        pose.joints[joint_index],
+        local,
     ))
 }
 
@@ -210,7 +231,7 @@ pub fn blend(a: JointPose, b: JointPose, t: f32) -> JointPose {
     }
 }
 
-fn local(pose: JointPose, mesh_scale: f32) -> Matrix {
+pub(super) fn local(pose: JointPose, mesh_scale: f32) -> Matrix {
     let [x, y, z, w] = pose.rotation;
     //1424E7F50 consumes the quaternion verbatim; no normalization.
     let twice = |value: f32| value + value;
@@ -318,6 +339,51 @@ pub fn assemble(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attachments_use_last_entity_child_kind_and_parent_root_on_miss() {
+        let mut rig = super::super::entity_animation::stage_rig(false);
+        let point = |x| {
+            let mut local = IDENTITY;
+            local[3][0] = x;
+            Locator {
+                name: "mount".into(),
+                local,
+                parent: None,
+                error: None,
+            }
+        };
+        let source = Source {
+            pdxmesh: true,
+            skeleton: Vec::new(),
+            entity_locators: vec![point(1.), point(4.)],
+            binary_locators: vec![point(8.)],
+            mesh_scale: 1.,
+            entity_scale: 1.,
+            frozen: None,
+            game_data: None,
+        };
+        rig.nodes[0].native = Some(std::sync::Arc::new(source));
+        let mut child = rig.nodes[0].clone();
+        child.parent = Some((0, "mount".into(), String::new()));
+        let mut world = scale(2.);
+        world[3][0] = 10.;
+        let actors = [Actor {
+            world: Ok(world),
+            pose: Err("unused uninitialized palette".into()),
+        }];
+        assert_eq!(parent_world(&rig, &actors, &child).unwrap()[3][0], 18.);
+        std::sync::Arc::make_mut(child.native.as_mut().unwrap()).pdxmesh = false;
+        assert_eq!(parent_world(&rig, &actors, &child).unwrap()[3][0], 18.);
+        std::sync::Arc::make_mut(rig.nodes[0].native.as_mut().unwrap())
+            .entity_locators
+            .clear();
+        assert_eq!(parent_world(&rig, &actors, &child).unwrap()[3][0], 10.);
+        std::sync::Arc::make_mut(child.native.as_mut().unwrap()).pdxmesh = true;
+        assert_eq!(parent_world(&rig, &actors, &child).unwrap()[3][0], 26.);
+        child.parent.as_mut().unwrap().1 = "absent".into();
+        assert_eq!(parent_world(&rig, &actors, &child).unwrap(), world);
+    }
 
     #[test]
     fn crossfade_uses_native_joint_scale_for_translation() {

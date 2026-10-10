@@ -2,7 +2,7 @@
 
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -471,67 +471,139 @@ pub struct Recovery {
 
 /// Recover only this segment's valid prefix. Never scan past damage for another magic.
 pub fn recover_prefix(bytes: &[u8]) -> Recovery {
+    recover_records(io::Cursor::new(bytes), bytes.len(), Ok, false).unwrap()
+}
+
+/// Read a segment one bounded record at a time. The callback may retain only
+/// metadata; allocation and I/O failures abort instead of becoming spool damage.
+pub fn recover_reader(
+    input: impl Read,
+    length: usize,
+    retain: impl FnMut(Record) -> io::Result<Record>,
+) -> io::Result<Recovery> {
+    recover_records(input, length, retain, true)
+}
+
+fn recover_records(
+    input: impl Read,
+    length: usize,
+    mut retain: impl FnMut(Record) -> io::Result<Record>,
+    fail_resources: bool,
+) -> io::Result<Recovery> {
     let mut result = Recovery {
         format: None,
         records: Vec::new(),
         valid_bytes: 0,
         damage: None,
     };
-    let mut state = SegmentState::default();
-    while result.valid_bytes < bytes.len() {
-        let offset = result.valid_bytes;
-        let decoded = (|| -> io::Result<(Record, usize)> {
-            let tail = &bytes[offset..];
-            if tail.len() < RECORD_HEADER_BYTES {
-                return Err(invalid("truncated record header"));
-            }
-            if tail[..4] != RECORD_MAGIC {
-                return Err(invalid(format!(
-                    "unsupported spool record magic {:?}; expected {:?}",
-                    String::from_utf8_lossy(&tail[..4]),
-                    String::from_utf8_lossy(&RECORD_MAGIC),
-                )));
-            }
-            let version = u16::from_le_bytes(tail[4..6].try_into().unwrap());
-            let format = FormatVersion::read(version)?;
-            format.require(RecordKind::SpoolEnvelope)?;
-            if result.format.is_some_and(|first| first != format) {
-                return Err(invalid("SpoolEnvelope format changed inside a segment"));
-            }
-            let length = u32::from_le_bytes(tail[6..10].try_into().unwrap()) as usize;
-            if length == 0 || length > MAX_RECORD_BYTES {
-                return Err(invalid("invalid record length"));
-            }
-            if length > tail.len() - RECORD_HEADER_BYTES {
-                return Err(invalid("truncated record payload"));
-            }
-            let payload = &tail[RECORD_HEADER_BYTES..RECORD_HEADER_BYTES + length];
-            let expected = u32::from_le_bytes(tail[10..14].try_into().unwrap());
-            if crc32fast::hash(payload) != expected {
-                return Err(invalid("record CRC mismatch"));
-            }
-            let mut input = Decoder::new(payload);
-            let record = Record::decode_version(&mut input, format)?;
-            input.finish()?;
-            state.accept(&record)?;
-            result.format = Some(format);
-            Ok((record, RECORD_HEADER_BYTES + length))
+    let mut reader = RecordReader::new(input, length);
+    loop {
+        let offset = reader.valid_bytes;
+        let decoded = (|| -> io::Result<Option<Record>> {
+            let Some(record) = reader.next_record()? else {
+                return Ok(None);
+            };
+            let record = retain(record)?;
+            engine::allocation::reserve(&mut result.records, 1)?;
+            Ok(Some(record))
         })();
         match decoded {
-            Ok((record, length)) => {
+            Ok(Some(record)) => {
                 result.records.push(record);
-                result.valid_bytes += length;
+                result.valid_bytes = reader.valid_bytes;
+                result.format = reader.format;
             }
+            Ok(None) => return Ok(result),
             Err(error) => {
-                result.damage = Some(format!("segment byte {offset}: {error}"));
-                return result;
+                if fail_resources
+                    && !matches!(
+                        error.kind(),
+                        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+                    )
+                {
+                    return Err(error);
+                }
+                result.damage = Some(
+                    if offset == length && reader.state.needs_keyframe && !reader.state.partial {
+                        "segment ended before initial keyframe".into()
+                    } else {
+                        format!("segment byte {offset}: {error}")
+                    },
+                );
+                return Ok(result);
             }
         }
     }
-    if state.needs_keyframe && !state.partial {
-        result.damage = Some("segment ended before initial keyframe".into());
+}
+
+/// A reusable payload buffer and one decoded record, independent of segment size.
+pub struct RecordReader<R> {
+    input: R,
+    length: usize,
+    valid_bytes: usize,
+    format: Option<FormatVersion>,
+    state: SegmentState,
+    payload: Vec<u8>,
+}
+
+impl<R: Read> RecordReader<R> {
+    pub fn new(input: R, length: usize) -> Self {
+        Self {
+            input,
+            length,
+            valid_bytes: 0,
+            format: None,
+            state: SegmentState::default(),
+            payload: Vec::new(),
+        }
     }
-    result
+
+    pub fn next_record(&mut self) -> io::Result<Option<Record>> {
+        let remaining = self.length - self.valid_bytes;
+        if remaining == 0 {
+            if self.state.needs_keyframe && !self.state.partial {
+                return Err(invalid("segment ended before initial keyframe"));
+            }
+            return Ok(None);
+        }
+        if remaining < RECORD_HEADER_BYTES {
+            return Err(invalid("truncated record header"));
+        }
+        let mut header = [0; RECORD_HEADER_BYTES];
+        self.input.read_exact(&mut header)?;
+        if header[..4] != RECORD_MAGIC {
+            return Err(invalid(format!(
+                "unsupported spool record magic {:?}; expected {:?}",
+                String::from_utf8_lossy(&header[..4]),
+                String::from_utf8_lossy(&RECORD_MAGIC),
+            )));
+        }
+        let format = FormatVersion::read(u16::from_le_bytes(header[4..6].try_into().unwrap()))?;
+        format.require(RecordKind::SpoolEnvelope)?;
+        if self.format.is_some_and(|first| first != format) {
+            return Err(invalid("SpoolEnvelope format changed inside a segment"));
+        }
+        let length = u32::from_le_bytes(header[6..10].try_into().unwrap()) as usize;
+        if length == 0 || length > MAX_RECORD_BYTES {
+            return Err(invalid("invalid record length"));
+        }
+        if length > remaining - RECORD_HEADER_BYTES {
+            return Err(invalid("truncated record payload"));
+        }
+        engine::allocation::resize(&mut self.payload, length, 0)?;
+        self.input.read_exact(&mut self.payload)?;
+        let expected = u32::from_le_bytes(header[10..14].try_into().unwrap());
+        if crc32fast::hash(&self.payload) != expected {
+            return Err(invalid("record CRC mismatch"));
+        }
+        let mut input = Decoder::new(&self.payload);
+        let record = Record::decode_version(&mut input, format)?;
+        input.finish()?;
+        self.state.accept(&record)?;
+        self.format = Some(format);
+        self.valid_bytes += RECORD_HEADER_BYTES + length;
+        Ok(Some(record))
+    }
 }
 
 /// Periodic synchronization work for one live segment, excluding forced barriers.

@@ -97,7 +97,7 @@ pub(crate) fn format_count(
 /// wrapping 32-bit seed hash. The jitter modulus is a signed `int` (`2h + 1` for an even half
 /// range `h`, `2h` for an odd one), never zero; a half range past `2^30` makes it negative, and
 /// the game's signed remainder takes it as it is.
-fn count_range(total: i32, percent: i32, minimum: i32, seed: u32) -> (i32, i32) {
+pub(crate) fn count_range(total: i32, percent: i32, minimum: i32, seed: u32) -> (i32, i32) {
     let half_range = (total.wrapping_mul(percent) / 100).max(minimum);
     let jitter = if half_range > 0 {
         let modulus = half_range

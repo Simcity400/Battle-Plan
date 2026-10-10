@@ -190,6 +190,154 @@ impl Memory for Bytes {
 }
 
 #[test]
+fn worker_hq_portraits_grow_5000_country_and_later_mod_sized_censuses_and_strings() {
+    const ROOTS: usize = 0x100000;
+    const LEADERS: usize = 0x10000000;
+    const TEXT: usize = 0x40000000;
+    struct World {
+        count: usize,
+        text: usize,
+    }
+    impl Memory for World {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            for (offset, byte) in output.iter_mut().enumerate() {
+                let at = address + offset;
+                let mut value = None;
+                for index in [at.saturating_sub(ROOTS) / 0x100] {
+                    if index < self.count {
+                        let root = ROOTS + index * 0x100;
+                        for (field, word) in [
+                            (root + group::HQ_PROVIDER, 1_u64),
+                            (root + group::LEADER, (LEADERS + index * 0x2000) as u64),
+                        ] {
+                            if (field..field + 8).contains(&at) {
+                                value = Some(word.to_le_bytes()[at - field]);
+                            }
+                        }
+                    }
+                }
+                if (LEADERS..TEXT).contains(&at) {
+                    let index = (at - LEADERS) / 0x2000;
+                    let leader = LEADERS + index * 0x2000;
+                    if index < self.count {
+                        for (field, word) in [
+                            (leader, VTABLE_RVA as u64),
+                            (
+                                leader + TYPE,
+                                ((index as u64 + 1) << 32) | u64::from(REFERENCE_TYPE),
+                            ),
+                            (leader + CHARACTER_TYPE, 0),
+                        ] {
+                            if (field..field + 8).contains(&at) {
+                                value = Some(word.to_le_bytes()[at - field]);
+                            }
+                        }
+                        for (lane, field) in PORTRAIT_STRINGS.into_iter().enumerate() {
+                            for (field, word) in [
+                                (leader + field, (TEXT + (index * 3 + lane) * 0x10000) as u64),
+                                (leader + field + 16, self.text as u64),
+                                (leader + field + 24, self.text as u64),
+                            ] {
+                                if (field..field + 8).contains(&at) {
+                                    value = Some(word.to_le_bytes()[at - field]);
+                                }
+                            }
+                        }
+                    }
+                }
+                if at >= TEXT {
+                    let index = (at - TEXT) / 0x10000;
+                    let position = (at - TEXT) % 0x10000;
+                    if index < self.count * 3 && position <= self.text {
+                        value = Some(if position == self.text {
+                            0
+                        } else {
+                            b'a' + (index % 3) as u8
+                        });
+                    }
+                }
+                let Some(value) = value else {
+                    return false;
+                };
+                *byte = value;
+            }
+            true
+        }
+    }
+    let mut sources = Vec::new();
+    let mut rows = Vec::new();
+    for (count, text) in [(5_000, 513), (12_000, 1025)] {
+        let roots: Vec<_> = (0..count)
+            .map(|index| group::Root {
+                pointer: ROOTS + index * 0x100,
+                handle: ((index as u64 + 1) << 32) | u64::from(group::REFERENCE_TYPE),
+                country: index as u32 + 1,
+            })
+            .collect();
+        let result =
+            walk_hq_portraits_growing(&World { count, text }, 0, &roots, &mut sources, &mut rows);
+        assert_eq!(result.outcome, Outcome::Rows { len: count });
+        assert_eq!(result.sources, Outcome::Rows { len: count });
+        assert_eq!(rows[count - 1].strings[2].as_bytes(), vec![b'c'; text]);
+    }
+}
+
+#[test]
+fn worker_portrait_paths_grow_source_rows_country_slot_memo_and_long_tag_bytes() {
+    use crate::{ccountry, cgame_state as gs};
+    const GS: usize = 0x4000;
+    const POINTERS: usize = 0x100000;
+    const LINKS: usize = 0x200000;
+    const TAGS: usize = 0x300000;
+    const COUNTRY: usize = 0x500000;
+    const LEADERS: usize = 0x1000000;
+    const PAYLOAD: usize = 0x8000000;
+    let mut rows = Vec::new();
+    let mut memo = PortraitTagMemo::default();
+    for (countries, len) in [(5_000, 513), (12_000, 1025)] {
+        let mut bytes = Bytes::default();
+        let array = |f: &mut Bytes, at: usize, data: usize, count: u32| {
+            f.put(at, &(data as u64).to_le_bytes());
+            f.put(at + 8, &count.to_le_bytes());
+            f.put(at + 12, &count.to_le_bytes());
+        };
+        array(&mut bytes, GS + gs::COUNTRIES, POINTERS, countries + 1);
+        array(&mut bytes, GS + gs::COUNTRY_LINKS, LINKS, countries + 1);
+        array(&mut bytes, GS + gs::COUNTRY_TAGS, TAGS, countries + 1);
+        bytes.put(
+            POINTERS + countries as usize * 8,
+            &(COUNTRY as u64).to_le_bytes(),
+        );
+        bytes.put(LINKS + countries as usize * 4, &countries.to_le_bytes());
+        bytes.put(COUNTRY, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+        bytes.put(COUNTRY + ccountry::ID, &countries.to_le_bytes());
+        bytes.put(COUNTRY + ccountry::ORIGINAL_TAG, &countries.to_le_bytes());
+        let tag = TAGS + countries as usize * msvc_string::STRIDE;
+        bytes.put(tag, &(PAYLOAD as u64).to_le_bytes());
+        bytes.put(tag + 16, &(len as u64).to_le_bytes());
+        bytes.put(tag + 24, &(len as u64).to_le_bytes());
+        bytes.put(PAYLOAD, &vec![0xff; len]);
+        bytes.put(PAYLOAD + len, &[0]);
+        let sources: Vec<_> = (0..5_000)
+            .map(|index| {
+                let pointer = LEADERS + index * 0x1000;
+                let leader = ((index as u64 + 1) << 32) | u64::from(REFERENCE_TYPE);
+                bytes.put(pointer, &(VTABLE_RVA as u64).to_le_bytes());
+                bytes.put(pointer + TYPE, &leader.to_le_bytes());
+                bytes.put(pointer + super::COUNTRY, &countries.to_le_bytes());
+                (leader, pointer)
+            })
+            .collect();
+        assert_eq!(
+            walk_portrait_paths_memo_growing(&bytes, 0, GS, &sources, &mut rows, &mut memo),
+            Outcome::Rows { len: 5_000 }
+        );
+        assert!(memo.cells.len() > countries as usize);
+        assert_eq!(rows[4_999].tag.as_bytes(), vec![0xff; len]);
+    }
+}
+
+#[test]
 fn portrait_paths_resolve_original_tag_strings_and_keep_unlinked_countries_empty() {
     use crate::{ccountry, cgame_state as gs, read_census::ReadCensus};
     use std::cell::RefCell;

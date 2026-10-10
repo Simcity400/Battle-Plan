@@ -13,6 +13,90 @@ fn allocation_capacity_overflow_preserves_movement_memo() {
     assert_eq!(memo.allocated_bytes(), before);
 }
 
+#[test]
+fn vacant_legacy_movement_memo_keeps_healthy_uncached_speed() {
+    let source = fixture();
+    let mut memo = MovementSpeeds::vacant();
+    assert_eq!(
+        memo.get(&source, 0, 0x1000, 1, 0xd000),
+        movement_speed(&source, 0, 0x1000, 1, 0xd000)
+    );
+}
+
+#[test]
+fn transport_success_cache_saturation_keeps_scoped_refusal_and_shared_root() {
+    use std::cell::{Cell, RefCell};
+    struct Fault<'a> {
+        source: &'a Fixture,
+        failed: Cell<bool>,
+        reads: RefCell<Vec<usize>>,
+    }
+    impl Memory for Fault<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push(address);
+            if address == 0x14008 && !self.failed.replace(true) {
+                return false;
+            }
+            self.source.copy(address, output)
+        }
+    }
+    let mut source = fixture();
+    source.word(0xc200, 0xd100);
+    source.word(0xd100, cstrategic_region::VTABLE_RVA as u64);
+    source.dword(0xd100 + cstrategic_region::ID, 0);
+    source.dword(0xd100 + cstrategic_region::RUNTIME_SLOT, 0);
+    source.word(0xf000, sweather_per_region::VTABLE_RVA as u64);
+    source.dword(0xf000 + sweather_per_region::ID, 0);
+    source.word(0x14000, 100_000);
+    let memory = Fault {
+        source: &source,
+        failed: Cell::new(false),
+        reads: RefCell::new(Vec::new()),
+    };
+    let mut memo = MovementSpeeds::new(1);
+    memo.reserve_queries(3, 2).unwrap();
+    // Existing optional success-cache saturation uses the uncached path.
+    for index in 0..memo.observations.capacity() {
+        let input = Input::Country(10_000 + index as u32);
+        memo.observations.push(Observation {
+            input,
+            result: Ok(InputValue::Scalar(0)),
+        });
+        memo.index_observation(input, index * 2 + 1);
+    }
+    assert_eq!(
+        memo.get_for_region(&memory, 0, 0x1000, 1, 0xd000, 1),
+        Err("navy regional operand unreadable")
+    );
+    let expected = movement_speed(&source, 0, 0x1000, 1, 0xd100);
+    assert_eq!(
+        memo.get_for_region(&memory, 0, 0x1000, 1, 0xd100, 0),
+        expected
+    );
+    assert_eq!(
+        memo.get_for_region(&memory, 0, 0x1000, 1, 0xd000, 1),
+        Err("navy regional operand unreadable")
+    );
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&at| at == 0x14008)
+            .count(),
+        1
+    );
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&at| at == BASE_SPEED_RVA)
+            .count(),
+        1
+    );
+}
+
 struct Fixture {
     bytes: Vec<u8>,
     globals: BTreeMap<usize, Vec<u8>>,
@@ -187,9 +271,41 @@ fn hourly_transport_inputs_share_only_complete_current_observations() {
     }
     let reference = observed(&source, None);
     let expected = movement_speed(&reference, 0, 0x1000, 1, 0xd000).unwrap();
-    let count = reference.reads.borrow().len();
-    for fault in 0..count {
-        let direct = observed(&source, Some(fault));
+    let first = observed(&source, None);
+    assert_eq!(
+        MovementSpeeds::new(8).get(&first, 0, 0x1000, 1, 0xd000),
+        Ok(expected)
+    );
+    // The owner and enemy share this manager's accepted controls. Only their
+    // repeated attempts disappear; every other operand keeps native order.
+    let shared_controls = [
+        0x1000 + cgame_state::STRATEGIC_NAVY_MANAGER,
+        0x11000,
+        0x11000 + cstrategic_navy_manager::NAVIES,
+    ];
+    let retained = |reads: &[(usize, usize)]| {
+        let mut seen = std::collections::BTreeSet::new();
+        reads
+            .iter()
+            .enumerate()
+            .filter_map(|(index, &(at, width))| {
+                (!shared_controls.contains(&at) || seen.insert((at, width))).then_some(index)
+            })
+            .collect::<Vec<_>>()
+    };
+    let direct_reads = reference.reads.borrow();
+    let retained_indices = retained(&direct_reads);
+    assert_eq!(
+        *first.reads.borrow(),
+        retained_indices
+            .iter()
+            .map(|&index| direct_reads[index])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(direct_reads.len() - retained_indices.len(), 3);
+    drop(direct_reads);
+    for (fault, &direct_fault) in retained_indices.iter().enumerate() {
+        let direct = observed(&source, Some(direct_fault));
         let shared = observed(&source, Some(fault));
         let mut memo = MovementSpeeds::new(8);
         let expected = movement_speed(&direct, 0, 0x1000, 1, 0xd000);
@@ -201,7 +317,10 @@ fn hourly_transport_inputs_share_only_complete_current_observations() {
         );
         assert_eq!(
             *shared.reads.borrow(),
-            *direct.reads.borrow(),
+            retained(&direct.reads.borrow())
+                .into_iter()
+                .map(|index| direct.reads.borrow()[index])
+                .collect::<Vec<_>>(),
             "fault order {fault}"
         );
         assert!(memo.owners.is_empty());
@@ -250,12 +369,7 @@ fn hourly_transport_inputs_share_only_complete_current_observations() {
                     movement_speed(&source, 0, 0x1000, 1, region)
                 );
             }
-            if count == 9 && capacity == 1 {
-                assert!(bounded.owners.is_empty());
-                assert!(bounded.enemies.is_empty());
-            } else {
-                assert_eq!(bounded.enemies.len(), count as usize);
-            }
+            assert_eq!(bounded.enemies.len(), count as usize);
         }
     }
     // A changed enemy gate after the hourly reset must affect both regions.
@@ -396,4 +510,16 @@ fn transport_faults_never_become_partial_enemy_aggregates() {
     m.bytes[0xb000 + cdiplomacy_status::CAPITULATED] = 1;
     m.word(0x13000, 0);
     assert_eq!(movement_speed(&m, 0, 0x1000, 1, 0xd000), Ok(200_000));
+}
+
+#[test]
+fn observation_index_demand_excludes_allocator_spare_capacity() {
+    let mut memo = MovementSpeeds::try_with_capacity(0).unwrap();
+    memo.observations.reserve(30_000);
+    memo.failures.reserve(30_000);
+    let slots = observation_slots(5_001, 5_001).unwrap();
+    for _ in 0..20 {
+        memo.reserve_queries(5_001, 0).unwrap();
+        assert_eq!(memo.observation_index.len(), slots);
+    }
 }

@@ -176,6 +176,12 @@ impl Default for ObjectConstants {
 }
 
 impl ObjectConstants {
+    /// A preceding world producer replaced physical PS b1. Its allocation remains in the
+    /// retained stream; a mesh without userdata must not rebind an older CPU snapshot.
+    pub fn forget_pixel_snapshot(&mut self) {
+        self.pixel = None;
+    }
+
     pub fn begin(&mut self) {
         self.bytes.fill(0);
     }
@@ -1274,6 +1280,9 @@ mod tests {
     #[test]
     fn native_userdata_is_caller_specific_and_land_motion_is_independent_of_clip() {
         let source = mesh_pose::Source {
+            pdxmesh: true,
+            entity_locators: Vec::new(),
+            binary_locators: Vec::new(),
             skeleton: Vec::new(),
             mesh_scale: 0.5,
             entity_scale: 1.,

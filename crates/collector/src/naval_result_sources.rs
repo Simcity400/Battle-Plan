@@ -2,7 +2,8 @@
 //! combat from a stack-local strike; no identity is invented for the latter.
 //! All callbacks are allocation-free and never wait for another caller.
 use crate::hook::Hook;
-use engine::{Memory, cgame_state::Clock, naval_result_sources as native};
+type Clock = engine::cgame_state::Clock<u64>;
+use engine::{Memory, naval_result_sources as native};
 use std::{
     collections::HashMap,
     ops::Range,
@@ -64,16 +65,7 @@ impl Store {
         poison();
     }
     fn birth(&mut self, pointer: usize, birth: Birth) -> Result<(), &'static str> {
-        let required = self.births.len().saturating_add(1);
-        BIRTH_DEMAND.fetch_max(required, Ordering::Relaxed);
         if !self.births.contains_key(&pointer) && self.births.len() == self.births.capacity() {
-            BIRTH_DEMAND.fetch_max(
-                BIRTH_CAPACITY
-                    .load(Ordering::Acquire)
-                    .saturating_mul(2)
-                    .max(required),
-                Ordering::Relaxed,
-            );
             OVERFLOW.fetch_add(1, Ordering::Relaxed);
             return Err("naval result sources birth storage overflow");
         }
@@ -100,13 +92,7 @@ impl Store {
         if !transient && birth.is_some_and(|b| b.kind != native::BirthKind::Persistent) {
             return Err("naval result sources registered source has conflicting birth witness");
         }
-        let required = self.entries.len().saturating_add(1);
-        EVENT_DEMAND.fetch_max(required, Ordering::Relaxed);
         if self.entries.len() == self.entries.capacity() {
-            EVENT_DEMAND.fetch_max(
-                self.entries.capacity().saturating_mul(2).max(required),
-                Ordering::Relaxed,
-            );
             OVERFLOW.fetch_add(1, Ordering::Relaxed);
             return Err("naval result sources event storage overflow");
         }
@@ -142,6 +128,8 @@ static BASE: AtomicUsize = AtomicUsize::new(0);
 static CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static BIRTH_CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static OFFERED_CAPACITY: AtomicUsize = AtomicUsize::new(0);
+static EVENT_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+static BIRTH_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static EVENT_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static BIRTH_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static HOURLY_PEAK: AtomicUsize = AtomicUsize::new(0);
@@ -173,6 +161,11 @@ pub fn active() -> usize {
 }
 pub fn capacity() -> usize {
     CAPACITY.load(Ordering::Acquire)
+}
+pub(crate) fn demand() -> usize {
+    EVENT_DEMAND
+        .load(Ordering::Acquire)
+        .max(BIRTH_DEMAND.load(Ordering::Acquire))
 }
 /// Loader only, after all relays, callbacks, and spool readers are quiet.
 pub fn release() -> Result<(), &'static str> {
@@ -275,11 +268,14 @@ fn collect_retired() {
 }
 
 fn presize(population: usize) {
+    engine::allocation::advisory(|| presize_storage(population));
+}
+
+fn presize_storage(population: usize) {
+    EVENT_DEMAND.fetch_max(population, Ordering::Release);
     let requested = population
         .max(EVENT_DEMAND.load(Ordering::Relaxed))
-        .max(BIRTH_DEMAND.load(Ordering::Relaxed))
-        .max(capacity())
-        .max(BIRTH_CAPACITY.load(Ordering::Acquire));
+        .max(BIRTH_DEMAND.load(Ordering::Relaxed));
     if (requested <= capacity() && requested <= BIRTH_CAPACITY.load(Ordering::Acquire))
         || requested <= OFFERED_CAPACITY.load(Ordering::Acquire)
     {
@@ -291,7 +287,6 @@ fn presize(population: usize) {
         || engine::allocation::reserve_map(&mut births, requested).is_err()
     {
         PREPARE_FAILURES.fetch_add(1, Ordering::Relaxed);
-        poison();
         return;
     }
     let Ok(mut swap) = STORAGE_SWAP.try_lock() else {
@@ -366,8 +361,10 @@ pub fn boundary(clock: Option<Clock>) {
     // Only birth witnesses from the just-finished interval can prove that an
     // unobserved combat began after its previous read. Events own their copy.
     current.births.clear();
+    BIRTH_ATTEMPTS.store(0, Ordering::Relaxed);
     if transition {
         current.entries.clear();
+        EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
         current.refusal = None;
         current.partial = Some("naval result sources first/branch interval is partial");
         RECOVERY_PENDING.store(false, Ordering::SeqCst);
@@ -375,6 +372,7 @@ pub fn boundary(clock: Option<Clock>) {
         POISONED.store(false, Ordering::SeqCst);
     } else if RECOVERY_PENDING.swap(false, Ordering::SeqCst) {
         current.entries.clear();
+        EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
         current.refusal = None;
         current.partial = Some("naval result sources recovery interval is partial");
         UNWOUND.store(false, Ordering::SeqCst);
@@ -389,7 +387,14 @@ pub fn boundary(clock: Option<Clock>) {
     }
     install_into(&mut current);
 }
+#[cfg(test)]
 pub fn drain(output: &mut [Entry]) -> Result<usize, &'static str> {
+    drain_buffer(engine::walk::Buffer::Fixed(output))
+}
+pub fn drain_growing(output: &mut Vec<Entry>) -> Result<usize, &'static str> {
+    drain_buffer(engine::walk::Buffer::Growing(output))
+}
+fn drain_buffer(mut output: engine::walk::Buffer<'_, Entry>) -> Result<usize, &'static str> {
     #[cfg(test)]
     if !tests::owns_observation() {
         return Err("naval result sources hooks unavailable (see status unhooked)");
@@ -418,6 +423,9 @@ pub fn drain(output: &mut [Entry]) -> Result<usize, &'static str> {
         return Err("naval result sources active writer at drain");
     }
     let len = current.entries.len();
+    output
+        .ensure(len)
+        .map_err(|_| "naval result sources drain allocation failed")?;
     if len > output.len() {
         lost_drain();
         return Err("naval result sources drain storage too small");
@@ -428,6 +436,7 @@ pub fn drain(output: &mut [Entry]) -> Result<usize, &'static str> {
         return Err("naval result sources writer overlaps hourly drain");
     }
     current.entries.clear();
+    EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
     install_into(&mut current);
     Ok(len)
 }
@@ -469,6 +478,14 @@ impl Drop for Call {
         ACTIVE[self.site].fetch_sub(1, Ordering::SeqCst);
     }
 }
+// Count every reached append, including calls skipped after an interval loss.
+// This pressure sizes only the producer's next offer and resets with its log.
+fn attempt(attempts: &AtomicUsize, demand: &AtomicUsize) {
+    if ENABLED.load(Ordering::SeqCst) {
+        let required = attempts.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        demand.fetch_max(required, Ordering::Release);
+    }
+}
 fn observing() -> bool {
     ENABLED.load(Ordering::SeqCst)
         && !crate::world_lifetime::invalidating()
@@ -497,6 +514,9 @@ unsafe extern "system-unwind" fn constructor(pointer: usize, caller: usize) -> u
     }
     if kind == native::BirthKind::Loaded {
         return call.returned(run());
+    }
+    if kind != native::BirthKind::Unknown {
+        attempt(&BIRTH_ATTEMPTS, &BIRTH_DEMAND);
     }
     if !observing() {
         return call.returned(run());
@@ -545,6 +565,7 @@ unsafe fn result_call(site: usize, result: usize, combat: usize) -> usize {
     let original: unsafe extern "system-unwind" fn(usize, usize) -> usize =
         unsafe { std::mem::transmute(ORIGINAL[site].load(Ordering::Acquire)) };
     let run = || unsafe { original(result, combat) };
+    attempt(&EVENT_ATTEMPTS, &EVENT_DEMAND);
     if !observing() {
         return call.returned(run());
     }

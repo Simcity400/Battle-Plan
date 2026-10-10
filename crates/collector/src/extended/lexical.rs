@@ -21,18 +21,23 @@ pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LexicalTokens];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[("global lexical dictionary", 0, &[0])];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: usize,
     pub text: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: 32768,
-            text: 1_048_576,
-        }
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        _state: usize,
+    ) -> Result<(), &'static str> {
+        let (rows, bytes) = cpdx_lexer::demand(memory, base)?;
+        grow_capacity(&mut self.rows, rows);
+        grow_capacity(&mut self.text, bytes);
+        Ok(())
     }
 }
 
@@ -100,6 +105,40 @@ impl Captured {
     }
 
     pub fn capture(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        hour: i32,
+        force_full: bool,
+    ) -> [u64; N] {
+        #[cfg(test)]
+        {
+            self.capture_fixture(memory, base, game_state, hour, force_full)
+        }
+        #[cfg(not(test))]
+        {
+            let _ = (memory, base, game_state);
+            self.reset();
+            if !self.raw_mode {
+                self.rows.outcome = Outcome::Unavailable {
+                    reason: if replay::cadence::should_walk(
+                        TableId::LexicalTokens,
+                        hour,
+                        force_full,
+                    ) {
+                        "lexical acquisition not supplied"
+                    } else {
+                        replay::cadence::SKIPPED_REASON
+                    },
+                };
+            }
+            [0; N]
+        }
+    }
+
+    #[cfg(test)]
+    fn capture_fixture(
         &mut self,
         memory: &impl Memory,
         base: usize,
@@ -303,6 +342,7 @@ pub(crate) struct LexicalJob {
     span_exhausted: bool,
     required_bytes: usize,
     has_bulk: bool,
+    worker_growth: bool,
     charge: crate::raw_memory::Charge,
     #[cfg(test)]
     reconstructions: std::cell::Cell<usize>,
@@ -310,9 +350,15 @@ pub(crate) struct LexicalJob {
 
 impl LexicalJob {
     pub fn new() -> Self {
-        Self::with_capacity(1 << 17, 12 << 20)
+        let mut job = Self {
+            worker_growth: true,
+            ..Default::default()
+        };
+        job.update_charge();
+        job
     }
 
+    #[cfg(test)]
     fn with_capacity(spans: usize, bytes: usize) -> Self {
         let mut job = Self {
             bytes: owned_vec(engine::allocation::vec(bytes)),
@@ -340,7 +386,7 @@ impl LexicalJob {
     }
 
     pub fn initialized(&self) -> bool {
-        self.span_limit != 0
+        self.worker_growth || self.span_limit != 0
     }
 
     #[cfg(test)]
@@ -397,6 +443,9 @@ impl LexicalJob {
     }
 
     fn failed(&mut self) -> Observation {
+        if self.worker_growth && self.spans == self.span_limit {
+            self.span_limit = self.span_limit.saturating_mul(2).max(self.spans + 1);
+        }
         if self.spans == self.span_limit {
             self.span_exhausted = true;
             self.overflowed = true;
@@ -427,6 +476,18 @@ impl LexicalJob {
             || !crate::raw::is_canonical_range(address, len)
         {
             return self.failed();
+        }
+        if self.worker_growth {
+            if self.spans == self.span_limit {
+                self.span_limit = self.span_limit.saturating_mul(2).max(self.spans + 1);
+            }
+            if len > self.bytes.capacity().saturating_sub(self.bytes.len()) {
+                if engine::allocation::reserve(&mut self.bytes, len).is_err() {
+                    self.overflowed = true;
+                    return Observation::Missing;
+                }
+                self.update_charge();
+            }
         }
         if self.spans == self.span_limit
             || self
@@ -466,6 +527,43 @@ impl LexicalJob {
     }
 
     fn take_payload(&mut self, memory: &impl Memory, address: usize, len: usize) -> Observation {
+        if self.worker_growth
+            && !self.overflowed
+            && len <= u32::MAX as usize
+            && address != 0
+            && address.checked_add(len).is_some()
+            && crate::raw::is_canonical_range(address, len)
+            && len > self.bytes.capacity().saturating_sub(self.bytes.len())
+        {
+            // Foreign length alone is not allocation evidence. Continue one
+            // native payload observation through successfully copied chunks.
+            let start = self.bytes.len();
+            if start
+                .checked_add(len)
+                .is_none_or(|end| end > u32::MAX as usize)
+            {
+                self.overflowed = true;
+                return Observation::Missing;
+            }
+            let mut scratch = [0u8; 4096];
+            for first in (0..len).step_by(scratch.len()) {
+                let count = (len - first).min(scratch.len());
+                if !memory.copy(address + first, &mut scratch[..count]) {
+                    self.bytes.truncate(start);
+                    return self.failed();
+                }
+                if engine::allocation::reserve(&mut self.bytes, count).is_err() {
+                    self.overflowed = true;
+                    return Observation::Missing;
+                }
+                self.bytes.extend_from_slice(&scratch[..count]);
+            }
+            self.spans += 1;
+            self.span_limit = self.span_limit.max(self.spans);
+            self.raw_bytes += len as u64;
+            self.update_charge();
+            return Observation::Copied(start as u32);
+        }
         if self.overflowed
             || len > u32::MAX as usize
             || address == 0
@@ -849,6 +947,18 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
     let Some(witness) = witness else { return };
     job.has_bulk = true;
     let total = witness.maximum() as usize + 1;
+    if job.worker_growth {
+        // RebuildLexerTokenNameLookup@1424A8D20 grows the reverse table and
+        // recomputes its maximum. Retain this original writer-free witness.
+        let chunks = total.div_ceil(TABLE_CHUNK / TOKEN_NAME_STRIDE);
+        if engine::allocation::reserve(&mut job.tokens, total).is_err()
+            || engine::allocation::reserve(&mut job.chunks, chunks).is_err()
+        {
+            job.overflowed = true;
+            return;
+        }
+        job.update_charge();
+    }
     let mut first = 0;
     while first < total {
         if job.chunks.len() == job.chunks.capacity() {
@@ -895,6 +1005,15 @@ fn copy_pass(memory: &impl Memory, base: usize, job: &mut LexicalJob) {
 }
 
 /// Acquire one refresh into its owned payload.
+pub(crate) fn copy_lexical_refresh_growing(
+    memory: &impl Memory,
+    ctx: LexicalCopyContext,
+    job: &mut LexicalJob,
+) -> LexicalCopyReport {
+    job.worker_growth = true;
+    copy_lexical_refresh(memory, ctx, job)
+}
+
 pub(crate) fn copy_lexical_refresh(
     memory: &impl Memory,
     ctx: LexicalCopyContext,
@@ -902,6 +1021,9 @@ pub(crate) fn copy_lexical_refresh(
 ) -> LexicalCopyReport {
     let started = qpc();
     copy_pass(memory, ctx.base, job);
+    if job.worker_growth {
+        job.update_charge();
+    }
     LexicalCopyReport {
         raw_ok: !job.overflowed,
         copy_ticks: [elapsed(started)],
@@ -1262,10 +1384,15 @@ mod tests {
             );
         }
         if packet.grow_for_next() {
+            let prior_spans = packet.span_limit;
             let prior_bytes = packet.bytes.capacity();
+            let span_exhausted = packet.span_exhausted;
             packet.grow();
             reference.grow();
-            assert_eq!(packet.span_limit, reference.spans.capacity());
+            if span_exhausted {
+                assert!(packet.span_limit > prior_spans);
+                assert!(reference.spans.capacity() > prior_spans);
+            }
             assert!(packet.bytes.capacity() >= prior_bytes);
             assert!(packet.bytes.capacity() <= reference.bytes.capacity());
         }
@@ -2229,6 +2356,49 @@ mod tests {
         assert!(!report.raw_ok);
         assert!(tiny.overflowed);
         assert!(tiny.grow_for_next());
+    }
+
+    #[test]
+    fn live_lexical_demand_and_same_payload_growth_keep_mod_dictionary() {
+        use super::lexical_test_kit as kit;
+        let mut job = LexicalJob::default();
+        let mut captured = Captured::with_capacities(&Capacities { rows: 0, text: 0 });
+        for count in [180_000, 220_000] {
+            let mut memory = kit::KitMemory::fixture();
+            memory.table = vec![0; count * TOKEN_NAME_STRIDE];
+            for token in 0..count {
+                kit::KitMemory::inline(&mut memory.table, token, b"mod_dictionary!");
+            }
+            memory.header_before =
+                kit::KitMemory::header(count as u32 - 1, 0x20000000, count as u32);
+            let mut capacity = Capacities::default();
+            capacity.presize(&memory, kit::BASE, 0).unwrap();
+            assert!(capacity.rows >= count && capacity.text >= count * 15);
+            assert!(
+                copy_lexical_refresh_growing(
+                    &memory,
+                    LexicalCopyContext { base: kit::BASE },
+                    &mut job
+                )
+                .raw_ok
+            );
+            captured.decode_lexical_payload(kit::BASE, &job, &mut [0]);
+            assert_eq!(captured.rows.outcome, Outcome::Rows { len: count });
+            assert_eq!(captured.text.len, count * 15);
+            assert_eq!(captured.rows.rows[count - 1].token, count as u32 - 1);
+            assert!(job.initialized());
+            assert!(!job.grow_for_next());
+        }
+    }
+
+    #[test]
+    fn lexical_cold_storage_is_provisioned_without_content_guesses() {
+        let job = LexicalJob::new();
+        assert!(job.initialized());
+        assert_eq!(job.capacities(), (0, 0));
+        assert_eq!((job.tokens.capacity(), job.chunks.capacity()), (0, 0));
+        let capacity = Capacities::default();
+        assert_eq!((capacity.rows, capacity.text), (0, 0));
     }
 }
 

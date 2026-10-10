@@ -47,10 +47,29 @@ pub fn demand(memory: &impl Memory, _base: usize, state: usize) -> Result<usize,
 /// without following any pointer. A native failure withholds the whole field;
 /// the caller must commit the scalar arena only on Ok. Aliases are not filtered.
 pub fn capture(memory: &impl Memory, base: usize, state: usize, output: &mut [u32]) -> Capture {
+    capture_buffer(memory, base, state, crate::walk::Buffer::Fixed(output))
+}
+
+pub fn capture_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut Vec<u32>,
+) -> Capture {
+    capture_buffer(memory, base, state, crate::walk::Buffer::Growing(output))
+}
+
+fn capture_buffer(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut output: crate::walk::Buffer<'_, u32>,
+) -> Capture {
     let mut required = 0;
     let len = (|| {
         let (address, bytes, array) = header(memory, state)?;
         required = array.count as usize;
+        output.ensure(required)?;
         if required > output.len() {
             return Err(CAPACITY);
         }
@@ -62,20 +81,13 @@ pub fn capture(memory: &impl Memory, base: usize, state: usize, output: &mut [u3
                 .and_then(|pointer| usize::try_from(pointer).ok())
                 .filter(|pointer| *pointer != 0)
                 .ok_or("reserved country roster pointer unreadable or null")?;
-            let expected = base
-                .checked_add(ccountry::VTABLE_RVA)
-                .ok_or("country-array module address overflow")?;
-            if read::<u64>(memory, pointer) != Some(expected as u64) {
-                return Err("reserved country roster vtable mismatch");
+            let root = memory
+                .authenticated_reserved_country(base, state)
+                .unwrap_or_else(|| ccountry::reserved_from_array(memory, base, array))?;
+            if root.pointer != pointer {
+                return Err("reserved country roster differs from authenticated root");
             }
-            let id = pointer
-                .checked_add(ccountry::ID)
-                .and_then(|address| read::<u32>(memory, address))
-                .ok_or("reserved country roster id unreadable")?;
-            if id != 0 {
-                return Err("reserved country roster id is not zero");
-            }
-            output[0] = id;
+            output[0] = 0;
             reserved = Some(pointer);
         }
         if array.count > 1 {

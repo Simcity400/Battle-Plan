@@ -24,6 +24,14 @@ pub fn demand(
     base: usize,
     state: usize,
 ) -> Result<[usize; 12], &'static str> {
+    crate::allocation::advisory(|| demand_inner(memory, base, state))
+}
+
+fn demand_inner(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> Result<[usize; 12], &'static str> {
     let countries = ccountry::Reader::new(memory, base, state)?;
     let mut rows = [0; 12];
     let manager = field::<u64>(memory, state, crate::cgame_state::STRATEGIC_AIR_MANAGER)? as usize;

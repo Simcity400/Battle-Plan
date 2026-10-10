@@ -1103,6 +1103,7 @@ fn a_modded_content_stack_names_and_pictures_its_own_buildings_and_refuses_what_
     ));
     let _ = std::fs::remove_dir_all(&root);
     let (base, modded) = (root.join("base"), root.join("mod"));
+    crate::catalogue::texture_tests::write_sprite_program(&base);
     let write = |dir: &Path, file: &str, bytes: &[u8]| {
         let path = dir.join(file);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

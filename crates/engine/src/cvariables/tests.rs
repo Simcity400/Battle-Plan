@@ -58,6 +58,116 @@ fn run(bytes: &[u8], output: &mut [Row], names: &mut [u8]) -> NameWalk {
 }
 
 #[test]
+fn growing_variable_rows_and_key_bytes_capture_first_and_later_mod_sized_maps() {
+    let mut small = fixture(2);
+    node(&mut small, 0, 0, b"a", i64::MIN);
+    node(&mut small, 1, 1, b"b", i64::MAX);
+    let mut rows = Vec::new();
+    let mut names = Vec::new();
+    let mut expected_rows = [Row::default(); 2];
+    let mut expected_names = [0; 2];
+    let expected = run(&small, &mut expected_rows, &mut expected_names);
+    assert_eq!(expected.outcome, Outcome::Rows { len: 2 });
+    assert_eq!(
+        walk_growing(
+            &SliceMemory {
+                base: BASE,
+                bytes: &small
+            },
+            BASE,
+            CONTAINER,
+            &mut rows,
+            &mut names
+        ),
+        expected
+    );
+    assert_eq!(&rows[..2], &expected_rows);
+    assert_eq!(&names[..2], &expected_names);
+    const COUNT: usize = 5_000;
+    const BUCKETS: usize = 8_192;
+    const TAIL: usize = 15;
+    let mut bytes = fixture(COUNT as u32);
+    bytes.resize(0x200 + (BUCKETS + TAIL + 1) * variable_hash_node::STRIDE, 0);
+    bytes[0x200..].fill(0);
+    put32(&mut bytes, 0x124, BUCKETS as u32 - 1);
+    bytes[0x128] = TAIL as u8;
+    bytes[0x200 + (BUCKETS + TAIL) * variable_hash_node::STRIDE + variable_hash_node::DISTANCE] =
+        0xff;
+    for index in 0..COUNT {
+        let at = 0x200 + index * variable_hash_node::STRIDE;
+        let key = format!("key_{index:04}");
+        put32(&mut bytes, at, index as u32);
+        bytes[at + variable_hash_node::DISTANCE] = 1;
+        bytes[at + variable_hash_node::KEY..at + variable_hash_node::KEY + key.len()]
+            .copy_from_slice(key.as_bytes());
+        put64(&mut bytes, at + 0x18, key.len() as u64);
+        put64(&mut bytes, at + 0x20, 15);
+        put64(&mut bytes, at + variable_hash_node::VALUE, index as u64);
+    }
+    let mut expected_rows = vec![Row::default(); COUNT];
+    let mut expected_names = vec![0; COUNT * 8];
+    let expected = run(&bytes, &mut expected_rows, &mut expected_names);
+    assert_eq!(expected.outcome, Outcome::Rows { len: COUNT });
+    assert_eq!(
+        (expected.bytes_len, expected.required_bytes),
+        (COUNT * 8, COUNT * 8)
+    );
+    assert_eq!(
+        walk_growing(
+            &SliceMemory {
+                base: BASE,
+                bytes: &bytes
+            },
+            BASE,
+            CONTAINER,
+            &mut rows,
+            &mut names
+        ),
+        expected
+    );
+    assert_eq!(&rows[..COUNT], expected_rows.as_slice());
+    assert_eq!(&names[..expected.bytes_len], expected_names.as_slice());
+}
+
+#[test]
+fn growing_variable_scopes_extend_all_three_buffers_on_the_first_pass() {
+    let bytes = scope_fixture();
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let mut expected_scopes = [ScopeRow::default(); 5];
+    let mut expected_entries = [Row::default(); 4];
+    let mut expected_names = [0; 6];
+    let expected = walk_scopes(
+        &memory,
+        BASE,
+        BASE + 0x1000,
+        &mut expected_scopes,
+        &mut expected_entries,
+        &mut expected_names,
+    );
+    assert_eq!(expected.outcome, Outcome::Rows { len: 5 });
+    let mut scopes = Vec::new();
+    let mut entries = Vec::new();
+    let mut names = Vec::new();
+    assert_eq!(
+        walk_scopes_growing(
+            &memory,
+            BASE,
+            BASE + 0x1000,
+            &mut scopes,
+            &mut entries,
+            &mut names
+        ),
+        expected
+    );
+    assert_eq!(&scopes[..5], &expected_scopes);
+    assert_eq!(&entries[..4], &expected_entries);
+    assert_eq!(&names[..6], &expected_names);
+}
+
+#[test]
 fn holes_probe_overflow_and_literal_bytes_preserve_exact_values() {
     let mut bytes = fixture(3);
     node(&mut bytes, 2, 2, b"", i64::MIN);
@@ -505,6 +615,21 @@ fn scoped_seeds_include_all_5000_country_stores_without_entry_demand() {
         assert_eq!(scopes[slot as usize].seed, Some(slot));
     }
     assert_eq!(scopes[expected - 1].seed, Some(0));
+    let mut growing_scopes = Vec::new();
+    let mut growing_entries = Vec::new();
+    let mut growing_names = Vec::new();
+    assert_eq!(
+        walk_scopes_growing(
+            &memory,
+            MODULE,
+            game,
+            &mut growing_scopes,
+            &mut growing_entries,
+            &mut growing_names
+        ),
+        captured
+    );
+    assert_eq!(&growing_scopes[..expected], scopes.as_slice());
     let demand = walk_scopes(&memory, MODULE, game, &mut [], &mut [], &mut []);
     assert_eq!(
         demand.outcome,

@@ -11,6 +11,7 @@ pub(crate) struct OwnedFogJob<R> {
     pub(super) row_limit: usize,
     pub(super) province_limit: usize,
     pub(super) acquired: bool,
+    pub(super) growing: bool,
     pub(super) active: bool,
     pub(super) raw_bytes: u64,
     pub(super) capacity_charge: crate::raw_memory::Charge,
@@ -33,6 +34,7 @@ impl<R: Default + Copy> OwnedFogJob<R> {
             row_limit: 0,
             province_limit: 0,
             acquired: false,
+            growing: false,
             active: false,
             raw_bytes: 0,
             capacity_charge: Default::default(),
@@ -54,6 +56,7 @@ impl<R: Default + Copy> OwnedFogJob<R> {
         self.row_limit = 0;
         self.province_limit = 0;
         self.acquired = false;
+        self.growing = false;
         self.active = false;
         self.raw_bytes = 0;
     }
@@ -96,18 +99,19 @@ impl<R: Default + Copy> OwnedFogJob<R> {
         self.row_limit = rows;
         self.province_limit = provinces;
     }
+    #[cfg(test)]
     fn fits(&self, rows: usize, provinces: usize) -> bool {
         rows <= self.rows.len() && provinces <= self.provinces.len()
     }
 }
 impl RadarJob {
     pub fn new() -> Self {
-        Self::with_storage(1024, 65_536)
+        Self::default()
     }
 }
 impl IntelJob {
     pub fn new() -> Self {
-        Self::with_storage(32_768, 0)
+        Self::default()
     }
 }
 
@@ -136,6 +140,23 @@ impl<M: Memory> Memory for FogMemory<'_, M> {
         state: usize,
     ) -> Option<ccountry::AuthenticatedRoster<'_>> {
         self.inner.authenticated_countries(base, state)
+    }
+
+    fn authenticated_reserved_country(
+        &self,
+        base: usize,
+        state: usize,
+    ) -> Option<Result<ccountry::Country, &'static str>> {
+        self.inner.authenticated_reserved_country(base, state)
+    }
+
+    fn authenticated_reserved_country_observation(
+        &self,
+        base: usize,
+        state: usize,
+    ) -> Option<ccountry::ReservedCountryObservation> {
+        self.inner
+            .authenticated_reserved_country_observation(base, state)
     }
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         let succeeded = self.inner.copy(address, destination);
@@ -200,13 +221,23 @@ fn acquire_radar(job: &mut RadarJob, memory: &impl Memory, ctx: RadarCopyContext
         inner: memory,
         bytes: std::cell::Cell::new(0),
     };
-    let result = radar_group::walk(
-        &source,
-        ctx.base,
-        ctx.game_state,
-        &mut job.rows[..job.row_limit],
-        &mut job.provinces[..job.province_limit],
-    );
+    let result = if job.growing {
+        radar_group::walk_growing(
+            &source,
+            ctx.base,
+            ctx.game_state,
+            &mut job.rows,
+            &mut job.provinces,
+        )
+    } else {
+        radar_group::walk(
+            &source,
+            ctx.base,
+            ctx.game_state,
+            &mut job.rows[..job.row_limit],
+            &mut job.provinces[..job.province_limit],
+        )
+    };
     job.outcome = result.outcome;
     job.provinces_len = result.provinces_len;
     job.required_provinces = result.required_provinces;
@@ -224,17 +255,22 @@ fn acquire_intel(
         inner: memory,
         bytes: std::cell::Cell::new(0),
     };
-    job.outcome = unit_viewer_entry::walk_with_divisions(
+    job.outcome = unit_viewer_entry::walk_with_divisions_buffer(
         &source,
         ctx.base,
         ctx.game_state,
-        &mut job.rows[..job.row_limit],
+        if job.growing {
+            engine::walk::Buffer::Growing(&mut job.rows)
+        } else {
+            engine::walk::Buffer::Fixed(&mut job.rows[..job.row_limit])
+        },
         divisions,
     );
     job.raw_bytes = source.bytes.get();
     job.acquired = true;
 }
 /// Check destination capacities before acquiring one owned radar snapshot.
+#[cfg(test)]
 pub(crate) fn copy_radar_refresh(
     memory: &impl Memory,
     ctx: RadarCopyContext,
@@ -256,6 +292,7 @@ pub(crate) fn copy_radar_refresh(
     }
 }
 /// The caller retains the primary division census until acquisition returns.
+#[cfg(test)]
 pub(crate) fn copy_intel_refresh_with_divisions(
     memory: &impl Memory,
     ctx: IntelCopyContext,
@@ -267,6 +304,46 @@ pub(crate) fn copy_intel_refresh_with_divisions(
     if job.fits(ctx.row_limit, 0) {
         acquire_intel(job, memory, ctx, divisions);
     }
+    IntelCopyReport {
+        raw_ok: job.acquired,
+        copy_ticks: [elapsed(started)],
+        raw_bytes: [job.raw_bytes],
+    }
+}
+
+/// Worker-only acquisition; each original native header can enlarge owned storage.
+pub(crate) fn copy_radar_refresh_growing(
+    memory: &impl Memory,
+    ctx: RadarCopyContext,
+    job: &mut RadarJob,
+) -> RadarCopyReport {
+    if !replay::cadence::should_walk(TableId::RadarCoverage, ctx.hour, ctx.force_full) {
+        job.clear();
+        return RadarCopyReport::default();
+    }
+    let started = qpc();
+    job.prepare(ctx.row_limit, ctx.province_limit);
+    job.growing = true;
+    acquire_radar(job, memory, ctx);
+    job.update_capacity_charge();
+    RadarCopyReport {
+        raw_ok: job.acquired,
+        copy_ticks: [elapsed(started)],
+        raw_bytes: [job.raw_bytes],
+    }
+}
+
+pub(crate) fn copy_intel_refresh_with_divisions_growing(
+    memory: &impl Memory,
+    ctx: IntelCopyContext,
+    job: &mut IntelJob,
+    divisions: Option<unit_viewer_entry::DivisionSources<'_>>,
+) -> IntelCopyReport {
+    let started = qpc();
+    job.prepare(ctx.row_limit, 0);
+    job.growing = true;
+    acquire_intel(job, memory, ctx, divisions);
+    job.update_capacity_charge();
     IntelCopyReport {
         raw_ok: job.acquired,
         copy_ticks: [elapsed(started)],
@@ -329,9 +406,24 @@ impl Captured {
             return;
         }
         let started = qpc();
-        if !job.acquired
-            || job.row_limit != self.radar.rows.len()
-            || job.province_limit != self.radar_provinces.first.len()
+        self.radar_provinces.required = job.required_provinces;
+        let growth = if job.growing {
+            engine::walk::Buffer::Growing(&mut self.radar.rows)
+                .ensure(job.outcome.len())
+                .and_then(|_| {
+                    engine::walk::Buffer::Growing(&mut self.radar_provinces.first)
+                        .ensure(job.provinces_len)
+                })
+        } else {
+            Ok(true)
+        };
+        if let Err(reason) = growth {
+            self.radar.outcome = job.outcome;
+            self.radar.fail(Outcome::Unavailable { reason });
+        } else if !job.acquired
+            || (!job.growing
+                && (job.row_limit != self.radar.rows.len()
+                    || job.province_limit != self.radar_provinces.first.len()))
         {
             self.radar.outcome = Outcome::Unavailable {
                 reason: "radar owned payload capacity mismatch",
@@ -359,7 +451,15 @@ impl Captured {
         decode_ticks: &mut [u64; INTEL_N],
     ) {
         let started = qpc();
-        if !job.acquired || job.row_limit != self.intel.rows.len() {
+        let growth = if job.growing {
+            engine::walk::Buffer::Growing(&mut self.intel.rows).ensure(job.outcome.len())
+        } else {
+            Ok(true)
+        };
+        if let Err(reason) = growth {
+            self.intel.outcome = job.outcome;
+            self.intel.fail(Outcome::Unavailable { reason });
+        } else if !job.acquired || (!job.growing && job.row_limit != self.intel.rows.len()) {
             self.intel.outcome = Outcome::Unavailable {
                 reason: "intel owned payload capacity mismatch",
             };

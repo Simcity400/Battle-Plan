@@ -211,7 +211,7 @@ fn raw_modifier_preserves_negative_values_absence_and_order() {
         0x10,
         4,
         &[6, 5, 7],
-        &mut output,
+        &mut Buffer::Fixed(&mut output),
         &mut len,
     )
     .unwrap();
@@ -230,7 +230,7 @@ fn raw_modifier_preserves_negative_values_absence_and_order() {
             0x10,
             0,
             &[1],
-            &mut output,
+            &mut Buffer::Fixed(&mut output),
             &mut len
         ),
         Err("reinforcement modifier arena full")
@@ -308,7 +308,7 @@ fn raw_shared_modifier_snapshot_avoids_native_recensus() {
         0x99999,
         1,
         &[4, 5],
-        &mut output,
+        &mut Buffer::Fixed(&mut output),
         &mut len,
     )
     .unwrap();
@@ -412,7 +412,7 @@ fn acclimatization_retains_native_ties_and_active_reference_join() {
     };
     let mut row = ContextRow::default();
     let mut terms = [AcclimatizationTerm::default(); 2];
-    acclimatization(&memory, 0x100, &mut row, &mut terms).unwrap();
+    acclimatization(&memory, 0x100, &mut row, &mut Buffer::Fixed(&mut terms)).unwrap();
     assert_eq!(
         terms,
         [
@@ -429,9 +429,145 @@ fn acclimatization_retains_native_ties_and_active_reference_join() {
     assert_eq!(row.scalar_values[0], 123);
     assert_eq!(row.scalar_values[1], -500);
     assert_eq!(
-        acclimatization(&memory, 0x100, &mut row, &mut terms[..1]),
+        acclimatization(
+            &memory,
+            0x100,
+            &mut row,
+            &mut Buffer::Fixed(&mut terms[..1])
+        ),
         Err("reinforcement acclimatization arena full")
     );
+}
+
+#[test]
+fn worker_acclimatization_has_no_chosen_limit_and_retains_later_growth() {
+    let mut terms = Vec::new();
+    for count in [5_000, 7_500] {
+        let mut bytes = vec![0_u8; 0x1000 + count * 16];
+        let object = 0x100 + carmy::ACCLIMATIZATION;
+        bytes[object + 8..object + 16].copy_from_slice(&0x1000_u64.to_le_bytes());
+        bytes[object + 16..object + 20].copy_from_slice(&(count as u32).to_le_bytes());
+        bytes[object + 20..object + 24].copy_from_slice(&(count as u32).to_le_bytes());
+        bytes[object + 0x20..object + 0x28].copy_from_slice(&0x900_u64.to_le_bytes());
+        for index in 0..count {
+            let at = 0x1000 + index * 16;
+            bytes[at..at + 8].copy_from_slice(&0x900_u64.to_le_bytes());
+            bytes[at + 8..at + 16].copy_from_slice(&(-(index as i64)).to_le_bytes());
+        }
+        let mut row = ContextRow::default();
+        acclimatization(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0x100,
+            &mut row,
+            &mut Buffer::Growing(&mut terms),
+        )
+        .unwrap();
+        assert_eq!(row.acclimatization_count, count);
+        assert_eq!(terms[count - 1].weight, -(count as i64 - 1));
+        assert_eq!(terms[count - 1].active, 1);
+    }
+}
+
+#[test]
+fn worker_modifier_batches_keep_mod_sized_populations_on_the_original_pass() {
+    struct Shared;
+    impl Memory for Shared {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if address == crate::modifier_definition::TABLE_RVA && output.len() == 8 {
+                output.copy_from_slice(&0x100_0000_u64.to_le_bytes());
+                return true;
+            }
+            let metadata = address.checked_sub(0x100_0000 + crate::modifier_definition::FLAGS);
+            if metadata.is_some_and(|offset| offset % crate::modifier_definition::STRIDE == 0)
+                && output.len() == 12
+            {
+                output.fill(0);
+                return true;
+            }
+            false
+        }
+        fn modifier_accumulator_value(
+            &self,
+            _: usize,
+            key: u32,
+        ) -> Option<Result<crate::modifier_accumulator::Value, &'static str>> {
+            Some(Ok(crate::modifier_accumulator::Value {
+                raw: -(key as i64),
+                present: true,
+            }))
+        }
+    }
+    let mut output = Vec::new();
+    for count in [5_000, 7_500] {
+        let keys: Vec<_> = (1..=count as u32).collect();
+        let mut len = 0;
+        append_modifiers(
+            &Shared,
+            0,
+            &mut Sources::new(),
+            0x1000,
+            6,
+            &keys,
+            &mut Buffer::Growing(&mut output),
+            &mut len,
+        )
+        .unwrap();
+        assert_eq!(len, count);
+        assert_eq!(output[count - 1].key, count as u32);
+        assert_eq!(output[count - 1].raw, -(count as i64));
+    }
+}
+
+#[test]
+fn supply_and_priority_category_arenas_keep_all_mod_sized_occurrences() {
+    let mut supply = Vec::new();
+    let mut categories = Vec::new();
+    for count in [5_000, 7_500] {
+        let mut memory = Sparse::default();
+        memory.u64(
+            0x1000,
+            crate::creferenced_division_template::VTABLE_RVA as u64,
+        );
+        memory.u64(
+            0x1000 + crate::creferenced_division_template::PRIORITY_UNIT,
+            0x2000,
+        );
+        memory.array(0x1000 + 0xc0, 0x10_0000, count as u32);
+        memory.u64(0x2000, crate::csub_unit_definition::VTABLE_RVA as u64);
+        memory.u32(0x2008, 7);
+        memory.u32(0x2000 + 0x5d8, 9);
+        memory.put(0x2000 + 0x5b7, &[1]);
+        memory.array(0x2000 + 0x508, 0x20_0000, count as u32);
+        memory.u32(0x3000 + 0x60, 11);
+        for index in 0..count {
+            memory.u64(0x10_0000 + index * 16, 0x2000);
+            memory.u32(0x10_0000 + index * 16 + 8, index as u32);
+            memory.u64(0x20_0000 + index * 8, 0x3000);
+        }
+        let mut row = ContextRow::default();
+        supply_terms(
+            &memory,
+            0,
+            &mut Sources::new(),
+            0x1000,
+            &mut row,
+            &mut Buffer::Growing(&mut supply),
+        )
+        .unwrap();
+        assert_eq!(row.supply_term_count, count);
+        assert_eq!(supply[count - 1].count, count as i32 - 1);
+        assert_eq!(supply[count - 1].special, 1);
+        categories.clear();
+        let selected = priority(&memory, 0, 0x1000, &mut categories).unwrap();
+        let selected = selected.categories.unwrap();
+        assert_eq!(selected.count, count as u32);
+        assert_eq!(selected.tokens.len, count);
+        assert_eq!(selected.failure, None);
+        assert_eq!(categories[count - 1], 11);
+    }
 }
 
 /// Chunked sparse memory: a read succeeds only inside one written chunk,

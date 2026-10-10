@@ -12,7 +12,9 @@ use replay::{
     rows::{CountryRow, tables},
 };
 
-use super::{Report, TokenNames, complete, invalid, required_country_tag};
+use super::{
+    Report, TokenNames, complete, invalid, required_country_tag, reverse_spellings, token_spelling,
+};
 
 fn equal<T: Debug + PartialEq>(
     report: &mut Report,
@@ -98,11 +100,15 @@ fn compare_pack(
     attempt!("PoliticalParties", compare_parties);
     attempt!("Politics", compare_politics);
     attempt!("Politics.ruling_party", compare_ruling_party);
-    attempt!("ActiveIdeas", compare_ideas);
+    complete &= report.attempt("governance ActiveIdeas", |report| {
+        compare_ideas(frame, pack, links, tokens, report)
+    });
     attempt!("TimedIdeas", compare_timed_ideas);
     attempt!("Focus", compare_focus);
     attempt!("CompletedFocuses", compare_completed_focuses);
-    attempt!("Research", compare_research);
+    complete &= report.attempt("governance Research", |report| {
+        compare_research(frame, pack, links, tokens, report)
+    });
     if frame.complete::<tables::ResearchModifiers>().is_ok() {
         report.limitation("research modifier operands and sources have synthetic coverage, but no fresh-save or live-rate oracle validation", "ResearchModifiers");
     }
@@ -212,7 +218,7 @@ fn compare_parties(
             None => report.difference(subject, token, "missing saved political party"),
         }
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         if let Some(saved) = &country.politics {
             for token in saved.parties.keys() {
                 if !captured.contains(&(tag.as_slice(), token.as_slice())) {
@@ -281,7 +287,7 @@ fn compare_politics(
         );
         count += 1;
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         if country.politics.is_some() && !captured.contains(tag.as_slice()) {
             report.difference(
                 label(tag, "politics"),
@@ -333,17 +339,24 @@ fn compare_ruling_party(
     Ok(())
 }
 
+/// 140BA12D0 writes CIdea+8 through GetTokenString@1424A7300, not its
+/// definition string at +0x18. The ctor@140FB7E30/140FB80F2 registers that
+/// string through AddDynamicToken; the recorded dictionary supplies its
+/// canonical writer spelling even when another file registered it first.
 fn compare_ideas(
     frame: &DecodedFrame,
     pack: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
+    tokens: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
     let ideas = complete::<tables::ActiveIdeas>(frame)?;
+    let spellings = reverse_spellings(tokens);
     let mut captured: BTreeMap<&[u8], BTreeMap<u32, &[u8]>> = BTreeMap::new();
     for row in ideas {
         let (tag, _) = country(pack, links, row.country)?;
         let token = literal(report, &label(tag, "ideas"), &row.token);
+        let token = token_spelling(tokens, &spellings, token, "active idea")?;
         if captured
             .entry(tag)
             .or_default()
@@ -354,7 +367,7 @@ fn compare_ideas(
         }
     }
     let mut count = 0;
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         if let Some(saved) = &country.politics {
             let actual = captured.remove(tag.as_slice()).unwrap_or_default();
             check_ordinals(actual.keys().copied())?;
@@ -408,7 +421,7 @@ fn compare_timed_ideas(
         }
     }
     let mut count = 0;
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         let actual = captured.remove(tag.as_slice()).unwrap_or_default();
         check_ordinals(actual.keys().copied())?;
         let expected = country
@@ -456,7 +469,7 @@ fn compare_decision_random_items(
         }
     }
     let mut count = 0;
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         let actual = captured.remove(tag.as_slice()).unwrap_or_default();
         check_ordinals(actual.keys().copied())?;
         let expected = country
@@ -553,7 +566,7 @@ fn compare_focus(
         );
         count += 1;
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         if country.focus.is_some() && !captured.contains(tag.as_slice()) {
             report.difference(label(tag, "focus"), "missing captured country", "present");
         }
@@ -593,7 +606,7 @@ fn compare_completed_focuses(
         }
     }
     let mut count = 0;
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         if let Some(saved) = &country.focus {
             let subject = label(tag, "focus");
             let actual = completions.remove(tag.as_slice()).unwrap_or_default();
@@ -670,7 +683,7 @@ fn compare_decision_counts(
         equal(report, label(tag, "decisions.counts"), actual, expected);
         count += 1;
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         if country.decisions.is_some() && !captured.contains(tag.as_slice()) {
             report.difference(
                 label(tag, "decisions"),
@@ -790,7 +803,7 @@ fn compare_decisions(
         }
         row_count += 1;
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         if let Some(saved) = &country.decisions {
             for (container, rows) in saved.containers.iter().enumerate() {
                 for ordinal in 0..rows.len() {
@@ -891,7 +904,7 @@ fn compare_modifiers(
         }
         count += 1;
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         for ordinal in 0..country.dynamic_modifiers.len() {
             if !keys.contains(&(tag.as_slice(), ordinal as u32)) {
                 report.difference(
@@ -931,7 +944,7 @@ fn compare_tactics(
             tactic_count += 1;
         }
     }
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         if country.preferred_tactic.is_some() && !tactic_countries.contains(tag.as_slice()) {
             report.difference(
                 label(tag, "preferred_tactic"),

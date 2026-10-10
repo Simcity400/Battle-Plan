@@ -97,6 +97,27 @@ pub struct Buffers<'a> {
     pub bytes: &'a mut [u8],
 }
 
+/// Worker-owned rows and arenas grow from the original role/trait headers.
+pub struct GrowingBuffers<'a> {
+    pub traits: &'a mut Vec<TraitRow>,
+    pub trait_values: &'a mut Vec<Trait>,
+    pub operatives: &'a mut Vec<OperativeRow>,
+    pub definitions: &'a mut Vec<u32>,
+    pub bytes: &'a mut Vec<u8>,
+}
+struct Storage<'a> {
+    traits: crate::walk::Buffer<'a, TraitRow>,
+    trait_values: crate::walk::Buffer<'a, Trait>,
+    operatives: crate::walk::Buffer<'a, OperativeRow>,
+    definitions: crate::walk::Buffer<'a, u32>,
+    bytes: crate::walk::Buffer<'a, u8>,
+}
+struct Names<'a> {
+    bytes: crate::walk::Buffer<'a, u8>,
+    len: usize,
+    required: usize,
+}
+
 /// Outcomes of both tables. Rows that do not fit are counted (a row whose
 /// values do not fit is not stored), and `required_*` count every value,
 /// stored or not, so an empty buffer yields the live demand.
@@ -159,8 +180,8 @@ const SENTINEL_LAYOUT: RecordLayout<'static> = match RecordLayout::new(&SENTINEL
 
 /// One table's rows, value arena and its own first failure.
 struct Table<'a, R, V> {
-    rows: &'a mut [R],
-    values: &'a mut [V],
+    rows: crate::walk::Buffer<'a, R>,
+    values: crate::walk::Buffer<'a, V>,
     len: usize,
     values_len: usize,
     required: usize,
@@ -168,8 +189,8 @@ struct Table<'a, R, V> {
     failure: Option<&'static str>,
 }
 
-impl<'a, R, V> Table<'a, R, V> {
-    fn new(rows: &'a mut [R], values: &'a mut [V]) -> Self {
+impl<'a, R: Default, V: Default> Table<'a, R, V> {
+    fn new(rows: crate::walk::Buffer<'a, R>, values: crate::walk::Buffer<'a, V>) -> Self {
         Self {
             rows,
             values,
@@ -189,6 +210,17 @@ impl<'a, R, V> Table<'a, R, V> {
             .required
             .checked_add(count)
             .ok_or("character input value count overflow")?;
+        // CHasTraitTrigger@1403D7D20 visits every role's full trait array.
+        self.rows.ensure(
+            self.len
+                .checked_add(1)
+                .ok_or("character input row count overflow")?,
+        )?;
+        self.values.ensure(
+            self.values_len
+                .checked_add(count)
+                .ok_or("character input value count overflow")?,
+        )?;
         if self.unread_rows == 0
             && self.len < self.rows.len()
             && count <= self.values.len() - self.values_len
@@ -237,10 +269,48 @@ impl<'a, R, V> Table<'a, R, V> {
 /// unreadable roster, page or unauthenticated character fails both tables; a
 /// role, trait or resolved leader that does not read fails its own table.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, buffers: Buffers<'_>) -> Walk {
+    walk_storage(
+        memory,
+        base,
+        game_state,
+        Storage {
+            traits: crate::walk::Buffer::Fixed(buffers.traits),
+            trait_values: crate::walk::Buffer::Fixed(buffers.trait_values),
+            operatives: crate::walk::Buffer::Fixed(buffers.operatives),
+            definitions: crate::walk::Buffer::Fixed(buffers.definitions),
+            bytes: crate::walk::Buffer::Fixed(buffers.bytes),
+        },
+    )
+}
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    buffers: GrowingBuffers<'_>,
+) -> Walk {
+    walk_storage(
+        memory,
+        base,
+        game_state,
+        Storage {
+            traits: crate::walk::Buffer::Growing(buffers.traits),
+            trait_values: crate::walk::Buffer::Growing(buffers.trait_values),
+            operatives: crate::walk::Buffer::Growing(buffers.operatives),
+            definitions: crate::walk::Buffer::Growing(buffers.definitions),
+            bytes: crate::walk::Buffer::Growing(buffers.bytes),
+        },
+    )
+}
+fn walk_storage(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    buffers: Storage<'_>,
+) -> Walk {
     let mut traits = Table::new(buffers.traits, buffers.trait_values);
     let mut operatives = Table::new(buffers.operatives, buffers.definitions);
     let mut resolver = creference_registry::HeaderResolver::default();
-    let mut names = crate::cname_group_member::Names {
+    let mut names = Names {
         bytes: buffers.bytes,
         len: 0,
         required: 0,
@@ -530,7 +600,7 @@ fn operative(
     character: u32,
     reference: u64,
     table: &mut Table<'_, OperativeRow, u32>,
-    names: &mut crate::cname_group_member::Names<'_>,
+    names: &mut Names<'_>,
 ) -> Result<(), &'static str> {
     let Some(object) = resolver.resolve(memory, base, reference)? else {
         if let Some(start) = table.reserve(0)? {
@@ -590,12 +660,18 @@ fn operative(
     };
     let array = Array::from_header(traits, 8).ok_or("operative trait array invalid")?;
     let len = array.count as usize;
-    let mut pending = crate::cname_group_member::Names {
-        bytes: &mut *names.bytes,
+    let mut pending = Names {
+        bytes: names.bytes.suffix(0),
         len: names.len,
         required: names.required,
     };
-    let (name, name_reason) = match cunit_leader::read_name(memory, object, &mut pending) {
+    let (name, name_reason) = match cunit_leader::read_name_buffer(
+        memory,
+        object,
+        pending.bytes.suffix(0),
+        &mut pending.len,
+        &mut pending.required,
+    ) {
         Ok(Some(span)) => (Some(span), None),
         Ok(None) => (None, Some("operative name byte capacity exceeded")),
         Err(reason) => (None, Some(reason)),
@@ -603,7 +679,14 @@ fn operative(
     let category = i32::from_le_bytes(category);
     let codename_start = pending.len;
     let (codename, codename_reason) = if cunit_leader::has_codename(kind) {
-        match cunit_leader::read_codename(memory, base, object, &mut pending) {
+        match cunit_leader::read_codename_buffer(
+            memory,
+            base,
+            object,
+            pending.bytes.suffix(0),
+            &mut pending.len,
+            &mut pending.required,
+        ) {
             Ok(crate::cname_group_member::Naming::Row(row)) => (Some(row), None),
             Ok(crate::cname_group_member::Naming::DoesNotFit) => {
                 pending.len = codename_start;
@@ -867,6 +950,68 @@ mod tests {
         m.u64(0x7300, cunit_leader_skill::VTABLE_RVA as u64);
         m.u32(0x7300 + cunit_leader_skill::LEVEL, 4);
         m
+    }
+
+    #[test]
+    fn worker_grows_5000_character_role_operative_and_name_arenas() {
+        let mut memory = world();
+        let pointers: Vec<_> = (0..5_000).map(|index| 0x10_0000 + index * 0x200).collect();
+        memory.array(
+            MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+            0x40_0000,
+            &pointers,
+        );
+        memory.array(MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS, 0, &[]);
+        for (index, &pointer) in pointers.iter().enumerate() {
+            memory.character(pointer, index as u32 + 1);
+            for offset in MAPS {
+                memory.empty_map(pointer, offset, 0x48_0000);
+            }
+            memory.u64(pointer + ccharacter::SCIENTIST, 0x5400);
+            memory.u64(pointer + ccharacter::OPERATIVE, RESOLVED);
+        }
+        let mut traits = Vec::new();
+        let mut trait_values = Vec::new();
+        let mut operatives = Vec::new();
+        let mut definitions = Vec::new();
+        let mut bytes = Vec::new();
+        for values in [1_usize, 17] {
+            memory.array(
+                0x5400 + cscientist::TRAIT_DATA,
+                0x49_0000,
+                &vec![0x6200; values],
+            );
+            memory.array(
+                OPERATIVE + cunit_leader::TRAIT_DATA,
+                0x4a_0000,
+                &vec![0x7200; values],
+            );
+            let result = walk_growing(
+                &memory,
+                0,
+                GS,
+                GrowingBuffers {
+                    traits: &mut traits,
+                    trait_values: &mut trait_values,
+                    operatives: &mut operatives,
+                    definitions: &mut definitions,
+                    bytes: &mut bytes,
+                },
+            );
+            assert_eq!(result.traits, Outcome::Rows { len: 5_000 });
+            assert_eq!(result.operatives, Outcome::Rows { len: 5_000 });
+            assert_eq!(result.required_trait_values, 5_000 * values);
+            assert_eq!(result.required_definitions, 5_000 * values);
+            assert_eq!(result.bytes_len, 50_000);
+            assert_eq!(traits[4_999].character, 5_000);
+            assert_eq!(operatives[4_999].name, Some((49_990, 5)));
+            assert_eq!(operatives[4_999].codename.unwrap().group, (49_995, 5));
+            assert!(
+                operatives[..5_000]
+                    .iter()
+                    .all(|row| row.name_reason.is_none() && row.codename_reason.is_none())
+            );
+        }
     }
 
     struct Output {

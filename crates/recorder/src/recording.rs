@@ -11,6 +11,7 @@ use replay::{
 };
 use serde_json::{Value, json};
 use std::{
+    cell::Cell,
     ffi::{OsStr, OsString},
     fs::{self, File},
     path::{Path, PathBuf},
@@ -510,6 +511,11 @@ fn capture(
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut next_progress = Instant::now() + Duration::from_secs(10);
     while !ready.handle.signaled()? {
+        if let Some(witness) = live_failure(&directory, session.id, session.process_start_time)? {
+            publish_failure_status(&directory, &witness)?;
+            detach.set()?;
+            break;
+        }
         if error_path.exists() {
             return Err(fs::read_to_string(&error_path).unwrap_or_else(|e| e.to_string()));
         }
@@ -531,7 +537,7 @@ fn capture(
     let active = output.join("active.json");
     write_json(
         &active,
-        &json!({"recorder_pid":std::process::id(),"game_pid":pid,"process_start_time":process.start_time,"session_dir":directory,"dll":dll,"detach_event":detach_name,"done_event":done_name}),
+        &json!({"recorder_pid":std::process::id(),"game_pid":pid,"session_id":session.id,"process_start_time":process.start_time,"session_dir":directory,"dll":dll,"detach_event":detach_name,"done_event":done_name}),
     )?;
     println!("Recording process {pid}. Spool: {}", directory.display());
     let mut next_status = Instant::now();
@@ -541,6 +547,16 @@ fn capture(
     loop {
         requested_detach |= STOP.load(Ordering::Acquire) || detach.handle.signaled()?;
         if process.handle.signaled()? {
+            break;
+        }
+        if let Some(witness) = live_failure(&directory, session.id, session.process_start_time)? {
+            publish_failure_status(&directory, &witness)?;
+            eprintln!(
+                "Collector capture failed at hour {:?} (phase {}, code {}); detaching and recovering the committed prefix.",
+                witness.failed_hour, witness.phase, witness.code
+            );
+            detach.set()?;
+            requested_detach = true;
             break;
         }
         if requested_detach {
@@ -631,10 +647,12 @@ fn capture(
             .push(format!("incomplete status publication failed: {error}"));
     }
     let _lock = finalization_lock(output)?;
-    let finalized = match outcome
-        .recovery_allowed
-        .then(|| replay_io::finalize_session_outcome(&directory, output))
-    {
+    let progress = FinalizationProgress::new(&directory)?;
+    let finalized = match outcome.recovery_allowed.then(|| {
+        replay_io::finalize_session_outcome_with_progress(&directory, output, &|| {
+            progress.advance()
+        })
+    }) {
         Some(Ok((paths, errors))) => {
             outcome.issues.extend(
                 errors
@@ -742,7 +760,11 @@ fn classify_terminal(
         {
             issue(format!("collector terminal error: {}", error.trim()));
         }
-        if status["state"] == "detached" && correct_session {
+        if matches!(
+            status["state"].as_str(),
+            Some("detached" | "capture_failed")
+        ) && correct_session
+        {
             outcome.drain_complete = status["drain_complete"].as_bool();
             if outcome.drain_complete == Some(false) {
                 issue("collector final queue drain or spool sync was incomplete".into());
@@ -870,7 +892,7 @@ fn failure_status(status: Option<Value>, witness: &TerminalWitness) -> Value {
     let mut status = status
         .filter(|status| status.is_object() && status["session"].as_u64() == Some(witness.session))
         .unwrap_or_else(|| json!({}));
-    status["state"] = json!("detached");
+    status["state"] = json!("capture_failed");
     status["session"] = json!(witness.session);
     status["drain_complete"] = json!(witness.drain_complete);
     status["capture_failed"] = json!(true);
@@ -888,7 +910,53 @@ fn publish_failure_status(directory: &Path, witness: &TerminalWitness) -> Result
     let previous = fs::read(&path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    write_json(&path, &failure_status(previous, witness))
+    let mut status = failure_status(previous, witness);
+    if let Ok(bytes) = fs::read(directory.join("collector-failure-detail.json"))
+        && let Ok(detail) = serde_json::from_slice::<Value>(&bytes)
+        && detail["session"].as_u64() == Some(witness.session)
+        && detail["process_start_time"].as_u64() == Some(witness.process_start_time)
+        && detail["family"].is_string()
+        && detail["requested_bytes"].is_u64()
+    {
+        status["allocation_family"] = detail["family"].clone();
+        status["allocation_requested_bytes"] = detail["requested_bytes"].clone();
+    }
+    write_json(&path, &status)
+}
+
+/// A complete first-failure witness is authoritative while capture is loaded.
+/// A concurrent fixed-record write may not yet have a valid checksum; terminal
+/// recovery still validates all evidence strictly after collector absence.
+fn live_failure(
+    directory: &Path,
+    session: u64,
+    process_start: u64,
+) -> Result<Option<TerminalWitness>, String> {
+    let Ok(Some(witness)) = replay_io::read_failure_witness(directory) else {
+        return Ok(None);
+    };
+    if witness.session != session || witness.process_start_time != process_start {
+        return Err(
+            "collector failure witness belongs to a different process session; spool retained"
+                .into(),
+        );
+    }
+    Ok(Some(witness))
+}
+
+fn refuse_failed_refresh(directory: &Path, active: &Value) -> Result<(), String> {
+    let process_start = active["process_start_time"]
+        .as_u64()
+        .ok_or("active recorder has no process start time")?;
+    let session = active["session_id"].as_u64().unwrap_or(process_start);
+    if let Some(witness) = live_failure(directory, session, process_start)? {
+        publish_failure_status(directory, &witness)?;
+        return Err(format!(
+            "collector capture failed at hour {:?} (phase {}, code {}); refresh unavailable; detach recovers the committed prefix",
+            witness.failed_hour, witness.phase, witness.code
+        ));
+    }
+    Ok(())
 }
 
 /// Validate the recorder's terminal result before a second console claims success.
@@ -945,6 +1013,7 @@ fn request_refresh(output: &Path) -> Result<(), String> {
             .as_str()
             .ok_or("active recorder has no session directory")?,
     );
+    refuse_failed_refresh(&session_dir, &active)?;
     let token = format!(
         "{}-{}",
         std::process::id(),
@@ -965,6 +1034,12 @@ fn request_refresh(output: &Path) -> Result<(), String> {
     }
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
+        if let Err(error) = refuse_failed_refresh(&session_dir, &active) {
+            if fs::read_to_string(&request).is_ok_and(|text| text.trim() == token) {
+                let _ = fs::remove_file(&request);
+            }
+            return Err(error);
+        }
         if fs::read_to_string(&ack).is_ok_and(|text| text.trim() == token) {
             println!("Full refresh requested: the next hourly sample reads every scheduled table.");
             return Ok(());
@@ -994,12 +1069,28 @@ fn request_detach(output: &Path) -> Result<(), String> {
             .as_str()
             .ok_or("active recorder has no session directory")?,
     );
+    let recorder_pid = active["recorder_pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .ok_or("active recorder has no valid recorder pid")?;
+    let recorder = Process::open(recorder_pid, false)
+        .map_err(|error| format!("recording controller unavailable: {error}"))?;
     Event::open(name)?.set()?;
     println!("Detach requested. Waiting for recorder finalization.");
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut watch = ProgressWatch::new(Instant::now());
     while !session_dir.join("completed.json").exists() {
-        if Instant::now() >= deadline {
-            return Err("detach/finalization has not completed; inspect the recorder console and retained spool".into());
+        if recorder.handle.signaled()? {
+            // Completion publication and controller exit can coincide.
+            if session_dir.join("completed.json").exists() {
+                break;
+            }
+            return Err(
+                "recording controller exited before detach/finalization completed; spool retained"
+                    .into(),
+            );
+        }
+        if watch.stalled(Instant::now(), progress_stamp(&session_dir)) {
+            return Err("detach/finalization stopped making progress; inspect the recorder console and retained spool".into());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -1016,6 +1107,77 @@ fn request_detach(output: &Path) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+// This is an inactivity timeout, never a limit on total drain/finalization time.
+const DETACH_STALL_TIMEOUT: Duration = Duration::from_secs(120);
+struct ProgressWatch {
+    last_progress: Instant,
+    stamp: (Option<SystemTime>, Option<SystemTime>),
+}
+impl ProgressWatch {
+    fn new(now: Instant) -> Self {
+        Self {
+            last_progress: now,
+            stamp: (None, None),
+        }
+    }
+    fn stalled(&mut self, now: Instant, stamp: (Option<SystemTime>, Option<SystemTime>)) -> bool {
+        if stamp != self.stamp {
+            self.stamp = stamp;
+            self.last_progress = now;
+        }
+        now.duration_since(self.last_progress) >= DETACH_STALL_TIMEOUT
+    }
+}
+fn progress_stamp(directory: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
+    let modified = |name| {
+        fs::metadata(directory.join(name))
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+    };
+    // After unload, the controller reports actual metadata/frame work. Earlier
+    // collector status publications act as its drain heartbeat.
+    let finalization = modified("finalization-progress.json");
+    (
+        if finalization.is_none() {
+            modified("status.json")
+        } else {
+            None
+        },
+        finalization,
+    )
+}
+struct FinalizationProgress<'a> {
+    directory: &'a Path,
+    records: Cell<u64>,
+    last_write: Cell<Instant>,
+}
+impl<'a> FinalizationProgress<'a> {
+    fn new(directory: &'a Path) -> Result<Self, String> {
+        write_json(
+            &directory.join("finalization-progress.json"),
+            &json!({"recorder_pid": std::process::id(), "records": 0u64}),
+        )?;
+        Ok(Self {
+            directory,
+            records: Cell::new(0),
+            last_write: Cell::new(Instant::now()),
+        })
+    }
+    fn advance(&self) -> std::io::Result<()> {
+        self.records.set(self.records.get().saturating_add(1));
+        let now = Instant::now();
+        if now.duration_since(self.last_write.get()) >= Duration::from_secs(1) {
+            write_json(
+                &self.directory.join("finalization-progress.json"),
+                &json!({"recorder_pid": std::process::id(), "records": self.records.get()}),
+            )
+            .map_err(std::io::Error::other)?;
+            self.last_write.set(now);
+        }
+        Ok(())
+    }
 }
 
 fn print_status(path: &Path) {
@@ -1062,7 +1224,7 @@ fn destruction_refusal(status: &Value) -> Option<(u64, &str)> {
 }
 
 fn write_json(path: &Path, value: &Value) -> Result<(), String> {
-    let temporary = path.with_extension("json.tmp");
+    let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
     fs::write(
         &temporary,
         serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?,
@@ -1231,6 +1393,19 @@ pub(crate) fn resolve_user_directory() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detach_wait_follows_progress_past_the_old_total_deadline_and_detects_stalls() {
+        let start = Instant::now();
+        let mut watch = ProgressWatch::new(start);
+        for seconds in [0, 60, 119, 127, 240, 1000] {
+            let stamp = Some(UNIX_EPOCH + Duration::from_secs(seconds));
+            assert!(!watch.stalled(start + Duration::from_secs(seconds), (None, stamp)));
+        }
+        let stamp = (None, Some(UNIX_EPOCH + Duration::from_secs(1000)));
+        assert!(!watch.stalled(start + Duration::from_secs(1119), stamp));
+        assert!(watch.stalled(start + Duration::from_secs(1120), stamp));
+    }
 
     #[test]
     fn politics_capture_defaults_on_and_can_only_be_disabled_for_recording() {
@@ -1412,7 +1587,7 @@ mod tests {
         publish_failure_status(&directory, &witness).unwrap();
         let status: Value =
             serde_json::from_slice(&fs::read(directory.join("status.json")).unwrap()).unwrap();
-        assert_eq!(status["state"], "detached");
+        assert_eq!(status["state"], "capture_failed");
         assert_eq!(status["capture_failed"], true);
         assert_eq!(status["failure_code"], "allocation_failed");
         assert_eq!(status["failed_hour"], 99);
@@ -1421,6 +1596,42 @@ mod tests {
         assert_eq!(status["hours"], 3);
         let completed = json!({"partial":true,"capture_failed":true,"failure_code":"allocation_failed","failed_hour":99,"issues":outcome.issues});
         assert!(completed_detach(&completed).is_err());
+    }
+
+    #[test]
+    fn live_failure_refuses_refresh_and_authenticates_request_diagnostics() {
+        use crate::test_support::{allocation_test_directory, allocation_witness};
+        let directory = allocation_test_directory("live-failure-refresh");
+        create_failure_witness(&directory, 7, 13).unwrap();
+        let active = json!({"session_id":7,"process_start_time":13});
+        assert_eq!(live_failure(&directory, 7, 13).unwrap(), None);
+        assert!(refuse_failed_refresh(&directory, &active).is_ok());
+        let witness = allocation_witness(1);
+        fs::write(directory.join(WITNESS_FILE_NAME), witness.encode()).unwrap();
+        write_json(
+            &directory.join("status.json"),
+            &json!({"session":7,"state":"recording","hours":16}),
+        )
+        .unwrap();
+        for session in [8, 7] {
+            write_json(&directory.join("collector-failure-detail.json"), &json!({
+                "session":session,"process_start_time":13,"family":"raw bytes","requested_bytes":322536576u64
+            })).unwrap();
+            assert_eq!(live_failure(&directory, 7, 13).unwrap(), Some(witness));
+            assert!(live_failure(&directory, 7, 14).is_err());
+            let error = refuse_failed_refresh(&directory, &active).unwrap_err();
+            assert!(error.contains("capture failed") && error.contains("refresh unavailable"));
+            let status: Value =
+                serde_json::from_slice(&fs::read(directory.join("status.json")).unwrap()).unwrap();
+            assert_eq!(status["state"], "capture_failed");
+            assert_eq!(status["hours"], 16);
+            if session == 7 {
+                assert_eq!(status["allocation_family"], "raw bytes");
+                assert_eq!(status["allocation_requested_bytes"], 322536576u64);
+            } else {
+                assert!(status.get("allocation_family").is_none());
+            }
+        }
     }
 
     #[test]
@@ -1473,7 +1684,7 @@ mod tests {
         fs::create_dir_all(&session).unwrap();
         fs::write(
             root.join("active.json"),
-            json!({"session_dir": session}).to_string(),
+            json!({"session_dir": session,"session_id":7,"process_start_time":13}).to_string(),
         )
         .unwrap();
         // A collector stand-in acknowledges the whole token it finds.

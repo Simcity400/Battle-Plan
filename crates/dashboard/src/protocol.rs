@@ -174,6 +174,18 @@ pub struct MapOptions {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MapGraphics {
+    /// Viewer-local allied battle plans; no recorded client selection or toggle.
+    #[serde(default)]
+    pub show_allied_plans: bool,
+    /// Viewer-local world target size; CMapRenderingOptions+0x19 defaults true.
+    #[serde(default = "default_full_resolution")]
+    pub full_resolution: bool,
+    /// Viewer-local day/night display; never copied from the recording's UI state.
+    #[serde(default = "default_day_night")]
+    pub day_night: bool,
+    /// Embedded viewer-local NATO icons; missing legacy choices inherit their parent.
+    #[serde(default)]
+    pub nato_counters: Option<bool>,
     /// CMapRenderingOptions+0x18; ctor1401F9640 defaults true.
     #[serde(default = "default_high_gfx_shaders")]
     pub high_gfx_shaders: bool,
@@ -199,6 +211,10 @@ pub struct MapGraphics {
 impl Default for MapGraphics {
     fn default() -> Self {
         Self {
+            show_allied_plans: false,
+            full_resolution: true,
+            day_night: true,
+            nato_counters: None,
             high_gfx_shaders: true,
             water_reflections: true,
             sky: true,
@@ -213,6 +229,14 @@ impl Default for MapGraphics {
             weather: true,
         }
     }
+}
+
+fn default_day_night() -> bool {
+    true
+}
+
+fn default_full_resolution() -> bool {
+    true
 }
 
 fn default_high_gfx_shaders() -> bool {
@@ -526,6 +550,35 @@ mod tests {
         assert_eq!(graphics.texture_quality, 0);
         assert!(graphics.high_gfx_shaders);
         assert!(graphics.water_reflections && graphics.sky);
+        assert!(graphics.day_night);
+        assert_eq!(graphics.nato_counters, None);
+        assert!(graphics.full_resolution);
+        assert!(!graphics.show_allied_plans);
+        let off = super::MapGraphics {
+            show_allied_plans: true,
+            full_resolution: false,
+            day_night: false,
+            nato_counters: Some(false),
+            ..graphics
+        };
+        assert_eq!(
+            serde_json::from_str::<super::MapGraphics>(&serde_json::to_string(&off).unwrap())
+                .unwrap(),
+            off
+        );
+        for nato_counters in [None, Some(false), Some(true)] {
+            let configured = super::MapGraphics {
+                nato_counters,
+                ..graphics
+            };
+            assert_eq!(
+                serde_json::from_str::<super::MapGraphics>(
+                    &serde_json::to_string(&configured).unwrap()
+                )
+                .unwrap(),
+                configured
+            );
+        }
         let old_settings = format!(r#"{{"graphics":{old},"visualMods":null}}"#);
         let old_settings: CampaignMapSettings = serde_json::from_str(&old_settings).unwrap();
         assert!(!old_settings.use_game_graphics);

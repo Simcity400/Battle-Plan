@@ -230,7 +230,7 @@ fn speed(memory: &impl Memory, pointers: &mut [usize]) -> Result<i64, &'static s
         GAME,
         VARIANT,
         &mut NamedBonuses {
-            pointers,
+            pointers: crate::walk::Buffer::Fixed(pointers),
             required: 0,
         },
     )
@@ -312,7 +312,7 @@ fn railway_speed_named_capacity_is_raw_count_and_gathers_before_stats() {
     assert_eq!(named_bonus_demand(&memory, VARIANT), Ok(3));
     let mut pointers = [0; 2];
     let mut scratch = NamedBonuses {
-        pointers: &mut pointers,
+        pointers: crate::walk::Buffer::Fixed(&mut pointers),
         required: 1,
     };
     assert_eq!(
@@ -444,4 +444,26 @@ fn railway_speed_group_scaling_wraps_and_reduction_keeps_native_sentinel() {
         .speed(),
         Ok(10)
     );
+}
+
+#[test]
+fn growing_named_bonus_arena_uses_original_raw_header_demand() {
+    let mut fixture = Fixture::new(100_000);
+    fixture.bytes.resize(0x80000, 0);
+    let mut pointers = Vec::new();
+    for count in [5_000, 20_000] {
+        let handles = vec![8; count];
+        fixture.named(1, 0, &handles, &[(8, 1)]);
+        let memory = fixture.memory();
+        let mut scratch = NamedBonuses {
+            pointers: crate::walk::Buffer::Growing(&mut pointers),
+            required: 0,
+        };
+        assert_eq!(
+            variant_speed(&memory, BASE, GAME, VARIANT, &mut scratch),
+            Ok(100_000 + count as i64)
+        );
+        assert_eq!(scratch.required, count);
+        assert!(scratch.pointers.len() >= count);
+    }
 }

@@ -32,6 +32,7 @@ impl Stack {
         for layer in [stack.base(), stack.addon()] {
             std::fs::create_dir_all(layer).unwrap();
         }
+        crate::catalogue::texture_tests::write_sprite_program(&stack.base());
         stack
     }
     fn base(&self) -> PathBuf {

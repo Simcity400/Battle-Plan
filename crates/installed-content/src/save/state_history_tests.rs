@@ -313,13 +313,9 @@ countries={AAA={}} states={1={owner=AAA} 2={owner=AAA}} provinces={1={controller
             .to_string()
             .contains("state 2 lacks its owner")
     );
-    assert!(
-        saved
-            .province_control(&membership)
-            .unwrap_err()
-            .to_string()
-            .contains("state 2 lacks its owner")
-    );
+    let rows = saved.province_control(&membership).unwrap();
+    assert_eq!(rows[1].owner, None);
+    assert_eq!(rows[1].controller, None);
 }
 
 #[test]
@@ -407,12 +403,10 @@ equipments={convoy_1={id={id=1 type=70}} convoy_1={id={id=2 type=70}}}
     assert_eq!(rows[2].controller, None);
     assert_eq!(save.equipment_definitions.len(), 2);
     save.states.get_mut(&1).unwrap().owner = None;
-    assert!(
-        save.province_control(&map)
-            .unwrap_err()
-            .to_string()
-            .contains("lacks its owner")
-    );
+    let rows = save.province_control(&map).unwrap();
+    assert_eq!(rows[0].owner, None);
+    assert_eq!(rows[0].controller, None);
+    assert_eq!(rows[1].controller.as_deref(), Some(b"D01".as_slice()));
     save.states.remove(&1);
     assert!(
         save.province_control(&map)

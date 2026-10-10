@@ -1,9 +1,11 @@
 use super::*;
+use replay::rows::ResearchTechnologyRow;
 
 pub(super) fn compare_research(
     frame: &DecodedFrame,
     pack: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
+    names: &TokenNames<'_>,
     report: &mut Report,
 ) -> io::Result<()> {
     // Technology rows keep the hour their country's slice read them
@@ -35,21 +37,67 @@ pub(super) fn compare_research(
     };
     let definitions = complete::<tables::TechnologyDefinitions>(frame)?;
     let mut dictionary = BTreeMap::new();
-    let mut tokens = BTreeSet::new();
+    let mut name_handles = BTreeMap::new();
+    let spellings = reverse_spellings(names);
     for row in definitions {
         let token = literal(report, "TechnologyDefinitions.id", &row.id);
-        if dictionary
-            .insert(row.technology_handle, (token, row.max_level))
-            .is_some()
-            || !tokens.insert(token)
+        // ED02A0 writes CTechnology+8 through 1424ADEC0/1424AF2C0.
+        // The lexer (1424A6500/1424A65A0) interns case aliases and keeps
+        // its first spelling; the authored name need not be those bytes.
+        let subject = format!(
+            "technology {:?} handle {} lexical binding",
+            String::from_utf8_lossy(&row.id),
+            row.technology_handle
+        );
+        let token =
+            token_spelling(names, &spellings, token, "technology").inspect_err(|error| {
+                report.difference(&subject, &row.id, error.to_string());
+            })?;
+        let Some(writer) = names.get(&row.technology_handle).copied() else {
+            let error = invalid(format!(
+                "technology {:?} handle {} is absent from the recorded lexical dictionary",
+                String::from_utf8_lossy(&row.id),
+                row.technology_handle,
+            ));
+            report.difference(&subject, &row.id, error.to_string());
+            return Err(error);
+        };
+        let writer = literal(report, "TechnologyDefinitions.handle", writer);
+        let identity = installed_content::tokens::Token::c_str(&row.id);
+        if writer != token
+            || (identity.is_rejected() && row.technology_handle != 0)
+            || (!identity.is_rejected() && identity != installed_content::tokens::Token::c_str(writer))
+        {
+            report.difference(&subject, &row.id, writer);
+            return Err(invalid(format!(
+                "technology {:?} has contradictory lexical binding to handle {} ({:?})",
+                String::from_utf8_lossy(&row.id),
+                row.technology_handle,
+                String::from_utf8_lossy(writer),
+            )));
+        }
+        // 140ABBF20 / 1424A65A0: separate indexes may share an interned token.
+        if row.database_index <= 0
+            || name_handles
+                .insert(writer, row.technology_handle)
+                .is_some_and(|handle| handle != row.technology_handle)
         {
             return Err(invalid(
-                "duplicate technology definition handle or serialized token",
+                "technology occurrence has inconsistent token identity",
             ));
+        }
+        if dictionary
+            .insert(
+                row.database_index as u32,
+                (writer, row.max_level, row.technology_handle),
+            )
+            .is_some()
+        {
+            return Err(invalid("duplicate technology definition occurrence"));
         }
     }
     report.compared("TechnologyDefinitions", 0);
-    report.limitation("technology definitions provide exact token joins; runtime handles, database ordinals, year, max level and authored cost are not directly certified by a text save", "TechnologyDefinitions");
+    report.limitation("technology definitions join through the recorded lexical writer spelling; runtime handles, database ordinals, year, max level and authored cost are not directly certified by a text save", "TechnologyDefinitions");
     // Without read hours (callers that do not scan the branch) a stale
     // ResearchSlots is a limitation, as before; with them, its comparison
     // group reports it carried.
@@ -102,7 +150,7 @@ pub(super) fn compare_research_slots(
     frame: &DecodedFrame,
     pack: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
-    dictionary: &BTreeMap<u32, (&[u8], i32)>,
+    dictionary: &BTreeMap<u32, (&[u8], i32, u32)>,
     report: &mut Report,
 ) -> io::Result<()> {
     let slots = complete::<tables::ResearchSlots>(frame)?;
@@ -121,10 +169,20 @@ pub(super) fn compare_research_slots(
         let token = if row.technology_handle == engine::cresearch_slot::IDLE_HANDLE {
             b"empty".as_slice()
         } else {
-            dictionary
-                .get(&row.technology_handle)
-                .ok_or_else(|| invalid("research slot has no definition"))?
-                .0
+            let definition = dictionary
+                .get(
+                    &(*row
+                        .database_index
+                        .require("ResearchSlots.database_index")
+                        .map_err(invalid)? as u32),
+                )
+                .ok_or_else(|| invalid("research slot has no definition"))?;
+            if definition.2 != row.technology_handle {
+                return Err(invalid(
+                    "research slot handle disagrees with definition occurrence",
+                ));
+            }
+            definition.0
         };
         captured_slots.entry(tag).or_default().push((
             token,
@@ -134,7 +192,7 @@ pub(super) fn compare_research_slots(
         ));
     }
     let mut slot_count = 0;
-    for (tag, country) in &pack.countries {
+    for (tag, country) in report.canonical_countries(&pack.countries) {
         if let Some(research) = &country.research {
             let mut actual = captured_slots.remove(tag.as_slice()).unwrap_or_default();
             if let Some(indices) = slot_indices.remove(tag.as_slice()) {
@@ -168,7 +226,11 @@ pub(super) fn compare_research_slots(
                         {
                             b"empty".as_slice()
                         } else {
-                            dictionary[&row.technology_handle].0
+                            dictionary[&(*row
+                                .database_index
+                                .require("ResearchSlots.database_index")
+                                .unwrap() as u32)]
+                                .0
                         };
                         (token, row)
                     });
@@ -191,51 +253,131 @@ pub(super) fn compare_research_slots(
     Ok(())
 }
 
-fn compare_research_technologies(
+pub(super) fn compare_research_technologies(
     frame: &DecodedFrame,
     pack: &saved::Pack,
     links: &BTreeMap<u32, &CountryRow>,
-    dictionary: &BTreeMap<u32, (&[u8], i32)>,
+    dictionary: &BTreeMap<u32, (&[u8], i32, u32)>,
     report: &mut Report,
 ) -> io::Result<()> {
     let technologies = complete::<tables::ResearchTechnologies>(frame)?;
-    // Active-slot omission coverage depends on ResearchSlots, but serialized
-    // technology fields and positive-value omission checks do not.
-    let active = complete::<tables::ResearchSlots>(frame).and_then(|slots| {
+    let active = (|| {
         let mut active = BTreeSet::new();
-        for row in slots {
+        for row in complete::<tables::ResearchSlots>(frame)? {
             if row.technology_present > 1 {
                 return Err(invalid("invalid research technology presence"));
             }
-            let (tag, _) = country(pack, links, row.country)?;
             if row.technology_present != 0 {
-                active.insert((tag, row.technology_handle));
+                let index = *row
+                    .database_index
+                    .require("ResearchSlots.database_index")
+                    .map_err(invalid)?;
+                if index <= 0 {
+                    return Err(invalid("active research slot lacks positive occurrence"));
+                }
+                if dictionary
+                    .get(&(index as u32))
+                    .is_none_or(|definition| definition.2 != row.technology_handle)
+                {
+                    return Err(invalid(
+                        "active research slot handle disagrees with definition occurrence",
+                    ));
+                }
+                let (tag, _) = country(pack, links, row.country)?;
+                active.insert((tag, index));
             }
         }
         Ok(active)
-    });
-    let mut captured_technologies = BTreeSet::new();
-    let mut technology_count = 0;
+    })();
+    let mut ambiguous = BTreeSet::new();
+    let mut captured: BTreeMap<&[u8], Vec<(&[u8], &ResearchTechnologyRow)>> = BTreeMap::new();
+    let mut keys = BTreeSet::new();
     let mut omitted_count = 0;
     for row in technologies {
-        let (tag, country) = country(pack, links, row.country)?;
-        let (token, max_level) = dictionary
-            .get(&row.technology_handle)
+        let (tag, _) = country(pack, links, row.country)?;
+        let (token, max_level, handle) = dictionary
+            .get(&(row.database_index as u32))
             .copied()
-            .ok_or_else(|| invalid("research technology has no definition"))?;
-        if !captured_technologies.insert((tag, token)) {
-            return Err(invalid("duplicate research technology key"));
+            .ok_or_else(|| invalid("research technology occurrence has no definition"))?;
+        if row.database_index <= 0 || row.technology_handle != handle {
+            return Err(invalid(
+                "research technology handle disagrees with definition occurrence",
+            ));
         }
-        let subject = format!(
-            "{}.technology.{}",
-            String::from_utf8_lossy(tag),
-            String::from_utf8_lossy(token)
-        );
-        let Some(research) = &country.research else {
-            report.difference(subject, "captured", "missing saved technology container");
+        if !keys.insert((tag, row.database_index)) {
+            return Err(invalid("duplicate research technology occurrence"));
+        }
+        // 140ED02A0: scan native indexed order, filter each exact instance.
+        if row.level > 0
+            || row.progress_raw > 0
+            || (row.level < max_level
+                && active
+                    .as_ref()
+                    .is_ok_and(|active| active.contains(&(tag, row.database_index))))
+            || row.applied_bonus_count != 0
+        {
+            captured.entry(tag).or_default().push((token, row));
+        } else {
+            if active.is_err() && row.level < max_level {
+                ambiguous.insert(tag);
+            }
+            omitted_count += 1;
+        }
+    }
+    let mut technology_count = 0;
+    for (tag, country) in report.canonical_countries(&pack.countries) {
+        let mut actual = captured.remove(tag.as_slice()).unwrap_or_default();
+        actual.sort_unstable_by_key(|(_, row)| row.database_index);
+        let expected = country
+            .research
+            .as_ref()
+            .map(|research| research.technologies.as_slice())
+            .unwrap_or_default();
+        if ambiguous.contains(tag.as_slice()) {
+            report.limitation("research occurrence order, multiplicity and serialized fields cannot be certified without exact active-slot filtering", label(tag, "technology"));
+            // 140ED02A0 still requires every positive level/progress or bonus
+            // occurrence. Unknown active instances may interleave them, but
+            // cannot remove or change this ordered serialized subsequence.
+            let mut saved = expected.iter();
+            for (token, row) in &actual {
+                if !saved.by_ref().any(|(saved_token, saved)| {
+                    *token == saved_token.as_slice()
+                        && row.level == saved.level.unwrap_or(0)
+                        && row.progress_raw == saved.progress.as_ref().map_or(0, |v| v.raw)
+                        && row.ahead_reduction_years_raw
+                            == saved.ahead_reduction.as_ref().map_or(0, |v| v.raw)
+                }) {
+                    report.difference(
+                        format!(
+                            "{}.serializer_required_occurrence[{}]",
+                            label(tag, "technology"),
+                            row.database_index
+                        ),
+                        row,
+                        expected,
+                    );
+                    break;
+                }
+            }
             continue;
-        };
-        if let Some(saved) = research.technologies.get(token) {
+        }
+        equal(
+            report,
+            label(tag, "technology.serialized_occurrences"),
+            actual.len(),
+            expected.len(),
+        );
+        for (ordinal, ((token, row), (saved_token, saved))) in
+            actual.iter().zip(expected).enumerate()
+        {
+            let subject = format!(
+                "{}.technology.{}[{ordinal}]",
+                String::from_utf8_lossy(tag),
+                String::from_utf8_lossy(token)
+            );
+            if *token != saved_token.as_slice() {
+                report.difference(format!("{subject}.token_order"), token, saved_token);
+            }
             equal(
                 report,
                 format!("{subject}.level"),
@@ -255,40 +397,13 @@ fn compare_research_technologies(
                 saved.ahead_reduction.as_ref().map_or(0, |v| v.raw),
             );
             technology_count += 1;
-        } else {
-            // ED02A0 must emit every positive level/progress and every occupied
-            // slot below max level. Its other predicate uses uncaptured bonuses.
-            if row.level > 0
-                || row.progress_raw > 0
-                || (row.level < max_level
-                    && active
-                        .as_ref()
-                        .is_ok_and(|active| active.contains(&(tag, row.technology_handle))))
-            {
-                report.difference(
-                    subject,
-                    "serializer-required technology",
-                    "missing saved technology",
-                );
-            }
-            omitted_count += 1;
         }
     }
-    for (tag, country) in &pack.countries {
-        if let Some(research) = &country.research {
-            for token in research.technologies.keys() {
-                if !captured_technologies.contains(&(tag.as_slice(), token.as_slice())) {
-                    report.difference(
-                        label(tag, "technology"),
-                        "missing captured technology",
-                        token,
-                    );
-                }
-            }
-        }
+    if !captured.is_empty() {
+        return Err(invalid("research occurrences have no saved country"));
     }
     report.compared("ResearchTechnologies", technology_count);
-    report.limitation("ED02A0 filters the technology census; omitted records' nonpositive level/progress and ahead-reduction bits are not directly serialized", format!("ResearchTechnologies: {omitted_count} omitted records"));
+    report.limitation("140ED02A0 filters each indexed instance; omitted nonpositive state is not serialized, and a text save does not certify omitted database indexes", format!("ResearchTechnologies: {omitted_count} omitted records"));
     report.limitation("technology classifier and independent researched-vector membership are not serialized directly; saved level is not substituted for either", "ResearchTechnologies");
     active.map(|_| ()).map_err(|error| invalid(format!("active-slot omission checks unavailable after serialized technology comparisons: {error}")))
 }

@@ -1,5 +1,7 @@
 use super::*;
 
+mod research_identity;
+
 /// A report whose frame refreshed ResearchSlots, as a full-refresh hour does.
 fn refreshed_report() -> Report {
     let mut report = Report::default();
@@ -57,6 +59,246 @@ fn fixture() -> (DecodedFrame, saved::Pack, CountryRow) {
         ..Default::default()
     };
     (frame, pack, country)
+}
+
+fn active_ideas_report(actual: &[&[u8]], expected: &[&[u8]], tokens: &[&[u8]]) -> Report {
+    let (mut frame, mut pack, country) = fixture();
+    *frame.tables[TableId::ActiveIdeas.index()] = TableView::Complete(TableRows::ActiveIdeas(
+        actual
+            .iter()
+            .enumerate()
+            .map(|(ordinal, token)| ActiveIdeaRow {
+                country: country.id,
+                ordinal: ordinal as u32,
+                token: token.to_vec(),
+            })
+            .collect(),
+    ));
+    pack.countries.get_mut(b"AAA".as_slice()).unwrap().politics = Some(saved::Politics {
+        parties: BTreeMap::new(),
+        leaders: BTreeMap::new(),
+        names: BTreeMap::new(),
+        ideas: expected.iter().map(|token| token.to_vec()).collect(),
+        timed_ideas: Vec::new(),
+        ruling_party: None,
+        last_election: None,
+        election_frequency: None,
+        elections_allowed: None,
+    });
+    let tokens = tokens
+        .iter()
+        .enumerate()
+        .map(|(id, &token)| (id as u32, token))
+        .collect();
+    let mut report = Report::default();
+    let _ = compare_pack(
+        &frame,
+        &pack,
+        &BTreeMap::from([(country.id, &country)]),
+        &tokens,
+        &mut report,
+    );
+    report
+}
+
+#[test]
+fn active_ideas_use_recorded_canonical_spelling_across_mod_files() {
+    let root = std::env::temp_dir().join(format!(
+        "oracle_idea_case_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let roots = [root.join("base"), root.join("mod")];
+    for (directory, file, input) in [
+        (
+            &roots[0],
+            "common/ideas/first.txt",
+            "ideas={country={MiXeD={}}}",
+        ),
+        (
+            &roots[1],
+            "common/ideas/second.txt",
+            "ideas={country={mixed={} Undead={}}}",
+        ),
+    ] {
+        let file = directory.join(file);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, input).unwrap();
+    }
+    let layers =
+        installed_content::ResolvedLayers::from_folders(&[(&roots[0], &[]), (&roots[1], &[])]).unwrap();
+    let (ideas, _, diagnostics) = installed_content::ideas::read(&layers, &[]).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let (tokens, gap) = ideas.tokens();
+    assert!(gap.is_none());
+    let authored = tokens.map(str::as_bytes).collect::<Vec<_>>();
+    assert_eq!(authored, [b"mixed".as_slice(), b"Undead"]);
+    // The recorded dictionary witnesses the first spelling registered by any
+    // loader; the idea files alone cannot reconstruct that global load order.
+    let report = active_ideas_report(&authored, &[b"MiXeD", b"undead"], &[b"MiXeD", b"undead"]);
+    assert!(
+        !report
+            .failed_comparisons
+            .contains_key("governance ActiveIdeas")
+    );
+    assert!(
+        !report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("ideas.ordered_tokens")),
+        "{:?}",
+        report.differences
+    );
+    assert_eq!(report.compared_tables["ActiveIdeas"], 2);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn active_ideas_require_exact_writer_spelling_and_order() {
+    for saved in [
+        &[b"mixed".as_slice(), b"undead"][..],
+        &[b"undead".as_slice(), b"MiXeD"][..],
+    ] {
+        let report = active_ideas_report(&[b"mixed", b"Undead"], saved, &[b"MiXeD", b"undead"]);
+        assert!(
+            report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("ideas.ordered_tokens"))
+        );
+    }
+    let report = active_ideas_report(&["É".as_bytes()], &["é".as_bytes()], &["É".as_bytes()]);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("ideas.ordered_tokens"))
+    );
+}
+
+#[test]
+fn active_ideas_preserve_identical_reverse_aliases_and_native_rejected_tokens() {
+    for (actual, expected, tokens) in [
+        (
+            b"mixed".as_slice(),
+            b"MiXeD".as_slice(),
+            &[b"MiXeD".as_slice(), b"MiXeD"][..],
+        ),
+        (b"7mod".as_slice(), b"".as_slice(), &[b"".as_slice()][..]),
+    ] {
+        let report = active_ideas_report(&[actual], &[expected], tokens);
+        assert!(
+            !report
+                .failed_comparisons
+                .contains_key("governance ActiveIdeas")
+        );
+        assert!(
+            !report
+                .differences
+                .iter()
+                .any(|difference| difference.contains("ideas.ordered_tokens")),
+            "{:?}",
+            report.differences
+        );
+    }
+}
+
+#[test]
+fn active_idea_canonical_spelling_scales_to_5000_countries() {
+    let (mut frame, _, _) = fixture();
+    let mut input = String::from("countries={");
+    let mut countries = Vec::new();
+    let mut ideas = Vec::new();
+    for id in 1..=5_000 {
+        input.push_str(&format!("T{id}={{politics={{ideas={{MiXeD}}}}}}"));
+        countries.push(CountryRow {
+            id,
+            tag: format!("T{id}").into_bytes(),
+            ..Default::default()
+        });
+        ideas.push(ActiveIdeaRow {
+            country: id,
+            ordinal: 0,
+            token: b"mixed".to_vec(),
+        });
+    }
+    input.push('}');
+    let pack = saved::parse(&installed_content::parser::parse(input.as_bytes()).unwrap().items).unwrap();
+    let links = countries
+        .iter()
+        .map(|country| (country.id, country))
+        .collect();
+    *frame.tables[TableId::ActiveIdeas.index()] =
+        TableView::Complete(TableRows::ActiveIdeas(ideas));
+    let mut report = Report::default();
+    compare_ideas(
+        &frame,
+        &pack,
+        &links,
+        &BTreeMap::from([(1, b"MiXeD".as_slice())]),
+        &mut report,
+    )
+    .unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["ActiveIdeas"], 5_000);
+}
+
+#[test]
+fn active_ideas_refuse_missing_and_ambiguous_recorded_spellings() {
+    for tokens in [
+        &[][..],
+        &[b"other".as_slice()][..],
+        &[b"MiXeD".as_slice(), b"mixed"][..],
+    ] {
+        let report = active_ideas_report(&[b"mixed"], &[b"MiXeD"], tokens);
+        assert!(
+            report
+                .failed_comparisons
+                .contains_key("governance ActiveIdeas"),
+            "{:?}",
+            report.failed_comparisons
+        );
+        assert!(!report.compared_tables.contains_key("ActiveIdeas"));
+    }
+}
+
+#[test]
+fn active_ideas_compare_lexer_case_identity_without_losing_order_or_other_bytes() {
+    let (mut frame, _, country) = fixture();
+    let parsed =
+        installed_content::parser::parse(b"countries={AAA={politics={ideas={MiXeD other}}}}").unwrap();
+    let pack = saved::parse(&parsed.items).unwrap();
+    let links = BTreeMap::from([(country.id, &country)]);
+    let idea = |ordinal, token: &[u8]| ActiveIdeaRow {
+        country: country.id,
+        ordinal,
+        token: token.to_vec(),
+    };
+    for (tokens, differences) in [
+        ([b"mixed".as_slice(), b"other"], 0),
+        ([b"OTHER".as_slice(), b"mixed"], 1),
+        ([b"mix_d".as_slice(), b"other"], 1),
+        ([b"mixed".as_slice(), b"oth\x80r"], 1),
+    ] {
+        *frame.tables[TableId::ActiveIdeas.index()] =
+            TableView::Complete(TableRows::ActiveIdeas(vec![
+                idea(0, tokens[0]),
+                idea(1, tokens[1]),
+            ]));
+        let mut report = Report::default();
+        let spellings = [b"MiXeD".as_slice(), b"other", b"mix_d", b"oth\x80r"]
+            .into_iter()
+            .enumerate()
+            .map(|(id, token)| (id as u32, token))
+            .collect();
+        compare_ideas(&frame, &pack, &links, &spellings, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            differences,
+            "{:?}",
+            report.differences
+        );
+    }
 }
 
 #[test]
@@ -249,6 +491,7 @@ fn unavailable_siblings_retain_independent_comparisons_and_aggregate_failure() {
     *frame.tables[TableId::TechnologyDefinitions.index()] =
         TableView::Complete(TableRows::TechnologyDefinitions(vec![
             TechnologyDefinitionRow {
+                database_index: 5,
                 technology_handle: 5,
                 id: b"technology".to_vec(),
                 ..Default::default()
@@ -257,6 +500,7 @@ fn unavailable_siblings_retain_independent_comparisons_and_aggregate_failure() {
     *frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(vec![
             ResearchTechnologyRow {
+                database_index: 5,
                 country: 11,
                 technology_handle: 5,
                 progress_raw: 1,
@@ -283,7 +527,11 @@ fn unavailable_siblings_retain_independent_comparisons_and_aggregate_failure() {
         };
     }
     let mut report = refreshed_report();
-    assert!(compare_pack(&frame, &pack, &links, &BTreeMap::new(), &mut report).is_err());
+    let tokens = BTreeMap::from([
+        (1, b"different_idea".as_slice()),
+        (5, b"technology".as_slice()),
+    ]);
+    assert!(compare_pack(&frame, &pack, &links, &tokens, &mut report).is_err());
     for table in [
         "ActiveIdeas",
         "CompletedFocuses",
@@ -303,7 +551,7 @@ fn unavailable_siblings_retain_independent_comparisons_and_aggregate_failure() {
     for subject in [
         "ideas.ordered_tokens",
         "preferred_tactic.id",
-        "technology.technology.research_points",
+        "technology.technology[0].research_points",
     ] {
         assert!(
             report
@@ -391,9 +639,12 @@ fn idle_research_slot_is_not_equivalent_to_a_new_assignment() {
     )
     .unwrap();
     let pack = saved::parse(&document.items).unwrap();
-    let dictionary = BTreeMap::from([(5, (b"selected_technology".as_slice(), 1))]);
+    let dictionary = BTreeMap::from([(5, (b"selected_technology".as_slice(), 1, 5))]);
     *frame.tables[TableId::ResearchSlots.index()] =
         TableView::Complete(TableRows::ResearchSlots(vec![ResearchSlotRow {
+            database_index: replay::rows::Recorded::Value(
+                (engine::cresearch_slot::IDLE_HANDLE) as i32,
+            ),
             country: 11,
             index: 0,
             technology_handle: engine::cresearch_slot::IDLE_HANDLE,
@@ -425,6 +676,7 @@ fn idle_research_slot_is_not_equivalent_to_a_new_assignment() {
         unreachable!()
     };
     rows[0].technology_handle = 5;
+    rows[0].database_index = replay::rows::Recorded::Value(5);
     rows[0].technology_present = 1;
     rows[0].research_speed_raw = 135_000;
     let mut report = Report::default();
@@ -442,6 +694,9 @@ fn shared_idle_handle_matches_saved_empty_without_a_technology_definition() {
     let pack = saved::parse(&document.items).unwrap();
     *frame.tables[TableId::ResearchSlots.index()] =
         TableView::Complete(TableRows::ResearchSlots(vec![ResearchSlotRow {
+            database_index: replay::rows::Recorded::Value(
+                (engine::cresearch_slot::IDLE_HANDLE) as i32,
+            ),
             country: 11,
             technology_handle: engine::cresearch_slot::IDLE_HANDLE,
             research_speed_raw: engine::cresearch_slot::RESEARCH_SPEED_SCALE,
@@ -983,6 +1238,7 @@ fn scoped_research_technologies_need_a_full_refresh() {
     *frame.tables[TableId::TechnologyDefinitions.index()] =
         TableView::Complete(TableRows::TechnologyDefinitions(vec![
             TechnologyDefinitionRow {
+                database_index: 5,
                 technology_handle: 5,
                 id: b"technology".to_vec(),
                 ..Default::default()
@@ -993,7 +1249,13 @@ fn scoped_research_technologies_need_a_full_refresh() {
         let mut report = refreshed_report();
         report.read_hours = Some(BTreeMap::new());
         report.forced_full = full;
-        let _ = compare_research(frame, &pack, &links, &mut report);
+        let _ = compare_research(
+            frame,
+            &pack,
+            &links,
+            &BTreeMap::from([(5, b"technology".as_slice())]),
+            &mut report,
+        );
         report
     };
     // Country 11 has no captured rows: a rowless owner, whose slice was
@@ -1021,6 +1283,7 @@ fn scoped_research_technologies_need_a_full_refresh() {
     *frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(vec![
             ResearchTechnologyRow {
+                database_index: 5,
                 country: 11,
                 technology_handle: 5,
                 progress_raw: 999,
@@ -1048,6 +1311,7 @@ fn stale_or_unknown_research_reads_skip_the_research_family() {
     *frame.tables[TableId::ResearchTechnologies.index()] =
         TableView::Complete(TableRows::ResearchTechnologies(vec![
             ResearchTechnologyRow {
+                database_index: 5,
                 country: 11,
                 technology_handle: 5,
                 ..Default::default()
@@ -1061,7 +1325,13 @@ fn stale_or_unknown_research_reads_skip_the_research_family() {
         }]))
     };
     let skipped = |frame: &DecodedFrame, mut report: Report| {
-        let _ = compare_research(frame, &pack, &BTreeMap::from([(11, &country)]), &mut report);
+        let _ = compare_research(
+            frame,
+            &pack,
+            &BTreeMap::from([(11, &country)]),
+            &BTreeMap::from([(5, b"technology".as_slice())]),
+            &mut report,
+        );
         report
             .limitations
             .keys()
@@ -1081,4 +1351,215 @@ fn stale_or_unknown_research_reads_skip_the_research_family() {
         reason: "fixture".into(),
     };
     assert!(skipped(&frame, refreshed_report()));
+}
+
+#[test]
+fn technology_occurrence_dictionary_accepts_shared_tokens_and_refuses_lexer_aliases() {
+    let (mut frame, pack, country) = fixture();
+    let links = BTreeMap::from([(11, &country)]);
+    *frame.tables[TableId::TechnologyDefinitions.index()] =
+        TableView::Complete(TableRows::TechnologyDefinitions(vec![
+            TechnologyDefinitionRow {
+                database_index: 1,
+                technology_handle: 7,
+                id: b"repeat".to_vec(),
+                ..Default::default()
+            },
+            TechnologyDefinitionRow {
+                database_index: 2,
+                technology_handle: 7,
+                id: b"REPEAT".to_vec(),
+                ..Default::default()
+            },
+        ]));
+    let names = BTreeMap::from([(7, b"RePeAt".as_slice())]);
+    super::research::compare_research(&frame, &pack, &links, &names, &mut refreshed_report())
+        .unwrap();
+    let TableView::Complete(TableRows::TechnologyDefinitions(rows)) =
+        &mut *frame.tables[TableId::TechnologyDefinitions.index()]
+    else {
+        unreachable!()
+    };
+    rows[1].technology_handle = 8;
+    let mut report = refreshed_report();
+    assert!(
+        super::research::compare_research(&frame, &pack, &links, &names, &mut report)
+            .unwrap_err()
+            .to_string()
+            .contains("handle 8")
+    );
+    assert_eq!(report.differences.len(), 1);
+}
+
+#[test]
+fn research_serializer_keeps_repeated_occurrences_order_and_exact_active_filter() {
+    let (mut frame, _, country) = fixture();
+    let links = BTreeMap::from([(11, &country)]);
+    let pack = saved::parse(&installed_content::parser::parse(b"countries={AAA={technology={technologies={repeat={level=1} repeat={research_points=0.5} repeat={ahead_reduction=0.00023}}}}}").unwrap().items).unwrap();
+    *frame.tables[TableId::TechnologyDefinitions.index()] =
+        TableView::Complete(TableRows::TechnologyDefinitions(
+            (1..=5)
+                .map(|database_index| TechnologyDefinitionRow {
+                    database_index,
+                    technology_handle: 7,
+                    id: if database_index == 2 {
+                        b"REPEAT".to_vec()
+                    } else {
+                        b"repeat".to_vec()
+                    },
+                    max_level: 2,
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::ResearchTechnologies.index()] =
+        TableView::Complete(TableRows::ResearchTechnologies(
+            (1..=5)
+                .map(|database_index| ResearchTechnologyRow {
+                    country: 11,
+                    database_index,
+                    technology_handle: 7,
+                    level: if database_index == 1 { 1 } else { 0 },
+                    progress_raw: if database_index == 2 { 50_000 } else { 0 },
+                    ahead_reduction_years_raw: if database_index >= 3 {
+                        i64::from(database_index * 7 - 5)
+                    } else {
+                        0
+                    },
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::ResearchSlots.index()] =
+        TableView::Complete(TableRows::ResearchSlots(vec![ResearchSlotRow {
+            country: 11,
+            technology_handle: 7,
+            technology_present: 1,
+            database_index: replay::rows::Recorded::Value(4),
+            ..Default::default()
+        }]));
+    let dictionary =
+        BTreeMap::from_iter((1..=5).map(|index| (index, (b"repeat".as_slice(), 2, 7))));
+    let compare = |frame: &DecodedFrame, pack: &saved::Pack| {
+        let mut report = Report::default();
+        super::research::compare_research_technologies(
+            frame,
+            pack,
+            &links,
+            &dictionary,
+            &mut report,
+        )
+        .unwrap();
+        report
+    };
+    let report = compare(&frame, &pack);
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables.get("ResearchTechnologies"), Some(&3));
+    let mut at_limit = dictionary.clone();
+    at_limit.get_mut(&4).unwrap().1 = 0;
+    let mut report = Report::default();
+    super::research::compare_research_technologies(&frame, &pack, &links, &at_limit, &mut report)
+        .unwrap();
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("serialized_occurrences"))
+    );
+    let mut reordered = pack.clone();
+    reordered
+        .countries
+        .get_mut(b"AAA".as_slice())
+        .unwrap()
+        .research
+        .as_mut()
+        .unwrap()
+        .technologies
+        .swap(0, 1);
+    assert!(!compare(&frame, &reordered).differences.is_empty());
+    let TableView::Complete(TableRows::ResearchTechnologies(rows)) =
+        &mut *frame.tables[TableId::ResearchTechnologies.index()]
+    else {
+        unreachable!()
+    };
+    rows[4].applied_bonus_count = 1;
+    assert!(
+        compare(&frame, &pack)
+            .differences
+            .iter()
+            .any(|difference| difference.contains("serialized_occurrences"))
+    );
+    let TableView::Complete(TableRows::ResearchTechnologies(rows)) =
+        &mut *frame.tables[TableId::ResearchTechnologies.index()]
+    else {
+        unreachable!()
+    };
+    rows[4].applied_bonus_count = 0;
+    rows[0].technology_handle = 8;
+    assert!(
+        super::research::compare_research_technologies(
+            &frame,
+            &pack,
+            &links,
+            &dictionary,
+            &mut Report::default()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("handle disagrees")
+    );
+    let TableView::Complete(TableRows::ResearchTechnologies(rows)) =
+        &mut *frame.tables[TableId::ResearchTechnologies.index()]
+    else {
+        unreachable!()
+    };
+    rows[0].technology_handle = 7;
+    *frame.tables[TableId::ResearchSlots.index()] = TableView::Unavailable {
+        reason: "fixture active slot unavailable".into(),
+    };
+    let mut report = Report::default();
+    assert!(
+        super::research::compare_research_technologies(
+            &frame,
+            &pack,
+            &links,
+            &dictionary,
+            &mut report
+        )
+        .is_err()
+    );
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("order, multiplicity"))
+    );
+    let mut differing = pack.clone();
+    differing
+        .countries
+        .get_mut(b"AAA".as_slice())
+        .unwrap()
+        .research
+        .as_mut()
+        .unwrap()
+        .technologies[0]
+        .1
+        .level = Some(99);
+    let mut report = Report::default();
+    assert!(
+        super::research::compare_research_technologies(
+            &frame,
+            &differing,
+            &links,
+            &dictionary,
+            &mut report,
+        )
+        .is_err()
+    );
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| difference.contains("serializer_required_occurrence[1]"))
+    );
 }

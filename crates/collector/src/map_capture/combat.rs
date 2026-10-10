@@ -1,0 +1,156 @@
+//! One original worker capture of map battle rows and their progress visitor.
+use super::{MAP_TABLES, MapCaptured, elapsed, qpc};
+use crate::{extended::combat_progress, table_capture::CaptureRows};
+use engine::{Memory, cland_combat, cnaval_combat, cnaval_combatant, walk::Outcome};
+use replay::rows::TableId;
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CombatReport {
+    pub map_ticks: [u64; MAP_TABLES],
+    pub progress_ticks: u64,
+}
+
+pub(crate) struct CombatRequest {
+    base: usize,
+    state: usize,
+    land: CaptureRows<cland_combat::Row>,
+    land_participants: Vec<u64>,
+    land_participants_len: usize,
+    land_participants_required: usize,
+    naval: CaptureRows<cnaval_combat::Row>,
+    naval_participants: CaptureRows<cnaval_combatant::Row>,
+    naval_groups: Vec<usize>,
+    naval_groups_required: usize,
+    progress: combat_progress::Captured,
+    land_finished: bool,
+    naval_finished: bool,
+}
+
+impl CombatRequest {
+    pub(crate) fn allocated_bytes(&self) -> u64 {
+        self.land.allocated_bytes() as u64
+            + crate::raw_memory::vector_bytes(&self.land_participants)
+            + self.naval.allocated_bytes() as u64
+            + self.naval_participants.allocated_bytes() as u64
+            + crate::raw_memory::vector_bytes(&self.naval_groups)
+            + self.progress.allocated_bytes() as u64
+    }
+
+    pub(crate) fn capture(&mut self, memory: &impl Memory) -> CombatReport {
+        let mut report = CombatReport::default();
+        let mut reads = crate::read_accounting::table(TableId::LandCombats);
+        let begin = qpc();
+        let progress_begin = qpc();
+        self.progress.begin();
+        report.progress_ticks = elapsed(progress_begin);
+        let land = cland_combat::walk_with_growing(
+            memory,
+            self.base,
+            self.state,
+            &mut self.land.rows,
+            &mut self.land_participants,
+            |source| {
+                let begin = qpc();
+                self.progress.visit(memory, self.base, source);
+                report.progress_ticks = report.progress_ticks.saturating_add(elapsed(begin));
+            },
+        );
+        let progress_begin = qpc();
+        self.progress.finish(land.outcome);
+        report.progress_ticks = report
+            .progress_ticks
+            .saturating_add(elapsed(progress_begin));
+        self.land.outcome = land.outcome;
+        self.land_participants_len = land.participants_len;
+        self.land_participants_required = land.required_participants;
+        self.land_finished = true;
+        report.map_ticks[2] = elapsed(begin).saturating_sub(report.progress_ticks);
+
+        let tables = [TableId::NavalCombats, TableId::NavalCombatParticipants];
+        reads.select(tables[0]);
+        let naval = cnaval_combat::walk_timed_growing(
+            memory,
+            self.base,
+            self.state,
+            &mut self.naval.rows,
+            &mut self.naval_participants.rows,
+            &mut self.naval_groups,
+            |phase| {
+                reads.select(tables[phase]);
+                qpc() as u64
+            },
+        );
+        self.naval.outcome = naval.capture.combats;
+        self.naval_participants.outcome = naval.capture.participants;
+        self.naval_groups_required = naval.capture.required_group_capacity;
+        self.naval_finished = true;
+        report.map_ticks[6..8].copy_from_slice(&naval.read_ticks);
+        report
+    }
+
+    fn fail_pending(&mut self, reason: &'static str) {
+        let outcome = Outcome::Unavailable { reason };
+        if !self.land_finished {
+            self.land.fail(outcome);
+            self.land_participants_len = 0;
+            self.progress.finish(outcome);
+        }
+        if !self.naval_finished {
+            self.naval.fail(outcome);
+            self.naval_participants.fail(outcome);
+        }
+    }
+}
+
+impl MapCaptured {
+    pub(crate) fn take_combat_request(
+        &mut self,
+        base: usize,
+        state: usize,
+        progress: combat_progress::Captured,
+    ) -> CombatRequest {
+        CombatRequest {
+            base,
+            state,
+            land: std::mem::replace(&mut self.land_combats, CaptureRows::new(0)),
+            land_participants: std::mem::take(&mut self.land_participants),
+            land_participants_len: 0,
+            land_participants_required: 0,
+            naval: std::mem::replace(&mut self.naval_combats, CaptureRows::new(0)),
+            naval_participants: std::mem::replace(
+                &mut self.naval_combat_participants,
+                CaptureRows::new(0),
+            ),
+            naval_groups: std::mem::take(&mut self.naval_groups),
+            naval_groups_required: 0,
+            progress,
+            land_finished: false,
+            naval_finished: false,
+        }
+    }
+
+    /// Install original outcomes and complete storage without callback allocation.
+    pub(crate) fn restore_combat_request(
+        &mut self,
+        mut request: CombatRequest,
+        report: CombatReport,
+        failure: Option<&'static str>,
+    ) -> combat_progress::Captured {
+        if let Some(reason) = failure {
+            request.fail_pending(reason);
+        }
+        self.land_combats = request.land;
+        self.land_participants = request.land_participants;
+        self.land_participants_len = request.land_participants_len;
+        self.land_participants_required = request.land_participants_required;
+        self.naval_combats = request.naval;
+        self.naval_combat_participants = request.naval_participants;
+        self.naval_groups = request.naval_groups;
+        self.naval_groups_required = request.naval_groups_required;
+        self.combat_ticks = Some(report.map_ticks);
+        request.progress
+    }
+}
+
+#[cfg(test)]
+mod tests;

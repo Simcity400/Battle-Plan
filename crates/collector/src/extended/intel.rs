@@ -140,6 +140,9 @@ fn operative_storage_outcome(outcome: Outcome, refused: u32) -> Outcome {
     }
 }
 
+mod demand;
+pub(crate) use demand::status as demand_status;
+
 pub const N: usize = 18;
 pub const TABLES: [TableId; N] = [
     TableId::Capitulation,
@@ -241,12 +244,11 @@ fn first_seen(bits: &mut [u64], index: usize) -> bool {
     first
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],
-    /// Bytes of scratch for the bulk intel-record copies, held with the shared
-    /// CountryIntel rows. This is a fixed copy window, not a row capacity, so
-    /// `grow` never raises it.
+    /// Bytes of scratch for the bulk intel-record copies. The worker prepares
+    /// at least one native record (`140CEFE90`); larger populations use bounded batches.
     pub intel_scratch: usize,
     pub subject_names: usize,
     pub autonomy_names: usize,
@@ -259,27 +261,34 @@ pub struct Capacities {
     pub tokens: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: [
-                512, 256, 256, 512, 4096, 4096, 16_384, 8192, 2048, 2048, 8192, 4096, 512, 16_384,
-                4096, 65_536, 0, 0,
-            ],
-            intel_scratch: 16_384,
-            subject_names: 16_384,
-            autonomy_names: 32_768,
-            agency_names: 32_768,
-            agency_upgrade_definitions: 0,
-            operation_descriptions: 0,
-            operative_names: 32_768,
-            variable_entries: 16_384,
-            variable_names: 512 * 1024,
-            tokens: 32_768,
-        }
-    }
-}
 impl Capacities {
+    /// Serializer@140D19300 emits each original nonzero cached opinion and
+    /// retained typed relation; an empty walk counts their exact live demand.
+    pub(crate) fn presize_relations(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let walk = crelation_status::walk(memory, base, state, &mut [], &mut [], [true, true]);
+        let mut failure = None;
+        for (index, outcome) in [(13, walk.opinions), (14, walk.tuples)] {
+            match outcome {
+                Outcome::Rows { len } => self.rows[index] = self.rows[index].max(len),
+                Outcome::Truncated { len, unread_rows } => {
+                    let count = len
+                        .checked_add(unread_rows as usize)
+                        .ok_or("relation sizing count overflow")?;
+                    self.rows[index] = self.rows[index].max(count);
+                }
+                Outcome::Unavailable { reason } => {
+                    failure.get_or_insert(reason);
+                }
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
     /// At most one row per canonical country for Capitulation, Subjects,
     /// Autonomy and IntelligenceAgencies; ScriptVariables has one scope row
     /// for the global scope, every country and every state (and every
@@ -528,6 +537,8 @@ pub struct Captured {
     /// grows this frame; see `daily_intel`.
     country_intel: Loan,
     country_intel_outcome: Outcome,
+    /// None means no walk (Skip/Busy), Err a fresh refusal, Ok a complete sample.
+    country_intel_sample: Option<Result<rows::ReservedCountryIntelSample, &'static str>>,
     subject_names: Arena<u8>,
     autonomy_names: Arena<u8>,
     agency_names: Arena<u8>,
@@ -633,6 +644,7 @@ impl Captured {
             subject_snapshot: cwar_relation::OwnedSnapshotScratch::default(),
             country_intel,
             country_intel_outcome: UNCAPTURED,
+            country_intel_sample: None,
             subject_names: Arena::new(capacity.subject_names),
             autonomy_names: Arena::new(capacity.autonomy_names),
             agency_names: Arena::new(capacity.agency_names),
@@ -698,11 +710,10 @@ impl Captured {
 
     /// The relations join as `acquire` runs it, after IntelResidual returned
     /// this pack: take back the slice and return the store (`end_relations`)
-    /// and set the raw-mode gate. `Ok` is a payload to publish. `Err` is one
-    /// to recycle: after a short payload the typed fallback reads the tables
-    /// from the returned slice; after a failure (a panicked or stopped job)
-    /// the gate keeps the typed capture off them, and
-    /// `fail_relations_capture` publishes them unavailable with no further
+    /// and set the raw-mode gate. `Ok` is a payload to publish, including
+    /// storage grown by the worker. `Err` recycles a panicked or stopped job;
+    /// the gate keeps typed capture off the tables, and
+    /// `fail_relations_capture` publishes them unavailable without another
     /// native read.
     #[allow(clippy::type_complexity)]
     pub(crate) fn join_relations(
@@ -714,8 +725,7 @@ impl Captured {
         Option<Box<SliceFingerprints>>,
         Result<RelationsJob, RelationsJob>,
     ) {
-        // A read not published whole (failed, truncated or left to the typed
-        // fallback) is read again at the next hour.
+        // A failed or truncated read is read again at the next hour.
         let published = report.raw_ok && failure.is_none() && job.published();
         let fingerprints = self.end_relations(&mut job, published);
         self.relations_raw_mode = report.raw_ok || failure.is_some();
@@ -773,6 +783,7 @@ impl Captured {
         self.incoming_actions.reset();
         self.country_intel.release();
         self.country_intel_outcome = UNCAPTURED;
+        self.country_intel_sample = None;
         self.subject_names.reset();
         self.autonomy_names.reset();
         self.agency_names.reset();
@@ -879,7 +890,8 @@ impl Captured {
         grow_vec(&mut self.flag_scratch, capacity.rows[7]);
     }
 
-    /// No allocation, encoding, token-name resolution, engine calls or I/O.
+    /// Worker acquisition grows owned storage from its original native observations.
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -922,6 +934,27 @@ impl Captured {
         self.capture_tables(memory, context, false, true)
     }
 
+    /// A final worker failure preserves independently staged raw tables.
+    pub(crate) fn fail_delegated_capture(&mut self, context: CaptureContext, reason: &'static str) {
+        if !self.capitulation_raw_mode {
+            self.fail_capitulation_capture(
+                if replay::cadence::should_walk(TABLES[0], context.hour, context.force_full) {
+                    reason
+                } else {
+                    replay::cadence::SKIPPED_REASON
+                },
+            );
+        }
+        if !self.relations_raw_mode {
+            self.fail_relations_capture(
+                [13, 14].map(|index| {
+                    replay::cadence::should_walk(TABLES[index], context.hour, context.force_full)
+                }),
+                reason,
+            );
+        }
+    }
+
     /// Reject an accepted residual request without retrying any live reads or
     /// changing the independently delegated tables and their raw-mode gates.
     pub(crate) fn fail_residual_capture(
@@ -929,6 +962,8 @@ impl Captured {
         context: CaptureContext,
         reason: &'static str,
     ) -> CaptureReport {
+        let intel_due = replay::cadence::should_walk(TABLES[15], context.hour, context.force_full)
+            || self.country_intel_sample.is_some();
         self.reset_residual();
         macro_rules! fail {
             ($($index:literal => $field:ident),+ $(,)?) => {$(
@@ -958,12 +993,13 @@ impl Captured {
             17 => agency_upgrades,
         );
         self.country_intel_outcome = Outcome::Unavailable {
-            reason: if replay::cadence::should_walk(TABLES[15], context.hour, context.force_full) {
+            reason: if intel_due {
                 reason
             } else {
                 replay::cadence::SKIPPED_REASON
             },
         };
+        self.country_intel_sample = intel_due.then_some(Err(reason));
         CaptureReport::default()
     }
 
@@ -1041,7 +1077,11 @@ impl Captured {
             }};
         }
         if include_delegated && !self.capitulation_raw_mode {
-            plain!(0, capitulation, cdiplomacy_status::walk_capitulation);
+            plain!(
+                0,
+                capitulation,
+                cdiplomacy_status::walk_capitulation_growing
+            );
         }
         if include_residual {
             let begin = qpc();
@@ -1050,7 +1090,7 @@ impl Captured {
                 &mut self.subject_names,
                 |rows, names| {
                     let _reads = read_accounting::table(TABLES[1]);
-                    ArenaRead::from(csubject_relation::walk_owned(
+                    ArenaRead::from(csubject_relation::walk_owned_growing(
                         memory,
                         base,
                         state,
@@ -1067,7 +1107,7 @@ impl Captured {
                 &mut self.autonomy_names,
                 |rows, names| {
                     let _reads = read_accounting::table(TABLES[2]);
-                    ArenaRead::from(ccurrent_autonomy_status::walk(
+                    ArenaRead::from(ccurrent_autonomy_status::walk_growing(
                         memory, base, state, rows, names,
                     ))
                 },
@@ -1075,7 +1115,7 @@ impl Captured {
             ticks[2] = elapsed(begin);
             let begin = qpc();
             let result = read_accounting::with_table(TABLES[3], || {
-                cintelligence_agency::walk_with_upgrades(
+                cintelligence_agency::walk_with_upgrades_growing(
                     memory,
                     base,
                     state,
@@ -1115,7 +1155,8 @@ impl Captured {
                     &mut self.operative_names,
                     |rows, names| {
                         let _reads = read_accounting::table(TABLES[4]);
-                        let read = coperative_leader::walk(memory, base, state, rows, names);
+                        let read =
+                            coperative_leader::walk_growing(memory, base, state, rows, names);
                         self.operative_failure = read.failed_membership;
                         self.operative_refused_rows = read.refused_rows;
                         self.operative_first_refused = read.first_refused;
@@ -1132,15 +1173,15 @@ impl Captured {
             plain!(
                 16,
                 captured_operatives,
-                cintelligence_agency::walk_captured_operatives
+                cintelligence_agency::walk_captured_operatives_growing
             );
-            plain!(5, cryptology, ccryptology::walk);
-            plain!(6, networks, ccountry_intel_network::walk);
+            plain!(5, cryptology, ccryptology::walk_growing);
+            plain!(6, networks, ccountry_intel_network::walk_growing);
             if active[7] {
                 let begin = qpc();
                 capture_rows(&mut self.flags, |rows| {
                     let _reads = read_accounting::table(TABLES[7]);
-                    walk_flags(memory, base, state, rows, &mut self.flag_scratch)
+                    walk_flags_growing(memory, base, state, rows, &mut self.flag_scratch)
                 });
                 ticks[7] = elapsed(begin);
             }
@@ -1152,7 +1193,7 @@ impl Captured {
                     &mut self.variable_names,
                     |scopes, entries, names| {
                         let _reads = read_accounting::table(TABLES[8]);
-                        cvariables::walk_scopes(memory, base, state, scopes, entries, names)
+                        cvariables::walk_scopes_growing(memory, base, state, scopes, entries, names)
                     },
                 );
                 ticks[8] = elapsed(begin);
@@ -1160,7 +1201,7 @@ impl Captured {
             if active[9] {
                 let begin = qpc();
                 let result = read_accounting::with_table(TABLES[9], || {
-                    ccountry_operation_manager::walk(
+                    ccountry_operation_manager::walk_growing(
                         memory,
                         base,
                         state,
@@ -1188,7 +1229,7 @@ impl Captured {
                     &mut self.tokens,
                     |rows, tokens| {
                         let _reads = read_accounting::table(TABLES[11]);
-                        let result = ccountry_operation_token_manager::walk(
+                        let result = ccountry_operation_token_manager::walk_growing(
                             memory, base, state, rows, tokens,
                         );
                         ArenaRead {
@@ -1200,7 +1241,11 @@ impl Captured {
                 );
                 ticks[11] = elapsed(begin);
             }
-            plain!(12, incoming_actions, incoming_diplomatic_action_queue::walk);
+            plain!(
+                12,
+                incoming_actions,
+                incoming_diplomatic_action_queue::walk_growing
+            );
         }
         let relation_walk =
             include_delegated && (active[13] || active[14]) && !self.relations_raw_mode;
@@ -1208,7 +1253,7 @@ impl Captured {
             let anchor = if active[14] { 14 } else { 13 };
             let _reads = read_accounting::table(TABLES[anchor]);
             let begin = qpc();
-            let result = crelation_status::walk_with(
+            let result = crelation_status::walk_growing_with(
                 memory,
                 base,
                 state,
@@ -1238,11 +1283,38 @@ impl Captured {
                     reason: replay::cadence::SKIPPED_REASON,
                 },
                 Walk::Ready(buffer) => {
+                    self.country_intel_sample = Some(Err("country intel acquisition incomplete"));
                     let begin = qpc();
-                    capture_rows(&mut buffer.rows, |rows| {
+                    let result = {
                         let _reads = read_accounting::table(TABLES[15]);
-                        ccountry_intel::walk(memory, base, state, rows, &mut buffer.scratch)
-                    });
+                        if grow_vec(&mut buffer.scratch, engine::country_intel_row::STRIDE) {
+                            ccountry_intel::walk_with_reserved_growing(
+                                memory,
+                                base,
+                                state,
+                                &mut buffer.rows.rows,
+                                &mut buffer.scratch,
+                            )
+                        } else {
+                            ccountry_intel::ReservedCapture {
+                                outcome: Outcome::Unavailable {
+                                    reason: "country intel scratch allocation failed",
+                                },
+                                vector_count: Err("country intel scratch allocation failed"),
+                                reserved_required: 0,
+                                reserved_reached: false,
+                            }
+                        }
+                    };
+                    buffer.rows.outcome = bounded(result.outcome, buffer.rows.rows.len());
+                    buffer.reserved_required =
+                        buffer.reserved_required.max(result.reserved_required);
+                    self.country_intel_sample = Some(result.vector_count.map(|vector_count| {
+                        rows::ReservedCountryIntelSample {
+                            sample_hour: hour,
+                            vector_count,
+                        }
+                    }));
                     ticks[15] = elapsed(begin);
                     buffer.rows.outcome
                 }
@@ -1272,6 +1344,12 @@ impl Captured {
             self.captured_operatives.outcome,
             self.agency_upgrades.outcome,
         ]
+    }
+
+    pub(crate) fn country_intel_sample(
+        &self,
+    ) -> Option<Result<rows::ReservedCountryIntelSample, &'static str>> {
+        self.country_intel_sample
     }
 
     /// Called only on the spool thread; this owns all Vec and string conversion.
@@ -1816,7 +1894,7 @@ fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
 }
 
-fn capture_rows<R>(captured: &mut CaptureRows<R>, walk: impl FnOnce(&mut [R]) -> Outcome) {
+fn capture_rows<R>(captured: &mut CaptureRows<R>, walk: impl FnOnce(&mut Vec<R>) -> Outcome) {
     captured.outcome = bounded(walk(&mut captured.rows), captured.rows.len());
 }
 
@@ -1930,7 +2008,7 @@ fn first_named<R: ArenaRow<T>, T>(
 fn capture_named<R: ArenaRow<T>, T>(
     captured: &mut CaptureRows<R>,
     arena: &mut Arena<T>,
-    walk: impl FnOnce(&mut [R], &mut [T]) -> ArenaRead,
+    walk: impl FnOnce(&mut Vec<R>, &mut Vec<T>) -> ArenaRead,
 ) {
     let result = walk(&mut captured.rows, &mut arena.first);
     first_named(captured, arena, result);
@@ -1950,9 +2028,9 @@ fn capture_variables(
     entries: &mut Arena<cvariables::Row>,
     names: &mut Arena<u8>,
     walk: impl FnOnce(
-        &mut [cvariables::ScopeRow],
-        &mut [cvariables::Row],
-        &mut [u8],
+        &mut Vec<cvariables::ScopeRow>,
+        &mut Vec<cvariables::Row>,
+        &mut Vec<u8>,
     ) -> cvariables::ScopeWalk,
 ) {
     let result = walk(&mut captured.rows, &mut entries.first, &mut names.first);
@@ -2030,6 +2108,38 @@ fn walk_flags(
     output: &mut [ScopedFlag],
     scratch: &mut [cscript_flag::Row],
 ) -> Outcome {
+    walk_flags_buffer(
+        memory,
+        base,
+        state,
+        engine::walk::Buffer::Fixed(output),
+        engine::walk::Buffer::Fixed(scratch),
+    )
+}
+
+fn walk_flags_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut Vec<ScopedFlag>,
+    scratch: &mut Vec<cscript_flag::Row>,
+) -> Outcome {
+    walk_flags_buffer(
+        memory,
+        base,
+        state,
+        engine::walk::Buffer::Growing(output),
+        engine::walk::Buffer::Growing(scratch),
+    )
+}
+
+fn walk_flags_buffer(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut output: engine::walk::Buffer<'_, ScopedFlag>,
+    mut scratch: engine::walk::Buffer<'_, cscript_flag::Row>,
+) -> Outcome {
     let result = (|| {
         let mut len = 0;
         let mut unread = 0_u32;
@@ -2042,10 +2152,19 @@ fn walk_flags(
         };
         let mut scope = |kind, id, manager| -> Result<(), &'static str> {
             let available = (output.len() - len).min(scratch.len());
-            let outcome = bounded(
-                cflag_manager::walk(memory, base, manager, &mut scratch[..available]),
-                available,
-            );
+            let outcome = if output.is_growing() {
+                let read = cflag_manager::walk_buffer(memory, base, manager, scratch.suffix(0));
+                output.ensure(
+                    len.checked_add(read.len())
+                        .ok_or("scoped flag row demand overflow")?,
+                )?;
+                read
+            } else {
+                bounded(
+                    cflag_manager::walk(memory, base, manager, &mut scratch[..available]),
+                    available,
+                )
+            };
             let count = match outcome {
                 Outcome::Rows { len } => len,
                 Outcome::Truncated { len, unread_rows } => {
@@ -2231,11 +2350,7 @@ impl SharedOpinions {
         {
             return;
         }
-        fit(
-            &mut self.marks,
-            self.required_marks
-                .max(crelation_status::Baseline::MIN_MARKS),
-        );
+        fit(&mut self.marks, self.required_marks);
         fit(&mut self.verify, self.required_verify);
         self.charge.set(crate::raw_memory::Capacity {
             payload_vectors: (self.baseline.allocated_bytes()
@@ -2343,13 +2458,14 @@ pub(crate) fn relation_epoch() -> u64 {
 }
 
 /// One relations refresh: its rows, outcomes and the walk's retained storage.
-/// Storage grows only off the game thread (`crate::decode`); a refresh that
-/// needs more rows than the job holds reports it and takes the typed fallback.
+/// Worker acquisition grows from original native occurrences; deferred decoding
+/// never follows native pointers.
 #[derive(Default)]
 pub(crate) struct RelationsJob {
     pub active: [bool; 2],
     pub opinions: Vec<crelation_status::OpinionRow>,
     pub tuples: Vec<crelation_status::TupleRow>,
+    provisioned: bool,
     walk: Option<crelation_status::Walk>,
     resolver: crelation_status::Resolver,
     /// Where this job borrows the opinion baseline.
@@ -2357,9 +2473,6 @@ pub(crate) struct RelationsJob {
     /// The shared store while this job holds it, from its refresh until decode
     /// releases the job.
     shared: Option<LentOpinions>,
-    /// Rows the last refresh needed, `[opinions, tuples]`.
-    required: [usize; 2],
-    overflowed: bool,
     capacity_charge: crate::raw_memory::Charge,
     /// The pack's owner selection for this hour, loaned from dispatch to the
     /// join (`Captured::take_relations_selection`).
@@ -2374,18 +2487,15 @@ impl std::fmt::Debug for RelationsJob {
             .debug_struct("RelationsJob")
             .field("active", &self.active)
             .field("walk", &self.walk)
-            .field("overflowed", &self.overflowed)
             .finish_non_exhaustive()
     }
 }
 
 impl RelationsJob {
-    /// Seeded for a late campaign at the vanilla country count (8,639
-    /// opinions and 1,512 tuples); growth follows each refresh.
+    /// Worker storage grows from the original acquired relation occurrences.
     pub fn new() -> Self {
         let mut job = Self {
-            opinions: owned_vec(default_vec(16_384)),
-            tuples: owned_vec(default_vec(4_096)),
+            provisioned: true,
             ..Self::default()
         };
         job.update_capacity_charge();
@@ -2396,7 +2506,6 @@ impl RelationsJob {
     pub fn clear(&mut self) {
         self.active = [false; 2];
         self.walk = None;
-        self.overflowed = false;
     }
 
     /// Whether the refresh's walk published both tables whole: rows, not a
@@ -2410,11 +2519,11 @@ impl RelationsJob {
 
     /// Whether this is pooled storage rather than a vacant placeholder.
     pub fn is_allocated(&self) -> bool {
-        !self.opinions.is_empty()
+        self.provisioned
     }
 
     pub fn grow_for_next(&self) -> bool {
-        self.overflowed || self.resolver.required() > self.resolver.capacity()
+        self.resolver.required() > self.resolver.capacity()
     }
 
     /// Off the game thread: grow the shared store to what this job's refresh
@@ -2425,19 +2534,8 @@ impl RelationsJob {
         }
     }
 
-    /// Off the game thread: grow rows to the last refresh's demand (with
-    /// headroom) and the walk's storage to what it observed.
+    /// Off the game thread: prepare the resolver for its observed demand.
     pub fn grow(&mut self) {
-        fn fit<T: Default + Clone>(rows: &mut Vec<T>, required: usize) {
-            if required > rows.len() {
-                let len = required.saturating_add(required / 4);
-                if reserve_exact(rows, len - rows.len()).is_ok() {
-                    rows.resize(len, T::default());
-                }
-            }
-        }
-        fit(&mut self.opinions, self.required[0]);
-        fit(&mut self.tuples, self.required[1]);
         if self.resolver.grow().map_err(crate::allocation::io).is_err() {
             return;
         }
@@ -2457,8 +2555,7 @@ impl RelationsJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct RelationsCopyReport {
-    /// False when the job's rows were too short: the caller takes the typed
-    /// fallback and enqueues no payload.
+    /// The accepted worker's outcomes are ready for deferred installation.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 2],
     /// Row bytes handed to decode.
@@ -2486,7 +2583,7 @@ fn verify_opinions(
     ctx: RelationsCopyContext,
     shared: &mut SharedOpinions,
     resolver: &mut crelation_status::Resolver,
-    rows: &mut [crelation_status::OpinionRow],
+    rows: &mut Vec<crelation_status::OpinionRow>,
     outcome: Outcome,
     select: impl Fn(u32) -> bool,
 ) -> Outcome {
@@ -2494,16 +2591,12 @@ fn verify_opinions(
         return outcome;
     };
     shared.required_verify = rows.len();
-    let Some(reference) = shared.verify.get_mut(..rows.len()) else {
-        report(None);
-        return outcome;
-    };
-    let expected = crelation_status::walk_with(
+    let expected = crelation_status::walk_growing_with(
         memory,
         ctx.base,
         ctx.game_state,
-        reference,
-        &mut [],
+        &mut shared.verify,
+        &mut Vec::new(),
         [true, false],
         resolver,
         &mut crelation_status::Baseline::default(),
@@ -2512,20 +2605,21 @@ fn verify_opinions(
     )
     .opinions;
     let len = expected.len();
-    let agrees = expected == outcome && reference[..len] == rows[..len];
+    let agrees = expected == outcome && shared.verify[..len] == rows[..len];
     report(Some(agrees));
     if agrees {
         return outcome;
     }
     shared.baseline.clear();
-    rows[..len].copy_from_slice(&reference[..len]);
+    if rows.len() < len && engine::allocation::resize_default(rows, len).is_err() {
+        return Outcome::Unavailable {
+            reason: "relation verification storage allocation failed",
+        };
+    }
+    rows[..len].copy_from_slice(&shared.verify[..len]);
     expected
 }
 
-/// The relations walk on the worker, into the job's rows. Rows and outcomes
-/// equal a walk into the pack's own buffers: each table is walked into at
-/// most the pack's capacity, and a job shorter than that which truncates
-/// reports `raw_ok: false` instead.
 /// Scan every live country into this hour's relations selection with a
 /// constant fingerprint: only new owners and unpublished reads join the
 /// hour's slice. The census reads go through the callback's cached country
@@ -2564,6 +2658,7 @@ pub(crate) fn copy_relations_refresh(
     job: &mut RelationsJob,
 ) -> RelationsCopyReport {
     job.clear();
+    job.provisioned = true;
     job.active = ctx.active;
     if !ctx.active.into_iter().any(|active| active) {
         return RelationsCopyReport {
@@ -2637,12 +2732,12 @@ pub(crate) fn copy_relations_refresh(
     // Verify only walks that replayed an owner: a walk that read every
     // selected owner in full has nothing to compare.
     let replayed = baseline.counts().reused_owners;
-    let mut walk = crelation_status::walk_with(
+    let mut walk = crelation_status::walk_growing_with(
         memory,
         ctx.base,
         ctx.game_state,
-        &mut job.opinions[..lens[0]],
-        &mut job.tuples[..lens[1]],
+        &mut job.opinions,
+        &mut job.tuples,
         ctx.active,
         &mut job.resolver,
         baseline,
@@ -2659,7 +2754,7 @@ pub(crate) fn copy_relations_refresh(
                 ctx,
                 shared,
                 &mut job.resolver,
-                &mut job.opinions[..lens[0]],
+                &mut job.opinions,
                 walk.opinions,
                 select,
             );
@@ -2667,22 +2762,10 @@ pub(crate) fn copy_relations_refresh(
     }
     let mut copy_ticks = [0; 2];
     copy_ticks[anchor] = elapsed(started);
-    // A truncation the pack's capacity would have held needs a longer job.
-    let short = |outcome: Outcome, len: usize, cap: usize| match outcome {
-        Outcome::Truncated { unread_rows, .. } if len < cap => {
-            Some(len.saturating_add(unread_rows as usize))
-        }
-        _ => None,
-    };
-    let demand = [
-        short(walk.opinions, lens[0], ctx.opinion_cap),
-        short(walk.tuples, lens[1], ctx.tuple_cap),
-    ];
-    job.overflowed = demand.iter().any(Option::is_some);
-    job.required = std::array::from_fn(|table| demand[table].unwrap_or(0));
     job.walk = Some(walk);
+    job.update_capacity_charge();
     RelationsCopyReport {
-        raw_ok: !job.overflowed,
+        raw_ok: true,
         copy_ticks,
         raw_bytes: [
             (walk.opinions.len() * size_of::<crelation_status::OpinionRow>()) as u64,
@@ -2759,9 +2842,8 @@ impl Captured {
     }
 }
 
-/// Copies one table's rows, which the refresh walked into at most `rows`'s
-/// capacity.
-fn install<R: Copy>(
+/// Installs owned rows, growing the decoded destination off-thread.
+fn install<R: Copy + Default>(
     active: bool,
     outcome: Outcome,
     source: &[R],
@@ -2773,6 +2855,12 @@ fn install<R: Copy>(
         return;
     }
     let len = outcome.len();
+    if rows.rows.len() < len && engine::allocation::resize_default(&mut rows.rows, len).is_err() {
+        rows.outcome = Outcome::Unavailable {
+            reason: "relation row storage allocation failed",
+        };
+        return;
+    }
     rows.outcome = match (source.get(..len), rows.rows.get_mut(..len)) {
         (Some(source), Some(destination)) => {
             destination.copy_from_slice(source);
@@ -2806,9 +2894,8 @@ fn install<R: Copy>(
 /// pilot's conservative rule.
 const M_CAPITULATION: u32 = 0x01;
 
-/// One hour of raw capitulation payload. Flat pools recycle capacities and
-/// the steady state allocates on neither thread; growth happens on the
-/// decode side only (see `crate::decode::recycle_capitulation_job`).
+/// One hour of raw capitulation payload. Flat pools recycle capacities;
+/// original acquisitions grow on the worker before publication.
 #[derive(Debug, Default)]
 pub(crate) struct CapitulationJob {
     pub log: RawLog<1>,
@@ -2818,10 +2905,7 @@ pub(crate) struct CapitulationJob {
 impl CapitulationJob {
     pub fn new() -> Self {
         Self {
-            // Late-campaign worst case is 439 countries with one diplomacy
-            // object each (~0.9 KiB per country); both pools start above
-            // that so steady state never overflows.
-            log: RawLog::new(1 << 15, 4 << 20),
+            log: RawLog::new(0, 0),
             game_state: 0,
         }
     }
@@ -2836,9 +2920,7 @@ impl CapitulationJob {
         self.log.grow_for_next()
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed hours fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
+    /// Retain observed demand when recycling on the decode worker.
     pub fn grow(&mut self) {
         self.log.grow();
     }
@@ -2846,14 +2928,13 @@ impl CapitulationJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct CapitulationCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
+    /// False when the original acquisition could not be staged whole.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 1],
     pub raw_bytes: [u64; 1],
 }
 
-/// Game-thread copy parameters, bundled to keep the tick entry small.
+/// Worker copy parameters, bundled to keep the tick entry small.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CapitulationCopyContext {
     pub base: usize,
@@ -3081,8 +3162,8 @@ fn copy_capitulation_pass(
     }
 }
 
-/// Hourly acquisition into one owned job. Staging overflow retains the existing
-/// typed fallback and enqueues no payload.
+/// Hourly worker acquisition into one owned job. Original spans grow before
+/// publication; failed staging publishes unavailable without another walk.
 pub(crate) fn copy_capitulation_refresh(
     memory: &impl Memory,
     ctx: CapitulationCopyContext,
@@ -3091,6 +3172,7 @@ pub(crate) fn copy_capitulation_refresh(
     let started = qpc();
     job.clear();
     job.game_state = ctx.game_state;
+    job.log.enable_worker_growth();
     copy_capitulation_pass(memory, ctx.base, ctx.game_state, &mut job.log);
     CapitulationCopyReport {
         raw_ok: !job.log.overflowed,
@@ -3120,7 +3202,7 @@ impl Captured {
         let recorded = crate::raw::Recorded::build(&job.log);
         let started = qpc();
         self.capitulation.outcome = bounded(
-            cdiplomacy_status::walk_capitulation(
+            cdiplomacy_status::walk_capitulation_growing(
                 &recorded,
                 base,
                 job.game_state,
@@ -3427,14 +3509,38 @@ mod tests {
                 }
         };
         assert!(capture(&mut first, 0));
+        assert!(matches!(first.country_intel_sample(), Some(Err(_))));
         assert!(!capture(&mut second, 1));
+        assert_eq!(second.country_intel_sample(), None);
         // The first frame is still unconverted at the next daily slot.
         assert!(!capture(&mut second, 24));
+        assert_eq!(second.country_intel_sample(), None);
         assert!(!capture(&mut second, 25));
         first.grow(&mut Capacities::default());
         assert!(capture(&mut second, 26));
+        assert!(matches!(second.country_intel_sample(), Some(Err(_))));
+        second.fail_residual_capture(
+            CaptureContext {
+                base: 0,
+                game_state: 0x1000,
+                hour: 26,
+                force_full: false,
+            },
+            "deferred residual worker failed",
+        );
+        assert_eq!(
+            second.country_intel_sample(),
+            Some(Err("deferred residual worker failed"))
+        );
+        assert_eq!(
+            second.outcomes()[15],
+            Outcome::Unavailable {
+                reason: "deferred residual worker failed"
+            }
+        );
         second.grow(&mut Capacities::default());
         assert!(!capture(&mut first, 27));
+        assert_eq!(first.country_intel_sample(), None);
         assert!(capture(&mut first, 48));
     }
 
@@ -3760,19 +3866,49 @@ mod tests {
             bytes: &bytes,
         };
 
-        for capacity in [1, 2] {
+        for (capacity, growing) in [(1, false), (2, false), (1, true), (2, true)] {
             let (mut capacities, _) = small();
             capacities.rows[17] = capacity;
             let mut captured = Captured::with_capacities(&capacities);
-            captured.capture_residual(
-                &memory,
-                CaptureContext {
-                    base: BASE,
-                    game_state: GAME,
-                    hour: 0,
-                    force_full: true,
-                },
-            );
+            if growing {
+                captured.capture_residual(
+                    &memory,
+                    CaptureContext {
+                        base: BASE,
+                        game_state: GAME,
+                        hour: 0,
+                        force_full: true,
+                    },
+                );
+            } else {
+                let result = cintelligence_agency::walk_with_upgrades(
+                    &memory,
+                    BASE,
+                    GAME,
+                    &mut captured.agencies.rows,
+                    &mut captured.agency_names.first,
+                    &mut captured.agency_upgrades.rows,
+                    &mut captured.agency_upgrade_catalog,
+                );
+                first_named(
+                    &mut captured.agencies,
+                    &mut captured.agency_names,
+                    ArenaRead::from(result.agencies),
+                );
+                captured.agency_upgrades.outcome = result.upgrades.outcome;
+                captured.agency_upgrade_required = result.upgrades.required_rows;
+                assert_eq!(result.upgrades.omitted_rows, (2 - capacity) as u32);
+                assert_eq!(result.upgrades.refused_rows, 2);
+                assert_eq!(
+                    result.upgrades.refusal_counts[agency_upgrade_levels::NULL_DEFINITION as usize],
+                    1
+                );
+                assert_eq!(
+                    result.upgrades.refusal_counts
+                        [agency_upgrade_levels::DATABASE_UNAVAILABLE as usize],
+                    1
+                );
+            }
             let tables = captured.tables();
             let (rows, missing) = match &tables[17] {
                 TableView::Complete(rows) => (rows, 0),
@@ -3780,7 +3916,8 @@ mod tests {
                 other => panic!("raw refused entries must survive acquisition: {other:?}"),
             };
             let upgrades = rows.rows::<tables::AgencyUpgradeLevels>().unwrap();
-            assert_eq!(upgrades.len(), capacity);
+            let retained = if growing { 2 } else { capacity };
+            assert_eq!(upgrades.len(), retained);
             assert_eq!(upgrades.len() + missing as usize, 2);
             assert_eq!(captured.agency_upgrade_required, 2);
             assert_eq!(
@@ -3788,7 +3925,7 @@ mod tests {
                 agency_upgrade_levels::NULL_DEFINITION
             );
             assert_eq!(upgrades[0].level, i32::MIN);
-            if capacity == 2 {
+            if retained == 2 {
                 assert!(matches!(tables[17], TableView::Complete(_)));
                 assert_eq!(missing, 0);
                 assert_eq!(upgrades[1].definition_pointer, 0xfeed_cafe);
@@ -5250,7 +5387,7 @@ mod tests {
                 };
                 let typed_memory = make_memory();
                 let mut opinions = vec![crelation_status::OpinionRow::default(); opinion_cap];
-                let mut tuples = vec![crelation_status::TupleRow::default(); tuple_cap];
+                let mut tuples = vec![crelation_status::TupleRow::default(); 16];
                 let typed = crelation_status::walk(
                     &typed_memory,
                     relations_kit::BASE,
@@ -5324,7 +5461,7 @@ mod tests {
     }
 
     #[test]
-    fn relations_job_matches_truncation_with_exact_missing_counts() {
+    fn relations_job_completes_rows_beyond_the_initial_pack_capacity() {
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
         let direct = relations_kit::direct(&memory, 1, 1);
@@ -5344,18 +5481,18 @@ mod tests {
         );
         let mut intel = relations_kit::intel_captured(1, 1);
         let (_, _) = relations_kit::split(&memory, &mut intel);
-        relations_kit::assert_matches_direct(&intel, &direct);
+        let complete = relations_kit::direct(&memory, 2, 2);
+        relations_kit::assert_matches_direct(&intel, &complete);
     }
 
     #[test]
-    fn relations_truncation_matrix_matches_direct_with_skipped_boundary() {
-        // Zero, one, exact and ample caps: the job walks into at most the
-        // pack's capacity, so its outcome (unread_rows included) and rows
-        // equal a typed walk into the pack's own buffers.
+    fn growing_relation_destinations_match_complete_rows_with_skipped_boundary() {
+        // Zero, one, exact and ample initial storage all publish the same
+        // complete native rows, preserving the serializer's skipped boundary.
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
         for (opinion_cap, tuple_cap) in [(0, 0), (1, 1), (2, 2), (64, 64)] {
-            let direct = relations_kit::direct(&memory, opinion_cap, tuple_cap);
+            let direct = relations_kit::direct(&memory, 2, 2);
             let mut intel = relations_kit::intel_captured(opinion_cap, tuple_cap);
             let (_, _) = relations_kit::split(&memory, &mut intel);
             relations_kit::assert_matches_direct(&intel, &direct);
@@ -5667,10 +5804,9 @@ mod tests {
     /// `acquire` runs it: the context and slice come from the real pack before
     /// the loan, the join (`join_relations`) returns them to it, then the
     /// typed capture and the failure path run as they do there. Published,
-    /// short (typed fallback, from the returned slice) and failed reads (no
-    /// typed read) all return the slice and the store; an unpublished read is
-    /// read again at the next hour. Rejected-inline execution is covered in
-    /// `acquisition_jobs`.
+    /// worker-grown and failed reads all return the slice and store without a
+    /// typed read; an unpublished read is read again at the next hour.
+    /// Rejected-inline execution is covered in `acquisition_jobs`.
     #[test]
     fn relations_dispatch_spans_the_intel_loan_and_returns_its_slice() {
         let bytes = relations_kit::opinionated_fixture();
@@ -5740,28 +5876,21 @@ mod tests {
                 Ok(job) => {
                     assert!(job.selection.is_none() && job.fingerprints.is_none());
                     assert_eq!(pack.relation_opinions.outcome, UNCAPTURED, "no typed walk");
+                    assert_eq!(pack.relation_tuples.outcome, UNCAPTURED, "no typed walk");
                     rows(&job.opinions, job.walk.unwrap().opinions)
                 }
                 Err(job) => {
                     assert!(job.selection.is_none() && job.fingerprints.is_none());
-                    if let Some(reason) = failure {
-                        // The raw-mode gate kept the typed capture off the
-                        // tables; the failure path publishes them unavailable.
-                        assert_eq!(pack.relation_opinions.outcome, UNCAPTURED, "no typed walk");
-                        assert_eq!(pack.relation_tuples.outcome, UNCAPTURED, "no typed walk");
-                        pack.fail_relations_capture(context.active, reason);
-                        for outcome in
-                            [pack.relation_opinions.outcome, pack.relation_tuples.outcome]
-                        {
-                            assert_eq!(outcome, Outcome::Unavailable { reason });
-                        }
-                        Default::default()
-                    } else {
-                        // The typed fallback read from the returned slice.
-                        let outcome = pack.relation_opinions.outcome;
-                        assert!(matches!(outcome, Outcome::Rows { .. }), "{outcome:?}");
-                        rows(&pack.relation_opinions.rows, outcome)
+                    let reason = failure.expect("accepted workers return their owned payload");
+                    // The raw-mode gate kept the typed capture off the
+                    // tables; the failure path publishes them unavailable.
+                    assert_eq!(pack.relation_opinions.outcome, UNCAPTURED, "no typed walk");
+                    assert_eq!(pack.relation_tuples.outcome, UNCAPTURED, "no typed walk");
+                    pack.fail_relations_capture(context.active, reason);
+                    for outcome in [pack.relation_opinions.outcome, pack.relation_tuples.outcome] {
+                        assert_eq!(outcome, Outcome::Unavailable { reason });
                     }
+                    Default::default()
                 }
             };
             (owners, published)
@@ -5778,15 +5907,14 @@ mod tests {
         let one = *all.iter().next().unwrap();
         let own = replay::cadence::slice_of(one) as i32 + 24;
         assert_eq!(hour(&mut pack, &mut store, own, 16, None).0, slice(own));
-        // A short job falls back to the typed walk, which reads exactly this
-        // hour's slice from the returned selection. Not published by the job,
-        // so the next hour reads this slice again.
-        let (typed, published) = hour(&mut pack, &mut store, own + 24, 0, None);
-        assert!(!published);
-        assert_eq!(typed, slice(own));
+        // An empty seed grows during its original worker walk and publishes
+        // this hour's complete slice. The next hour reads only its own slice.
+        let (grown, published) = hour(&mut pack, &mut store, own + 24, 0, None);
+        assert!(published);
+        assert_eq!(grown, slice(own));
         assert_eq!(
             hour(&mut pack, &mut store, own + 25, 16, None).0,
-            &slice(own) | &slice(own + 25)
+            slice(own + 25)
         );
         // A panicked job (it walked) or a stopped one (it never walked)
         // publishes nothing, reads nothing more, and is read again too.
@@ -5944,9 +6072,9 @@ mod tests {
         let missed = observed_refresh(&bytes, &mut job, 1);
         assert_eq!(missed.1[1].opinion, 62);
         let delta = |now: [u64; 3]| std::array::from_fn(|index| now[index] - before[index]);
-        // Never unverified (until the verify rows existed the walks read in
-        // full), agreed three times, then disagreed.
-        assert_eq!(delta(verified()), [0, 3, 1]);
+        // The first refresh sizes owners; the next sizes their exact matrices.
+        // Verification then agrees twice and catches the unmarked change.
+        assert_eq!(delta(verified()), [0, 2, 1]);
         // The mismatch poisoned the real observation: a drain now observes
         // nothing, so every refresh reads every status.
         let (mut consumed, mut output, mut required) =
@@ -5961,17 +6089,15 @@ mod tests {
         );
         // The baseline was dropped: the next refresh reads every status.
         assert_eq!(observed_refresh(&bytes, &mut job, 1), missed);
-        assert_eq!(delta(verified()), [0, 3, 1]);
+        assert_eq!(delta(verified()), [0, 2, 1]);
         crate::opinion_changes::observe_for_test(false);
     }
 
     #[test]
-    fn a_short_relations_job_takes_the_typed_fallback_and_grows() {
+    fn a_short_relations_job_grows_during_its_original_worker_walk() {
         let bytes = relations_kit::opinionated_fixture();
         let memory = relations_kit::memory(&bytes);
-        let intel = relations_kit::intel_captured(16, 16);
-        // A job shorter than the pack's buffers cannot hold the rows: the
-        // report declines the payload so the caller falls back to the typed walk.
+        let mut intel = relations_kit::intel_captured(0, 0);
         let mut tiny = RelationsJob::default();
         let ctx = RelationsCopyContext {
             base: relations_kit::BASE,
@@ -5982,12 +6108,10 @@ mod tests {
             epoch: 0,
         };
         let report = copy_relations_refresh(&memory, ctx, &mut tiny);
-        assert!(!report.raw_ok);
-        assert!(tiny.grow_for_next());
-        tiny.grow();
-        assert!(copy_relations_refresh(&memory, ctx, &mut tiny).raw_ok);
-        // The typed path still reads the same fixture cleanly.
+        assert!(report.raw_ok);
+        intel.decode_relations_payload(&tiny, &mut [0; 2]);
         let direct = relations_kit::direct(&memory, 16, 16);
+        relations_kit::assert_matches_direct(&intel, &direct);
         assert_eq!(direct.opinion_outcome, Outcome::Rows { len: 2 });
     }
 
@@ -6184,7 +6308,7 @@ mod tests {
     }
 
     #[test]
-    fn capitulation_split_copy_matches_direct_walk_under_truncation() {
+    fn capitulation_split_copy_grows_original_shortage_before_publication() {
         let bytes = cap_fixture();
         let memory = SliceMemory {
             base: CAP_GAME,
@@ -6202,10 +6326,13 @@ mod tests {
             ),
             direct.capitulation.rows.len(),
         );
-        assert!(matches!(
+        assert_eq!(
             direct.capitulation.outcome,
-            Outcome::Truncated { .. }
-        ));
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: 1
+            }
+        );
         let mut split = Captured::with_capacities(&capacities);
         let ctx = CapitulationCopyContext {
             base: CAP_BASE,
@@ -6217,7 +6344,10 @@ mod tests {
         split.capitulation_raw_mode = true;
         let mut ticks = [0u64; 1];
         split.decode_capitulation_payload(CAP_BASE, &first, &mut ticks);
+        let direct = cap_direct(&memory);
+        assert_eq!(split.capitulation.outcome, Outcome::Rows { len: 1 });
         assert_eq!(split.capitulation.outcome, direct.capitulation.outcome);
+        assert_eq!(split.capitulation.rows[..1], direct.capitulation.rows[..1]);
     }
 
     #[test]
@@ -6239,24 +6369,111 @@ mod tests {
     }
 
     #[test]
-    fn capitulation_staging_overflow_falls_back_to_typed_walk() {
-        let bytes = cap_fixture();
-        let memory = SliceMemory {
-            base: CAP_GAME,
-            bytes: &bytes,
-        };
-        let ctx = CapitulationCopyContext {
-            base: CAP_BASE,
-            game_state: CAP_GAME,
-        };
-        let mut tiny = CapitulationJob {
-            log: crate::raw::RawLog::new(8, 8),
-            game_state: 0,
-        };
-        let report = copy_capitulation_refresh(&memory, ctx, &mut tiny);
-        assert!(!report.raw_ok);
-        assert!(tiny.log.overflowed);
-        assert!(tiny.grow_for_next());
+    fn cold_capitulation_jobs_grow_before_publication_for_5000_countries() {
+        let mut job = CapitulationJob::new();
+        assert_eq!((job.log.spans.capacity(), job.log.bytes.capacity()), (0, 0));
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        for count in [1_500, 5_000] {
+            let pointers = 0x10000;
+            let links = pointers + (count + 1) * 8;
+            let objects = links + (count + 1) * 4;
+            let stride = ccountry::DIPLOMACY_STATUS + 8;
+            let diplomacy = objects + count * stride;
+            let mut bytes = vec![0; diplomacy + count * 0x360 - CAP_GAME];
+            cap_array(
+                &mut bytes,
+                CAP_GAME + cgame_state::COUNTRIES,
+                pointers,
+                (count + 1) as u32,
+            );
+            cap_array(
+                &mut bytes,
+                CAP_GAME + cgame_state::COUNTRY_LINKS,
+                links,
+                (count + 1) as u32,
+            );
+            for slot in 1..=count {
+                let country = objects + (slot - 1) * stride;
+                let status = diplomacy + (slot - 1) * 0x360;
+                cap_put(
+                    &mut bytes,
+                    pointers + slot * 8,
+                    &(country as u64).to_le_bytes(),
+                );
+                cap_put(&mut bytes, links + slot * 4, &(slot as u32).to_le_bytes());
+                cap_put(
+                    &mut bytes,
+                    country,
+                    &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+                );
+                cap_put(
+                    &mut bytes,
+                    country + ccountry::ID,
+                    &(slot as u32).to_le_bytes(),
+                );
+                cap_put(
+                    &mut bytes,
+                    country + ccountry::DIPLOMACY_STATUS,
+                    &(status as u64).to_le_bytes(),
+                );
+                cap_put(
+                    &mut bytes,
+                    status,
+                    &(cdiplomacy_status::VTABLE_RVA as u64).to_le_bytes(),
+                );
+                cap_put(
+                    &mut bytes,
+                    status + cdiplomacy_status::COUNTRY,
+                    &(country as u64).to_le_bytes(),
+                );
+                cap_put(
+                    &mut bytes,
+                    status + cdiplomacy_status::LEGITIMACY,
+                    &(slot as i64).to_le_bytes(),
+                );
+            }
+            struct Once<'a> {
+                memory: SliceMemory<'a>,
+                headers: std::cell::Cell<usize>,
+            }
+            impl Memory for Once<'_> {
+                fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                    if address == CAP_GAME + cgame_state::COUNTRIES {
+                        self.headers.set(self.headers.get() + 1);
+                        assert_eq!(
+                            self.headers.get(),
+                            1,
+                            "growth must retain the original header"
+                        );
+                    }
+                    self.memory.copy(address, output)
+                }
+            }
+            let memory = Once {
+                memory: SliceMemory {
+                    base: CAP_GAME,
+                    bytes: &bytes,
+                },
+                headers: std::cell::Cell::new(0),
+            };
+            let report = copy_capitulation_refresh(
+                &memory,
+                CapitulationCopyContext {
+                    base: CAP_BASE,
+                    game_state: CAP_GAME,
+                },
+                &mut job,
+            );
+            assert!(report.raw_ok && !job.log.overflowed);
+            assert_eq!(memory.headers.get(), 1);
+            captured.decode_capitulation_payload(CAP_BASE, &job, &mut [0]);
+            assert_eq!(captured.capitulation.outcome, Outcome::Rows { len: count });
+            assert_eq!(captured.capitulation.rows[count - 1].country, count as u32);
+            assert_eq!(
+                captured.capitulation.rows[count - 1].legitimacy_raw,
+                count as i64
+            );
+        }
     }
 
     #[test]
@@ -6271,14 +6488,5 @@ mod tests {
         };
         let ticks = captured.capture(&memory, CAP_BASE, CAP_GAME, 0, false);
         assert_eq!(ticks[0], 0);
-    }
-
-    #[test]
-    fn capitulation_worst_case_pools_start_above_late_campaign_caps() {
-        let job = CapitulationJob::new();
-        assert!(job.log.spans.capacity() >= (1 << 14));
-        assert!(job.log.bytes.capacity() >= (4 << 20));
-        let capacities = Capacities::default();
-        assert!(capacities.rows[0] >= 512);
     }
 }

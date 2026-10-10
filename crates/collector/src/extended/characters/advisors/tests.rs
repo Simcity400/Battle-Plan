@@ -1,6 +1,6 @@
 use super::super::{
     characters_test_kit as kit,
-    tests::{ADDRESS, CHARACTERS, IMAGE, literal, pointer, put},
+    tests::{ADDRESS, CHARACTERS, IMAGE, fixture_capacities, literal, pointer, put},
 };
 use super::*;
 use std::collections::BTreeMap;
@@ -52,7 +52,12 @@ fn context() -> CharactersCopyContext {
 }
 fn cache_for(bytes: &[u8]) -> Cache {
     let demand = cadvisor::modifier_demand(&kit::memory(bytes), IMAGE, ADDRESS).unwrap();
-    Cache::with_modifier_demand(demand)
+    let mut cache = Cache::with_modifier_demand(demand);
+    cache.sections = [
+        Section::with_capacity(16384, 1 << 20, 16384),
+        Section::with_capacity(4096, 1 << 18, 8192),
+    ];
+    cache
 }
 
 #[test]
@@ -81,6 +86,10 @@ fn advisor_modifier_sizing_survives_an_unreadable_political_census() {
         .unwrap();
     assert!(demand.rows > 0);
     let mut cache = Cache::with_modifier_demand(demand);
+    cache.sections = [
+        Section::with_capacity(16384, 1 << 20, 16384),
+        Section::with_capacity(4096, 1 << 18, 8192),
+    ];
     cache.capture(&memory, context(), &Observer::new(), None);
     assert_eq!(cache.modifiers.shortfall, 0);
 }
@@ -93,7 +102,7 @@ fn assert_fresh(cache: &Section, bytes: &[u8]) {
             assert!(row.modifier_start >= entry.bytes.start);
         }
     }
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&fixture_capacities());
     let direct = walk_family(
         &kit::memory(bytes),
         IMAGE,
@@ -137,9 +146,9 @@ fn assert_outer_fresh(cache: &Cache, bytes: &[u8]) {
     assert_outer_matches(cache, &kit::memory(bytes));
 }
 fn assert_outer_matches(cache: &Cache, memory: &impl Memory) {
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&fixture_capacities());
     cache.decode(&mut captured);
-    let mut direct = Captured::with_capacities(&Capacities::default());
+    let mut direct = Captured::with_capacities(&fixture_capacities());
     let expected = walk_family(
         memory,
         IMAGE,
@@ -227,7 +236,7 @@ fn fresh_modifier_cache_changes_without_an_advisor_mutation_hook() {
     cache.capture(&kit::memory(&bytes), context(), &observer, None);
     assert_eq!(cache.counts.planned, 2);
     assert_outer_fresh(&cache, &bytes);
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&fixture_capacities());
     // Projection consumes owned bytes after the native objects disappear.
     bytes.fill(0);
     cache.decode(&mut captured);
@@ -443,7 +452,7 @@ fn optional_cache_capacity_shortfall_keeps_roles_and_definition_certificates() {
     assert_eq!(cache.modifiers.failure, None);
     assert!(cache.sections.iter().all(|section| section.valid));
     assert_eq!(cache.counts.planned, 2);
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&fixture_capacities());
     cache.decode(&mut captured);
     let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
         panic!("capacity shortfall keeps advisor roles");
@@ -573,7 +582,7 @@ fn planned_control_failures_keep_first_fault_and_recover_with_fresh_data() {
         } else {
             // Appended tooltip faults do not invalidate observed definitions.
             assert!(cache.sections.iter().all(|section| section.valid));
-            let mut captured = Captured::with_capacities(&Capacities::default());
+            let mut captured = Captured::with_capacities(&fixture_capacities());
             cache.decode(&mut captured);
             assert!(
                 captured.advisors.rows.rows[..cache.result.outcome.len()]
@@ -637,7 +646,7 @@ fn planned_country_prefix_survives_later_control_change_and_fault() {
             );
             assert_eq!(reads.as_slice(), &expected_reads[..=stop_index]);
             assert!(cache.sections.iter().all(|section| !section.valid));
-            let mut captured = Captured::with_capacities(&Capacities::default());
+            let mut captured = Captured::with_capacities(&fixture_capacities());
             cache.decode(&mut captured);
             assert_eq!(captured.advisors.rows.outcome, cache.result.outcome);
         } else {
@@ -710,7 +719,7 @@ fn planned_duplicate_characters_keep_each_country_observation() {
         // A separate observation sequence gives the ordinary reader the
         // same three distinct values; an address-keyed oracle would hide bugs.
         let direct_source = Countries::new(&bytes, countries);
-        let mut direct = Captured::with_capacities(&Capacities::default());
+        let mut direct = Captured::with_capacities(&fixture_capacities());
         let expected = walk_family(
             &direct_source,
             IMAGE,
@@ -724,7 +733,7 @@ fn planned_duplicate_characters_keep_each_country_observation() {
         assert_eq!(cache.result.outcome, expected.outcome);
         assert_eq!(cache.result.bytes_len, expected.bytes_len);
         assert_eq!(cache.result.required_bytes, expected.required_bytes);
-        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut captured = Captured::with_capacities(&fixture_capacities());
         cache.decode(&mut captured);
         direct.advisors.primary(expected);
         assert_eq!(captured.advisors_table(), direct.advisors_table());
@@ -843,7 +852,7 @@ fn unchanged_roles_skip_payload_reads_but_country_stays_current() {
     assert_eq!(cache.current.rows[0].country, 99);
     // Decode uses only owned bytes, even after all source storage disappears.
     bytes.fill(0);
-    let mut output = Captured::with_capacities(&Capacities::default());
+    let mut output = Captured::with_capacities(&fixture_capacities());
     cache.decode(&mut output);
     assert_eq!(output.advisors.rows.rows[0].country, 99);
 }
@@ -962,7 +971,7 @@ fn tooltip_keys_stay_fresh_under_definition_reuse_and_shortfalls_keep_roles() {
     literal(&mut bytes, 0x8b08, b"later");
     cache.capture(&kit::memory(&bytes), context(), &observer, None);
     assert_eq!(cache.counts.planned, 2);
-    let mut captured = Captured::with_capacities(&Capacities::default());
+    let mut captured = Captured::with_capacities(&fixture_capacities());
     cache.decode(&mut captured);
     let TableView::Complete(TableRows::AdvisorRoles(rows)) = captured.advisors_table() else {
         panic!("tooltip capture keeps roles");
@@ -1017,4 +1026,152 @@ fn tooltip_storage_grows_from_exact_demand_at_5000_countries() {
             .iter()
             .all(|row| row.tooltip_recorded)
     );
+}
+
+#[test]
+fn worker_cache_grows_5000_unique_advisor_definitions_numeric_and_tooltip_arenas() {
+    use super::super::tests::MANAGER;
+    use engine::{ccharacter_manager, character_advisor_node, msvc_tree_node as node};
+    fn alloc(bytes: &mut Vec<u8>, len: usize) -> usize {
+        let at = bytes.len();
+        bytes.resize(at + len, 0);
+        at
+    }
+    let mut bytes = kit::mapped_fixture();
+    let roster = alloc(&mut bytes, 5_000 * 8);
+    pointer(
+        &mut bytes,
+        MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS,
+        roster,
+    );
+    for offset in [8, 12] {
+        put(
+            &mut bytes,
+            MANAGER + ccharacter_manager::HISTORICAL_CHARACTERS + offset,
+            5_000_u32.to_le_bytes(),
+        );
+    }
+    for offset in [0, 8, 12] {
+        put(
+            &mut bytes,
+            MANAGER + ccharacter_manager::DYNAMIC_CHARACTERS + offset,
+            [0; 4],
+        );
+    }
+    let numeric = alloc(&mut bytes, 16);
+    put(&mut bytes, numeric, 71_u32.to_le_bytes());
+    put(&mut bytes, numeric + 8, (-17_i64).to_le_bytes());
+    let tooltip = alloc(&mut bytes, 0x28);
+    bytes[tooltip + 4] = 1;
+    literal(&mut bytes, tooltip + 8, b"key");
+    let mut first_role = 0;
+    let mut first_character = 0;
+    for index in 0..5_000 {
+        let character = alloc(&mut bytes, 0x120);
+        let head = alloc(&mut bytes, 32);
+        let entry = alloc(&mut bytes, character_advisor_node::SIZE);
+        // Header +8 contains data/count/mask and its final overflow byte.
+        let role = alloc(&mut bytes, cadvisor::TOOLTIP_KEYS + 8 + 17);
+        if index == 0 {
+            first_role = role;
+            first_character = character;
+        }
+        pointer(&mut bytes, roster + index * 8, character);
+        put(
+            &mut bytes,
+            character,
+            ((IMAGE + ccharacter::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            character + ccharacter::TYPE,
+            ccharacter::REFERENCE_TYPE.to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            character + ccharacter::ID,
+            (index as u32 + 1).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
+            character + ccharacter::COUNTRY,
+            (index as u32 + 1).to_le_bytes(),
+        );
+        pointer(&mut bytes, character + ccharacter::ADVISOR_MAP_HEAD, head);
+        put(
+            &mut bytes,
+            character + ccharacter::ADVISOR_MAP_SIZE,
+            1_u64.to_le_bytes(),
+        );
+        for link in [node::LEFT, node::PARENT, node::RIGHT] {
+            pointer(&mut bytes, head + link, entry);
+            pointer(&mut bytes, entry + link, head);
+        }
+        bytes[head + node::NIL] = 1;
+        literal(&mut bytes, entry + character_advisor_node::KEY, b"key");
+        pointer(&mut bytes, entry + character_advisor_node::ADVISOR, role);
+        put(
+            &mut bytes,
+            role,
+            ((IMAGE + cadvisor::VTABLE_RVA) as u64).to_le_bytes(),
+        );
+        pointer(&mut bytes, role + cadvisor::CHARACTER, character);
+        literal(&mut bytes, role + cadvisor::IDEA_TOKEN, b"idea");
+        literal(&mut bytes, role + cadvisor::SLOT, b"slot");
+        pointer(&mut bytes, role + cadvisor::MODIFIER_ENTRIES, numeric);
+        for offset in [8, 12] {
+            put(
+                &mut bytes,
+                role + cadvisor::MODIFIER_ENTRIES + offset,
+                1_u32.to_le_bytes(),
+            );
+        }
+        pointer(&mut bytes, role + cadvisor::TOOLTIP_KEYS + 8, tooltip);
+        put(
+            &mut bytes,
+            role + cadvisor::TOOLTIP_KEYS + 16,
+            1_u32.to_le_bytes(),
+        );
+    }
+    let mut cache = Cache::with_modifier_demand(cadvisor::ModifierDemand::default());
+    cache.sections = std::array::from_fn(|_| Section::with_capacity(0, 0, 0));
+    let mut captured = Captured::with_capacities(&Capacities {
+        rows: [0; 6],
+        bytes: [0; 6],
+    });
+    let mut observer = Observer::new();
+    for enlarged in [false, true] {
+        if enlarged {
+            literal(
+                &mut bytes,
+                first_role + cadvisor::IDEA_TOKEN,
+                b"longer_idea",
+            );
+            observer.change(first_character);
+        }
+        cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+        assert_eq!(cache.result.outcome, Outcome::Rows { len: 5_000 });
+        assert_eq!(cache.counts.read, if enlarged { 1 } else { 5_000 });
+        assert_eq!(cache.counts.planned, u64::from(enlarged));
+        assert_eq!(cache.sections[0].current.entries.len(), 5_000);
+        assert_eq!(cache.modifiers.shortfall, 0);
+        assert_eq!(cache.modifiers.len, 5_000 * 27);
+        assert!(
+            cache.modifiers.spans[..5_000]
+                .iter()
+                .all(|row| row.recorded && row.tooltip_recorded)
+        );
+        cache.decode(&mut captured);
+        assert_eq!(captured.advisors.rows.outcome, Outcome::Rows { len: 5_000 });
+        assert_eq!(captured.advisors.rows.rows[4_999].character, 5_000);
+        let expected = captured.advisors_table();
+        cache.prepare();
+        cache.capture_growing(&kit::memory(&bytes), context(), &observer, None);
+        assert_eq!(cache.result.outcome, Outcome::Rows { len: 5_000 });
+        assert_eq!(cache.counts.planned, 2);
+        assert_eq!(cache.counts.read, 0);
+        cache.decode(&mut captured);
+        assert_eq!(captured.advisors_table(), expected);
+        captured.reset();
+    }
 }

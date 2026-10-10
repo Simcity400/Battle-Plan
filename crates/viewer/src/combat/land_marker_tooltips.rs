@@ -142,6 +142,7 @@ pub(super) fn outlook(
     Ok(text)
 }
 
+#[cfg(test)]
 pub(crate) fn hit(hits: &[super::Hit], point: [f32; 2]) -> Option<(u64, [f32; 4])> {
     let hit = hits.iter().rev().find(|hit| hit.contains(point))?;
     match hit.selection {

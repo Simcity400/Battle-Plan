@@ -455,9 +455,18 @@ pub(crate) fn direct(memory: &impl engine::Memory, capacities: &Capacities) -> C
         rows: &[],
         outcome: Outcome::Rows { len: 0 },
     };
-    let _ = captured.acquire(memory, 0, BASE, divisions, 0, true);
+    let _ = captured.acquire_fixed(memory, 0, BASE, divisions, 0, true);
     captured.rest_raw_mode = false;
     captured
+}
+
+pub(crate) fn job() -> ProductionRestJob {
+    let mut job = ProductionRestJob::new();
+    job.log = crate::raw::RawLog::new(8_192, 1 << 20);
+    job.log.initialize_read_plan(8_192, 8_192, 1 << 20);
+    job.census.reserve_exact(16);
+    job.update_capacity_charge();
+    job
 }
 
 pub(crate) fn split(
@@ -469,7 +478,7 @@ pub(crate) fn split(
         base: 0,
         game_state: BASE,
     };
-    let mut first = ProductionRestJob::new();
+    let mut first = job();
     let report = crate::extended::production::copy_production_rest_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     captured.rest_raw_mode = report.raw_ok;
@@ -478,7 +487,7 @@ pub(crate) fn split(
         rows: &[],
         outcome: Outcome::Rows { len: 0 },
     };
-    let _ = captured.acquire(memory, 0, BASE, divisions, 0, true);
+    let _ = captured.acquire_fixed(memory, 0, BASE, divisions, 0, true);
     let mut ticks = [0u64; 8];
     captured.decode_production_rest_payload(0, BASE, &first, &mut ticks);
     (captured, report, first)

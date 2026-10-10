@@ -356,7 +356,7 @@ fn fixture() -> Mem {
 #[test]
 fn reads_every_stored_operand_and_the_state_container() {
     let m = fixture();
-    let mut buffers = Buffers::new(&Capacity::default()).unwrap();
+    let mut buffers = Buffers::new(&fixture_capacity()).unwrap();
     let walk = walk(&m, 0, GS, &mut buffers, Selection::ALL);
     assert_eq!(
         walk.outcomes,
@@ -435,7 +435,7 @@ fn no_route_value_and_no_origin_leave_the_factors_unread() {
         0x4400_6000 + supply_node::STRIDE + supply_node::ROUTE_VALUE,
         0,
     );
-    let mut buffers = Buffers::new(&Capacity::default()).unwrap();
+    let mut buffers = Buffers::new(&fixture_capacity()).unwrap();
     walk(&m, 0, GS, &mut buffers, Selection::ALL);
     assert_eq!(buffers.inputs[0].supply_route, 0);
     m.u64(0x4300_2000 + cresource_origin::STATE, STATE_B as u64);
@@ -455,7 +455,7 @@ fn short_buffers_truncate_and_report_live_sizes() {
     let small = Capacity {
         token_bytes: 4,
         override_rows: 1,
-        ..Capacity::default()
+        ..fixture_capacity()
     };
     let mut buffers = Buffers::new(&small).unwrap();
     let first = walk(&m, 0, GS, &mut buffers, Selection::ALL);
@@ -482,13 +482,269 @@ fn short_buffers_truncate_and_report_live_sizes() {
 }
 
 #[test]
+fn growing_walk_fills_the_first_pass_and_keeps_the_first_native_fault() {
+    use std::cell::RefCell;
+    struct Traced<'a> {
+        memory: &'a Mem,
+        copies: RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            self.copies.borrow_mut().push((address, destination.len()));
+            self.memory.copy(address, destination)
+        }
+    }
+    let mut memory = fixture();
+    let traced = Traced {
+        memory: &memory,
+        copies: RefCell::new(Vec::new()),
+    };
+    let mut buffers = Buffers::empty();
+    let captured = walk_growing(&traced, 0, GS, &mut buffers, Selection::ALL);
+    assert_eq!(
+        captured.outcomes,
+        [
+            Outcome::Rows { len: 2 },
+            Outcome::Rows { len: 1 },
+            Outcome::Rows { len: 1 },
+            Outcome::Rows { len: 2 }
+        ]
+    );
+    for header in [
+        GS + cgame_state::STATES,
+        GS + cgame_state::COUNTRIES,
+        GS + cgame_state::COUNTRY_LINKS,
+        0x4100_0000 + cstrategic_resource_database::ITEMS,
+        0x4100_0000 + cstrategic_resource_database::KEYS,
+    ] {
+        assert_eq!(
+            traced
+                .copies
+                .borrow()
+                .iter()
+                .filter(|&&(address, len)| address == header && len == 16)
+                .count(),
+            1,
+            "header {header:x} reread"
+        );
+    }
+    assert_eq!(&buffers.tokens[..captured.token_bytes], b"refinery");
+    assert_eq!(buffers.read_countries, [1]);
+    let fixed = walk(&memory, 0, GS, &mut Buffers::empty(), Selection::ALL);
+    assert!(
+        fixed
+            .outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, Outcome::Truncated { .. }))
+    );
+    memory.u64(STATE_A, 7);
+    memory.0.remove(&(GS + cgame_state::COUNTRIES));
+    assert_eq!(
+        walk_growing(&memory, 0, GS, &mut Buffers::empty(), Selection::ALL).outcomes,
+        [Outcome::Unavailable {
+            reason: "state vtable mismatch"
+        }; 4]
+    );
+}
+
+#[test]
+fn growing_resource_database_and_name_dictionary_follow_mod_demand() {
+    let mut memory = fixture();
+    let database = 0x4100_0000;
+    let count = 257;
+    let items = 0x4b00_0000;
+    let tokens = 0x4b01_0000;
+    memory.array(
+        database + cstrategic_resource_database::ITEMS,
+        items,
+        count + 1,
+    );
+    memory.array(database + cstrategic_resource_database::KEYS, tokens, count);
+    memory.u64(items, 0x4100_2000);
+    for index in 0..count as usize {
+        let descriptor = 0x4b02_0000 + index * 0x200;
+        memory.u64(items + (index + 1) * 8, descriptor as u64);
+        memory.u32(tokens + index * 4, index as u32 + 100);
+        memory.u64(descriptor, cstrategic_resource::VTABLE_RVA as u64);
+        memory.u32(descriptor + cstrategic_resource::INDEX, index as u32 + 1);
+        memory.u32(
+            descriptor + cstrategic_resource::TOKEN_ID,
+            index as u32 + 100,
+        );
+        for offset in 0..4 {
+            memory.u32(
+                descriptor + cstrategic_resource::STATE_ADDITIVE_KEY + offset * 4,
+                index as u32 * 4 + offset as u32 + 1,
+            );
+        }
+    }
+    let (mut descriptors, mut keys, mut bytes) = (Vec::new(), Vec::new(), Vec::new());
+    assert_eq!(
+        resource_database(&memory, 0, &mut descriptors, &mut keys, &mut bytes, false),
+        Ok(Err(count as usize))
+    );
+    assert_eq!(
+        resource_database(&memory, 0, &mut descriptors, &mut keys, &mut bytes, true),
+        Ok(Ok(count as usize))
+    );
+    assert_eq!(descriptors[count as usize - 1].token, count + 99);
+    let (mut table, mut name_bytes) = (Vec::new(), Vec::new());
+    let mut names = Names {
+        table: &mut table,
+        bytes: &mut name_bytes,
+        used: 0,
+        entries: 0,
+        limit: 0,
+        growing: true,
+    };
+    let mut required = Capacity::zero();
+    for index in 0..2_201 {
+        let definition = 0x4c00_0000 + index * 0x100;
+        let text = format!("name_{index:04}");
+        memory.put(definition, &[0; 0x48]);
+        memory.u64(definition, cdynamic_modifier::VTABLE_RVA as u64);
+        memory.put(definition + cdynamic_modifier::ID, text.as_bytes());
+        memory.u64(definition + cdynamic_modifier::ID + 16, text.len() as u64);
+        memory.u64(definition + cdynamic_modifier::ID + 24, 15);
+        let Name::Kept(start, len) = names.get(&memory, 0, definition, &mut required).unwrap()
+        else {
+            panic!("growing names must retain the first occurrence");
+        };
+        assert_eq!(&names.bytes[start..start + len], text.as_bytes());
+    }
+    // Dictionary expansion keeps previously captured identities and bytes.
+    for index in 0..2_201 {
+        let definition = 0x4c00_0000 + index * 0x100;
+        memory.0.remove(&definition);
+        let Name::Kept(start, len) = names.get(&memory, 0, definition, &mut required).unwrap()
+        else {
+            panic!("known names must not reread native storage");
+        };
+        assert_eq!(
+            &names.bytes[start..start + len],
+            format!("name_{index:04}").as_bytes()
+        );
+    }
+    assert_eq!(required.definitions, 2_201);
+    assert_eq!(required.name_bytes, 2_201 * 9);
+}
+
+#[test]
+fn growing_core_lists_preserve_5000_links_and_later_growth() {
+    let mut memory = fixture();
+    let links_address = 0x4d00_0000;
+    let mut rows = Vec::new();
+    let mut links = Vec::new();
+    for count in [5_000, 11_000] {
+        memory.array(STATE_A + cstate::CORES, links_address, count);
+        memory.array(STATE_B + cstate::CORES, 0, 0);
+        for index in 0..count {
+            memory.u32(links_address + index as usize * 4, index % 5_000 + 1);
+        }
+        let mut required = 0;
+        assert_eq!(
+            state_cores_growing(
+                &memory,
+                0,
+                GS,
+                &[1, 2],
+                &|_| true,
+                &mut rows,
+                &mut links,
+                &mut required
+            ),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!(required, count as usize);
+        assert_eq!(
+            rows[0],
+            CoreRow {
+                state: 1,
+                start: 0,
+                len: count as usize
+            }
+        );
+        assert_eq!(
+            &links[..count as usize],
+            (0..count)
+                .map(|index| index % 5_000 + 1)
+                .collect::<Vec<_>>()
+        );
+    }
+    let mut required = 0;
+    assert_eq!(
+        state_cores(
+            &memory,
+            0,
+            GS,
+            &[1, 2],
+            &|_| true,
+            &mut [],
+            &mut [],
+            &mut required
+        ),
+        Outcome::Truncated {
+            len: 0,
+            unread_rows: 2
+        }
+    );
+}
+
+#[test]
+fn live_demand_sizes_every_raid_state_table_without_acquiring_payloads() {
+    let mut memory = fixture();
+    memory.array(STATE_A + cstate::CORES, 0x4d00_0000, 5_000);
+    memory.array(STATE_B + cstate::CORES, 0, 0);
+    // The core payload is deliberately absent: a hint needs only its header.
+    let (capacity, cores) = demand(&memory, 0, GS).unwrap();
+    assert_eq!(
+        (capacity.states, capacity.countries, capacity.resources),
+        (3, 2, 2)
+    );
+    assert_eq!(cores, 5_000);
+    assert_eq!(
+        (
+            capacity.modifier_rows,
+            capacity.token_bytes,
+            capacity.override_rows
+        ),
+        (1, 8, 2)
+    );
+    assert_eq!(
+        (
+            capacity.origins,
+            capacity.routes,
+            capacity.provinces,
+            capacity.entries
+        ),
+        (1, 2, 2, 2)
+    );
+    assert_eq!(
+        capacity.batch_bytes,
+        3 * cstrategic_resource_pool::VALUE_STRIDE
+            + 3 * modifier_entry::STRIDE
+            + dynamic_modifier_entry::STRIDE
+    );
+    let mut buffers = Buffers::new(&capacity).unwrap();
+    assert!(
+        walk(&memory, 0, GS, &mut buffers, Selection::ALL)
+            .outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, Outcome::Rows { .. }))
+    );
+    // Population is unchanged; retained child headers still raise demand.
+    memory.array(STATE_B + cstate::CORES, 0x4d10_0000, 6_000);
+    assert_eq!(demand(&memory, 0, GS).unwrap().1, 11_000);
+}
+
+#[test]
 fn a_foreign_container_or_torn_pool_fails_the_whole_walk() {
     let mut m = fixture();
     m.u32(
         STATE_A + cstate::DYNAMIC_MODIFIERS + cdynamic_modifier_container::STATE,
         9,
     );
-    let mut buffers = Buffers::new(&Capacity::default()).unwrap();
+    let mut buffers = Buffers::new(&fixture_capacity()).unwrap();
     assert!(
         walk(&m, 0, GS, &mut buffers, Selection::ALL)
             .outcomes
@@ -513,7 +769,7 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
         9,
     );
     m.0.remove(&0x4300_3000);
-    let mut buffers = Buffers::new(&Capacity::default()).unwrap();
+    let mut buffers = Buffers::new(&fixture_capacity()).unwrap();
     let only_two = Selection {
         states: &|state| state == 2,
         countries: &|_| false,
@@ -554,7 +810,7 @@ fn a_walk_reads_rows_only_for_selected_states_and_countries() {
 #[test]
 fn the_batched_resource_database_keeps_each_failure_and_its_order() {
     let reason = |m: &Mem| {
-        let mut buffers = Buffers::new(&Capacity::default()).unwrap();
+        let mut buffers = Buffers::new(&fixture_capacity()).unwrap();
         match walk(m, 0, GS, &mut buffers, Selection::ALL).outcomes[0] {
             Outcome::Unavailable { reason } => reason,
             other => panic!("{other:?}"),
@@ -883,6 +1139,49 @@ fn scaled_with(countries: usize, states: usize, with_origins: bool) -> (Arena, u
     (m, game_state)
 }
 
+#[test]
+fn growing_raid_state_tables_complete_5000_countries_and_later_mod_growth() {
+    let mut buffers = Buffers::empty();
+    for state_count in [5_000, 11_000] {
+        let (arena, game_state) = scaled(5_000, state_count);
+        let memory = crate::memory::SliceMemory {
+            base: arena.base,
+            bytes: &arena.bytes,
+        };
+        let captured = walk_growing(
+            &memory,
+            arena.base,
+            game_state,
+            &mut buffers,
+            Selection::ALL,
+        );
+        assert_eq!(
+            captured.outcomes,
+            [
+                Outcome::Rows { len: state_count },
+                Outcome::Rows {
+                    len: state_count * 3
+                },
+                Outcome::Rows {
+                    len: state_count * MODIFIERS_PER_STATE
+                },
+                Outcome::Rows { len: 500 }
+            ]
+        );
+        assert_eq!(buffers.inputs[state_count - 1].state, state_count as u32);
+        assert_eq!(
+            buffers.resources[state_count * 3 - 1].state,
+            state_count as u32
+        );
+        assert_eq!(
+            buffers.modifiers[state_count * MODIFIERS_PER_STATE - 1].state,
+            state_count as u32
+        );
+        assert_eq!(buffers.read_countries.len(), 5_000);
+        assert_eq!(captured.required.countries, 5_001);
+    }
+}
+
 /// `cargo test --release -p engine raid_state_inputs_bench -- --ignored --nocapture`
 #[cfg(all(windows, target_env = "msvc", target_arch = "x86_64"))]
 #[test]
@@ -892,7 +1191,7 @@ fn raid_state_inputs_bench() {
         let (arena, game_state) = scaled(countries, states);
         // SAFETY: immutable synthetic storage owned by this test.
         let memory = Counted::new(unsafe { crate::memory::LiveMemory::new() });
-        let mut capacity = Capacity::default();
+        let mut capacity = fixture_capacity();
         let mut buffers = Buffers::new(&capacity).unwrap();
         loop {
             let walk = walk(
@@ -960,7 +1259,7 @@ fn raid_state_inputs_bench() {
 
 /// Walk buffers grown to a complete walk of this image.
 fn grown_walk(memory: &impl Memory, arena: &Arena, game_state: usize) -> Buffers {
-    let mut capacity = Capacity::default();
+    let mut capacity = fixture_capacity();
     loop {
         let mut buffers = Buffers::new(&capacity).unwrap();
         let walk = walk(memory, arena.base, game_state, &mut buffers, Selection::ALL);
@@ -1072,4 +1371,29 @@ fn capacity_arithmetic_failure_is_allocation_failure() {
         Buffers::new(&capacity).err().unwrap().kind(),
         std::io::ErrorKind::OutOfMemory
     );
+}
+
+fn fixture_capacity() -> Capacity {
+    Capacity {
+        states: 4096,
+        resources: 32,
+        resource_rows: 8192,
+        modifier_rows: 4096,
+        token_bytes: 1 << 17,
+        override_rows: 1024,
+        origins: 4096,
+        routes: 1 << 16,
+        provinces: 1024,
+        entries: 1024,
+        countries: 4096,
+        definitions: 2048,
+        name_bytes: 1 << 16,
+        batch_bytes: 1 << 18,
+    }
+}
+
+#[test]
+fn default_capacity_has_no_chosen_state_or_content_population() {
+    let capacity = Capacity::default();
+    assert_eq!(capacity, Capacity::zero());
 }

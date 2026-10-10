@@ -367,38 +367,60 @@ pub(crate) fn split(
 }
 
 pub(crate) fn assert_matches_direct(split: &Split, direct: &Split) {
+    // Owned transfers retain different storage headroom; outcomes certify
+    // the rows to compare, including every retained truncation prefix.
     assert_eq!(
         split.divisions_outcome, direct.divisions_outcome,
         "divisions outcome"
     );
-    assert_eq!(split.divisions, direct.divisions, "divisions rows");
+    assert_eq!(
+        &split.divisions[..split.divisions_outcome.len()],
+        &direct.divisions[..direct.divisions_outcome.len()],
+        "divisions rows"
+    );
     assert_eq!(
         split.equipment_outcome, direct.equipment_outcome,
         "equipment outcome"
     );
-    assert_eq!(split.equipment, direct.equipment, "equipment rows");
+    assert_eq!(
+        &split.equipment[..split.equipment_outcome.len()],
+        &direct.equipment[..direct.equipment_outcome.len()],
+        "equipment rows"
+    );
     assert_eq!(
         split.groups_outcome, direct.groups_outcome,
         "groups outcome"
     );
     assert_eq!(
-        &split.groups[..direct.groups.len()],
-        direct.groups,
+        &split.groups[..split.groups_outcome.len()],
+        &direct.groups[..direct.groups_outcome.len()],
         "groups rows"
     );
     assert_eq!(
         split.requests_outcome, direct.requests_outcome,
         "requests outcome"
     );
-    assert_eq!(split.requests, direct.requests, "requests rows");
+    assert_eq!(
+        &split.requests[..split.requests_outcome.len()],
+        &direct.requests[..direct.requests_outcome.len()],
+        "requests rows"
+    );
     assert_eq!(
         split.deliveries_outcome, direct.deliveries_outcome,
         "deliveries outcome"
     );
-    assert_eq!(split.deliveries, direct.deliveries, "deliveries rows");
+    assert_eq!(
+        &split.deliveries[..split.deliveries_outcome.len()],
+        &direct.deliveries[..direct.deliveries_outcome.len()],
+        "deliveries rows"
+    );
     assert_eq!(
         split.produced_outcome, direct.produced_outcome,
         "produced outcome"
     );
-    assert_eq!(split.produced, direct.produced, "produced rows");
+    assert_eq!(
+        &split.produced[..split.produced_outcome.len()],
+        &direct.produced[..direct.produced_outcome.len()],
+        "produced rows"
+    );
 }

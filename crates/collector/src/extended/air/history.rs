@@ -1,5 +1,4 @@
 use super::*;
-use engine::allocation;
 
 /// Shared regional-history payload slots in report order: [history, damage].
 pub(crate) const AIR_HISTORY_N: usize = 2;
@@ -18,6 +17,7 @@ pub(crate) struct AirHistoryJob {
     pub(super) required_history: usize,
     pub(super) required_damage: usize,
     pub(super) acquired: bool,
+    pub(super) growing: bool,
     pub(super) active: bool,
     pub(super) raw_bytes: [u64; AIR_HISTORY_N],
     pub(super) capacity_charge: crate::raw_memory::Charge,
@@ -38,6 +38,7 @@ impl Default for AirHistoryJob {
             required_history: 0,
             required_damage: 0,
             acquired: false,
+            growing: false,
             active: false,
             raw_bytes: [0; AIR_HISTORY_N],
             capacity_charge: Default::default(),
@@ -46,13 +47,7 @@ impl Default for AirHistoryJob {
 }
 impl AirHistoryJob {
     pub fn new() -> Self {
-        let mut job = Self {
-            history: allocation::owned_vec(allocation::default_vec(8192)),
-            damage: allocation::owned_vec(allocation::default_vec(16_384)),
-            ..Self::default()
-        };
-        job.update_capacity_charge();
-        job
+        Self::default()
     }
     pub(super) fn update_capacity_charge(&mut self) {
         use crate::raw_memory::{Capacity, vector_bytes};
@@ -74,6 +69,7 @@ impl AirHistoryJob {
         self.required_history = 0;
         self.required_damage = 0;
         self.acquired = false;
+        self.growing = false;
         self.active = false;
         self.raw_bytes = [0; AIR_HISTORY_N];
     }
@@ -137,6 +133,23 @@ impl<M: Memory> Memory for AirHistoryMemory<'_, M> {
         state: usize,
     ) -> Option<ccountry::AuthenticatedRoster<'_>> {
         self.inner.authenticated_countries(base, state)
+    }
+
+    fn authenticated_reserved_country(
+        &self,
+        base: usize,
+        state: usize,
+    ) -> Option<Result<ccountry::Country, &'static str>> {
+        self.inner.authenticated_reserved_country(base, state)
+    }
+
+    fn authenticated_reserved_country_observation(
+        &self,
+        base: usize,
+        state: usize,
+    ) -> Option<ccountry::ReservedCountryObservation> {
+        self.inner
+            .authenticated_reserved_country_observation(base, state)
     }
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
         let succeeded = self.inner.copy(address, destination);
@@ -216,6 +229,7 @@ pub(crate) struct AirHistoryCopyContext {
     pub damage_limit: usize,
 }
 
+#[cfg(test)]
 pub(super) fn acquire_air_history_pass(
     job: &mut AirHistoryJob,
     memory: &impl Memory,
@@ -224,14 +238,35 @@ pub(super) fn acquire_air_history_pass(
     history_limit: usize,
     damage_limit: usize,
 ) {
+    acquire_air_history_pass_mode(
+        job,
+        memory,
+        base,
+        game_state,
+        history_limit,
+        damage_limit,
+        false,
+    );
+}
+
+fn acquire_air_history_pass_mode(
+    job: &mut AirHistoryJob,
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    history_limit: usize,
+    damage_limit: usize,
+    growing: bool,
+) {
     let _reads = read_accounting::table(TableId::AirRegionHistory);
     job.clear();
     job.active = true;
+    job.growing = growing;
     job.required_history = history_limit;
     job.required_damage = damage_limit;
     job.history_limit = history_limit;
     job.damage_limit = damage_limit;
-    if history_limit > job.history.len() || damage_limit > job.damage.len() {
+    if !growing && (history_limit > job.history.len() || damage_limit > job.damage.len()) {
         return;
     }
     let source = AirHistoryMemory {
@@ -239,13 +274,23 @@ pub(super) fn acquire_air_history_pass(
         raw_bytes: std::cell::Cell::new([0; AIR_HISTORY_N]),
         record: std::cell::Cell::new(None),
     };
-    let captured = cair_region_combat_data::walk_world(
-        &source,
-        base,
-        game_state,
-        &mut job.history[..history_limit],
-        &mut job.damage[..damage_limit],
-    );
+    let captured = if growing {
+        cair_region_combat_data::walk_world_growing(
+            &source,
+            base,
+            game_state,
+            &mut job.history,
+            &mut job.damage,
+        )
+    } else {
+        cair_region_combat_data::walk_world(
+            &source,
+            base,
+            game_state,
+            &mut job.history[..history_limit],
+            &mut job.damage[..damage_limit],
+        )
+    };
     job.history_result = captured.records;
     job.damage_result = captured.damage;
     job.acquired = true;
@@ -253,6 +298,33 @@ pub(super) fn acquire_air_history_pass(
 }
 
 /// Acquire regional history and damage after checking both destination limits.
+pub(crate) fn copy_air_history_refresh_growing(
+    memory: &impl Memory,
+    ctx: AirHistoryCopyContext,
+    job: &mut AirHistoryJob,
+) -> AirHistoryCopyReport {
+    if !replay::cadence::should_walk(TableId::AirRegionHistory, ctx.hour, ctx.force_full) {
+        job.clear();
+        return AirHistoryCopyReport::default();
+    }
+    let started = qpc();
+    acquire_air_history_pass_mode(
+        job,
+        memory,
+        ctx.base,
+        ctx.game_state,
+        ctx.history_limit,
+        ctx.damage_limit,
+        true,
+    );
+    AirHistoryCopyReport {
+        raw_ok: job.acquired,
+        copy_ticks: [elapsed(started), 0],
+        raw_bytes: job.raw_bytes,
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn copy_air_history_refresh(
     memory: &impl Memory,
     ctx: AirHistoryCopyContext,
@@ -305,11 +377,24 @@ impl Captured {
             return;
         }
         let started = qpc();
-        if !job.acquired
-            || job.history_limit != self.history.rows.len()
-            || job.damage_limit != self.damage.rows.len()
-            || job.history_limit > job.history.len()
-            || job.damage_limit > job.damage.len()
+        let storage = if job.growing {
+            engine::walk::Buffer::Growing(&mut self.history.rows)
+                .ensure(job.history_result.len())
+                .and_then(|_| {
+                    engine::walk::Buffer::Growing(&mut self.damage.rows)
+                        .ensure(job.damage_result.len())
+                })
+        } else {
+            Ok(true)
+        };
+        if let Err(reason) = storage {
+            self.history.outcome = Outcome::Unavailable { reason };
+            self.damage.outcome = self.history.outcome;
+        } else if !job.acquired
+            || (!job.growing && job.history_limit != self.history.rows.len())
+            || (!job.growing && job.damage_limit != self.damage.rows.len())
+            || (!job.growing && job.history_limit > job.history.len())
+            || (!job.growing && job.damage_limit > job.damage.len())
         {
             self.history.outcome = Outcome::Unavailable {
                 reason: "air history owned payload capacity mismatch",

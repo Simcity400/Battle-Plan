@@ -1,7 +1,7 @@
 //! CLoopHistory layout and its air-statistics channel schema.
 //!
 //! Harvested from `air_loss_stats_live/src/lib.rs`, whose country walk checks
-//! the vtable, self-reference, 89 fields, and five-entry yearly window. The
+//! the vtable, self-reference and 89 fields. The
 //! 24 named channels below are a subset of those 89 fields. Values remain i64;
 //! display divisors do not justify narrowing or rounding the recorded value.
 
@@ -67,6 +67,29 @@ impl Row {
 /// A malformed allocated object makes the table unavailable. Capacity bounds
 /// row storage; remaining allocated histories are counted without field reads.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+) -> Outcome {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
     match walk_inner(memory, base, game_state, output) {
         Ok((len, 0)) => Outcome::Rows { len },
         Ok((len, unread_rows)) => Outcome::Truncated { len, unread_rows },
@@ -78,9 +101,9 @@ fn walk_inner(
     memory: &impl Memory,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
+    mut output: crate::walk::Buffer<'_, Row>,
 ) -> Result<(usize, u32), &'static str> {
-    let mut len = 0;
+    let mut len = 0_usize;
     let mut unread_rows = 0_u32;
     // The region-indexed history table is a contiguous pointer vector. One
     // guarded round per batch replaces one read per region slot; each slot is
@@ -124,6 +147,7 @@ fn walk_inner(
                 if history == 0 {
                     continue;
                 }
+                output.ensure(len.checked_add(1).ok_or("air history row count overflow")?)?;
                 if len == output.len() {
                     unread_rows = unread_rows
                         .checked_add(1)
@@ -160,7 +184,9 @@ fn read_current(
     let capacity = field::<u32>(memory, window, loop_history_window::CAPACITY)?;
     let year_slot = field::<u32>(memory, window, loop_history_window::CURRENT_SLOT)?;
     let year_window_wrapped = field::<u8>(memory, window, loop_history_window::WRAPPED)?;
-    if capacity != loop_history_window::AIR_STATS_YEARLY_CAPACITY
+    // 140C40870 leaves existing air histories intact; 141504800 and
+    // 141505AD0 use the original signed ring capacity without a five-slot gate.
+    if capacity as i32 <= 0
         || records.count != capacity
         || year_slot >= capacity
         || year_window_wrapped > 1
@@ -616,5 +642,74 @@ mod tests {
                 reason: "strategic air country pointer unreadable or address overflow",
             }
         );
+    }
+
+    #[test]
+    fn growing_air_statistics_follows_changed_region_demand_without_country_growth() {
+        let mut memory = Fixture::new();
+        let mut output = Vec::new();
+        for count in [5_000_u32, 12_000] {
+            memory.array(AIR + cstrategic_air::HISTORY_TABLE, 0x100000, count);
+            for index in 0..count as usize {
+                memory.pointer(0x100000 + index * 8, HISTORY);
+            }
+            let mut fixed = [Row::default(); 1];
+            assert_eq!(
+                walk(&memory, BASE, GAME, &mut fixed),
+                Outcome::Truncated {
+                    len: 1,
+                    unread_rows: count - 1
+                }
+            );
+            assert_eq!(
+                walk_growing(&memory, BASE, GAME, &mut output),
+                Outcome::Rows {
+                    len: count as usize
+                }
+            );
+            assert_eq!(output[count as usize - 1].region, count - 1);
+        }
+    }
+
+    #[test]
+    fn current_air_statistics_uses_original_yearly_capacity_and_slot() {
+        let mut output = Vec::new();
+        for count in [6_u32, 97, 5_000, 12_000] {
+            let mut memory = Fixture::new();
+            memory.array(
+                WINDOW_OBJECT + loop_history_window::RECORDS,
+                0x100000,
+                count,
+            );
+            memory.u32(WINDOW_OBJECT + loop_history_window::CAPACITY, count);
+            memory.u32(WINDOW_OBJECT + loop_history_window::CURRENT_SLOT, count - 1);
+            memory.pointer(0x100000 + (count as usize - 1) * 8, RECORD);
+            assert_eq!(
+                walk_growing(&memory, BASE, GAME, &mut output),
+                Outcome::Rows { len: 1 }
+            );
+            assert_eq!(
+                (output[0].year_slot, output[0].year_window_wrapped),
+                (count - 1, 1)
+            );
+            assert_eq!(
+                output[0].channels,
+                air_stats::CHANNELS.map(|channel| -(channel as i64) - 1)
+            );
+            let mut fixed = [Row::default(); 1];
+            assert_eq!(
+                walk(&memory, BASE, GAME, &mut fixed),
+                Outcome::Rows { len: 1 }
+            );
+            assert_eq!(fixed, output[..1]);
+        }
+        for count in [0, i32::MAX as u32 + 1, u32::MAX] {
+            let mut memory = Fixture::new();
+            memory.u32(WINDOW_OBJECT + loop_history_window::CAPACITY, count);
+            assert!(matches!(
+                walk_growing(&memory, BASE, GAME, &mut output),
+                Outcome::Unavailable { .. }
+            ));
+        }
     }
 }

@@ -235,6 +235,164 @@ fn capture(memory: &impl Memory, rows: &mut [Row], bonuses: &mut [BonusRow]) -> 
 }
 
 #[test]
+fn growing_research_slots_and_bonus_rows_follow_later_original_headers() {
+    const POINTERS: usize = 0x20000;
+    const OBJECTS: usize = 0x30000;
+    let mut bytes = fixture(true, true);
+    bytes.resize(OBJECTS + 7_000 * 0x50, 0);
+    let source = bytes[SLOT..SLOT + 0x44].to_vec();
+    let mut rows = Vec::new();
+    let mut bonuses = Vec::new();
+    for count in [5_000_u32, 7_000] {
+        array(
+            &mut bytes,
+            STATUS + ctechnology_status::RESEARCH_SLOTS_DATA,
+            POINTERS,
+            count,
+        );
+        for index in 0..count as usize {
+            let slot = OBJECTS + index * 0x50;
+            bytes[slot..slot + source.len()].copy_from_slice(&source);
+            put(
+                &mut bytes,
+                slot + cresearch_slot::INDEX,
+                (index as u32).to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                POINTERS + index * 8,
+                (slot as u64).to_le_bytes(),
+            );
+        }
+        let memory = MemoryTrace::new(&bytes);
+        let result = walk_country_growing(
+            &memory,
+            0,
+            COUNTRY,
+            11,
+            Ok(Context {
+                cost_scale_raw: 100_000,
+                cost_debug: 0,
+            }),
+            &mut rows,
+            &mut bonuses,
+        );
+        assert_eq!(
+            result,
+            (
+                Outcome::Rows {
+                    len: count as usize
+                },
+                Outcome::Rows {
+                    len: count as usize
+                }
+            )
+        );
+        assert_eq!(rows[count as usize - 1].slot.index, count - 1);
+        assert!(
+            bonuses[..count as usize]
+                .iter()
+                .all(|bonus| bonus.resolved == 1)
+        );
+        assert_eq!(
+            memory
+                .reads
+                .borrow()
+                .iter()
+                .filter(|&&(at, _)| at == STATUS + ctechnology_status::RESEARCH_SLOTS_DATA)
+                .count(),
+            1
+        );
+    }
+    let mut short = [Row::default()];
+    assert!(matches!(
+        capture(&MemoryTrace::new(&bytes), &mut short, &mut []),
+        (Outcome::Truncated { .. }, _)
+    ));
+}
+
+#[test]
+fn growing_research_names_and_applied_bonus_populations_have_no_inline_limit() {
+    const IDS_LIVE: usize = 0x20000;
+    const PROVIDERS: usize = 0x26000;
+    const TECH_TEXT: usize = 0x28000;
+    const BONUS_TEXT: usize = 0x2a000;
+    let mut bytes = fixture(true, true);
+    bytes.resize(0x30000, 0);
+    for (descriptor, source, len, fill) in [
+        (
+            TEMPLATE + ctechnology_template::ID,
+            TECH_TEXT,
+            2_048_usize,
+            b't',
+        ),
+        (BONUS + bonus::NAME, BONUS_TEXT, 4_097_usize, b'b'),
+    ] {
+        put(&mut bytes, descriptor, (source as u64).to_le_bytes());
+        put(&mut bytes, descriptor + 16, (len as u64).to_le_bytes());
+        put(&mut bytes, descriptor + 24, (len as u64).to_le_bytes());
+        bytes[source..source + len].fill(fill);
+    }
+    array(
+        &mut bytes,
+        TECH + ctechnology::APPLIED_BONUS_IDS,
+        IDS_LIVE,
+        5_000,
+    );
+    for index in 0..5_000 {
+        put(&mut bytes, IDS_LIVE + index * 4, (-7_i32).to_le_bytes());
+    }
+    array(
+        &mut bytes,
+        STATUS + ctechnology_status::LIMITED_BONUSES,
+        PROVIDERS,
+        5_000,
+    );
+    for index in 0..64 {
+        put(
+            &mut bytes,
+            PROVIDERS + index * 8,
+            (BONUS as u64).to_le_bytes(),
+        );
+    }
+    let memory = MemoryTrace::new(&bytes);
+    let mut rows = Vec::new();
+    let mut bonuses = Vec::new();
+    assert_eq!(
+        walk_country_growing(
+            &memory,
+            0,
+            COUNTRY,
+            11,
+            Ok(Context {
+                cost_scale_raw: 100_000,
+                cost_debug: 0
+            }),
+            &mut rows,
+            &mut bonuses
+        ),
+        (Outcome::Rows { len: 1 }, Outcome::Rows { len: 5_000 })
+    );
+    assert_eq!(rows[0].token.as_bytes(), vec![b't'; 2_048]);
+    assert!(
+        bonuses[..5_000]
+            .iter()
+            .all(|row| row.value.name.as_bytes() == vec![b'b'; 4_097])
+    );
+    assert_eq!(
+        capture(&MemoryTrace::new(&bytes), &mut [Row::default()], &mut []),
+        (
+            Outcome::Unavailable {
+                reason: "technology token too long"
+            },
+            Outcome::Unavailable {
+                reason: "technology token too long"
+            }
+        )
+    );
+}
+
+#[test]
 fn idle_and_unbonused_slots_skip_bonus_roster_and_catalogue() {
     for (active, expected_calls) in [(false, 5), (true, 8)] {
         let b = fixture(active, false);
@@ -287,14 +445,17 @@ fn native_slot_indices_survive_permutation_and_shared_bonuses_are_read_once() {
     );
     put(&mut b, SLOTS + 8, (second as u64).to_le_bytes());
     let m = MemoryTrace::new(&b);
-    let mut rows = [Row::default(); 2];
-    let mut bonuses = [BonusRow::default(); 2];
+    let mut rows = vec![Row::default(); 2];
+    let mut bonuses = vec![BonusRow::default(); 2];
     assert_eq!(
         capture(&m, &mut rows, &mut bonuses),
         (Outcome::Rows { len: 2 }, Outcome::Rows { len: 2 })
     );
-    assert_eq!(rows.map(|r| r.slot.index), [0, 1]);
-    assert_eq!(bonuses.map(|r| r.index), [0, 1]);
+    assert_eq!(
+        rows.iter().map(|r| r.slot.index).collect::<Vec<_>>(),
+        [0, 1]
+    );
+    assert_eq!(bonuses.iter().map(|r| r.index).collect::<Vec<_>>(), [0, 1]);
     assert_eq!(m.calls.get(), 19);
     for address in [
         STATUS + ctechnology_status::LIMITED_BONUSES,
@@ -436,7 +597,7 @@ fn cost_reduction_ids_use_their_own_layout_and_only_unresolved_ids_need_that_ros
 }
 
 #[test]
-fn bonus_rosters_are_bounded_before_reading_entries_and_stop_after_resolution() {
+fn bonus_rosters_follow_native_population_and_stop_after_resolution() {
     let mut bytes = fixture(true, true);
     array(
         &mut bytes,
@@ -448,17 +609,17 @@ fn bonus_rosters_are_bounded_before_reading_entries_and_stop_after_resolution() 
     let mut requested = BonusRow::default();
     requested.value.id = -7;
     assert_eq!(
-        resolve_bonuses(&memory, 0, STATUS, &mut [requested]),
-        Err("research bonus roster limit exceeded")
+        resolve_bonuses(&memory, 0, STATUS, &mut [requested.clone()], false),
+        Err("research bonus pointer invalid")
     );
-    assert_eq!(memory.calls.get(), 1);
-    assert_eq!(memory.reads.borrow().len(), 1);
+    assert_eq!(memory.calls.get(), 2);
+    assert_eq!(memory.reads.borrow().len(), 2);
 
     array(
         &mut bytes,
         STATUS + ctechnology_status::LIMITED_BONUSES,
         BONUSES,
-        4096,
+        5_000,
     );
     for index in 0..64 {
         put(
@@ -469,7 +630,10 @@ fn bonus_rosters_are_bounded_before_reading_entries_and_stop_after_resolution() 
     }
     let memory = MemoryTrace::new(&bytes);
     let mut requested = [requested];
-    assert_eq!(resolve_bonuses(&memory, 0, STATUS, &mut requested), Ok(()));
+    assert_eq!(
+        resolve_bonuses(&memory, 0, STATUS, &mut requested, false),
+        Ok(())
+    );
     assert_eq!(requested[0].resolved, 1);
     assert!(
         !memory

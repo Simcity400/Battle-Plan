@@ -12,7 +12,7 @@ Native text for own active/result raids, incoming raids and target offers in the
 
 ## Rules
 
-Hit rectangles follow reverse window paint order, not pool/live order; disabled frames own hover. Hits must select their painted target. One coalescing worker binds text to content/frame/perspective, retaining same-icon text across hourly rebuilds and clearing it when icon/country/content changes. Keep joins/localisation off frames. Shared [ToolTip](../../../combat/tooltip_painter.rs) owns resources, wrapping, placement and delayed text.
+Hit rectangles follow reverse window paint order, not pool/live order; disabled frames own hover. Hits must select their painted target. One coalescing worker binds text to content/frame/perspective/NATO choice, retaining same-icon text across hourly rebuilds and clearing it when icon/country/content or NATO choice changes. The choice also applies inside custom trigger text and nested effects. Keep joins/localisation off frames. Shared [ToolTip](../../../combat/tooltip_painter.rs) owns resources, wrapping, placement and delayed text.
 
 `rules.rs` owns compact branches, line order and separators. Keep typed string/integer/fixed5 arguments; content chooses precision/colour. Add only missing trailing newlines. Preserve native requirement/pointer-map order, repeated interception occurrences and equipment-group terminal deduplication. Army precedes wing in selected-unit naming.
 

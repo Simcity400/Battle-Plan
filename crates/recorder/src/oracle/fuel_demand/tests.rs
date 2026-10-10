@@ -9,6 +9,29 @@ use replay::{
 };
 
 #[test]
+fn conditional_names_distinguish_omitted_and_emitted_empty_save_text() {
+    for (actual, saved) in [
+        (&b""[..], None),
+        (&b"\0retained suffix"[..], Some(&b""[..])),
+        (&b"command\0retained suffix"[..], Some(&b"command"[..])),
+    ] {
+        let mut report = Report::default();
+        conditional_name(&mut report, "stored name", Some(actual), saved).unwrap();
+        assert!(report.differences.is_empty());
+    }
+    for (actual, saved) in [
+        (&b""[..], Some(&b""[..])),
+        (&b"\0retained suffix"[..], None),
+        (&b"command"[..], Some(&b"other"[..])),
+    ] {
+        let mut report = Report::default();
+        conditional_name(&mut report, "stored name", Some(actual), saved).unwrap();
+        assert_eq!(report.differences.len(), 1);
+    }
+    assert!(conditional_name(&mut Report::default(), "stored name", None, None).is_err());
+}
+
+#[test]
 fn skipped_zero_wing_owner_witness_keeps_override_fallback_and_failure_independent_of_rate() {
     let (mut frame, mut saved, _, _) = super::super::tests::fixture();
     let id = 7_u64 << 32 | 69;

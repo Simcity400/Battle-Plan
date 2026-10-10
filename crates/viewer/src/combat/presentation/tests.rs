@@ -105,3 +105,73 @@ fn exile_operand_refusal_hides_only_badge_and_keeps_commander_portrait() {
     );
     assert_eq!(out.refused().values().sum::<usize>(), 1);
 }
+
+#[test]
+fn null_tactic_keeps_authored_art_and_counters_the_real_defender() {
+    let mut out = Bindings::default();
+    for prefix in ["attacker", "defender"] {
+        hide(&mut out.values, &format!("{prefix}_tactic"));
+        hide(
+            &mut out.values,
+            &format!("{prefix}_countered_tactic_overlay"),
+        );
+    }
+    let content = super::super::tactics::Content::from_database(installed_content::combat_tactics::parse(
+        b"defend = { picture = mod_defense }",
+        &installed_content::key_names::KeyNames::default(),
+    ));
+    let mut sides = [
+        LandCombatSideDetails {
+            tactic_kind: 1,
+            ..Default::default()
+        },
+        LandCombatSideDetails {
+            tactic_kind: 2,
+            tactic_id: 1,
+            tactic_token: b"defend".to_vec(),
+            tactic_counter_id: 0,
+            ..Default::default()
+        },
+    ];
+    let has = |name: &str| name == "combat_tactic:mod_defense";
+    land_tactics(&mut out, &has, &content, false, &sides);
+    assert!(!out.values["attacker_tactic"].hidden);
+    assert!(
+        out.values["attacker_tactic"].sprite.is_none(),
+        "the .gui supplies its own artwork"
+    );
+    assert!(out.values["attacker_tactic"].retain_sprite);
+    assert!(out.values["attacker_countered_tactic_overlay"].hidden);
+    assert!(!out.values["defender_countered_tactic_overlay"].hidden);
+    assert_eq!(
+        out.values["defender_tactic"].sprite.as_deref(),
+        Some("combat_tactic:mod_defense")
+    );
+
+    // A real null pointer has no ID for the counter predicate.
+    sides[0].tactic_kind = 0;
+    land_tactics(&mut out, &has, &content, false, &sides);
+    assert!(out.values["defender_countered_tactic_overlay"].hidden);
+}
+
+#[test]
+fn null_tactic_draws_the_empty_picture_path_when_content_supplies_it() {
+    let mut out = Bindings::default();
+    let content = super::super::tactics::Content::default();
+    let sides = std::array::from_fn(|_| LandCombatSideDetails {
+        tactic_kind: 1,
+        ..Default::default()
+    });
+    let has = |name: &str| name == super::super::tactics::NULL_PICTURE;
+    land_tactics(&mut out, &has, &content, true, &sides);
+    assert_eq!(
+        out.values["attacker_tactic"].sprite.as_deref(),
+        Some("combat_tactic:")
+    );
+    assert!(!out.values["attacker_tactic"].hidden);
+    assert!(!out.values["attacker_countered_tactic_overlay"].hidden);
+    assert!(!out.values["defender_countered_tactic_overlay"].hidden);
+    land_tactics(&mut out, &|_| false, &content, true, &sides);
+    assert!(out.values["attacker_tactic"].hidden);
+    assert_eq!(out.refused().values().sum::<usize>(), 2);
+}

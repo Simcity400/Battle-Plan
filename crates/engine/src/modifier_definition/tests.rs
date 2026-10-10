@@ -459,3 +459,92 @@ fn key_by_name_resolves_the_registered_index_through_the_lexer() {
         .put(BASE + cpdx_lexer::WRITER_FLAG_RVA, &1_u32.to_le_bytes());
     assert!(key(&table.memory, b"stability_factor").is_err());
 }
+
+#[test]
+fn modifier_definitions_grow_rows_and_text_from_original_headers_for_mod_populations() {
+    struct Traced<'a> {
+        source: &'a Fixture,
+        calls: std::cell::RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, at: usize, bytes: &mut [u8]) -> bool {
+            self.calls.borrow_mut().push((at, bytes.len()));
+            self.source.copy(at, bytes)
+        }
+    }
+    let mut rows = Vec::new();
+    let mut text = Vec::new();
+    for (count, name) in [
+        (5000_usize, b"key" as &'static [u8]),
+        (5000, b"longer_key"),
+        (12000, b"longer_key"),
+    ] {
+        let definitions: Vec<_> = (0..count)
+            .map(|index| {
+                Some((
+                    index as u32,
+                    index as u32 + 1,
+                    name,
+                    b"p" as &[u8],
+                    b"a" as &[u8],
+                ))
+            })
+            .collect();
+        let table = Table::new(&definitions);
+        let demand = storage_demand(&table.memory, BASE).unwrap();
+        assert_eq!(demand, (count, count * (name.len() + 2)));
+        assert!(
+            matches!(table.walk(0, 0).0.outcome, Outcome::Truncated { unread_rows, .. } if unread_rows == count as u32)
+        );
+        let source = Traced {
+            source: &table.memory,
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+        let mut expected_rows = vec![Row::default(); count];
+        let mut expected_text = vec![0; demand.1];
+        let expected = walk(&source, BASE, &mut expected_rows, &mut expected_text);
+        let trace = source.calls.replace(Vec::new());
+        let captured = walk_growing(&source, BASE, &mut rows, &mut text);
+        assert_eq!(captured, expected);
+        assert_eq!(captured.outcome, Outcome::Rows { len: count });
+        assert_eq!(&rows[..count], expected_rows.as_slice());
+        assert_eq!(&text[..captured.text_len], expected_text.as_slice());
+        assert_eq!(*source.calls.borrow(), trace);
+        // Original header plus the retained native table-change guard; no growth restart.
+        assert_eq!(
+            trace
+                .iter()
+                .filter(|&&(at, _)| at == BASE + TABLE_RVA)
+                .count(),
+            2
+        );
+    }
+}
+
+#[test]
+fn pass_metadata_memo_retains_five_thousand_original_keys() {
+    let mut source = Fixture::new(KEY, 0, 0);
+    for key in 1..=5_001 {
+        source.put(Fixture::row(key) + FEATURE_SELECTOR, &0_u32.to_le_bytes());
+        source.put(Fixture::row(key) + FLAGS, &key.to_le_bytes());
+    }
+    let mut memo = PassDefinitions::default();
+    for key in 1..=5_001 {
+        assert_eq!(memo.flags(&source, BASE, key), Ok(Some(key)));
+    }
+    assert_eq!(memo.slots.borrow().len(), 5_001);
+    for key in 1..=5_001 {
+        source.put(Fixture::row(key) + FLAGS, &0_u32.to_le_bytes());
+        assert_eq!(memo.flags(&source, BASE, key), Ok(Some(key)));
+    }
+    memo.clear();
+    assert_eq!(memo.flags(&source, BASE, 5_001), Ok(Some(0)));
+}
+
+#[test]
+fn requested_modifier_name_uses_its_native_lexer_length() {
+    let name = vec![b'm'; 5_001];
+    let mut table = Table::new(&[Some((0, 1, b"custom", b"", b""))]);
+    table.lexer(&[b"", &name]);
+    assert_eq!(key(&table.memory, &name), Ok(Some(0)));
+}

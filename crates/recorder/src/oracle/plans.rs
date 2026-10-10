@@ -15,6 +15,16 @@ pub(super) fn compare(frame: &DecodedFrame, save: &Save, report: &mut Report) {
     report.attempt_table(TableId::InvasionPreparations, |r| invasions(frame, save, r));
 }
 fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
+    let saved_groups: BTreeMap<u64, (bool, usize)> = save
+        .naval_history
+        .theatre_countries
+        .as_ref()
+        .into_iter()
+        .flat_map(|countries| countries.values())
+        .flat_map(|country| &country.land)
+        .flat_map(|theatre| &theatre.definitions)
+        .map(|group| (group.id, (group.is_army_group, group.children.len())))
+        .collect();
     // Only successors are serialized (COrderInstance::serialize@1410362c0);
     // reciprocal predecessor membership is exact, its order is not saved.
     let mut predecessors: BTreeMap<(u64, u32), Vec<u32>> = BTreeMap::new();
@@ -26,17 +36,40 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
                 .push(instance);
         }
     }
-    let mut rows: BTreeMap<_, _> = frame
-        .complete::<tables::ArmyOrderPlans>()?
-        .iter()
-        .map(|r| ((r.owner_group, r.instance), r))
-        .collect();
+    let mut rows = BTreeMap::new();
+    for row in frame.complete::<tables::ArmyOrderPlans>()? {
+        if row.owner_group as u32 != engine::corders_group::REFERENCE_TYPE {
+            return Err(invalid(
+                "ArmyOrderPlans has invalid owner-group reference type",
+            ));
+        }
+        if rows.insert((row.owner_group, row.instance), row).is_some() {
+            return Err(invalid(format!(
+                "duplicate ArmyOrderPlans identity {}:{}",
+                row.owner_group, row.instance
+            )));
+        }
+    }
     for (key, saved) in &save.plans.orders {
         let label = format!("ArmyOrderPlans {}:{}", key.0, key.1);
         let Some(row) = rows.remove(key) else {
             report.difference(label, "absent", "present");
             continue;
         };
+        if saved.order_type == 3 {
+            let expected = saved
+                .invasion_transports
+                .ok_or_else(|| invalid(format!("{label} save lacks allocated invasion convoys")))?;
+            let name = format!("{label}.invasion_transports");
+            if let Some(actual) = report.recorded(
+                &row.invasion_transports,
+                "ArmyOrderPlans.invasion_transports",
+                &name,
+            ) {
+                eq(report, &name, *actual, Some(expected));
+            }
+        }
+        execution(row, saved, &label, report);
         for (name, actual, expected) in [
             ("blitz", row.blitz != 0, saved.blitz),
             ("withdraw", row.withdraw != 0, saved.withdraw),
@@ -56,6 +89,109 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
             row.has_child != 0,
             child,
         );
+        if let Some(recorded) =
+            report.recorded(&row.child_fronts, "ArmyOrderPlans.child_fronts", &label)
+        {
+            let demanded = saved.front.is_some()
+                && save
+                    .army_orders
+                    .get(key)
+                    .is_none_or(|order| !order.path.is_empty());
+            match recorded {
+                None if demanded => report.difference(
+                    format!("{label}.child_fronts"),
+                    "unavailable",
+                    "bound nonempty-path operands",
+                ),
+                None => {}
+                Some(inputs) if inputs.area_province_count <= 2 => {}
+                Some(inputs) => {
+                    let stored_count = saved.child_fronts.len();
+                    match inputs.count {
+                        Some(count) => eq(
+                            report,
+                            &format!("{label}.child_fronts.count"),
+                            count as usize,
+                            stored_count,
+                        ),
+                        None => report.difference(
+                            format!("{label}.child_fronts.count"),
+                            "unavailable",
+                            stored_count,
+                        ),
+                    }
+                    // Demand comes from the save, so a missing/shrunken capture
+                    // count cannot suppress another independently saved field.
+                    let reached =
+                        stored_count > 0 && saved.order_type == engine::corder_instance::TYPE_LINE;
+                    let mut expected_prefix = (stored_count == 0).then_some(0);
+                    if reached {
+                        match saved_groups.get(&key.0) {
+                            Some((true, expected)) => {
+                                expected_prefix = Some(stored_count.min(*expected));
+                                match inputs.group_child_count {
+                                    Some(count) => {
+                                        eq(
+                                            report,
+                                            &format!("{label}.child_fronts.group_child_count"),
+                                            i64::from(count),
+                                            *expected as i64,
+                                        );
+                                        if count < 0 {
+                                            report.limitation("negative native army-group child count is unsupported; its exact signed value requires a matched native witness", &label);
+                                        }
+                                    }
+                                    None => report.difference(
+                                        format!("{label}.child_fronts.group_child_count"),
+                                        "unavailable",
+                                        expected,
+                                    ),
+                                }
+                            }
+                            Some((false, _)) => {}
+                            None => report.limitation(
+                                "saved group kind/count is unavailable for child-payload demand",
+                                &label,
+                            ),
+                        }
+                    }
+                    if let Some(sections) = &inputs.sections {
+                        if let Some(prefix) = expected_prefix {
+                            let actual: Vec<_> = sections
+                                .iter()
+                                .map(|child| (child.group, child.segment_start, child.segment_end))
+                                .collect();
+                            let expected: Vec<_> = saved
+                                .child_fronts
+                                .iter()
+                                .take(prefix)
+                                .map(|child| (child.group, child.segment_start, child.segment_end))
+                                .collect();
+                            eq(
+                                report,
+                                &format!("{label}.child_fronts.sections"),
+                                actual,
+                                expected,
+                            );
+                        } else if !sections.is_empty()
+                            && (!reached || saved_groups.contains_key(&key.0))
+                        {
+                            report.difference(
+                                format!("{label}.child_fronts.sections"),
+                                "nonempty",
+                                "outside saved army-group demand",
+                            );
+                        }
+                    } else if expected_prefix.is_some_and(|prefix| prefix > 0) {
+                        report.difference(
+                            format!("{label}.child_fronts.sections"),
+                            "unavailable",
+                            "demanded stored army-group prefix",
+                        );
+                    }
+                }
+            }
+        }
         eq(
             report,
             &format!("{label}.front"),
@@ -156,7 +292,98 @@ fn orders(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
     }
     report.limitation("save yes/no fields distinguish zero from nonzero, not distinct nonzero raw bytes; absent bindings do not preserve the invalid sentinel bits or unused section word; segment endpoints are compared only when serialized; same-hour post-sample commands may change plans", "ArmyOrderPlans");
     report.limitation("the save stores ordinary successors in native order but not predecessor order; reciprocal predecessor membership and multiplicity are compared, native predecessor order is not", "ArmyOrderPlans.predecessors");
+    report.limitation("first-path controller-area size is unsaved and history-dependent; it needs independent matched native/write witnesses. Stored child-front count, current army-group child count and ordered group/relative spans are compared only where their native demands are reached", "ArmyOrderPlans.child_fronts");
+    report.limitation("the save writes route_is_ok as boolean truth and accumulated preparation as time; type4 progress is compared only when the captured route byte is known nonzero. Target, country/relation/leader modifier terms and preparation-days terms are runtime getter operands, not certified by those saved fields; they need independent matched native/read witnesses", "ArmyOrderPlans.execution.paradrop");
+    report.limitation("naval stat weight, paradrop eligibility and effective roster-country/selected-commander transport modifier terms are unsaved runtime inputs; agreement of saved plan, division and wing fields cannot certify them. Independent matched native/read witnesses remain required", "DivisionMovement.order_transport");
     Ok(())
+}
+
+/// Saved truth/progress remain independent of later unsaved term refusals.
+fn execution(
+    row: &replay::rows::ArmyOrderPlanRow,
+    saved: &save::plans::Order,
+    label: &str,
+    report: &mut Report,
+) {
+    let Some(recorded) = report.recorded(&row.execution, "ArmyOrderPlans.execution", label) else {
+        return;
+    };
+    if !matches!(
+        saved.order_type,
+        engine::corder_instance::TYPE_INVASION | engine::corder_instance::TYPE_PARADROP
+    ) {
+        if recorded.is_some() {
+            report.difference(
+                format!("{label}.execution"),
+                "present",
+                "outside type3/4 scope",
+            );
+        }
+        return;
+    }
+    let Some(inputs) = recorded else {
+        report.difference(
+            format!("{label}.execution"),
+            "unavailable",
+            "type3/4 route byte",
+        );
+        return;
+    };
+    match inputs.route_is_ok {
+        Some(raw) => {
+            eq(
+                report,
+                &format!("{label}.execution.route_is_ok"),
+                raw != 0,
+                saved.route_is_ok,
+            );
+            if raw > 1 {
+                report.limitation(
+                    "route_is_ok raw byte exceeds one; the saved yes/no establishes only its truth, so exact byte agreement requires an independent matched native/read witness",
+                    format!("{label}.execution.route_is_ok raw={raw}"),
+                );
+            }
+        }
+        None => report.difference(
+            format!("{label}.execution.route_is_ok"),
+            "unavailable",
+            saved.route_is_ok,
+        ),
+    }
+    if saved.order_type != engine::corder_instance::TYPE_PARADROP {
+        if inputs.paradrop.is_some() {
+            report.difference(
+                format!("{label}.execution.paradrop"),
+                "present",
+                "outside type4 scope",
+            );
+        }
+        return;
+    }
+    if inputs.route_is_ok.is_none_or(|raw| raw == 0) {
+        if inputs.paradrop.is_some() {
+            report.difference(
+                format!("{label}.execution.paradrop"),
+                "present",
+                "outside known-nonzero route demand",
+            );
+        }
+        return;
+    }
+    let expected = saved.preparation.as_ref().map_or(0, |time| time.raw);
+    match inputs.paradrop {
+        Some(preparation) => eq(
+            report,
+            &format!("{label}.execution.paradrop.progress"),
+            preparation.progress,
+            expected,
+        ),
+        None => report.difference(
+            format!("{label}.execution.paradrop.progress"),
+            "unavailable",
+            expected,
+        ),
+    }
 }
 fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::OrdersGroupPlans>()?;
@@ -173,11 +400,23 @@ fn group_plans(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Re
         let [saved_primary, saved_fallback] =
             save.plans.group_orders.get(&row.group).unwrap_or(&empty);
         let label = format!("OrdersGroupPlans {}", row.group);
+        // 140BE8100 tests stored length before 1424ADF40 writes the first-NUL
+        // prefix. A leading NUL emits name=""; a zero-length string omits it.
+        let name = (!row.name.is_empty()).then(|| installed_content::parser::c_string(&row.name));
+        if name.is_some_and(|prefix| prefix.len() < row.name.len()) {
+            report.limitation(
+                "native text serialization ends at the first NUL; captured trailing group-name bytes are not save-comparable",
+                format!("{label}.name"),
+            );
+        }
         eq(
             report,
             &format!("{label}.name"),
-            Some(&row.name),
-            save.plans.group_names.get(&row.group),
+            Some(name),
+            save.plans
+                .group_names
+                .get(&row.group)
+                .map(|name| name.as_deref()),
         );
         eq(
             report,
@@ -276,11 +515,15 @@ fn fronts(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<
 /// (`COrderInstance+0xD8`, which `COrderInstance::serialize@1410362C0`
 /// writes only when nonzero) exactly.
 fn invasions(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Result<()> {
-    let mut rows: BTreeMap<_, _> = frame
-        .complete::<tables::InvasionPreparations>()?
-        .iter()
-        .map(|r| ((r.owner_group, r.instance), r))
-        .collect();
+    let mut rows = BTreeMap::new();
+    for row in frame.complete::<tables::InvasionPreparations>()? {
+        if rows.insert((row.owner_group, row.instance), row).is_some() {
+            return Err(invalid(format!(
+                "duplicate InvasionPreparations identity {}:{}",
+                row.owner_group, row.instance
+            )));
+        }
+    }
     for (key, saved) in save
         .plans
         .orders
@@ -308,9 +551,13 @@ fn invasions(frame: &DecodedFrame, save: &Save, report: &mut Report) -> io::Resu
         );
     }
     report.limitation("GetRequiredInvasionPreparationHours@141016930's operands are live getter inputs the order serializer does not write: the target (the first path province's state controller), the country, relation and leader modifier terms, and whether the leader term counts (the HQ provider's root order) are not compared; the invasion census and the accumulated preparation are", "InvasionPreparations");
-    report.limitation("CheckNavalInvasionRoute@1410277D0's path-cost operands are runtime state the save never writes: the route unit's CUnit+0x1E0 owner, its slot-0 CRelationStatus (+0x2E8 presence, +0x49, +0x310) and its nonzero +0x310 targets are not compared; the roster fallback unit is compared as CountryCounterInputs.first_division", "InvasionPreparations.unit_owner/zero_war_present/zero_war_retired/zero_co_belligerent/co_belligerents");
+    report.limitation("CheckNavalInvasionRoute@1410277D0's path-cost operands are runtime state the save never writes: the route unit's CUnit+0x1E0 owner remains InvasionPreparations.unit_owner, while its owner's slot-0 war-pointer presence and retired byte (+0x2E8/+0x49) and directed +0x310 targets now come from shared CountryCounterInputs.zero_war/co_belligerents. Those runtime operands are not compared; the published InvasionPreparations zero_* and co_belligerents prefix fields remain legacy evidence. The roster fallback unit is compared as CountryCounterInputs.first_division", "InvasionPreparations.unit_owner and legacy zero_war_present/zero_war_retired/zero_co_belligerent/co_belligerents; CountryCounterInputs.zero_war/co_belligerents");
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "plans/execution_tests.rs"]
+mod execution_tests;
 
 #[cfg(test)]
 mod tests {
@@ -321,6 +568,134 @@ mod tests {
             ArmyOrderPlanRow, ArmyOrderRow, FrontRow, InvasionPreparationRow, OrdersGroupPlanRow,
         },
     };
+    #[test]
+    fn invasion_allocation_is_compared_exactly_and_capture_absence_is_not_zero() {
+        use replay::rows::Recorded;
+        let (_, mut saved, _, _) = super::super::tests::fixture();
+        let group = (8_u64 << 32) | 53;
+        saved.plans.orders.clear();
+        for expected in [0_i32, -3] {
+            saved.plans.orders.insert(
+                (group, 1),
+                save::plans::Order {
+                    order_type: 3,
+                    has_child: Some(false),
+                    invasion_transports: Some(expected),
+                    ..Default::default()
+                },
+            );
+            for (actual, differences) in [(Some(expected), 0), (Some(expected + 1), 1), (None, 1)] {
+                let mut frame = DecodedFrame {
+                    branch: 1,
+                    hour: 0,
+                    metrics: Metrics::default(),
+                    tables: std::array::from_fn::<_, TABLE_COUNT, _>(|_| TableView::Unavailable {
+                        reason: "fixture".into(),
+                    })
+                    .map(Into::into),
+                };
+                *frame.tables[TableId::ArmyOrderPlans.index()] =
+                    TableView::Complete(TableRows::ArmyOrderPlans(vec![ArmyOrderPlanRow {
+                        owner_group: group,
+                        instance: 1,
+                        invasion_transports: Recorded::Value(actual),
+                        execution: Recorded::Value(Some(replay::rows::OrderExecutionInputs {
+                            route_is_ok: Some(0),
+                            paradrop: None,
+                        })),
+                        ..Default::default()
+                    }]));
+                let mut report = Report::default();
+                orders(&frame, &saved, &mut report).unwrap();
+                assert_eq!(report.differences.len(), differences);
+                let mut row = ArmyOrderPlanRow {
+                    owner_group: group,
+                    instance: 1,
+                    ..Default::default()
+                };
+                row.invasion_transports = Recorded::NotRecorded;
+                row.execution = Recorded::Value(Some(replay::rows::OrderExecutionInputs {
+                    route_is_ok: Some(0),
+                    paradrop: None,
+                }));
+                *frame.tables[TableId::ArmyOrderPlans.index()] =
+                    TableView::Complete(TableRows::ArmyOrderPlans(vec![row]));
+                let mut historical = Report::default();
+                orders(&frame, &saved, &mut historical).unwrap();
+                assert!(historical.differences.is_empty());
+                assert!(
+                    historical
+                        .limitations
+                        .contains_key("ArmyOrderPlans.invasion_transports not recorded")
+                );
+            }
+        }
+    }
+    #[test]
+    fn historical_invasion_suffix_keeps_its_prefix_and_later_orders_compared() {
+        use replay::rows::Recorded;
+        let (mut frame, mut saved, _, _) = super::super::tests::fixture();
+        let group = (8_u64 << 32) | 53;
+        saved.plans.orders.clear();
+        saved.plans.orders.insert(
+            (group, 1),
+            save::plans::Order {
+                order_type: 3,
+                has_child: Some(false),
+                invasion_transports: Some(0),
+                front: Some((9_u64 << 32) | 66),
+                assigned: vec![11],
+                ..Default::default()
+            },
+        );
+        saved.plans.orders.insert(
+            (group, 2),
+            save::plans::Order {
+                order_type: 1,
+                has_child: Some(false),
+                assigned: vec![22],
+                ..Default::default()
+            },
+        );
+        *frame.tables[TableId::ArmyOrderPlans.index()] =
+            TableView::Complete(TableRows::ArmyOrderPlans(vec![
+                ArmyOrderPlanRow {
+                    owner_group: group,
+                    instance: 1,
+                    invasion_transports: Recorded::NotRecorded,
+                    execution: Recorded::NotRecorded,
+                    ..Default::default()
+                },
+                ArmyOrderPlanRow {
+                    owner_group: group,
+                    instance: 2,
+                    execution: Recorded::NotRecorded,
+                    ..Default::default()
+                },
+            ]));
+        let mut report = Report::default();
+        orders(&frame, &saved, &mut report).unwrap();
+        assert!(
+            report
+                .limitations
+                .contains_key("ArmyOrderPlans.invasion_transports not recorded")
+        );
+        for field in [
+            format!("{group}:1.front"),
+            format!("{group}:1.assigned_divisions"),
+            format!("{group}:2.assigned_divisions"),
+        ] {
+            assert!(
+                report
+                    .differences
+                    .iter()
+                    .any(|difference| difference.contains(&field)),
+                "{:?}",
+                report.differences
+            );
+        }
+        assert_eq!(report.compared_tables["ArmyOrderPlans"], 2);
+    }
     #[test]
     fn every_saved_plan_operand_and_pair_order_can_fail_the_oracle() {
         let (_, mut saved, _, _) = super::super::tests::fixture();
@@ -355,7 +730,10 @@ mod tests {
             },
         );
         saved.plans.colors.insert(group, Some(vec![127, 0, 0]));
-        saved.plans.group_names.insert(group, b"Army 1".to_vec());
+        saved
+            .plans
+            .group_names
+            .insert(group, Some(b"Army 1".to_vec()));
         let mut frame = DecodedFrame {
             branch: 1,
             hour: 0,
@@ -377,6 +755,8 @@ mod tests {
                 name_prefix: b"o_operation".to_vec(),
                 name_first: b"o_x".to_vec(),
                 name_second: b"o_y".to_vec(),
+                // This saved-prefix fixture predates the child-front packet.
+                child_fronts: replay::rows::Recorded::NotRecorded,
                 ..Default::default()
             }]));
         *frame.tables[TableId::Fronts.index()] =
@@ -398,6 +778,10 @@ mod tests {
         compare(&frame, &saved, &mut report);
         assert!(report.differences.is_empty());
         assert!(report.failed_comparisons.is_empty());
+        assert_eq!(
+            report.limitations["ArmyOrderPlans.child_fronts not recorded"],
+            vec![format!("ArmyOrderPlans {group}:1")],
+        );
         saved
             .plans
             .orders
@@ -416,7 +800,10 @@ mod tests {
             .names
             .swap(2, 3);
         saved.plans.orders.get_mut(&(group, 1)).unwrap().successors = vec![7];
-        saved.plans.group_names.insert(group, b"Army 2".to_vec());
+        saved
+            .plans
+            .group_names
+            .insert(group, Some(b"Army 2".to_vec()));
         let mut report = Report::default();
         compare(&frame, &saved, &mut report);
         assert_eq!(report.differences.len(), 7, "{:?}", report.differences);
@@ -436,12 +823,415 @@ mod tests {
     }
 
     #[test]
+    fn child_front_oracle_compares_ordered_spans_and_refuses_reached_capture_gaps() {
+        use replay::rows::{OrderChildFront, OrderChildFrontInputs, Recorded};
+        let (_, mut saved, _, _) = super::super::tests::fixture();
+        let group = (8_u64 << 32) | 53;
+        let child = (9_u64 << 32) | 53;
+        let front = (9_u64 << 32) | 66;
+        saved.plans.orders.clear();
+        saved.plans.orders.insert(
+            (group, 1),
+            save::plans::Order {
+                front: Some(front),
+                order_type: engine::corder_instance::TYPE_LINE,
+                has_child: Some(false),
+                child_fronts: vec![
+                    save::plans::ChildFront {
+                        group: child,
+                        segment_start: -1,
+                        segment_end: -1,
+                    },
+                    save::plans::ChildFront {
+                        group: child,
+                        segment_start: 1,
+                        segment_end: 3,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        saved.naval_history.theatre_countries = Some(BTreeMap::from([(
+            Vec::new(),
+            save::naval_history::TheatreCountry {
+                land: vec![save::naval_history::LandTheatre {
+                    id: 1,
+                    volunteers_country: None,
+                    groups: Vec::new(),
+                    units: Vec::new(),
+                    area_representatives: Vec::new(),
+                    definitions: vec![save::naval_history::OrdersGroup {
+                        id: group,
+                        is_army_group: true,
+                        children: vec![child, child],
+                        ..Default::default()
+                    }],
+                }],
+                ..Default::default()
+            },
+        )]));
+        let sections = vec![
+            OrderChildFront {
+                group: child,
+                segment_start: -1,
+                segment_end: -1,
+            },
+            OrderChildFront {
+                group: child,
+                segment_start: 1,
+                segment_end: 3,
+            },
+        ];
+        let inputs = OrderChildFrontInputs {
+            area_province_count: 3,
+            count: Some(2),
+            group_child_count: Some(2),
+            sections: Some(sections.clone()),
+        };
+        let mut reversed = sections;
+        reversed.reverse();
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 0,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn::<_, TABLE_COUNT, _>(|_| TableView::Unavailable {
+                reason: "fixture".into(),
+            })
+            .map(Into::into),
+        };
+        for (recorded, differences) in [
+            (Recorded::Value(Some(inputs.clone())), 0),
+            (
+                Recorded::Value(Some(OrderChildFrontInputs {
+                    sections: Some(reversed),
+                    ..inputs.clone()
+                })),
+                1,
+            ),
+            (
+                Recorded::Value(Some(OrderChildFrontInputs {
+                    count: None,
+                    group_child_count: None,
+                    sections: None,
+                    ..inputs.clone()
+                })),
+                3,
+            ),
+            (
+                Recorded::Value(Some(OrderChildFrontInputs {
+                    group_child_count: None,
+                    sections: None,
+                    ..inputs.clone()
+                })),
+                2,
+            ),
+            (
+                Recorded::Value(Some(OrderChildFrontInputs {
+                    group_child_count: Some(1),
+                    ..inputs.clone()
+                })),
+                1,
+            ),
+            (
+                Recorded::Value(Some(OrderChildFrontInputs {
+                    group_child_count: Some(-1),
+                    sections: None,
+                    ..inputs.clone()
+                })),
+                2,
+            ),
+            (
+                Recorded::Value(Some(OrderChildFrontInputs {
+                    sections: None,
+                    ..inputs.clone()
+                })),
+                1,
+            ),
+            (Recorded::Value(None), 1),
+            (
+                Recorded::Value(Some(OrderChildFrontInputs {
+                    area_province_count: 2,
+                    count: None,
+                    group_child_count: None,
+                    sections: None,
+                })),
+                0,
+            ),
+            (Recorded::NotRecorded, 0),
+        ] {
+            *frame.tables[TableId::ArmyOrderPlans.index()] =
+                TableView::Complete(TableRows::ArmyOrderPlans(vec![ArmyOrderPlanRow {
+                    owner_group: group,
+                    instance: 1,
+                    front,
+                    front_valid: 1,
+                    child_fronts: recorded,
+                    ..Default::default()
+                }]));
+            let mut report = Report::default();
+            orders(&frame, &saved, &mut report).unwrap();
+            assert_eq!(
+                report.differences.len(),
+                differences,
+                "{:?}",
+                report.differences
+            );
+        }
+        // The save independently demands one indexed child from two stored
+        // entries. Neither captured count can suppress that saved prefix.
+        saved
+            .naval_history
+            .theatre_countries
+            .as_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap()
+            .land[0]
+            .definitions[0]
+            .children
+            .truncate(1);
+        let prefix = OrderChildFrontInputs {
+            group_child_count: Some(1),
+            sections: Some(inputs.sections.as_ref().unwrap()[..1].to_vec()),
+            ..inputs.clone()
+        };
+        let mut altered = prefix.sections.clone().unwrap();
+        altered[0].segment_end = 5;
+        for (captured, differences) in [
+            (prefix.clone(), 0),
+            (
+                OrderChildFrontInputs {
+                    count: Some(0),
+                    ..prefix.clone()
+                },
+                1,
+            ),
+            (
+                OrderChildFrontInputs {
+                    count: None,
+                    group_child_count: None,
+                    sections: None,
+                    ..prefix.clone()
+                },
+                3,
+            ),
+            (
+                OrderChildFrontInputs {
+                    count: Some(0),
+                    group_child_count: None,
+                    sections: None,
+                    ..prefix.clone()
+                },
+                3,
+            ),
+            (
+                OrderChildFrontInputs {
+                    group_child_count: Some(0),
+                    sections: None,
+                    ..prefix.clone()
+                },
+                2,
+            ),
+            (
+                OrderChildFrontInputs {
+                    group_child_count: Some(2),
+                    ..prefix.clone()
+                },
+                1,
+            ),
+            (
+                OrderChildFrontInputs {
+                    sections: Some(Vec::new()),
+                    ..prefix.clone()
+                },
+                1,
+            ),
+            (
+                OrderChildFrontInputs {
+                    sections: inputs.sections.clone(),
+                    ..prefix.clone()
+                },
+                1,
+            ),
+            (
+                OrderChildFrontInputs {
+                    sections: Some(altered),
+                    ..prefix
+                },
+                1,
+            ),
+        ] {
+            *frame.tables[TableId::ArmyOrderPlans.index()] =
+                TableView::Complete(TableRows::ArmyOrderPlans(vec![ArmyOrderPlanRow {
+                    owner_group: group,
+                    instance: 1,
+                    front,
+                    front_valid: 1,
+                    child_fronts: Recorded::Value(Some(captured)),
+                    ..Default::default()
+                }]));
+            let mut report = Report::default();
+            orders(&frame, &saved, &mut report).unwrap();
+            assert_eq!(
+                report.differences.len(),
+                differences,
+                "{:?}",
+                report.differences
+            );
+        }
+        saved
+            .naval_history
+            .theatre_countries
+            .as_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap()
+            .land[0]
+            .definitions[0]
+            .is_army_group = false;
+        *frame.tables[TableId::ArmyOrderPlans.index()] =
+            TableView::Complete(TableRows::ArmyOrderPlans(vec![ArmyOrderPlanRow {
+                owner_group: group,
+                instance: 1,
+                front,
+                front_valid: 1,
+                child_fronts: Recorded::Value(Some(inputs.clone())),
+                ..Default::default()
+            }]));
+        let mut report = Report::default();
+        orders(&frame, &saved, &mut report).unwrap();
+        assert_eq!(report.differences.len(), 1, "{:?}", report.differences);
+        saved
+            .naval_history
+            .theatre_countries
+            .as_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap()
+            .land[0]
+            .definitions[0]
+            .is_army_group = true;
+        saved.army_orders.insert(
+            (group, 1),
+            save::ArmyOrder {
+                owner_group: group,
+                instance: 1,
+                country: Vec::new(),
+                order_type: engine::corder_instance::TYPE_LINE,
+                active: 0,
+                paradrop_target: 0,
+                path: Vec::new(),
+                target_states: Vec::new(),
+            },
+        );
+        *frame.tables[TableId::ArmyOrderPlans.index()] =
+            TableView::Complete(TableRows::ArmyOrderPlans(vec![ArmyOrderPlanRow {
+                owner_group: group,
+                instance: 1,
+                front,
+                front_valid: 1,
+                child_fronts: Recorded::Value(None),
+                ..Default::default()
+            }]));
+        let mut report = Report::default();
+        orders(&frame, &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        saved.army_orders.get_mut(&(group, 1)).unwrap().path.push(1);
+        saved
+            .naval_history
+            .theatre_countries
+            .as_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap()
+            .land[0]
+            .definitions[0]
+            .children
+            .clear();
+        *frame.tables[TableId::ArmyOrderPlans.index()] =
+            TableView::Complete(TableRows::ArmyOrderPlans(vec![ArmyOrderPlanRow {
+                owner_group: group,
+                instance: 1,
+                front,
+                front_valid: 1,
+                child_fronts: Recorded::Value(Some(OrderChildFrontInputs {
+                    group_child_count: Some(0),
+                    sections: None,
+                    ..inputs
+                })),
+                ..Default::default()
+            }]));
+        let mut report = Report::default();
+        orders(&frame, &saved, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+    }
+
+    #[test]
+    fn group_name_compares_stored_length_gate_and_first_nul_prefix() {
+        let (_, mut saved, _, _) = super::super::tests::fixture();
+        let group = (13171_u64 << 32) | 53;
+        saved.plans.colors.clear();
+        saved.plans.colors.insert(group, None);
+        saved.plans.group_names.clear();
+        saved.plans.group_orders.clear();
+        let mut frame = DecodedFrame {
+            branch: 1,
+            hour: 0,
+            metrics: Metrics::default(),
+            tables: std::array::from_fn::<_, TABLE_COUNT, _>(|_| TableView::Unavailable {
+                reason: "fixture".into(),
+            })
+            .map(Into::into),
+        };
+        for (actual, expected, matches) in [
+            (b"".as_slice(), None, true),
+            (b"".as_slice(), Some(b"".as_slice()), false),
+            (b"\0tail".as_slice(), Some(b"".as_slice()), true),
+            (b"\0tail".as_slice(), None, false),
+            (b"Army 1\0tail".as_slice(), Some(b"Army 1".as_slice()), true),
+            (b"Army 1".as_slice(), None, false),
+            (b"Army 2".as_slice(), Some(b"Army 1".as_slice()), false),
+        ] {
+            saved
+                .plans
+                .group_names
+                .insert(group, expected.map(<[u8]>::to_vec));
+            *frame.tables[TableId::OrdersGroupPlans.index()] =
+                TableView::Complete(TableRows::OrdersGroupPlans(vec![OrdersGroupPlanRow {
+                    group,
+                    name: actual.to_vec(),
+                    ..Default::default()
+                }]));
+            let mut report = Report::default();
+            group_plans(&frame, &saved, &mut report).unwrap();
+            assert_eq!(
+                report.differences.is_empty(),
+                matches,
+                "actual={actual:?}, saved={expected:?}, differences={:?}",
+                report.differences
+            );
+            if actual.contains(&0) {
+                assert!(
+                    report
+                        .limitations
+                        .keys()
+                        .any(|reason| reason.contains("first NUL"))
+                );
+            }
+        }
+    }
+
+    #[test]
     fn group_roots_lead_the_saved_list_and_belong_to_the_order_census() {
         let (_, mut saved, _, _) = super::super::tests::fixture();
         let group = (8_u64 << 32) | 53;
         saved.plans.colors.insert(group, None);
         // The group's name matches, so only the roots can differ.
-        saved.plans.group_names.insert(group, Vec::new());
+        saved.plans.group_names.insert(group, None);
         // Root 1 is saved with its successor 5 before root 2; 3 is a fallback.
         saved
             .plans
@@ -503,6 +1293,7 @@ mod tests {
         let invasion = |preparation: Option<&[u8]>| save::plans::Order {
             order_type: 3,
             preparation: preparation.map(|text| Decimal::parse(text).unwrap()),
+            invasion_transports: Some(0),
             ..Default::default()
         };
         saved

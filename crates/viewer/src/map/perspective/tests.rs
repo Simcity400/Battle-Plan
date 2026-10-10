@@ -259,6 +259,7 @@ fn air_base_icons_need_access_intel_or_a_clear_byte() {
             country: 101,
             target_index: 3,
             links: RelationLinkRow::AIR_BASE_ACCESS,
+            transport_subject: Default::default(),
         }],
     );
     let vision = view(&frame, &links, &tags, &content, Country::Recorded, true);
@@ -276,6 +277,7 @@ fn air_base_icons_need_access_intel_or_a_clear_byte() {
     let vision = view(&frame, &links, &tags, &content, Country::Recorded, true);
     assert_eq!(vision.sees_air_base(3, 3), Some(true));
     assert_eq!(vision.sees_air_port_detail(3), Some(true));
+    assert_eq!(vision.air_port_level(3), Some(1));
     *frame.tables[TableId::RelationLinks.index()] = TableView::Unavailable {
         reason: "read fault".into(),
     };
@@ -283,6 +285,25 @@ fn air_base_icons_need_access_intel_or_a_clear_byte() {
     let vision = view(&frame, &links, &tags, &content, Country::Recorded, true);
     assert_eq!(vision.sees_air_base(3, 3), None);
     assert_eq!(vision.province_fog(), None, "attaches feed the fog rebuild");
+}
+
+#[test]
+fn carrier_country_intel_uses_fog_locally_and_keeps_relation_failures_named() {
+    let mut vision = Vision::sharing(1, [2]);
+    vision.relations_gap = Some("FactionMembers");
+    assert_eq!(vision.shares_vision_or_fog(1), Ok(true));
+    assert_eq!(vision.shares_vision_or_fog(2), Ok(true));
+    assert_eq!(
+        vision.shares_vision_or_fog(3),
+        Err(SharingUnknown::Relations("FactionMembers"))
+    );
+    vision.fog = false;
+    assert_eq!(vision.shares_vision_or_fog(3), Ok(true));
+    assert_eq!(
+        vision.shares_vision_proven(3),
+        Err(SharingUnknown::Relations("FactionMembers")),
+        "the local fog setting does not change ordinary shared vision"
+    );
 }
 
 #[test]

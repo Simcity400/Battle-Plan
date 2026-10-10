@@ -107,6 +107,11 @@ impl Captured {
         self.navy_reason = None;
         self.group_owner_reason = None;
     }
+    pub(crate) fn fail_capture(&mut self, hour: i32, reason: &'static str) {
+        self.reset();
+        self.hour = Some(hour);
+        self.reason = Some(reason);
+    }
     pub fn allocated_bytes(&self) -> usize {
         self.countries.capacity() * size_of::<native::Country>()
             + self.divisions.capacity() * size_of::<native::CachedUnit>()
@@ -170,29 +175,48 @@ impl Captured {
         grow_vec(&mut self.group_countries, groups);
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize, state: usize, hour: i32) {
+        self.capture_buffers(memory, base, state, hour, false);
+    }
+    pub(crate) fn capture_growing(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        hour: i32,
+    ) {
+        self.capture_buffers(memory, base, state, hour, true);
+    }
+    fn capture_buffers(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        hour: i32,
+        growing: bool,
+    ) {
         self.reset();
         self.hour = Some(hour);
         self.context_slots.fill(0);
         let mut out = native::Buffers {
-            countries: rows(&mut self.countries[..]),
-            divisions: rows(&mut self.divisions[..]),
-            fleets: rows(&mut self.fleets[..]),
-            tasks: rows(&mut self.tasks[..]),
-            sites: rows(&mut self.sites[..]),
-            wings: rows(&mut self.wings[..]),
-            weather: rows(&mut self.weather[..]),
-            contexts: rows(&mut self.contexts[..]),
-            context_slots: &mut self.context_slots,
-            names: &mut self.names,
+            countries: rows(&mut self.countries, growing),
+            divisions: rows(&mut self.divisions, growing),
+            fleets: rows(&mut self.fleets, growing),
+            tasks: rows(&mut self.tasks, growing),
+            sites: rows(&mut self.sites, growing),
+            wings: rows(&mut self.wings, growing),
+            weather: rows(&mut self.weather, growing),
+            contexts: rows(&mut self.contexts, growing),
+            context_slots: engine::walk::Buffer::for_worker(&mut self.context_slots, growing),
+            names: engine::walk::Buffer::for_worker(&mut self.names, growing),
             name_len: 0,
             name_required: 0,
-            roots: &mut self.roots,
-            groups: &mut self.groups,
-            members: &mut self.members,
-            children: &mut self.children,
-            roster_scratch: &mut self.scratch,
-            group_names: &mut self.group_names,
-            group_countries: &mut self.group_countries,
+            roots: engine::walk::Buffer::for_worker(&mut self.roots, growing),
+            groups: engine::walk::Buffer::for_worker(&mut self.groups, growing),
+            members: engine::walk::Buffer::for_worker(&mut self.members, growing),
+            children: engine::walk::Buffer::for_worker(&mut self.children, growing),
+            roster_scratch: engine::walk::Buffer::for_worker(&mut self.scratch, growing),
+            group_names: engine::walk::Buffer::for_worker(&mut self.group_names, growing),
+            group_countries: engine::walk::Buffer::for_worker(&mut self.group_countries, growing),
             group_owner_reason: None,
             group_outcomes: None,
             roots_outcome: None,
@@ -466,9 +490,9 @@ fn context_slots(count: usize) -> io::Result<usize> {
             .ok_or_else(engine::allocation::oom)
     }
 }
-fn rows<T>(rows: &mut [T]) -> native::BufferRows<'_, T> {
+fn rows<T>(rows: &mut Vec<T>, growing: bool) -> native::BufferRows<'_, T> {
     native::BufferRows {
-        rows,
+        rows: engine::walk::Buffer::for_worker(rows, growing),
         len: 0,
         required: 0,
     }

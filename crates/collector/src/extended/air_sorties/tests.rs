@@ -242,7 +242,7 @@ fn fixture(missions: usize, countries: u32) -> Fixture {
     witnesses.sort_unstable_by_key(|witness| witness.handle);
     let wings = (0..missions)
         .map(|index| {
-            let mission = world.alloc(0xd0);
+            let mission = world.alloc(0xd8);
             let region = index as u32 % REGIONS + 1;
             world.vtable(mission, air_mission::VTABLE_RVA);
             world.q(
@@ -261,6 +261,7 @@ fn fixture(missions: usize, countries: u32) -> Fixture {
             );
             world.q(mission + REGION_COVERAGE, 90_000);
             world.q(mission + REASSIGNMENT_PENALTY, 10_000);
+            world.q(mission + 0xd0, index as u64 * 25_000);
             world.d(mission + air_mission::LAST_TARGET_PROVINCE, 1_000);
             WingIdentity {
                 mission_pointer: mission,
@@ -272,6 +273,8 @@ fn fixture(missions: usize, countries: u32) -> Fixture {
                 air_base: witnesses[index / 4].handle,
                 base_override: 0,
                 country_override: 0,
+                ace: 0,
+                planes: 0,
             }
         })
         .collect();
@@ -289,7 +292,7 @@ fn capacities() -> Capacities {
         reached: 1 << 17,
         rows: 16_384,
         keys: 65_536,
-        ..Capacities::default()
+        hosts: 2,
     }
 }
 
@@ -354,6 +357,60 @@ fn reached_provinces_keep_the_native_order() {
     assert_eq!(reached, native);
 }
 
+#[test]
+fn cas_ratio_projection_preserves_zero_signed_values_and_field_local_faults() {
+    let mut fixture = fixture(3, 16);
+    let values = [0_i64, -7, i64::MIN];
+    for (wing, value) in fixture.wings.iter().zip(values) {
+        fixture.world.q(wing.mission_pointer + 0xd0, value as u64);
+    }
+    struct Fault<'a> {
+        memory: &'a Counting<'a>,
+        at: Option<usize>,
+    }
+    impl Memory for Fault<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if self
+                .at
+                .is_some_and(|at| address <= at && at < address.saturating_add(destination.len()))
+            {
+                return false;
+            }
+            self.memory.copy(address, destination)
+        }
+    }
+    let memory = Counting::new(&fixture.world.bytes);
+    let mut sorties = Sorties::with_capacities(&capacities());
+    for fault in [None, Some(fixture.wings[1].mission_pointer + 0xd0)] {
+        sorties.capture(
+            &Fault {
+                memory: &memory,
+                at: fault,
+            },
+            MODULE,
+            fixture.game_state,
+            false,
+            fixture.wings.iter().map(Ok),
+            &fixture.witnesses,
+        );
+        let tables = sorties.tables();
+        let TableView::Complete(replay::rows::TableRows::AirMissionInputs(rows)) = &tables[0]
+        else {
+            panic!("complete mission inputs expected");
+        };
+        assert_eq!(rows.len(), 3);
+        for (index, row) in rows.iter().enumerate() {
+            let expected = if fault.is_some() && index == 1 {
+                None
+            } else {
+                Some(values[index])
+            };
+            assert_eq!(row.cas_ratio_raw, replay::rows::Recorded::Value(expected));
+            assert_eq!(row.coverage_raw, 90_000);
+        }
+    }
+}
+
 /// Prints guarded calls per hour and the best of five capture times;
 /// run with `--release --nocapture` to measure.
 #[test]
@@ -389,5 +446,71 @@ fn sortie_cost_scales_with_missions_not_countries() {
             calls as f64 / missions as f64,
         );
         assert!(calls <= 30 * missions, "{calls} guarded calls");
+    }
+}
+
+#[test]
+fn growing_sortie_arenas_publish_cold_and_later_mod_demand_for_5000_countries() {
+    let capacity = Capacities::default();
+    assert_eq!(
+        [
+            capacity.missions,
+            capacity.reached,
+            capacity.rows,
+            capacity.keys,
+            capacity.hosts
+        ],
+        [0; 5]
+    );
+    let mut growing = Sorties::with_capacities(&capacity);
+    for count in [9_000usize, 18_000] {
+        let fixture = fixture(count, 5_000);
+        let memory = Counting::new(&fixture.world.bytes);
+        growing.capture_growing(
+            &memory,
+            MODULE,
+            fixture.game_state,
+            false,
+            fixture.wings.iter().map(Ok),
+            &fixture.witnesses,
+        );
+        assert_eq!(growing.outcome, Outcome::Rows { len: 0 });
+        assert_eq!(growing.missions.len, count);
+        assert_eq!(growing.reached.len, count * REACHED as usize);
+        assert!(growing.keys.len >= count);
+        assert_eq!(growing.hosts_required, 2);
+        assert_eq!(growing.hosts_short, 0);
+        let grown_reads = memory.reads.get();
+        // Each mission queues its base container, two hosts and the four
+        // remaining operand scopes; enough fixed storage follows that census.
+        let mut fixed = Sorties::with_capacities(&Capacities {
+            missions: count,
+            reached: count * REACHED as usize,
+            rows: count * 7,
+            keys: count * 7,
+            hosts: 2,
+        });
+        let baseline = Counting::new(&fixture.world.bytes);
+        fixed.capture(
+            &baseline,
+            MODULE,
+            fixture.game_state,
+            false,
+            fixture.wings.iter().map(Ok),
+            &fixture.witnesses,
+        );
+        assert_eq!(fixed.outcome, growing.outcome);
+        assert_eq!(
+            baseline.reads.get(),
+            grown_reads,
+            "growth restarted a native read"
+        );
+        assert_eq!(fixed.missions.len, growing.missions.len);
+        assert_eq!(fixed.containers.len, growing.containers.len);
+        assert_eq!(fixed.modifiers.len, growing.modifiers.len);
+        assert_eq!(
+            &fixed.reached.rows[..fixed.reached.len],
+            &growing.reached.rows[..growing.reached.len]
+        );
     }
 }

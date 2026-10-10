@@ -45,6 +45,9 @@ pub(super) fn compare(
     complete_comparison &= report.attempt("fog AirBaseRegistrations", |report| {
         record_registrations(frame, report)
     });
+    complete_comparison &= report.attempt("fog CarrierAir (recording self-check)", |report| {
+        record_carrier(frame, links, report)
+    });
     if complete_comparison {
         Ok(())
     } else {
@@ -174,7 +177,7 @@ fn compare_volunteer_hosts(
         }
     }
     let mut compared = 0;
-    for (tag, country) in &saved.countries {
+    for (tag, country) in report.canonical_countries(&saved.countries) {
         let label = format!("{} received_air_volunteer_permission", show(tag));
         let actual = by_tag.remove(tag.as_slice()).unwrap_or_default();
         if actual.len() != country.volunteer_permissions.len() {
@@ -358,6 +361,321 @@ fn record_registrations(frame: &DecodedFrame, report: &mut Report) -> io::Result
     Ok(())
 }
 
+/// Additional carrier inputs have no exact text-save representation here.
+/// Numeric presence and cross-table joins are recording self-checks only.
+fn record_carrier(
+    frame: &DecodedFrame,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    report.compared("AirBases.carrier", 0);
+    report.compared("AirBaseRegistrations.carrier", 0);
+    report.compared("AirBaseRegistrations.transport_planes", 0);
+    report.limitation(
+        "carrier recording self-check only: dense/indexed registration joins, raw name availability, fuel availability and ordered wing partitions; zero fresh-save or native comparisons",
+        "AirBases.carrier, AirBaseRegistrations.carrier",
+    );
+    report.limitation(
+        "CAirBase writer C57070 does not serialize the dense +48 vector, the +30 indexed container scalars E0/F0, or retained host-name bytes; passive current/max query operands and results have no established text-save comparator and require a matched native witness",
+        "registered_countries, host_name, fuel_demand_raw, fuel_allocated_raw, current_fuel_raw, maximum_fuel_raw",
+    );
+    report.limitation(
+        "carrier pool order, empty pools and signed grouping keys are not certified by the save here; member sub-unit index joins below are recording self-checks. military::air_transport separately compares saved wing-pool identity through recorded content; it supplies no invented save join for empty carrier pools",
+        "AirBaseRegistrations.carrier.pools",
+    );
+    report.limitation(
+        "original carrier pool plane sums have a recording self-check against captured wing planes only when every member is present; the unsaved registration order and fading members require a matched native witness. The separate air-wing save oracle compares serialized wing planes, not this registration sum",
+        "AirBaseRegistrations.transport_planes",
+    );
+    let bases = complete::<tables::AirBases>(frame)?;
+    let registrations = complete::<tables::AirBaseRegistrations>(frame)?;
+    let by_base: BTreeMap<_, _> = bases.iter().map(|row| (row.id, row)).collect();
+    let by_registration: BTreeMap<_, _> = registrations
+        .iter()
+        .map(|row| ((row.base, row.slot), row))
+        .collect();
+    if by_base.len() != bases.len() || by_registration.len() != registrations.len() {
+        return Err(invalid(
+            "duplicate carrier base or indexed registration key",
+        ));
+    }
+    // Build this index once, only if a nonempty carrier pool needs it.
+    let mut wings = None;
+    let mut checks_complete = true;
+    for base in bases {
+        let label = format!("carrier base {}", base.id);
+        if base.state.is_some() {
+            report.limitation("state base is outside carrier-input demand", label);
+            continue;
+        }
+        let Some(packet) = report.recorded(&base.carrier, "AirBases.carrier", &label) else {
+            continue;
+        };
+        let Some(packet) = packet else {
+            checks_complete &= report.attempt(&label, |_| {
+                Err(invalid("current carrier base packet acquisition refused"))
+            });
+            continue;
+        };
+        checks_complete &= report.attempt(&format!("{label}.host_name"), |report| {
+            // Some(empty) is a successfully read null/stale or empty host name.
+            // Raw bytes need no UTF-8 normalization for this recording check.
+            carrier_input(&packet.host_name, "host_name", report)?;
+            Ok(())
+        });
+        checks_complete &= report.attempt(&format!("{label}.registered_countries"), |report| {
+            let dense =
+                carrier_input(&packet.registered_countries, "registered_countries", report)?;
+            let mut joined = true;
+            for (ordinal, entry) in dense.iter().enumerate() {
+                joined &= report.attempt(
+                    &format!("{label}.registered_countries[{ordinal}]"),
+                    |report| {
+                        carrier_country(entry.country, entry.slot, links, report)?;
+                        let indexed = by_registration
+                            .get(&(base.id, entry.slot))
+                            .ok_or_else(|| invalid("dense country has no indexed registration"))?;
+                        let Some(packet) = report.recorded(
+                            &indexed.carrier,
+                            "AirBaseRegistrations.carrier",
+                            &label,
+                        ) else {
+                            return Ok(());
+                        };
+                        let packet = packet.as_ref().ok_or_else(|| {
+                            invalid("dense country indexed packet acquisition refused")
+                        })?;
+                        if packet.country != entry.country {
+                            return Err(invalid(
+                                "dense country differs from indexed packet raw country",
+                            ));
+                        }
+                        report.compared("CarrierAir.dense_join (recording self-check)", 1);
+                        Ok(())
+                    },
+                );
+            }
+            if joined {
+                Ok(())
+            } else {
+                Err(invalid("carrier dense joins incomplete"))
+            }
+        });
+    }
+    for registration in registrations {
+        let label = format!(
+            "carrier base {} slot {}",
+            registration.base, registration.slot
+        );
+        let Some(base) = by_base.get(&registration.base) else {
+            checks_complete &= report.attempt(&label, |_| {
+                Err(invalid("indexed registration has no recorded air base"))
+            });
+            continue;
+        };
+        if base.state.is_some() {
+            report.limitation("state base is outside carrier-input demand", label);
+            continue;
+        }
+        let Some(packet) = report.recorded(
+            &registration.carrier,
+            "AirBaseRegistrations.carrier",
+            &label,
+        ) else {
+            continue;
+        };
+        let Some(packet) = packet else {
+            checks_complete &= report.attempt(&label, |_| {
+                Err(invalid(
+                    "current carrier registration packet acquisition refused",
+                ))
+            });
+            continue;
+        };
+        checks_complete &= report.attempt(&format!("{label}.country"), |report| {
+            carrier_country(packet.country, registration.slot, links, report)
+        });
+        for (field, value) in [
+            ("fuel_demand_raw", &packet.fuel_demand_raw),
+            ("fuel_allocated_raw", &packet.fuel_allocated_raw),
+        ] {
+            checks_complete &= report.attempt(&format!("{label}.{field}"), |report| {
+                carrier_input(value, field, report)?;
+                Ok(())
+            });
+        }
+        checks_complete &= report.attempt(&format!("{label}.transport_planes"), |report| {
+            let Some(planes) = report.recorded(
+                &registration.transport_planes, "AirBaseRegistrations.transport_planes", &label,
+            ) else { return Ok(()); };
+            let planes = carrier_input(planes, "transport_planes", report)?;
+            let pools = packet.pools.as_ref()
+                .ok_or_else(|| invalid("carrier complete ordered pool prefix refused for plane self-check"))?;
+            if planes.len() != pools.len() {
+                return Err(invalid("carrier plane sums do not cover every ordered pool"));
+            }
+            let mut plane_checks = true;
+            for (ordinal, (pool, planes)) in pools.iter().zip(planes).enumerate() {
+                plane_checks &= report.attempt(&format!("{label}.transport_planes[{ordinal}]"), |report| {
+                    let planes = *carrier_input(planes, "pool_planes_input", report)?;
+                    let end = pool.wing_start.checked_add(pool.wing_count)
+                        .ok_or_else(|| invalid("carrier plane self-check wing range overflow"))?;
+                    let members = registration.wings.get(pool.wing_start as usize..end as usize)
+                        .ok_or_else(|| invalid("carrier plane self-check wing range outside prefix"))?;
+                    if members.is_empty() {
+                        if planes != 0 { return Err(invalid("empty original carrier pool has nonzero planes")); }
+                        report.compared("CarrierAir.empty_pool_planes (recording self-check)", 1);
+                        return Ok(());
+                    }
+                    let wings = wings.get_or_insert_with(|| {
+                        complete::<tables::AirWings>(frame).and_then(|rows| {
+                            let mut wings = BTreeMap::new();
+                            for row in rows {
+                                if row.id == 0 || wings.insert(row.id, row).is_some() {
+                                    return Err(invalid("null or duplicate AirWings handle in carrier plane join"));
+                                }
+                            }
+                            Ok(wings)
+                        })
+                    });
+                    let wings = wings.as_ref().map_err(|error| invalid(error.to_string()))?;
+                    let mut sum = 0_i32;
+                    for id in members {
+                        let Some(wing) = wings.get(id) else {
+                            report.limitation(
+                                "original carrier member is absent from AirWings; this captured sum requires a native witness",
+                                format!("{label} pool {ordinal} wing {id}"),
+                            );
+                            return Ok(());
+                        };
+                        sum = sum.wrapping_add(wing.planes);
+                    }
+                    if sum != planes {
+                        return Err(invalid("original carrier plane sum differs from captured ordered wing planes"));
+                    }
+                    report.compared("CarrierAir.pool_planes (recording self-check)", 1);
+                    Ok(())
+                });
+            }
+            if plane_checks { Ok(()) } else { Err(invalid("carrier plane self-check incomplete")) }
+        });
+        checks_complete &= report.attempt(&format!("{label}.pools"), |report| {
+            let pools = carrier_input(&packet.pools, "pools", report)?;
+            let mut pool_checks = true;
+            let mut consumed = Some(0_u32);
+            for (ordinal, pool) in pools.iter().enumerate() {
+                let pool_label = format!("{label}.pools[{ordinal}]");
+                let end = pool.wing_start.checked_add(pool.wing_count);
+                pool_checks &= report.attempt(&format!("{pool_label}.partition"), |report| {
+                    if consumed != Some(pool.wing_start)
+                        || end.is_none_or(|end| end as usize > registration.wings.len())
+                    {
+                        return Err(invalid("carrier pool range does not continue the ordered wing partition"));
+                    }
+                    report.compared("CarrierAir.partition (recording self-check)", 1);
+                    Ok(())
+                });
+                consumed = end;
+                // Fuel reads remain independently reportable even after a bad
+                // partition or a different pool's optional acquisition fault.
+                for (field, value) in [
+                    ("current_fuel_raw", &pool.current_fuel_raw),
+                    ("maximum_fuel_raw", &pool.maximum_fuel_raw),
+                ] {
+                    pool_checks &= report.attempt(&format!("{pool_label}.{field}"), |report| {
+                        carrier_input(value, field, report)?;
+                        Ok(())
+                    });
+                }
+                pool_checks &= report.attempt(&format!("{pool_label}.members"), |report| {
+                    let end = end.ok_or_else(|| invalid("carrier pool range overflow"))? as usize;
+                    let members = registration.wings.get(pool.wing_start as usize..end)
+                        .ok_or_else(|| invalid("carrier pool range outside recorded wings"))?;
+                    // Empty pools need no fabricated saved base or member.
+                    if members.is_empty() { return Ok(()); }
+                    let wings = wings.get_or_insert_with(|| {
+                        complete::<tables::AirWings>(frame).and_then(|rows| {
+                            let mut wings = BTreeMap::new();
+                            for row in rows {
+                                if row.id == 0 || wings.insert(row.id, row).is_some() {
+                                    return Err(invalid("null or duplicate AirWings handle in carrier member join"));
+                                }
+                            }
+                            Ok(wings)
+                        })
+                    });
+                    let wings = wings.as_ref().map_err(|error| invalid(error.to_string()))?;
+                    for id in members {
+                        let wing = wings.get(id)
+                            .ok_or_else(|| invalid(format!("carrier member wing {id} absent from AirWings")))?;
+                        let Some(index) = report.recorded(
+                            &wing.pool_subunit, "AirWings.pool_subunit", format!("air wing {id}"),
+                        ) else { continue; };
+                        let index = index.ok_or_else(|| invalid(format!("carrier member wing {id} pool identity acquisition refused")))?;
+                        if index != pool.subunit_index {
+                            return Err(invalid(format!("carrier member wing {id} pool identity differs from its recorded pool")));
+                        }
+                        report.compared("CarrierAir.member_identity (recording self-check)", 1);
+                    }
+                    Ok(())
+                });
+            }
+            pool_checks &= report.attempt(&format!("{label}.pools.final_partition"), |_| {
+                if consumed.map(|length| length as usize) != Some(registration.wings.len()) {
+                    return Err(invalid("carrier pools do not consume every recorded wing"));
+                }
+                Ok(())
+            });
+            if pool_checks { Ok(()) } else { Err(invalid("carrier pool self-check incomplete")) }
+        });
+    }
+    if checks_complete {
+        Ok(())
+    } else {
+        Err(invalid("carrier recording self-check incomplete"))
+    }
+}
+
+fn carrier_input<'a, T>(
+    value: &'a Option<T>,
+    field: &str,
+    report: &mut Report,
+) -> io::Result<&'a T> {
+    let value = value
+        .as_ref()
+        .ok_or_else(|| invalid(format!("carrier {field}: current acquisition refused")))?;
+    report.compared(&format!("CarrierAir.{field} (recording self-check)"), 1);
+    Ok(value)
+}
+
+fn carrier_country(
+    raw: u32,
+    slot: u32,
+    links: &BTreeMap<u32, &CountryRow>,
+    report: &mut Report,
+) -> io::Result<()> {
+    // Native country_slot checks raw zero before consulting the link table.
+    match (raw, slot, links.get(&raw)) {
+        (0, 0, _) => {}
+        (0, _, _) => return Err(invalid("carrier raw zero country must use slot zero")),
+        (_, _, Some(country)) if country.canonical_slot == slot => {}
+        (_, 0, None) => {
+            report.limitation(
+                "carrier slot-zero nonzero raw country has no recorded link; readable native unlinked-reference resolution cannot be certified by this self-check",
+                format!("country {raw}, slot {slot}"),
+            );
+            return Ok(());
+        }
+        _ => {
+            return Err(invalid(
+                "carrier raw country does not resolve to its indexed slot",
+            ));
+        }
+    }
+    report.compared("CarrierAir.country (recording self-check)", 1);
+    Ok(())
+}
+
 fn show(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -370,8 +688,10 @@ mod tests {
     use replay::{
         frame::TableView,
         rows::{
-            AirBaseRegistrationRow, RadarCoverageRow, StationedUnitRow, TableId, TableRows,
-            TheatreAreaRow, UnitIntelRow, VolunteerHostRow,
+            AirBaseCarrierInputs, AirBaseCountryOccurrence, AirBaseRegistrationCarrierInputs,
+            AirBaseRegistrationRow, AirBaseRow, AirWingRow, CarrierAirPool, RadarCoverageRow,
+            Recorded, StationedUnitRow, TableId, TableRows, TheatreAreaRow, UnitIntelRow,
+            VolunteerHostRow,
         },
     };
 
@@ -508,13 +828,487 @@ states={} provinces={}"#,
                 state: Some(4),
                 provinces: vec![7],
             }]),
+            TableRows::AirBases(vec![AirBaseRow {
+                id: 65,
+                state: Some(4),
+                ..Default::default()
+            }]),
             TableRows::AirBaseRegistrations(vec![AirBaseRegistrationRow {
                 base: 65,
                 slot: 1,
                 capacity_raw: 100_000,
                 wings: vec![69],
+                carrier: Default::default(),
+                transport_planes: Default::default(),
             }]),
         ])
+    }
+
+    const CARRIER_BASE: u64 = (23_u64 << 32) | 65;
+    const CARRIER_WING: u64 = (29_u64 << 32) | 69;
+
+    fn carrier_frame() -> DecodedFrame {
+        frame([
+            TableRows::AirBases(vec![AirBaseRow {
+                id: CARRIER_BASE,
+                host: (31_u64 << 32) | 70,
+                carrier: Recorded::Value(Some(AirBaseCarrierInputs {
+                    registered_countries: Some(vec![
+                        AirBaseCountryOccurrence {
+                            country: 12,
+                            slot: 1,
+                        },
+                        AirBaseCountryOccurrence {
+                            country: 12,
+                            slot: 1,
+                        },
+                    ]),
+                    host_name: Some(vec![0xff, 0]),
+                })),
+                ..Default::default()
+            }]),
+            TableRows::AirBaseRegistrations(vec![AirBaseRegistrationRow {
+                base: CARRIER_BASE,
+                slot: 1,
+                capacity_raw: 0,
+                wings: vec![CARRIER_WING, CARRIER_WING],
+                transport_planes: Recorded::Value(Some(vec![Some(0), Some(6), Some(0)])),
+                carrier: Recorded::Value(Some(AirBaseRegistrationCarrierInputs {
+                    country: 12,
+                    fuel_demand_raw: Some(i64::MIN),
+                    fuel_allocated_raw: Some(i64::MAX),
+                    pools: Some(vec![
+                        CarrierAirPool {
+                            type_index: i32::MIN,
+                            subunit_index: 42,
+                            current_fuel_raw: Some(i64::MIN),
+                            maximum_fuel_raw: Some(i64::MAX),
+                            ..Default::default()
+                        },
+                        CarrierAirPool {
+                            type_index: i32::MAX,
+                            subunit_index: 42,
+                            wing_count: 2,
+                            current_fuel_raw: Some(i64::MAX),
+                            maximum_fuel_raw: Some(i64::MIN),
+                            ..Default::default()
+                        },
+                        CarrierAirPool {
+                            type_index: -1,
+                            subunit_index: 0,
+                            wing_start: 2,
+                            current_fuel_raw: Some(0),
+                            maximum_fuel_raw: Some(0),
+                            ..Default::default()
+                        },
+                    ]),
+                })),
+            }]),
+            TableRows::AirWings(vec![AirWingRow {
+                id: CARRIER_WING,
+                owner: 12,
+                planes: 3,
+                air_base: CARRIER_BASE,
+                pool_subunit: Recorded::Value(Some(42)),
+                ..Default::default()
+            }]),
+        ])
+    }
+
+    fn carrier_base(frame: &mut DecodedFrame) -> &mut AirBaseRow {
+        let TableView::Complete(TableRows::AirBases(rows)) =
+            &mut *frame.tables[TableId::AirBases.index()]
+        else {
+            unreachable!()
+        };
+        &mut rows[0]
+    }
+
+    fn carrier_registration(frame: &mut DecodedFrame) -> &mut AirBaseRegistrationRow {
+        let TableView::Complete(TableRows::AirBaseRegistrations(rows)) =
+            &mut *frame.tables[TableId::AirBaseRegistrations.index()]
+        else {
+            unreachable!()
+        };
+        &mut rows[0]
+    }
+
+    fn carrier_packet(frame: &mut DecodedFrame) -> &mut AirBaseRegistrationCarrierInputs {
+        let Recorded::Value(Some(packet)) = &mut carrier_registration(frame).carrier else {
+            unreachable!()
+        };
+        packet
+    }
+
+    fn carrier_count(report: &Report, field: &str) -> usize {
+        report
+            .compared_tables
+            .get(&format!("CarrierAir.{field} (recording self-check)"))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn carrier_self_check_preserves_empty_pools_repeats_raw_bytes_and_signed_extrema() {
+        let (country, _) = links();
+        let links = BTreeMap::from([(12, &country)]);
+        let frame = carrier_frame();
+        let mut report = Report::default();
+        record_carrier(&frame, &links, &mut report).unwrap();
+        assert!(report.differences.is_empty());
+        assert!(report.failed_comparisons.is_empty());
+        assert_eq!(carrier_count(&report, "dense_join"), 2);
+        assert_eq!(carrier_count(&report, "partition"), 3);
+        assert_eq!(carrier_count(&report, "member_identity"), 2);
+        assert_eq!(carrier_count(&report, "host_name"), 1);
+        assert_eq!(carrier_count(&report, "current_fuel_raw"), 3);
+        assert_eq!(carrier_count(&report, "maximum_fuel_raw"), 3);
+        assert_eq!(carrier_count(&report, "empty_pool_planes"), 2);
+        assert_eq!(carrier_count(&report, "pool_planes"), 1);
+        assert_eq!(report.compared_tables["AirBases.carrier"], 0);
+        assert_eq!(report.compared_tables["AirBaseRegistrations.carrier"], 0);
+        assert_eq!(
+            report.compared_tables["AirBaseRegistrations.transport_planes"],
+            0
+        );
+        for reason in [
+            "zero fresh-save or native comparisons",
+            "matched native witness",
+            "empty carrier pools",
+        ] {
+            assert!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|value| value.contains(reason)),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn carrier_plane_suffix_refuses_missing_prefix_leaf_and_incorrect_empty_or_wrapping_sums() {
+        let (country, _) = links();
+        let links = BTreeMap::from([(12, &country)]);
+        for value in [
+            Recorded::Value(None),
+            Recorded::Value(Some(vec![Some(0), Some(6)])),
+            Recorded::Value(Some(vec![Some(0), None, Some(0)])),
+            Recorded::Value(Some(vec![Some(1), Some(6), Some(0)])),
+            Recorded::Value(Some(vec![Some(0), Some(3), Some(0)])),
+        ] {
+            let mut frame = carrier_frame();
+            carrier_registration(&mut frame).transport_planes = value;
+            let mut report = Report::default();
+            assert!(record_carrier(&frame, &links, &mut report).is_err());
+            assert!(
+                report
+                    .failed_comparisons
+                    .keys()
+                    .any(|key| key.contains("transport_planes"))
+            );
+            assert_eq!(carrier_count(&report, "current_fuel_raw"), 3);
+            assert_eq!(carrier_count(&report, "member_identity"), 2);
+        }
+        let mut historical = carrier_frame();
+        carrier_registration(&mut historical).transport_planes = Recorded::NotRecorded;
+        let mut report = Report::default();
+        record_carrier(&historical, &links, &mut report).unwrap();
+        assert!(
+            report
+                .limitations
+                .contains_key("AirBaseRegistrations.transport_planes not recorded")
+        );
+        assert_eq!(carrier_count(&report, "pool_planes"), 0);
+
+        let mut wrapping = carrier_frame();
+        let TableView::Complete(TableRows::AirWings(rows)) =
+            &mut *wrapping.tables[TableId::AirWings.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].planes = i32::MAX;
+        carrier_registration(&mut wrapping).transport_planes =
+            Recorded::Value(Some(vec![Some(0), Some(-2), Some(0)]));
+        let mut report = Report::default();
+        record_carrier(&wrapping, &links, &mut report).unwrap();
+        assert_eq!(carrier_count(&report, "pool_planes"), 1);
+    }
+
+    #[test]
+    fn carrier_optional_refusals_preserve_independent_fuel_name_and_pool_checks() {
+        let (country, _) = links();
+        let links = BTreeMap::from([(12, &country)]);
+        let mut frame = carrier_frame();
+        let Recorded::Value(Some(base)) = &mut carrier_base(&mut frame).carrier else {
+            unreachable!()
+        };
+        base.registered_countries = None;
+        let packet = carrier_packet(&mut frame);
+        packet.fuel_demand_raw = None;
+        packet.pools.as_mut().unwrap()[1].current_fuel_raw = None;
+        let mut report = Report::default();
+        assert!(record_carrier(&frame, &links, &mut report).is_err());
+        for field in [
+            "registered_countries",
+            "fuel_demand_raw",
+            "current_fuel_raw",
+        ] {
+            assert!(
+                report
+                    .failed_comparisons
+                    .keys()
+                    .any(|key| key.ends_with(field)),
+                "{field}"
+            );
+        }
+        assert_eq!(carrier_count(&report, "host_name"), 1);
+        assert_eq!(carrier_count(&report, "fuel_allocated_raw"), 1);
+        assert_eq!(carrier_count(&report, "current_fuel_raw"), 2);
+        assert_eq!(carrier_count(&report, "maximum_fuel_raw"), 3);
+        assert_eq!(carrier_count(&report, "member_identity"), 2);
+
+        carrier_packet(&mut frame).pools = None;
+        let mut report = Report::default();
+        assert!(record_carrier(&frame, &links, &mut report).is_err());
+        assert_eq!(carrier_count(&report, "fuel_allocated_raw"), 1);
+        assert_eq!(carrier_count(&report, "pools"), 0);
+    }
+
+    #[test]
+    fn carrier_historical_absence_current_refusal_and_state_scope_stay_distinct() {
+        let (country, _) = links();
+        let links = BTreeMap::from([(12, &country)]);
+        let mut frame = carrier_frame();
+        carrier_base(&mut frame).carrier = Recorded::NotRecorded;
+        carrier_registration(&mut frame).carrier = Recorded::NotRecorded;
+        let mut report = Report::default();
+        record_carrier(&frame, &links, &mut report).unwrap();
+        assert!(
+            report
+                .limitations
+                .contains_key("AirBases.carrier not recorded")
+        );
+        assert!(
+            report
+                .limitations
+                .contains_key("AirBaseRegistrations.carrier not recorded")
+        );
+
+        carrier_base(&mut frame).carrier = Recorded::Value(None);
+        carrier_registration(&mut frame).carrier = Recorded::Value(None);
+        let mut report = Report::default();
+        assert!(record_carrier(&frame, &links, &mut report).is_err());
+        assert_eq!(report.failed_comparisons.len(), 2);
+        carrier_base(&mut frame).state = Some(4);
+        let mut report = Report::default();
+        record_carrier(&frame, &links, &mut report).unwrap();
+        assert!(report.failed_comparisons.is_empty());
+        assert_eq!(
+            report.limitations["state base is outside carrier-input demand"].len(),
+            2
+        );
+
+        let mut frame = carrier_frame();
+        let base = carrier_base(&mut frame);
+        let Recorded::Value(Some(packet)) = &mut base.carrier else {
+            unreachable!()
+        };
+        packet.host_name = Some(Vec::new());
+        record_carrier(&frame, &links, &mut Report::default()).unwrap();
+        let Recorded::Value(Some(packet)) = &mut carrier_base(&mut frame).carrier else {
+            unreachable!()
+        };
+        packet.host_name = None;
+        let mut report = Report::default();
+        assert!(record_carrier(&frame, &links, &mut report).is_err());
+        assert_eq!(carrier_count(&report, "host_name"), 0);
+        assert_eq!(carrier_count(&report, "dense_join"), 2);
+    }
+
+    #[test]
+    fn carrier_pool_gaps_overlap_overflow_and_unconsumed_wings_refuse_only_their_checks() {
+        let (country, _) = links();
+        let links = BTreeMap::from([(12, &country)]);
+        for mutate in [
+            |pools: &mut Vec<CarrierAirPool>| pools[1].wing_start = 1,
+            |pools: &mut Vec<CarrierAirPool>| pools[2].wing_start = 1,
+            |pools: &mut Vec<CarrierAirPool>| {
+                pools[1].wing_start = u32::MAX;
+                pools[1].wing_count = 2;
+            },
+            |pools: &mut Vec<CarrierAirPool>| {
+                pools[1].wing_count = 1;
+                pools[2].wing_start = 1;
+            },
+        ] {
+            let mut frame = carrier_frame();
+            mutate(carrier_packet(&mut frame).pools.as_mut().unwrap());
+            let mut report = Report::default();
+            assert!(record_carrier(&frame, &links, &mut report).is_err());
+            assert!(
+                report
+                    .failed_comparisons
+                    .keys()
+                    .any(|key| key.contains("partition"))
+            );
+            assert_eq!(carrier_count(&report, "current_fuel_raw"), 3);
+            assert_eq!(carrier_count(&report, "maximum_fuel_raw"), 3);
+            assert_eq!(carrier_count(&report, "fuel_allocated_raw"), 1);
+        }
+    }
+
+    #[test]
+    fn carrier_member_missing_or_refused_identity_never_certifies_the_pool() {
+        let (country, _) = links();
+        let links = BTreeMap::from([(12, &country)]);
+        for identity in [Recorded::Value(Some(43)), Recorded::Value(None)] {
+            let mut frame = carrier_frame();
+            let TableView::Complete(TableRows::AirWings(rows)) =
+                &mut *frame.tables[TableId::AirWings.index()]
+            else {
+                unreachable!()
+            };
+            rows[0].pool_subunit = identity;
+            let mut report = Report::default();
+            assert!(record_carrier(&frame, &links, &mut report).is_err());
+            assert_eq!(carrier_count(&report, "member_identity"), 0);
+            assert_eq!(carrier_count(&report, "maximum_fuel_raw"), 3);
+        }
+        let mut historical = carrier_frame();
+        let TableView::Complete(TableRows::AirWings(rows)) =
+            &mut *historical.tables[TableId::AirWings.index()]
+        else {
+            unreachable!()
+        };
+        rows[0].pool_subunit = Recorded::NotRecorded;
+        let mut report = Report::default();
+        record_carrier(&historical, &links, &mut report).unwrap();
+        assert!(
+            report
+                .limitations
+                .contains_key("AirWings.pool_subunit not recorded")
+        );
+        assert_eq!(carrier_count(&report, "member_identity"), 0);
+        assert_eq!(carrier_count(&report, "maximum_fuel_raw"), 3);
+        let mut frame = carrier_frame();
+        *frame.tables[TableId::AirWings.index()] = TableView::Unavailable {
+            reason: "guarded wing read".into(),
+        };
+        let mut report = Report::default();
+        assert!(record_carrier(&frame, &links, &mut report).is_err());
+        assert_eq!(carrier_count(&report, "current_fuel_raw"), 3);
+        assert_eq!(carrier_count(&report, "fuel_demand_raw"), 1);
+        *frame.tables[TableId::AirWings.index()] = TableView::Complete(TableRows::AirWings(vec![]));
+        assert!(record_carrier(&frame, &links, &mut Report::default()).is_err());
+    }
+
+    #[test]
+    fn carrier_dense_country_requires_matching_indexed_raw_identity_and_slot() {
+        let (country, _) = links();
+        let links = BTreeMap::from([(12, &country)]);
+        for mutate in [
+            |row: &mut AirBaseRegistrationRow| row.slot = 2,
+            |row: &mut AirBaseRegistrationRow| {
+                let Recorded::Value(Some(packet)) = &mut row.carrier else {
+                    unreachable!()
+                };
+                packet.country = 0;
+            },
+        ] {
+            let mut frame = carrier_frame();
+            mutate(carrier_registration(&mut frame));
+            let mut report = Report::default();
+            assert!(record_carrier(&frame, &links, &mut report).is_err());
+            assert_eq!(carrier_count(&report, "dense_join"), 0);
+            assert_eq!(carrier_count(&report, "fuel_demand_raw"), 1);
+        }
+        for raw in [0, 4999] {
+            let mut frame = carrier_frame();
+            carrier_registration(&mut frame).slot = 0;
+            carrier_packet(&mut frame).country = raw;
+            let Recorded::Value(Some(base)) = &mut carrier_base(&mut frame).carrier else {
+                unreachable!()
+            };
+            for entry in base.registered_countries.as_mut().unwrap() {
+                entry.country = raw;
+                entry.slot = 0;
+            }
+            let mut report = Report::default();
+            record_carrier(&frame, &links, &mut report).unwrap();
+            assert_eq!(carrier_count(&report, "dense_join"), 2);
+            assert_eq!(
+                carrier_count(&report, "country"),
+                if raw == 0 { 3 } else { 0 }
+            );
+            assert_eq!(
+                report
+                    .limitations
+                    .keys()
+                    .any(|key| key.contains("slot-zero nonzero")),
+                raw != 0
+            );
+        }
+    }
+
+    #[test]
+    fn carrier_raw_zero_slot_is_not_overridden_by_a_recorded_country_link() {
+        let (country, _) = links();
+        let links = BTreeMap::from([(0, &country), (12, &country)]);
+        let mut frame = carrier_frame();
+        carrier_packet(&mut frame).country = 0;
+        let Recorded::Value(Some(base)) = &mut carrier_base(&mut frame).carrier else {
+            unreachable!()
+        };
+        for entry in base.registered_countries.as_mut().unwrap() {
+            entry.country = 0;
+        }
+        let mut report = Report::default();
+        assert!(record_carrier(&frame, &links, &mut report).is_err());
+        assert_eq!(carrier_count(&report, "country"), 0);
+        assert_eq!(carrier_count(&report, "dense_join"), 0);
+        assert_eq!(carrier_count(&report, "fuel_allocated_raw"), 1);
+        carrier_registration(&mut frame).slot = 0;
+        let Recorded::Value(Some(base)) = &mut carrier_base(&mut frame).carrier else {
+            unreachable!()
+        };
+        for entry in base.registered_countries.as_mut().unwrap() {
+            entry.slot = 0;
+        }
+        let mut report = Report::default();
+        record_carrier(&frame, &links, &mut report).unwrap();
+        assert_eq!(carrier_count(&report, "country"), 3);
+        assert_eq!(carrier_count(&report, "dense_join"), 2);
+    }
+
+    #[test]
+    fn carrier_refusal_does_not_replace_the_existing_registration_save_limitation() {
+        let (country, soviet) = links();
+        let links = BTreeMap::from([(12, &country), (34, &soviet)]);
+        let mut frame = complete_frame();
+        let carrier = carrier_frame();
+        for table in [
+            TableId::AirBases,
+            TableId::AirBaseRegistrations,
+            TableId::AirWings,
+        ] {
+            frame.tables[table.index()] = carrier.tables[table.index()].clone();
+        }
+        carrier_packet(&mut frame).fuel_allocated_raw = None;
+        let mut report = Report::default();
+        assert!(compare(&frame, &saved(), &links, &mut report).is_err());
+        assert_eq!(report.compared_tables["AirBaseRegistrations"], 0);
+        assert!(
+            report
+                .limitations
+                .keys()
+                .any(|key| key.contains("does not traverse the +0x30"))
+        );
+        assert!(
+            report
+                .failed_comparisons
+                .contains_key("fog CarrierAir (recording self-check)")
+        );
     }
 
     #[test]

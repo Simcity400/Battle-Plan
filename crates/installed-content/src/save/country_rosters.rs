@@ -20,10 +20,18 @@ pub struct Goal {
 }
 
 pub fn parse(items: &[Item]) -> io::Result<Pack> {
+    parse_with_countries(items, super::CountriesView::from_root(items)?)
+}
+
+pub(super) fn parse_with_countries(
+    _items: &[Item],
+    countries: super::CountriesView<'_>,
+) -> io::Result<Pack> {
     let mut pack = Pack::default();
-    let countries = field(items, b"countries")?
-        .ok_or_else(|| invalid("country rosters save lacks countries"))?;
-    for country in block(countries)? {
+    if !countries.is_present() {
+        return Err(invalid("country rosters save lacks countries"));
+    }
+    for country in countries.iter() {
         let tag = country
             .key
             .as_ref()

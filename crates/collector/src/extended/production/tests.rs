@@ -141,7 +141,7 @@ fn production_rest_job_capacity_accounting_tracks_all_vectors_through_growth_cle
     assert_eq!(initial, expected(&job));
     job.grow();
     let grown = LOCAL.snapshot().current.auxiliary_vectors;
-    assert!(grown > initial);
+    assert_eq!(grown, initial, "unused census capacity is not live demand");
     assert_eq!(grown, expected(&job));
     job.clear();
     assert_eq!(LOCAL.snapshot().current.auxiliary_vectors, grown);
@@ -826,7 +826,7 @@ fn text_capture_keeps_first_bytes_and_primary_truncation_grows_off_thread() {
 }
 
 #[test]
-fn variant_loan_retains_buffers_and_adopts_worker_growth() {
+fn variant_loan_retains_buffers_and_adopts_worker_observations() {
     let mut capacities = capacities();
     let mut captured = Captured::with_capacities(&capacities);
     let before = captured.allocated_bytes();
@@ -838,8 +838,8 @@ fn variant_loan_retains_buffers_and_adopts_worker_growth() {
     );
     variants.definitions.rows.resize(33, Default::default());
     variants.definition_bytes.first.resize(65, 0);
-    let row_capacity = variants.definitions.rows.capacity();
-    let byte_capacity = variants.definition_bytes.first.capacity();
+    variants.definitions.rows.reserve(5000);
+    variants.definition_bytes.first.reserve(5000);
     variants.fail("variant worker stopped", 0, true);
     captured.restore_variants(variants);
     assert!(captured.outcomes()[3..7].iter().all(|outcome| {
@@ -850,9 +850,16 @@ fn variant_loan_retains_buffers_and_adopts_worker_growth() {
     }));
     let allocated = captured.allocated_bytes();
     captured.grow(&mut capacities);
-    assert_eq!(capacities.rows[3], row_capacity);
-    assert_eq!(capacities.definition_bytes, byte_capacity);
+    assert_eq!(capacities.rows[3], 2);
+    assert_eq!(capacities.definition_bytes, 16);
     assert_eq!(captured.allocated_bytes(), allocated);
+    let mut variants = captured.take_variants();
+    variants.definitions.outcome = Outcome::Rows { len: 33 };
+    variants.definition_bytes.len = 65;
+    captured.restore_variants(variants);
+    captured.grow(&mut capacities);
+    assert!(capacities.rows[3] >= 33 && capacities.rows[3] <= 128);
+    assert!(capacities.definition_bytes >= 65 && capacities.definition_bytes <= 256);
     let mut variants = captured.take_variants();
     variants.fail("variant worker stopped", 0, false);
     captured.restore_variants(variants);
@@ -994,7 +1001,7 @@ fn fixture_plan_context() -> ProductionRestCopyContext {
 fn production_plan_copies_changed_payload_without_rebuilding_discovery() {
     use super::production_rest_test_kit as kit;
     let mut bytes = kit::fixture();
-    let mut job = ProductionRestJob::new();
+    let mut job = production_rest_test_kit::job();
     let initial = engine::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
@@ -1028,7 +1035,7 @@ fn production_plan_copies_changed_payload_without_rebuilding_discovery() {
     };
     assert!(expected_counts[TABLES[0].index()].spans > 0);
     assert_eq!(planned_counts, expected_counts);
-    let mut canonical = ProductionRestJob::new();
+    let mut canonical = production_rest_test_kit::job();
     let native = read_accounting::Capture::new();
     let fresh = copy_production_rest_refresh(&memory, fixture_plan_context(), &mut canonical);
     let canonical_counts = native.finish();
@@ -1061,7 +1068,7 @@ fn production_plan_copies_changed_payload_without_rebuilding_discovery() {
 fn production_plan_rebuilds_changed_pointer_and_preserves_a_later_fault_once() {
     use super::production_rest_test_kit as kit;
     let mut bytes = kit::fixture();
-    let mut job = ProductionRestJob::new();
+    let mut job = production_rest_test_kit::job();
     let initial = engine::memory::SliceMemory {
         base: kit::BASE,
         bytes: &bytes,
@@ -1088,7 +1095,7 @@ fn production_plan_rebuilds_changed_pointer_and_preserves_a_later_fault_once() {
             "changed pointer or fault resumes discovery"
         );
         let planned_calls = memory.calls.take();
-        let mut canonical = ProductionRestJob::new();
+        let mut canonical = production_rest_test_kit::job();
         let fresh = copy_production_rest_refresh(&memory, fixture_plan_context(), &mut canonical);
         assert!(fresh.raw_ok && !fresh.plan_failed);
         assert_eq!(
@@ -1134,7 +1141,7 @@ fn production_rest_truncation_matrix_matches_direct_with_same_caps() {
             base: 0,
             game_state: kit::BASE,
         };
-        let mut first = ProductionRestJob::new();
+        let mut first = production_rest_test_kit::job();
         let report =
             crate::extended::production::copy_production_rest_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok, "rows={rows:?}");
@@ -1172,7 +1179,7 @@ fn production_rest_split_copy_matches_direct_walk_under_truncation() {
             base: 0,
             game_state: kit::BASE,
         };
-        let mut first = ProductionRestJob::new();
+        let mut first = production_rest_test_kit::job();
         let report =
             crate::extended::production::copy_production_rest_refresh(&memory, ctx, &mut first);
         assert!(report.raw_ok);
@@ -1214,17 +1221,93 @@ fn production_rest_staging_overflow_falls_back_to_typed_walk() {
 }
 
 #[test]
-fn production_rest_worst_case_pools_start_above_late_campaign_caps() {
-    // Late-campaign worst case: 2048 lines, 8192 stockpiles, licences and
-    // deployment queues with names plus licence handles. Pools start
-    // above that so steady state never overflows; overflow still falls
-    // back to the typed walk above.
-    let job = ProductionRestJob::new();
-    assert!(job.log.spans.capacity() >= 1 << 17);
-    assert!(job.log.bytes.capacity() >= (8 << 20));
-    let capacities = Capacities::default();
-    assert!(capacities.rows[0] >= 2048);
-    assert!(capacities.rows[1] >= 8192);
-    assert!(capacities.conveyor_name_bytes >= 128 * 1024);
-    assert!(capacities.license_handles >= 4096);
+fn cold_production_owned_buffers_keep_mod_sized_original_occurrences_and_later_growth() {
+    use super::production_rest_test_kit as kit;
+    let mut captured = Captured::with_capacities(&Capacities {
+        rows: [0; N],
+        definition_bytes: 0,
+        conveyor_name_bytes: 0,
+        line_custom_name_bytes: 0,
+        license_handles: 0,
+    });
+    let mut job = ProductionRestJob::new();
+    job.log = RawLog::new(1, 1);
+    job.census = Vec::new();
+    for count in [1_500_usize, 5_000] {
+        let mut bytes = kit::fixture();
+        let mut array = |header: usize, stride: usize, entry: &[u8]| {
+            let data = kit::BASE + bytes.len();
+            bytes.resize(bytes.len() + count * stride, 0);
+            for ordinal in 0..count {
+                let first = data - kit::BASE + ordinal * stride;
+                bytes[first..first + entry.len()].copy_from_slice(entry);
+            }
+            let at = header - kit::BASE;
+            bytes[at..at + 8].copy_from_slice(&(data as u64).to_le_bytes());
+            bytes[at + 8..at + 12].copy_from_slice(&(count as u32).to_le_bytes());
+            bytes[at + 12..at + 16].copy_from_slice(&(count as u32).to_le_bytes());
+        };
+        array(
+            0x10000 + cproduction_status::LINES,
+            8,
+            &(kit::PLINE as u64).to_le_bytes(),
+        );
+        array(
+            0x10000 + cproduction_status::LICENSES,
+            8,
+            &(kit::VARIANT as u64).to_le_bytes(),
+        );
+        array(
+            0x10000 + cproduction_status::LICENSE_RECORDS,
+            8,
+            &0x11500u64.to_le_bytes(),
+        );
+        let mut stock = [0; 16];
+        stock[..8].copy_from_slice(&(kit::VARIANT as u64).to_le_bytes());
+        stock[8..].copy_from_slice(&77_i64.to_le_bytes());
+        array(0x10000 + cproduction_status::STOCKPILE, 16, &stock);
+        array(
+            0x4000 + cdeployment_status::CONVEYORS,
+            8,
+            &0x5000u64.to_le_bytes(),
+        );
+        let memory = engine::memory::CountedMemory::new(engine::memory::SliceMemory {
+            base: kit::BASE,
+            bytes: &bytes,
+        });
+        let native = read_accounting::Capture::new();
+        let report = copy_production_rest_refresh_growing(
+            &memory,
+            ProductionRestCopyContext {
+                base: 0,
+                game_state: kit::BASE,
+            },
+            &mut job,
+        );
+        assert!(report.raw_ok && !report.plan_failed);
+        let reads = read_accounting::snapshot();
+        captured.decode_production_rest_payload(0, kit::BASE, &job, &mut [0; 8]);
+        assert_eq!(
+            native.finish(),
+            reads,
+            "decode must use only owned observations"
+        );
+        for index in [0, 1, 11, 12, 13, 14, 15, 16] {
+            assert_eq!(
+                captured.outcomes()[index],
+                Outcome::Rows { len: count },
+                "table {index}"
+            );
+        }
+        assert_eq!(captured.license_handles.len, count);
+        assert_eq!(captured.conveyor_name_bytes.len, count * 6);
+        assert_eq!(captured.conveyors.rows[count - 1].ordinal, count as u32 - 1);
+        assert_eq!(captured.stockpiles.rows[count - 1].amount_raw, 77);
+        let mut enough = kit::capacities();
+        enough.rows = [count; N];
+        enough.license_handles = count;
+        enough.conveyor_name_bytes = count * 6;
+        let direct = kit::direct(&memory, &enough);
+        kit::assert_matches_direct(&captured, &direct);
+    }
 }

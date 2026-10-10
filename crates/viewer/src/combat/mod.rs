@@ -28,12 +28,14 @@ mod naval_environment;
 mod naval_escape;
 pub(crate) mod naval_marker_tooltips;
 mod naval_positioning;
+mod naval_results;
 mod naval_screening;
 mod naval_ship_tooltips;
 pub(crate) mod naval_sides;
 mod naval_summary_tooltips;
 mod naval_surface_detection;
-mod naval_terrain;
+pub(crate) mod naval_terrain;
+mod naval_variants;
 mod presentation;
 pub(crate) mod progress;
 mod reinforcement_speed;
@@ -49,6 +51,8 @@ pub use assets::Assets;
 pub(crate) use assets::CombatContent;
 pub(crate) use battle_name::battle_name_candidates;
 use binding::Bindings;
+pub(crate) use division_tooltips::modifier_name_key;
+pub(crate) use naval_air_tooltips::wing_short_name;
 /// The one screen-rectangle hit test; the map's counter hits share it.
 pub(crate) fn contains(rect: [f32; 4], point: [f32; 2]) -> bool {
     point[0] >= rect[0]
@@ -131,6 +135,10 @@ impl Selector {
 pub struct Hit {
     pub selection: Selection,
     pub rect: [f32; 4],
+    pub layer: u64,
+    pub order: usize,
+    /// Unsupported native hit shapes block lower windows without dispatching observers.
+    pub supported: bool,
 }
 impl Hit {
     pub fn contains(&self, point: [f32; 2]) -> bool {
@@ -174,6 +182,8 @@ pub struct Window {
     /// The possible-tactics popup (1415C7D20): window presentation state,
     /// never recorded.
     pub tactics_open: bool,
+    /// 1417C7B10 / 1417C8D20: retained-result detail panels are local UI state.
+    result_details_open: bool,
     tactics_position: Option<[f32; 2]>,
     dragging_tactics: bool,
     hover: tooltip_painter::HoverState,
@@ -193,19 +203,47 @@ struct Scope {
     perspective: crate::map::perspective::Choice,
     viewer: u32,
     playing: bool,
+    nato: bool,
 }
 
 impl Scope {
+    fn matches_request(
+        &self,
+        branch: replay::BranchId,
+        hour: i32,
+        selection: Selection,
+        perspective: &crate::map::perspective::Choice,
+        playing: bool,
+        nato: bool,
+    ) -> bool {
+        self.branch == branch
+            && self.hour == hour
+            && self.selection == selection
+            && self.perspective == *perspective
+            && self.playing == playing
+            && self.nato == nato
+    }
+
     /// Whether contents read at `self` are the window's last refresh at
     /// `now`: the same combat on the same branch, seen by the same viewing
     /// country under the same choice, no later than `now`. Another branch's
     /// contents, or another resolved viewer's, are not this window's.
     fn holds_at(&self, now: &Scope) -> bool {
+        // Only land tactics have scripted unit-bonus icons, and land windows
+        // refresh at `now`. A local icon toggle does not end a naval hold.
         self.branch == now.branch
             && self.selection == now.selection
             && self.perspective == now.perspective
             && self.viewer == now.viewer
             && self.playing == now.playing
+            && self.hour <= now.hour
+    }
+
+    fn result_ui_at(&self, now: &Scope) -> bool {
+        self.branch == now.branch
+            && self.selection == now.selection
+            && self.perspective == now.perspective
+            && self.viewer == now.viewer
             && self.hour <= now.hour
     }
 }
@@ -373,6 +411,29 @@ impl Window {
     }
     /// The popup's own controls; true when `point` was one of them.
     pub fn handle_click(&mut self, drawn: &Drawn, point: [f32; 2]) -> bool {
+        if matches!(self.selection, Some(Selection::NavalResult(_)))
+            && drawn
+                .result_details_button
+                .is_some_and(|rect| contains(rect, point))
+        {
+            let Some(cache) = self.cached.as_mut() else {
+                return false;
+            };
+            let Some((_, bindings)) = cache.contents.as_mut() else {
+                return false;
+            };
+            if bindings
+                .values
+                .get("open_details")
+                .is_some_and(|widget| widget.enabled == Some(false))
+            {
+                return true;
+            }
+            self.result_details_open = !self.result_details_open;
+            naval_results::show_details(&mut bindings.values, self.result_details_open);
+            cache.generation = cache.generation.wrapping_add(1);
+            return true;
+        }
         if drawn
             .tactics_close
             .is_some_and(|rect| contains(rect, point))
@@ -515,6 +576,7 @@ impl Window {
         extent: [f32; 2],
         perspective: &crate::map::perspective::Choice,
         engaged: Option<&crate::engaged_index::EngagedIndex>,
+        nato: bool,
         hovers: bool,
         time: f32,
         advance: bool,
@@ -526,14 +588,15 @@ impl Window {
         let hour = document.playback.hour();
         let covered = engaged.is_some_and(|index| index.covers(branch, hour));
         if !self.cached.as_ref().is_some_and(|cached| {
-            (
-                cached.at.branch,
-                cached.at.hour,
-                cached.at.selection,
-                cached.covered,
-            ) == (branch, hour, selection, covered)
-                && cached.at.perspective == *perspective
-                && cached.at.playing == self.playing
+            cached.covered == covered
+                && cached.at.matches_request(
+                    branch,
+                    hour,
+                    selection,
+                    perspective,
+                    self.playing,
+                    nato,
+                )
         }) {
             let vision = document.vision(perspective)?;
             let now = Scope {
@@ -543,7 +606,19 @@ impl Window {
                 perspective: perspective.clone(),
                 viewer: vision.ours(),
                 playing: self.playing,
+                nato,
             };
+            if matches!(selection, Selection::NavalResult(_)) {
+                let same = self
+                    .cached
+                    .as_ref()
+                    .is_some_and(|cached| cached.at.result_ui_at(&now));
+                if !same {
+                    self.result_details_open = false;
+                    self.gui = gui::Windows::default();
+                    self.gui_time = None;
+                }
+            }
             let flags = combat_flags(document.frame()?, vision.ours(), engaged)?;
             let cached = match update(selection, &flags) {
                 Update::Hold { combat, undecided } => {
@@ -572,7 +647,10 @@ impl Window {
                         .as_ref()
                         .map_or(1, |cached| cached.generation.wrapping_add(1));
                     let mut bindings =
-                        Bindings::read(document, selection, &vision, &flags, !self.playing)?;
+                        Bindings::read(document, selection, &vision, &flags, !self.playing, nato)?;
+                    if matches!(selection, Selection::NavalResult(_)) {
+                        naval_results::show_details(&mut bindings.values, self.result_details_open);
+                    }
                     if let Some((read, previous)) = self
                         .cached
                         .as_ref()
@@ -608,7 +686,7 @@ impl Window {
         let counters = &document.icons.counters;
         let windows = counters.windows_at(extent.map(|value| value as u32))?;
         let inventory = cached.gui_assets.as_mut().expect("refreshed with bindings");
-        inventory.refresh_portraits(assets, time);
+        inventory.refresh_portraits(assets, time, document.icons.lazy.version());
         let resources = gui_resources::GuiResources::new(
             assets,
             &windows,
@@ -651,6 +729,9 @@ pub struct Drawn {
     refused: BTreeMap<String, usize>,
     pub rect: [f32; 4],
     pub close: Option<[f32; 4]>,
+    dismiss: Option<[f32; 4]>,
+    result_details_button: Option<[f32; 4]>,
+    result_details_rects: Vec<[f32; 4]>,
     lists: Vec<([f32; 4], ScrollTarget)>,
     scroll_buttons: Vec<([f32; 4], ScrollTarget, i32)>,
     /// Hover regions in draw order; the last containing one wins.
@@ -695,10 +776,17 @@ impl Drawn {
         self.tactics_rect.is_some_and(|rect| contains(rect, point))
     }
     pub fn contains(&self, point: [f32; 2]) -> bool {
-        contains(self.rect, point) || self.in_popup(point)
+        contains(self.rect, point)
+            || self.in_popup(point)
+            || self
+                .result_details_rects
+                .iter()
+                .any(|rect| contains(*rect, point))
     }
     pub fn closes(&self, point: [f32; 2]) -> bool {
-        !self.in_popup(point) && self.close.is_some_and(|rect| contains(rect, point))
+        !self.in_popup(point)
+            && (self.close.is_some_and(|rect| contains(rect, point))
+                || self.dismiss.is_some_and(|rect| contains(rect, point)))
     }
     /// The list under `point`; the popup covers the window's lists.
     pub(crate) fn list_at(&self, point: [f32; 2]) -> Option<ScrollTarget> {
@@ -722,6 +810,8 @@ impl Drawn {
 #[derive(Clone, Default)]
 pub struct Widget {
     pub text: Option<String>,
+    /// 1417C6130 overrides the text scrollbar's step from its newline count.
+    pub text_scroll_lines: Option<bool>,
     /// Hover text, and the delayed body shown after its longer delay.
     pub tooltip: Option<HoverText>,
     pub tooltip_description: Option<HoverText>,
@@ -734,11 +824,14 @@ pub struct Widget {
     /// seed never replaces its text or its refusal.
     pub hover_owned: bool,
     pub sprite: Option<String>,
+    /// 141C5DD20 leaves the existing drawable untouched when its picture path is absent.
+    pub retain_sprite: bool,
     pub flag: Option<String>,
     pub fill: Option<f32>,
     pub frame: Option<u32>,
     pub rotation: Option<f32>,
     pub opacity: Option<f32>,
+    pub color: Option<[f32; 4]>,
     /// Runtime button state; absent restores the GUI's authored enabled state.
     pub enabled: Option<bool>,
     pub hidden: bool,
@@ -832,7 +925,68 @@ mod tests {
             perspective: crate::map::perspective::Choice::default(),
             viewer,
             playing: false,
+            nato: false,
         }
+    }
+
+    #[test]
+    fn retained_result_details_toggle_both_panels_and_reset_on_reopen() {
+        let mut window = Window::default();
+        window.open(Selection::NavalResult(7));
+        let mut at = scope(0, 10, 1);
+        at.selection = Selection::NavalResult(7);
+        let mut bindings = Bindings::default();
+        naval_results::show_details(&mut bindings.values, false);
+        window.cached = Some(Cached {
+            at: at.clone(),
+            covered: false,
+            contents: Some((at.clone(), bindings)),
+            shown: true,
+            held: None,
+            generation: 1,
+            gui_assets: None,
+        });
+        let drawn = Drawn {
+            result_details_button: Some([5., 5., 20., 20.]),
+            ..Default::default()
+        };
+        assert!(window.handle_click(&drawn, [10., 10.]));
+        assert!(window.result_details_open);
+        let cached = window.cached.as_ref().unwrap();
+        assert_eq!(cached.generation, 2);
+        let values = &cached.contents.as_ref().unwrap().1.values;
+        assert!(!values["attacker_details"].hidden && !values["defender_details"].hidden);
+        let mut later = at.clone();
+        later.hour = 12;
+        later.playing = true;
+        assert!(
+            at.result_ui_at(&later),
+            "playing keeps the local result details"
+        );
+        for changed in [
+            Scope {
+                branch: 1,
+                ..later.clone()
+            },
+            Scope {
+                viewer: 2,
+                ..later.clone()
+            },
+            Scope {
+                hour: 9,
+                ..later.clone()
+            },
+            Scope {
+                selection: Selection::NavalResult(8),
+                ..later
+            },
+        ] {
+            assert!(!at.result_ui_at(&changed));
+        }
+        assert!(window.handle_click(&drawn, [10., 10.]));
+        assert!(!window.result_details_open);
+        window.open(Selection::NavalResult(7));
+        assert!(!window.result_details_open && window.cached.is_none());
     }
 
     /// Held contents are kept only for the branch, combat, choice and resolved viewing
@@ -881,6 +1035,37 @@ mod tests {
             ))
         );
         assert!(hold(None, &scope(0, 12, 1), 2, None).is_none());
+    }
+
+    #[test]
+    fn viewer_nato_changes_the_combat_refresh_key_without_ending_a_naval_hold() {
+        let read = scope(0, 10, 1);
+        let mut toggled = read.clone();
+        toggled.nato = true;
+        let matches = |now: &Scope| {
+            read.matches_request(
+                now.branch,
+                now.hour,
+                now.selection,
+                &now.perspective,
+                now.playing,
+                now.nato,
+            )
+        };
+        assert!(matches(&read));
+        assert!(
+            !matches(&toggled),
+            "land tactic bindings must refresh at the same hour"
+        );
+        toggled.hour = 12;
+        let kept = hold(Some((read, Bindings::default())), &toggled, 2, None)
+            .expect("a viewer icon toggle keeps a disengaged naval window");
+        let (at, _) = kept.0.unwrap();
+        assert_eq!(
+            at.hour, 10,
+            "held simulation operands stay at their read hour"
+        );
+        assert!(kept.1.is_none());
     }
 
     #[test]

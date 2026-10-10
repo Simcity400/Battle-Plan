@@ -373,6 +373,10 @@ impl Content {
 /// `gfx/interface/landcombat/tactics/<picture>.dds` (141C5DD20).
 const PICTURE_PREFIX: &str = "combat_tactic:";
 
+/// 1406B3BD0/1406B0A70 leave the singleton's picture empty; 141C5DD20
+/// constructs the same path as for an authored picture, including `.dds`.
+pub(super) const NULL_PICTURE: &str = PICTURE_PREFIX;
+
 /// A tactic's definition as 1406B3CB0 reads it, or why the viewer cannot.
 fn definition(
     tactic: &installed_content::combat_tactics::Tactic,
@@ -1198,6 +1202,7 @@ pub(super) fn bind(
     frame: &DecodedFrame,
     selection: Selection,
     vision: &Vision,
+    nato: bool,
 ) -> io::Result<()> {
     let Selection::Land(id) = selection else {
         // Only the land view (1415C7D20) has a possible-tactics popup.
@@ -1468,13 +1473,7 @@ pub(super) fn bind(
     } else {
         unavailable.insert("selection chances or unlocks are incomplete; candidate order remains matching content order".into());
     }
-    let scripted = document
-        .scripted
-        .as_ref()
-        .map(|content| {
-            dashboard::scripted_text::ScriptedText::new(frame, loc, content, vision.ours())
-        })
-        .map_err(Clone::clone);
+    let scripted = scripted_text(frame, loc, &document.scripted, vision.ours(), nato);
     for index in order {
         let candidate = &candidates[index];
         let token = String::from_utf8_lossy(&candidate.token);
@@ -1603,6 +1602,23 @@ pub(super) fn bind(
     }
     out.tactics = menu;
     Ok(())
+}
+
+/// The scripted caller shared by the tactic's requirements and doctrine sources.
+fn scripted_text<'a>(
+    frame: &'a DecodedFrame,
+    loc: &'a Localisation,
+    content: &'a Result<dashboard::scripted_text::ScriptedContent, String>,
+    ours: u32,
+    nato: bool,
+) -> Result<dashboard::scripted_text::ScriptedText<'a>, String> {
+    content
+        .as_ref()
+        .map(|content| {
+            dashboard::scripted_text::ScriptedText::new(frame, loc, content, ours)
+                .with_nato_counters(nato)
+        })
+        .map_err(Clone::clone)
 }
 
 /// Whether 141C5C1F0 lists a tactic for the viewing country `ours`.
@@ -2092,6 +2108,101 @@ mod tests {
             StateRow, TableId, TableRows,
         },
     };
+
+    #[test]
+    fn tactic_scripted_caller_keeps_viewer_nato_through_nested_effect_unit_icons() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_viewer_tactic_nato_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for (relative, contents) in [
+            (
+                "common/defines/test.lua",
+                "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",
+            ),
+            ("common/units/test.txt", "sub_units={syn_unit={}}"),
+            (
+                "common/bop/test.txt",
+                "balance={range={id=active on_activate={add_unit_bonus={syn_unit={}}}}}",
+            ),
+            (
+                "common/scripted_localisation/test.txt",
+                "entry={name=IconEntry text={localization_key=ICON_BODY}}",
+            ),
+        ] {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+        let layers = installed_content::ResolvedLayers::from_folders(&[(&root, &[][..])]).unwrap();
+        let content = Ok(dashboard::scripted_text::ScriptedContent::read(
+            Arc::new(installed_content::content::ResolvedContent {
+                layers,
+                stats: Default::default(),
+            }),
+            String::new(),
+        )
+        .unwrap());
+        let mut frame = DecodedFrame {
+            branch: 0,
+            hour: 10,
+            tables: std::array::from_fn(|at| {
+                TableView::Complete(TableRows::empty(TableId::ALL[at])).into()
+            }),
+            metrics: Metrics::default(),
+        };
+        *frame.tables[TableId::Countries.index()] =
+            TableView::Complete(TableRows::Countries(vec![replay::rows::CountryRow {
+                id: 10,
+                canonical_slot: 2,
+                tag: b"SYN".to_vec(),
+                ..Default::default()
+            }]));
+        *frame.tables[TableId::CountryLinks.index()] =
+            TableView::Complete(TableRows::CountryLinks(vec![
+                replay::rows::CountryLinkRow {
+                    id: 10,
+                    canonical_slot: 2,
+                },
+            ]));
+        *frame.tables[TableId::PowerBalances.index()] =
+            TableView::Complete(TableRows::PowerBalances(vec![
+                replay::rows::PowerBalanceRow {
+                    balance: b"balance".to_vec(),
+                    active_range: b"active".to_vec(),
+                    ..Default::default()
+                },
+            ]));
+        *frame.tables[TableId::PowerBalanceMembers.index()] =
+            TableView::Complete(TableRows::PowerBalanceMembers(vec![
+                replay::rows::PowerBalanceMemberRow {
+                    country: 10,
+                    ..Default::default()
+                },
+            ]));
+        let loc: Localisation = [
+            ("ICON_BODY", "[ROOT.GetActiveRangeActivationEffect]"),
+            ("PROGRESS_SECTION_ACTIVATION_EFFECT", "Activate:\n$DESC$"),
+            ("SUBUNIT_BONUS_HEADER", "$ICON$$NAME$"),
+            ("syn_unit", "Unit"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), value.into()))
+        .collect();
+        for nato in [false, true, false] {
+            let text = scripted_text(&frame, &loc, &content, 2, nato).unwrap();
+            let icon_frame = if nato { 2 } else { 1 };
+            assert_eq!(
+                text.expand("[IconEntry]"),
+                Ok(format!(
+                    "Activate:\n\u{13}GFX_syn_unit_icon_small|{icon_frame} Unit\n"
+                ))
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     /// Six absent effects, each 0 (1406B0A70).
     fn no_effects() -> [i64; 6] {
@@ -4253,6 +4364,7 @@ mod tests {
                 countries
                     .map(
                         |(country, _, _, owned_state_count)| CountryCounterInputRow {
+                            forward_visibility: replay::rows::Recorded::NotRecorded,
                             country,
                             owned_state_count,
                             ..Default::default()
@@ -4529,6 +4641,7 @@ mod tests {
                     countries
                         .map(
                             |(country, _, _, owned_state_count)| CountryCounterInputRow {
+                                forward_visibility: replay::rows::Recorded::NotRecorded,
                                 country,
                                 owned_state_count,
                                 ..Default::default()

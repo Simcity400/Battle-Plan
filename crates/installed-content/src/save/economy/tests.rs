@@ -310,6 +310,72 @@ fn supply_preserves_native_word_bits_order_alias_tags_and_zero_levels() {
 }
 
 #[test]
+fn temp_nodes_omitted_and_empty_preserve_supply_root_presence() {
+    let pack = parse(&parser::parse(b"countries={}").unwrap().items).unwrap();
+    assert!(pack.supply.is_none());
+    for fields in ["", "temp_nodes={}"] {
+        let input = format!("countries={{}} supply_system_2={{countries={{TEST={{{fields}}}}}}}");
+        let pack = parse(&parser::parse(input.as_bytes()).unwrap().items).unwrap();
+        assert_eq!(pack.supply.unwrap()[b"TEST".as_slice()], Supply::default());
+    }
+}
+
+#[test]
+fn temp_nodes_preserve_signed_provinces_duplicates_order_and_boolean_base() {
+    let document = parser::parse(
+        b"temp_nodes={
+            {province=-2147483648 base=no}
+            {province=-1 base=yes}
+            {province=-1 base=no}
+            {province=0 base=no}
+            {province=2147483647 base=yes}
+        }",
+    )
+    .unwrap();
+    let supply = parse_supply(&document.items).unwrap();
+    let expected: Vec<_> = [
+        (i32::MIN, false),
+        (-1, true),
+        (-1, false),
+        (0, false),
+        (i32::MAX, true),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(ordinal, (province, base))| TemporaryNode {
+        ordinal: ordinal as u32,
+        province,
+        base,
+    })
+    .collect();
+    assert_eq!(supply.temp_nodes, expected);
+}
+
+#[test]
+fn temp_nodes_require_anonymous_blocks_and_mandatory_typed_fields() {
+    for input in [
+        "temp_nodes=yes",
+        "temp_nodes={1}",
+        "temp_nodes={node={province=1 base=yes}}",
+        "temp_nodes={{base=no}}",
+        "temp_nodes={{province=1}}",
+        "temp_nodes={{province=1 province=2 base=yes}}",
+        "temp_nodes={{province=1 base=yes base=no}}",
+        "temp_nodes={{province=1 base=2}}",
+        "temp_nodes={{province=1 base={}}}",
+        "temp_nodes={{province=2147483648 base=yes}}",
+        "temp_nodes={{province=@variable base=yes}}",
+        "temp_nodes={{province={} base=yes}}",
+        "temp_nodes={} temp_nodes={}",
+    ] {
+        assert!(
+            parse_supply(&parser::parse(input.as_bytes()).unwrap().items).is_err(),
+            "{input}"
+        );
+    }
+}
+
+#[test]
 fn purchase_parser_preserves_full_typed_id_and_rejects_duplicate_identity() {
     let contract = br#"purchase_contract={
         id={id=4294967295 type=81}

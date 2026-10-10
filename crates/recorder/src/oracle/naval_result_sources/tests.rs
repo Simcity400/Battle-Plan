@@ -434,7 +434,8 @@ fn older_recording_reports_one_compatibility_reason_without_scanning_hours() {
     let mut replay = replay_of(&frames);
     // The refusal must happen before reading any payload; only the opened
     // recording's format is relevant to this compatibility check.
-    replay.format = FormatVersion::read(replay::FORMAT_VERSION - 1).unwrap();
+    replay.format =
+        FormatVersion::read(TableId::NavalResultSources.last_change().introduced - 1).unwrap();
     let reason = replay
         .format
         .table_refusal(TableId::NavalResultSources)

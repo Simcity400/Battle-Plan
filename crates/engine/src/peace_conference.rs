@@ -240,6 +240,29 @@ pub struct Row {
 /// unauthenticated nonzero entry is unavailable. No UI state or pointers enter
 /// the rows. Capacity stops the walk and reports every remaining roster entry.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+) -> Outcome {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    mut output: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
     let result = (|| {
         if base == 0 || game_state == 0 {
             return Err("peace conference module or game state is null");
@@ -254,6 +277,7 @@ pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [
             .ok_or("peace conference roster address overflow")?;
         let roster = Array::read(memory, header, 8)
             .ok_or("peace conference roster unreadable or invalid")?;
+        output.ensure(roster.count as usize)?;
         let len = output.len().min(roster.count as usize);
         for (index, slot) in output[..len].iter_mut().enumerate() {
             let address = roster

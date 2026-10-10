@@ -235,6 +235,7 @@ fn game_score_air_preserves_repeated_first_sites_and_wings_without_capacity_gate
                 slot: 7,
                 capacity_raw: 0,
                 wings: vec![70, 70],
+                ..Default::default()
             },
             // An unrelated/second-list base is not admitted by registration alone.
             AirBaseRegistrationRow {
@@ -242,6 +243,7 @@ fn game_score_air_preserves_repeated_first_sites_and_wings_without_capacity_gate
                 slot: 7,
                 capacity_raw: Q,
                 wings: vec![71],
+                ..Default::default()
             },
         ]),
     );
@@ -305,6 +307,7 @@ fn game_score_known_absent_empty_unreadable_and_missing_wings_are_distinct() {
         slot: 7,
         capacity_raw: 0,
         wings: vec![70],
+        ..Default::default()
     };
     let registrations = HashMap::from([((40, 7), &registration)]);
     let missing = air_score(&base, &row, 7, &multipliers.air, None, Some(&registrations));
@@ -481,7 +484,11 @@ fn game_score_old_recordings_only_compute_industry_from_content_evaluated_define
     assert_eq!(multipliers.navy.value(), Some(100_000_000));
     assert!(!multipliers.industry.read_each_hour);
     let first = frame(100);
-    for version in [97, 98, replay::FORMAT_VERSION - 1] {
+    for version in [
+        97,
+        98,
+        TableId::CountryGameScoreInputs.last_change().introduced - 1,
+    ] {
         let historical = replay::format::FormatVersion::read(version).unwrap();
         let refusal = historical
             .table_refusal(TableId::CountryGameScoreInputs)
@@ -579,7 +586,10 @@ fn game_score_equal_rereads_are_dated_but_gaps_and_reused_identities_break_runs(
 
 #[test]
 fn game_score_content_fallback_uses_format_lifetimes_or_disabled_capture() {
-    let historical = replay::format::FormatVersion::read(replay::FORMAT_VERSION - 1).unwrap();
+    let historical = replay::format::FormatVersion::read(
+        TableId::CountryGameScoreInputs.last_change().introduced - 1,
+    )
+    .unwrap();
     let mut old = frame(100);
     for table in [
         TableId::CountryGameScoreInputs,
@@ -630,7 +640,11 @@ fn game_score_content_fallback_uses_format_lifetimes_or_disabled_capture() {
     .unwrap();
     // A current container cannot acquire historical meaning from an error
     // string. Historical readers establish absence from table lifetimes.
-    for version in [97, 98, replay::FORMAT_VERSION - 1] {
+    for version in [
+        97,
+        98,
+        TableId::CountryGameScoreInputs.last_change().introduced - 1,
+    ] {
         let historical = replay::format::FormatVersion::read(version).unwrap();
         let old_operands = !TableId::CountryGameScoreInputs
             .last_change()
@@ -1502,6 +1516,7 @@ fn game_score_missing_tables_keep_runs_when_other_tables_change() {
             slot: 7,
             capacity_raw: Q,
             wings: Vec::new(),
+            ..Default::default()
         }]),
     );
     let reply = scan_frames(vec![first, second], None);

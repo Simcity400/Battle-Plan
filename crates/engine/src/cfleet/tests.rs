@@ -1,5 +1,290 @@
 use super::*;
 use crate::{cunit, memory::SliceMemory};
+
+struct OriginalCounterMemory<'a> {
+    bytes: &'a [u8],
+    fail_once_at: Option<usize>,
+    failed: std::cell::Cell<bool>,
+    reads: std::cell::RefCell<Vec<(usize, usize)>>,
+}
+
+impl Memory for OriginalCounterMemory<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        self.reads.borrow_mut().push((address, output.len()));
+        if self.fail_once_at == Some(address) && !self.failed.replace(true) {
+            return false;
+        }
+        SliceMemory {
+            base: 0,
+            bytes: self.bytes,
+        }
+        .copy(address, output)
+    }
+}
+
+fn original_counter_fixture() -> Vec<u8> {
+    let mut bytes = fixture();
+    let root = TASK + ctask_force::NAVAL_MISSION;
+    put64(&mut bytes, root, crate::cnaval_mission::VTABLE_RVA as u64);
+    put64(
+        &mut bytes,
+        root + crate::cnaval_mission::TASK_FORCE,
+        TASK as u64,
+    );
+    bytes[root + crate::cnaval_mission::IS_IN_REGIONS] = 255;
+    put64(
+        &mut bytes,
+        TASK + cunit::RECEIVED_SUPPLY_RATIO,
+        (-35_001_i64) as u64,
+    );
+    bytes
+}
+
+#[test]
+fn original_counter_borrower_receives_same_prefix_without_an_extra_native_read() {
+    let bytes = original_counter_fixture();
+    let legacy = OriginalCounterMemory {
+        bytes: &bytes,
+        fail_once_at: None,
+        failed: std::cell::Cell::new(false),
+        reads: Default::default(),
+    };
+    let borrowed = OriginalCounterMemory {
+        bytes: &bytes,
+        fail_once_at: None,
+        failed: std::cell::Cell::new(false),
+        reads: Default::default(),
+    };
+    let mut expected_fleets = [CounterRow::default(); 1];
+    let mut expected_tasks = [ctask_force::CounterRow::default(); 1];
+    let mut expected_rosters = [0; 1];
+    let expected = walk_counter_inputs(
+        &legacy,
+        0,
+        GS,
+        &mut expected_fleets,
+        &mut expected_rosters,
+        &mut expected_tasks,
+        |_, _| {},
+    );
+    let mut fleets = [CounterRow::default(); 1];
+    let mut tasks = [ctask_force::CounterRow::default(); 1];
+    let mut rosters = [0; 1];
+    let mut observed = Vec::new();
+    let actual = walk_counter_inputs_with_port_observed(
+        &borrowed,
+        0,
+        GS,
+        &mut fleets,
+        &mut rosters,
+        (&mut tasks, None, None, None),
+        |_, _| {},
+        |pointer, id, original| observed.push((pointer, id, original)),
+    );
+    assert_eq!(actual, expected);
+    assert_eq!(tasks, expected_tasks);
+    assert_eq!(
+        observed,
+        vec![(TASK, (11_u64 << 32) | 51, Some(Ok(tasks[0])))]
+    );
+    assert_eq!(
+        (tasks[0].is_in_regions, tasks[0].received_supply_ratio),
+        (255, -35_001)
+    );
+    assert_eq!(
+        borrowed.reads.borrow().as_slice(),
+        legacy.reads.borrow().as_slice()
+    );
+    for address in [
+        TASK + ctask_force::NAVAL_MISSION,
+        TASK + cunit::RECEIVED_SUPPLY_RATIO,
+    ] {
+        assert_eq!(
+            borrowed
+                .reads
+                .borrow()
+                .iter()
+                .filter(|(at, _)| *at == address)
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn growing_counters_follow_a_native_roster_larger_than_the_old_chosen_limit() {
+    let mut bytes = original_counter_fixture();
+    let count = 65_537_usize;
+    let pointers = bytes.len();
+    bytes.resize(pointers + count * 8, 0);
+    array(&mut bytes, FLEET + TASK_FORCES, pointers, count as u32);
+    for index in 0..count {
+        put64(&mut bytes, pointers + index * 8, TASK as u64);
+    }
+    let memory = OriginalCounterMemory {
+        bytes: &bytes,
+        fail_once_at: None,
+        failed: std::cell::Cell::new(false),
+        reads: Default::default(),
+    };
+    let mut fleets = Vec::new();
+    let mut tasks = Vec::new();
+    let mut rosters = Vec::new();
+    let actual = walk_counter_inputs_with_port_observed_growing(
+        &memory,
+        0,
+        GS,
+        &mut fleets,
+        &mut rosters,
+        (&mut tasks, None, None, None),
+        |_, _| {},
+        |_, _, _| {},
+    );
+    assert_eq!(actual.fleets, Outcome::Rows { len: 1 });
+    assert_eq!(actual.task_forces, Outcome::Rows { len: count });
+    assert_eq!((actual.roster_len, actual.roster_required), (count, count));
+    assert_eq!(fleets[0].len, count);
+    assert_eq!(tasks[count - 1].id, (11_u64 << 32) | 51);
+    assert_eq!(rosters[count - 1], tasks[count - 1].id);
+    assert_eq!(
+        memory
+            .reads
+            .borrow()
+            .iter()
+            .filter(|(at, _)| *at == FLEET + TASK_FORCES)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn growing_counter_names_follow_original_headers_on_first_and_later_publications() {
+    let mut fleets = Vec::new();
+    let mut tasks = Vec::new();
+    let mut rosters = Vec::new();
+    let mut text = Vec::new();
+    for count in [5_000_usize, 12_000] {
+        let mut bytes = original_counter_fixture();
+        let name = b"Retained task force name including a mod-authored suffix";
+        let name_data = bytes.len();
+        bytes.extend_from_slice(name);
+        bytes.push(0);
+        put64(&mut bytes, TASK + 0x258, name_data as u64);
+        put64(&mut bytes, TASK + 0x258 + 16, name.len() as u64);
+        put64(&mut bytes, TASK + 0x258 + 24, name.len() as u64);
+        let pointers = bytes.len();
+        bytes.resize(pointers + count * 8, 0);
+        array(&mut bytes, FLEET + TASK_FORCES, pointers, count as u32);
+        for index in 0..count {
+            put64(&mut bytes, pointers + index * 8, TASK as u64);
+        }
+        let memory = OriginalCounterMemory {
+            bytes: &bytes,
+            fail_once_at: None,
+            failed: std::cell::Cell::new(false),
+            reads: Default::default(),
+        };
+        let mut names = crate::cname_group_member::NameArena {
+            bytes: crate::walk::Buffer::Growing(&mut text),
+            len: 0,
+            required: 0,
+        };
+        let capture = walk_counter_inputs_with_port_observed_growing(
+            &memory,
+            0,
+            GS,
+            &mut fleets,
+            &mut rosters,
+            (&mut tasks, Some(&mut names), None, None),
+            |_, _| {},
+            |_, _, _| {},
+        );
+        assert_eq!(capture.task_forces, Outcome::Rows { len: count });
+        assert_eq!(
+            (names.len, names.required),
+            (count * name.len(), count * name.len())
+        );
+        for (index, task) in tasks[..count].iter().enumerate() {
+            let span = task.name.unwrap();
+            assert_eq!(span, (index * name.len(), name.len()));
+            assert_eq!(&names.bytes[span.0..span.0 + span.1], name);
+        }
+        assert_eq!(
+            memory
+                .reads
+                .borrow()
+                .iter()
+                .filter(|(at, len)| *at == TASK + 0x258 && *len == 32)
+                .count(),
+            count
+        );
+    }
+}
+
+#[test]
+fn original_counter_borrower_distinguishes_unattempted_capacity_from_failed_prefix() {
+    let bytes = original_counter_fixture();
+    let root = TASK + ctask_force::NAVAL_MISSION;
+    for capacity in [0, 1] {
+        let memory = OriginalCounterMemory {
+            bytes: &bytes,
+            fail_once_at: Some(root),
+            failed: std::cell::Cell::new(false),
+            reads: Default::default(),
+        };
+        let mut tasks = [ctask_force::CounterRow::default(); 1];
+        let mut observed = Vec::new();
+        let actual = walk_counter_inputs_with_port_observed(
+            &memory,
+            0,
+            GS,
+            &mut [],
+            &mut [],
+            (&mut tasks[..capacity], None, None, None),
+            |_, _| {},
+            |pointer, id, original| observed.push((pointer, id, original)),
+        );
+        let original = if capacity == 0 {
+            None
+        } else {
+            Some(Err("naval mission identity unreadable"))
+        };
+        assert_eq!(observed, vec![(TASK, (11_u64 << 32) | 51, original)]);
+        assert_eq!(
+            memory
+                .reads
+                .borrow()
+                .iter()
+                .filter(|(at, _)| *at == root)
+                .count(),
+            capacity
+        );
+        assert!(
+            !memory
+                .reads
+                .borrow()
+                .iter()
+                .any(|(at, _)| *at == TASK + cunit::RECEIVED_SUPPLY_RATIO)
+        );
+        if capacity == 0 {
+            assert_eq!(
+                actual.task_forces,
+                Outcome::Truncated {
+                    len: 0,
+                    unread_rows: 1
+                }
+            );
+        } else {
+            assert_eq!(
+                actual.task_forces,
+                Outcome::Unavailable {
+                    reason: "naval mission identity unreadable"
+                }
+            );
+        }
+    }
+}
+
 #[test]
 fn healthy_read_accounting_partitions_fleet_graph_without_changing_its_read_trace() {
     use crate::memory::{CountedMemory, ReadCounts};
@@ -561,6 +846,11 @@ fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
             repair_last_mission: 7,
             received_supply_ratio: 35_000,
             attached_headquarters: 0,
+            name: None,
+            supply: None,
+            supply_origins_start: 0,
+            supply_failure: None,
+            port_mission: None,
         }
     );
     census.reset();
@@ -636,6 +926,131 @@ fn counter_inputs_read_mission_links_colour_and_ordered_roster_with_bounds() {
     );
 }
 
+#[test]
+fn task_force_cached_name_failure_preserves_counter_prefix_and_admission_order() {
+    use crate::{cname_group_member::Names, cnaval_mission};
+    let mut bytes = fixture();
+    let root = TASK + ctask_force::NAVAL_MISSION;
+    put64(&mut bytes, root, cnaval_mission::VTABLE_RVA as u64);
+    put64(&mut bytes, root + cnaval_mission::TASK_FORCE, TASK as u64);
+    array(
+        &mut bytes,
+        root + cnaval_mission::ACCESSIBLE_REGIONS,
+        0xb300,
+        0,
+    );
+    array(&mut bytes, FLEET + MISSION_REGIONS, 0xb300, 0);
+    put64(&mut bytes, TASK + cunit::RECEIVED_SUPPLY_RATIO, 35_000);
+    let name = TASK + 0x258;
+    bytes[name..name + 6].copy_from_slice(b"Guard\0");
+    put64(&mut bytes, name + 16, 6);
+    put64(&mut bytes, name + 24, 15);
+    let handle = (11_u64 << 32) | 51;
+    let prefix = ctask_force::read_counter_inputs(
+        &SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        },
+        0,
+        GS,
+        TASK,
+        handle,
+    )
+    .unwrap();
+    let mut fleets = [CounterRow::default(); 1];
+    let mut tasks = [ctask_force::CounterRow::default(); 1];
+    let mut rosters = [0; 1];
+    for capacity in [0, 6] {
+        let mut owned = vec![0; capacity];
+        let mut names = Names {
+            bytes: &mut owned,
+            len: 0,
+            required: 0,
+        };
+        let mut visited = Vec::new();
+        let captured = walk_counter_inputs_with_names(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            GS,
+            &mut fleets,
+            &mut rosters,
+            (&mut tasks, Some(&mut names)),
+            |pointer, id| visited.push((pointer, id)),
+        );
+        assert_eq!(captured.task_forces, Outcome::Rows { len: 1 });
+        assert_eq!(visited, [(TASK, handle)]);
+        assert_eq!(rosters, [handle]);
+        assert_eq!(names.required, 6);
+        assert_eq!(names.len, capacity);
+        assert_eq!(tasks[0].name, (capacity == 6).then_some((0, 6)));
+        let mut actual = tasks[0];
+        actual.name = None;
+        assert_eq!(actual, prefix);
+        if capacity == 6 {
+            assert_eq!(owned, b"Guard\0");
+        }
+    }
+    // A corrupt header is local to this suffix and counts no growth demand.
+    put64(&mut bytes, name + 24, 1);
+    let mut names = Names {
+        bytes: &mut [],
+        len: 0,
+        required: 0,
+    };
+    let captured = walk_counter_inputs_with_names(
+        &SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        },
+        0,
+        GS,
+        &mut fleets,
+        &mut rosters,
+        (&mut tasks, Some(&mut names)),
+        |_, _| {},
+    );
+    assert_eq!(captured.task_forces, Outcome::Rows { len: 1 });
+    assert_eq!(tasks[0], prefix);
+    assert_eq!(names.required, 0);
+
+    struct Traced<'a> {
+        bytes: &'a [u8],
+        reads: std::cell::RefCell<Vec<usize>>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push(address);
+            SliceMemory {
+                base: 0,
+                bytes: self.bytes,
+            }
+            .copy(address, output)
+        }
+    }
+    put64(&mut bytes, root, 0);
+    let memory = Traced {
+        bytes: &bytes,
+        reads: std::cell::RefCell::default(),
+    };
+    let captured = walk_counter_inputs_with_names(
+        &memory,
+        0,
+        GS,
+        &mut fleets,
+        &mut rosters,
+        (&mut tasks, Some(&mut names)),
+        |_, _| {},
+    );
+    assert!(matches!(captured.task_forces, Outcome::Unavailable { .. }));
+    assert!(
+        !memory.reads.borrow().contains(&name),
+        "failed prefixes acquire no name suffix"
+    );
+}
+
 /// The fleet walk visits a task force before it reads the counter row, which checks the
 /// mission too; with the counter buffer exhausted the mission collector still authenticates
 /// every mission it observes.
@@ -687,5 +1102,494 @@ fn missions_are_authenticated_when_the_counter_buffer_is_exhausted() {
             },
             "{at:#x}"
         );
+    }
+}
+
+#[test]
+fn task_force_supply_uses_the_admitted_primary_root_and_preserves_name_and_scalar_fragments() {
+    use crate::{cname_group_member::Names, cnaval_mission, cunit_supply_inputs as supply};
+    let mut bytes = fixture();
+    let root = TASK + ctask_force::NAVAL_MISSION;
+    put64(&mut bytes, root, cnaval_mission::VTABLE_RVA as u64);
+    put64(&mut bytes, root + cnaval_mission::TASK_FORCE, TASK as u64);
+    array(
+        &mut bytes,
+        root + cnaval_mission::ACCESSIBLE_REGIONS,
+        0xb300,
+        0,
+    );
+    array(&mut bytes, FLEET + MISSION_REGIONS, 0xb300, 0);
+    let name = TASK + 0x258;
+    bytes[name..name + 5].copy_from_slice(b"Navy\0");
+    put64(&mut bytes, name + 16, 4);
+    put64(&mut bytes, name + 24, 15);
+    put64(&mut bytes, TASK + supply::ASKED, 200_000);
+    put64(&mut bytes, TASK + supply::RECEIVED, 31_000);
+    put32(&mut bytes, TASK + supply::SHIP_COUNT, 2);
+    put64(&mut bytes, TASK + supply::SHIP_DEMAND, 200_000);
+    put64(&mut bytes, TASK + supply::DISRUPTION, (-9_i64) as u64);
+    array(&mut bytes, TASK + supply::ORIGINS, 0xb700, 2);
+    for (index, (requested, received)) in [(3_i64, 5_i64), (-7, -11)].into_iter().enumerate() {
+        let origin = 0xb700 + index * supply::ORIGIN_STRIDE;
+        put64(
+            &mut bytes,
+            origin + supply::ORIGIN_REQUESTED,
+            requested as u64,
+        );
+        put64(
+            &mut bytes,
+            origin + supply::ORIGIN_RECEIVED,
+            received as u64,
+        );
+        put32(&mut bytes, origin + supply::ORIGIN_PROVINCE, 13);
+    }
+    let prefix = ctask_force::read_counter_inputs(
+        &SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        },
+        0,
+        GS,
+        TASK,
+        (11 << 32) | 51,
+    )
+    .unwrap();
+    for bad_name in [false, true] {
+        put64(&mut bytes, name + 24, if bad_name { 1 } else { 15 });
+        for capacity in [0, 2] {
+            let mut name_bytes = [0; 4];
+            let mut names = Names {
+                bytes: &mut name_bytes,
+                len: 0,
+                required: 0,
+            };
+            let mut origin_bytes = [supply::Origin::default(); 2];
+            let mut origins = ctask_force::SupplyOrigins {
+                origins: crate::walk::Buffer::Fixed(&mut origin_bytes[..capacity]),
+                len: 0,
+                required: 0,
+            };
+            let (mut fleets, mut tasks, mut rosters) = (
+                [CounterRow::default(); 1],
+                [ctask_force::CounterRow::default(); 1],
+                [0; 1],
+            );
+            let walk = walk_counter_inputs_with_tooltips(
+                &SliceMemory {
+                    base: 0,
+                    bytes: &bytes,
+                },
+                0,
+                GS,
+                &mut fleets,
+                &mut rosters,
+                (&mut tasks, Some(&mut names), Some(&mut origins)),
+                |_, _| {},
+            );
+            assert_eq!(walk.task_forces, Outcome::Rows { len: 1 });
+            let input = tasks[0].supply.unwrap();
+            assert_eq!(
+                (input.asked, input.received, input.disruption),
+                (200_000, 31_000, -9)
+            );
+            assert_eq!(
+                (input.ship_demand.count, input.ship_demand.value),
+                (2, 200_000)
+            );
+            assert_eq!(origins.required, 2);
+            assert_eq!(origins.len, capacity);
+            assert_eq!(tasks[0].name, (!bad_name).then_some((0, 4)));
+            if capacity == 2 {
+                assert_eq!(input.origins_len, Ok(2));
+                assert_eq!(
+                    origins.origins[1],
+                    supply::Origin {
+                        province: 13,
+                        requested: -7,
+                        received: -11
+                    }
+                );
+            } else {
+                assert_eq!(
+                    input.origins_len,
+                    Err(supply::Failure::OriginsCapacity { required: 2 })
+                );
+            }
+            let mut actual = tasks[0];
+            actual.name = None;
+            actual.supply = None;
+            actual.supply_origins_start = 0;
+            actual.supply_failure = None;
+            assert_eq!(
+                actual, prefix,
+                "optional fields preserve every admitted prefix word"
+            );
+        }
+    }
+}
+
+#[test]
+fn optional_supply_preserves_legacy_trace_and_never_reads_an_unadmitted_prefix() {
+    use crate::{cname_group_member::Names, cnaval_mission, cunit_supply_inputs as supply};
+    struct Traced<'a> {
+        bytes: &'a [u8],
+        denied: Option<usize>,
+        reads: std::cell::RefCell<Vec<(usize, usize)>>,
+    }
+    impl Memory for Traced<'_> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            self.reads.borrow_mut().push((address, output.len()));
+            if self
+                .denied
+                .is_some_and(|denied| address <= denied && denied - address < output.len())
+            {
+                return false;
+            }
+            SliceMemory {
+                base: 0,
+                bytes: self.bytes,
+            }
+            .copy(address, output)
+        }
+    }
+    let mut bytes = fixture();
+    let root = TASK + ctask_force::NAVAL_MISSION;
+    put64(&mut bytes, root, cnaval_mission::VTABLE_RVA as u64);
+    put64(&mut bytes, root + cnaval_mission::TASK_FORCE, TASK as u64);
+    array(
+        &mut bytes,
+        root + cnaval_mission::ACCESSIBLE_REGIONS,
+        0xb300,
+        0,
+    );
+    array(&mut bytes, FLEET + MISSION_REGIONS, 0xb300, 0);
+    let name = TASK + 0x258;
+    bytes[name..name + 5].copy_from_slice(b"Navy\0");
+    put64(&mut bytes, name + 16, 4);
+    put64(&mut bytes, name + 24, 15);
+    let (mut fleets, mut tasks, mut rosters) = (
+        [CounterRow::default(); 1],
+        [ctask_force::CounterRow::default(); 1],
+        [0; 1],
+    );
+    let old = Traced {
+        bytes: &bytes,
+        denied: None,
+        reads: Default::default(),
+    };
+    let old_walk = walk_counter_inputs(
+        &old,
+        0,
+        GS,
+        &mut fleets,
+        &mut rosters,
+        &mut tasks,
+        |_, _| {},
+    );
+    let new = Traced {
+        bytes: &bytes,
+        denied: None,
+        reads: Default::default(),
+    };
+    let new_walk = walk_counter_inputs_with_tooltips(
+        &new,
+        0,
+        GS,
+        &mut fleets,
+        &mut rosters,
+        (&mut tasks, None, None),
+        |_, _| {},
+    );
+    assert_eq!(old_walk, new_walk);
+    assert_eq!(old.reads.borrow().as_slice(), new.reads.borrow().as_slice());
+    assert!(
+        !new.reads
+            .borrow()
+            .iter()
+            .any(|&(at, _)| at == TASK + supply::ASKED)
+    );
+    let mut origin_bytes = [];
+    let mut origins = ctask_force::SupplyOrigins {
+        origins: crate::walk::Buffer::Fixed(&mut origin_bytes),
+        len: 0,
+        required: 0,
+    };
+    let mut name_bytes = [0; 4];
+    let mut names = Names {
+        bytes: &mut name_bytes,
+        len: 0,
+        required: 0,
+    };
+    let denied = Traced {
+        bytes: &bytes,
+        denied: Some(TASK + supply::ASKED),
+        reads: Default::default(),
+    };
+    let walk = walk_counter_inputs_with_tooltips(
+        &denied,
+        0,
+        GS,
+        &mut fleets,
+        &mut rosters,
+        (&mut tasks, Some(&mut names), Some(&mut origins)),
+        |_, _| {},
+    );
+    assert_eq!(walk.task_forces, Outcome::Rows { len: 1 });
+    assert_eq!(tasks[0].supply, None);
+    assert_eq!(tasks[0].supply_failure, Some(supply::Failure::Unreadable));
+    assert_eq!(tasks[0].name, Some((0, 4)));
+    assert_eq!(names.required, 4);
+    put64(&mut bytes, root, 0);
+    let unadmitted = Traced {
+        bytes: &bytes,
+        denied: None,
+        reads: Default::default(),
+    };
+    let walk = walk_counter_inputs_with_tooltips(
+        &unadmitted,
+        0,
+        GS,
+        &mut fleets,
+        &mut rosters,
+        (&mut tasks, Some(&mut names), Some(&mut origins)),
+        |_, _| {},
+    );
+    assert!(matches!(walk.task_forces, Outcome::Unavailable { .. }));
+    assert!(
+        !unadmitted
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(at, _)| at == TASK + supply::ASKED || at == name)
+    );
+}
+
+#[test]
+fn worker_naval_population_jump_grows_without_repeating_native_reads() {
+    let bytes = fixture();
+    let fixed = OriginalCounterMemory {
+        bytes: &bytes,
+        fail_once_at: None,
+        failed: Default::default(),
+        reads: Default::default(),
+    };
+    let grown = OriginalCounterMemory {
+        bytes: &bytes,
+        fail_once_at: None,
+        failed: Default::default(),
+        reads: Default::default(),
+    };
+    let mut expected_fleets = vec![Row::default(); 1];
+    let mut expected_tasks = vec![ctask_force::Row::default(); 1];
+    let mut expected_ships = vec![cship::Row::default(); 2];
+    let expected = walk_timed_with_names(
+        &fixed,
+        0,
+        GS,
+        &mut expected_fleets,
+        &mut expected_tasks,
+        &mut expected_ships,
+        |_| 0,
+        |_, _| {},
+        &mut Vec::new(),
+    );
+    let (mut fleets, mut tasks, mut ships) = (Vec::new(), Vec::new(), Vec::new());
+    let actual = walk_timed_growing_with_names(
+        &grown,
+        0,
+        GS,
+        &mut fleets,
+        &mut tasks,
+        &mut ships,
+        |_| 0,
+        |_, _| {},
+        &mut Vec::new(),
+    );
+    assert_eq!(actual, expected);
+    assert_eq!(fleets[..1], expected_fleets);
+    assert_eq!(tasks[..1], expected_tasks);
+    assert_eq!(ships[..2], expected_ships);
+    assert_eq!(*grown.reads.borrow(), *fixed.reads.borrow());
+    assert_eq!(actual.capture.fleets, Outcome::Rows { len: 1 });
+    assert_eq!(actual.capture.task_forces, Outcome::Rows { len: 1 });
+    assert_eq!(actual.capture.ships, Outcome::Rows { len: 2 });
+}
+
+#[test]
+fn growing_task_force_supply_and_port_arenas_capture_five_thousand_countries_before_publication() {
+    use crate::cunit_supply_inputs as supply;
+    use ctask_force::port_mission::{Collector, ReferenceAnswer, Searcher};
+    const COUNT: usize = 5_000;
+    const BLOCK: usize = 0x1000;
+    let mut bytes = fixture();
+    let countries = bytes.len();
+    let links = countries + (COUNT + 1) * 8;
+    let blocks = links + (COUNT + 1) * 4;
+    bytes.resize(blocks + COUNT * BLOCK, 0);
+    array(
+        &mut bytes,
+        GS + cgame_state::COUNTRIES,
+        countries,
+        COUNT as u32 + 1,
+    );
+    array(
+        &mut bytes,
+        GS + cgame_state::COUNTRY_LINKS,
+        links,
+        COUNT as u32 + 1,
+    );
+    for index in 0..COUNT {
+        let country = blocks + index * BLOCK;
+        let fleet = country + 0x300;
+        let task = country + 0x500;
+        let fleet_roster = country + 0xd00;
+        let task_roster = country + 0xd08;
+        let slot = index as u32 + 1;
+        put64(&mut bytes, countries + (index + 1) * 8, country as u64);
+        put32(&mut bytes, links + (index + 1) * 4, slot);
+        put64(&mut bytes, country, ccountry::VTABLE_RVA as u64);
+        put32(&mut bytes, country + ccountry::ID, slot);
+        array(&mut bytes, country + ccountry::FLEETS, fleet_roster, 1);
+        put64(&mut bytes, fleet_roster, fleet as u64);
+        put64(&mut bytes, fleet, VTABLE_RVA as u64);
+        put64(&mut bytes, fleet + HANDLE, ((index as u64 + 1) << 32) | 61);
+        put64(&mut bytes, fleet + OWNER, country as u64);
+        array(&mut bytes, fleet + TASK_FORCES, task_roster, 1);
+        put64(&mut bytes, task_roster, task as u64);
+        put64(&mut bytes, task, ctask_force::VTABLE_RVA as u64);
+        put64(
+            &mut bytes,
+            task + ctask_force::SECONDARY_BASE,
+            ctask_force::SECONDARY_VTABLE_RVA as u64,
+        );
+        put64(
+            &mut bytes,
+            task + cunit::HANDLE,
+            ((index as u64 + 1) << 32) | 51,
+        );
+        put64(&mut bytes, task + ctask_force::FLEET, fleet as u64);
+        put32(&mut bytes, task + ctask_force::MISSION, 2);
+        put64(
+            &mut bytes,
+            task + ctask_force::NAVAL_MISSION,
+            crate::cnaval_mission::VTABLE_RVA as u64,
+        );
+        put64(
+            &mut bytes,
+            task + ctask_force::NAVAL_MISSION + crate::cnaval_mission::TASK_FORCE,
+            task as u64,
+        );
+        put32(
+            &mut bytes,
+            task + ctask_force::NAVAL_MISSION + crate::cnaval_mission::ENGAGEMENT_RULE,
+            2,
+        );
+    }
+    let mut fleets = Vec::new();
+    let mut tasks = Vec::new();
+    let mut rosters = Vec::new();
+    let mut origin_rows = Vec::new();
+    let (mut searchers, mut avoided, mut text, mut answers): (
+        Vec<Searcher>,
+        Vec<Option<crate::cname_group_member::Span>>,
+        Vec<u8>,
+        Vec<ReferenceAnswer>,
+    ) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for (hour, origins, searching, strings) in [(1, 3, 1, 1), (2, 37, 17, 19)] {
+        let origin_data = bytes.len();
+        let search_data = origin_data + origins * supply::ORIGIN_STRIDE;
+        let string_data = search_data + searching * 8;
+        bytes.resize(string_data + strings * 32, 0);
+        for index in 0..origins {
+            let at = origin_data + index * supply::ORIGIN_STRIDE;
+            put64(&mut bytes, at + supply::ORIGIN_REQUESTED, index as u64);
+            put64(
+                &mut bytes,
+                at + supply::ORIGIN_RECEIVED,
+                (-1 - index as i64) as u64,
+            );
+            put32(&mut bytes, at + supply::ORIGIN_PROVINCE, index as u32 % 7);
+        }
+        for index in 0..strings {
+            let at = string_data + index * 32;
+            bytes[at..at + 3].copy_from_slice(&[0xff, 0, index as u8]);
+            put64(&mut bytes, at + 16, 3);
+            put64(&mut bytes, at + 24, 15);
+        }
+        for index in 0..COUNT {
+            let task = blocks + index * BLOCK + 0x500;
+            array(
+                &mut bytes,
+                task + supply::ORIGINS,
+                origin_data,
+                origins as u32,
+            );
+            array(&mut bytes, task + 0x610, search_data, searching as u32);
+            array(&mut bytes, task + 0x740, string_data, strings as u32);
+        }
+        let memory = OriginalCounterMemory {
+            bytes: &bytes,
+            fail_once_at: None,
+            failed: std::cell::Cell::new(false),
+            reads: Default::default(),
+        };
+        let mut supply = ctask_force::SupplyOrigins {
+            origins: crate::walk::Buffer::Growing(&mut origin_rows),
+            len: 0,
+            required: 0,
+        };
+        let mut port = Collector::new_growing(
+            &memory,
+            0,
+            hour,
+            &mut searchers,
+            &mut avoided,
+            &mut text,
+            &mut answers,
+        );
+        let actual = walk_counter_inputs_with_port_observed_growing(
+            &memory,
+            0,
+            GS,
+            &mut fleets,
+            &mut rosters,
+            (&mut tasks, None, Some(&mut supply), Some(&mut port)),
+            |_, _| {},
+            |_, _, _| {},
+        );
+        let port = port.finish();
+        assert_eq!(actual.fleets, Outcome::Rows { len: COUNT });
+        assert_eq!(actual.task_forces, Outcome::Rows { len: COUNT });
+        assert_eq!(
+            (supply.len, supply.required),
+            (COUNT * origins, COUNT * origins)
+        );
+        assert_eq!(port.searching_len, COUNT * searching);
+        assert_eq!(port.avoided_len, COUNT * strings);
+        assert_eq!(port.bytes_len, COUNT * strings * 3);
+        let mut reads = std::collections::HashMap::<usize, usize>::new();
+        for &(at, _) in memory.reads.borrow().iter() {
+            *reads.entry(at).or_default() += 1;
+        }
+        for (index, task) in tasks[..COUNT].iter().enumerate() {
+            assert_eq!(task.supply_origins_start, index * origins);
+            assert_eq!(task.supply.unwrap().origins_len, Ok(origins));
+            assert_eq!(task.supply_failure, None);
+            let inputs = task.port_mission.unwrap();
+            assert_eq!(inputs.sample_hour, hour);
+            assert_eq!(inputs.searching, Some((index * searching, searching)));
+            assert_eq!(inputs.avoided_ship_types, Some((index * strings, strings)));
+            assert_eq!(inputs.engagement_target.unwrap().resolves, Some(false));
+            for origin in 0..origins {
+                assert_eq!(
+                    supply.origins[index * origins + origin].received,
+                    -1 - origin as i64
+                );
+            }
+            let pointer = blocks + index * BLOCK + 0x500;
+            assert_eq!(reads.get(&(pointer + supply::ORIGINS)), Some(&2));
+            assert_eq!(reads.get(&(pointer + 0x610)), Some(&1));
+            assert_eq!(reads.get(&(pointer + 0x740)), Some(&1));
+        }
     }
 }

@@ -312,7 +312,7 @@ mod tests {
             };
             let mut rows = vec![Row::default(); 5 + text.len().div_ceil(8)];
             let mut sink = Sink {
-                rows: &mut rows,
+                rows: crate::walk::Buffer::Fixed(&mut rows),
                 required: 0,
                 raid: 1,
                 ordinal: 0,
@@ -341,7 +341,7 @@ mod tests {
                 assert_eq!(row.key, index as u32);
             }
             let mut sink = Sink {
-                rows: &mut [],
+                rows: crate::walk::Buffer::Fixed(&mut []),
                 required: 0,
                 raid: 1,
                 ordinal: 0,
@@ -368,7 +368,7 @@ mod tests {
         });
         let mut rows = vec![Row::default(); count * 6];
         let mut sink = Sink {
-            rows: &mut rows,
+            rows: crate::walk::Buffer::Fixed(&mut rows),
             required: 0,
             raid: 0,
             ordinal: 0,
@@ -406,7 +406,7 @@ mod tests {
             bytes[4099] = u8::from(!terminated);
             let mut rows = [Row::default(); 9];
             let mut sink = Sink {
-                rows: &mut rows,
+                rows: crate::walk::Buffer::Fixed(&mut rows),
                 required: 0,
                 raid: 1,
                 ordinal: 0,
@@ -454,7 +454,7 @@ mod tests {
         }
         let mut rows = [Row::default(); 9];
         let mut sink = Sink {
-            rows: &mut rows,
+            rows: crate::walk::Buffer::Fixed(&mut rows),
             required: 0,
             raid: 1,
             ordinal: 0,
@@ -479,7 +479,7 @@ mod tests {
         };
         let mut rows = [Row::default(); 3];
         let mut sink = Sink {
-            rows: &mut rows,
+            rows: crate::walk::Buffer::Fixed(&mut rows),
             required: 0,
             raid: 1,
             ordinal: 0,
@@ -489,7 +489,7 @@ mod tests {
         assert_eq!(rows[0].raw, text.len() as i64);
         assert_eq!(&rows[1].raw.to_le_bytes(), &text[..8]);
         let mut sink = Sink {
-            rows: &mut [],
+            rows: crate::walk::Buffer::Fixed(&mut []),
             required: 0,
             raid: 1,
             ordinal: 0,

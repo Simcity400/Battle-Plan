@@ -122,3 +122,70 @@ fn refuses_unexpected_forms() {
     f.bytes.remove(&(EXCHANGES + DELIVERED + 3));
     assert_eq!(unavailable(&f), "lend-lease exchange unreadable");
 }
+
+#[test]
+fn worker_pool_growth_precedes_first_and_later_publication() {
+    let mut fixture = fixture();
+    let mut rows = Vec::new();
+    assert_eq!(row_demand(&fixture, 0, 0x1000), Ok(4));
+    assert_eq!(
+        walk_growing(&fixture, 0, 0x1000, &mut rows),
+        Outcome::Rows { len: 4 }
+    );
+    let entries: Vec<_> = (1..=5_000).map(|id| (id, i64::from(id))).collect();
+    pool_at(&mut fixture, EXCHANGES + DELIVERED, 0x10_0000, &entries);
+    assert_eq!(row_demand(&fixture, 0, 0x1000), Ok(5_002));
+    assert_eq!(
+        walk_growing(&fixture, 0, 0x1000, &mut rows),
+        Outcome::Rows { len: 5_002 }
+    );
+    assert_eq!(
+        (rows[4_999].variant, rows[4_999].amount_raw),
+        (5_000, 5_000)
+    );
+    assert!(matches!(
+        walk(&fixture, 0, 0x1000, &mut [Row::default(); 4]),
+        Outcome::Truncated { .. }
+    ));
+}
+
+#[test]
+fn growing_lend_lease_covers_5000_country_exchange_pools() {
+    let mut world = crate::ccountry::synthetic::World::new(0, 5_000, 0x1600);
+    let variant = world.alloc(16);
+    world.u64(variant, cequipment_variant::VTABLE_RVA as u64);
+    world.u32(variant + 8, cequipment_variant::REFERENCE_TYPE);
+    world.u32(variant + 12, 17);
+    for country in 1..=5_000 {
+        let resources = world.alloc(0x800);
+        world.u64(
+            world.object(country) + ccountry::RESOURCES,
+            resources as u64,
+        );
+        world.u64(resources, ccountry_resources::VTABLE_RVA as u64);
+        world.u32(resources + ccountry_resources::OWNER, country);
+        let exchange = world.alloc(SIZE);
+        world.u64(exchange, VTABLE_RVA as u64);
+        world.u64(exchange + HANDLE, u64::from(country) << 32 | 4713);
+        world.u32(exchange + RECEIVER, 1);
+        let items = world.alloc(equipment_entry::STRIDE);
+        world.u64(items, variant as u64);
+        world.u64(items + equipment_entry::AMOUNT, u64::from(country));
+        world.u64(exchange + DELIVERED, pool::VTABLE_RVA as u64);
+        world.array(exchange + DELIVERED + pool::ITEMS, items, 1);
+        world.u64(exchange + SUNK, pool::VTABLE_RVA as u64);
+        let list = world.alloc(8);
+        world.u64(list, exchange as u64);
+        world.array(resources + OUTGOING, list, 1);
+    }
+    let mut rows = Vec::new();
+    assert_eq!(
+        row_demand(&world.memory(), 0, world.game_state()),
+        Ok(5_000)
+    );
+    assert_eq!(
+        walk_growing(&world.memory(), 0, world.game_state(), &mut rows),
+        Outcome::Rows { len: 5_000 }
+    );
+    assert_eq!((rows[4_999].giver, rows[4_999].amount_raw), (5_000, 5_000));
+}

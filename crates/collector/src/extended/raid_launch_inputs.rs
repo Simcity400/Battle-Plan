@@ -36,7 +36,7 @@ pub const TABLES: [TableId; N] = [
 /// One country pass produces all five tables.
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[("raid launch inputs", 0, &[0, 1, 2, 3, 4])];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     /// RaidCountryInputs, StockpileArchetypes, RaidAirSites, AceRangeInputs.
     rows: [usize; 4],
@@ -44,23 +44,13 @@ pub struct Capacities {
     /// Command power rows: one per country.
     command_power: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: [512, 8192, 8192, 256],
-            reservations: 512,
-            command_power: 512,
-        }
-    }
-}
+
 impl Capacities {
-    /// One input row per country; archetypes and sites scale with them too.
+    /// One selected launch-input row and one hourly command-power row per country.
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         use crate::country_scale::{raise, rows};
         raise(&mut self.rows[0], rows(slots, 1));
         raise(&mut self.command_power, rows(slots, 1));
-        raise(&mut self.rows[1], rows(slots, 16));
-        raise(&mut self.rows[2], rows(slots, 16));
     }
 
     /// The live reservation words of every country
@@ -74,6 +64,28 @@ impl Capacities {
     #[cfg(test)]
     pub(crate) fn holds_reservations(&self, words: usize) -> bool {
         self.reservations >= words
+    }
+}
+
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let demand = native::storage_demand(memory, base, state)?;
+        for (floor, count) in self.rows.iter_mut().zip([
+            demand.countries,
+            demand.archetypes,
+            demand.sites,
+            demand.aces,
+        ]) {
+            crate::country_scale::raise(floor, count);
+        }
+        crate::country_scale::raise(&mut self.command_power, demand.countries);
+        crate::country_scale::raise(&mut self.reservations, demand.reservations);
+        Ok(())
     }
 }
 
@@ -118,16 +130,7 @@ impl Captured {
             reservations: Arena::new(capacity.reservations),
             command_power: CaptureRows::new(capacity.command_power),
             selection: SliceSelection::new(capacity.rows[0] != 0),
-            // The six launch keys; a vacant pack stays allocation-free.
-            memo: engine::modifier_definition::DefinitionMemo::try_with_capacity(
-                if capacity.rows[0] == 0 {
-                    0
-                } else {
-                    native::MODIFIERS
-                },
-            )
-            .map_err(crate::allocation::io)
-            .unwrap_or_default(),
+            memo: Default::default(),
         }
     }
     pub fn reset(&mut self) {
@@ -165,8 +168,8 @@ impl Captured {
         &self.selection
     }
 
-    /// Without the family's owner store (the inline fallback): a full read of
-    /// every country.
+    /// Fixture read of every country without the family's owner store.
+    #[cfg(test)]
     pub fn capture(
         &mut self,
         memory: &impl Memory,
@@ -238,12 +241,12 @@ impl Captured {
             native::Buffers {
                 memo: &self.memo,
                 keys: &keys,
-                countries: &mut self.countries.rows,
-                command_power: &mut self.command_power.rows,
-                reservations: &mut self.reservations.first,
-                archetypes: &mut self.archetypes.rows,
-                sites: &mut self.sites.rows,
-                aces: &mut self.aces.rows,
+                countries: engine::walk::Buffer::Growing(&mut self.countries.rows),
+                command_power: engine::walk::Buffer::Growing(&mut self.command_power.rows),
+                reservations: engine::walk::Buffer::Growing(&mut self.reservations.first),
+                archetypes: engine::walk::Buffer::Growing(&mut self.archetypes.rows),
+                sites: engine::walk::Buffer::Growing(&mut self.sites.rows),
+                aces: engine::walk::Buffer::Growing(&mut self.aces.rows),
             },
             &|slot| selection.contains(slot),
         );
@@ -350,7 +353,11 @@ mod tests {
     /// RaidCountryInputs.
     #[test]
     fn the_country_conversion_maps_the_named_modifiers_and_the_allocation() {
-        let mut captured = Captured::with_capacities(&Capacities::default());
+        let mut captured = Captured::with_capacities(&Capacities {
+            rows: [1, 0, 0, 0],
+            reservations: 2,
+            command_power: 1,
+        });
         captured.countries.rows[0] = native::CountryRow {
             canonical_slot: 3,
             modifiers: [Some(1), Some(2), Some(3), None, Some(5), Some(6)],

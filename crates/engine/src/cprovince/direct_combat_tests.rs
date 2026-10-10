@@ -126,3 +126,73 @@ fn every_combat_keeps_its_vector_place_and_class() {
         Outcome::Unavailable { .. }
     ));
 }
+
+#[test]
+fn growing_province_combat_rows_and_parallel_arenas_follow_mod_demand() {
+    const COUNT: usize = 5_000;
+    let mut rows = Vec::new();
+    let mut handles = Vec::new();
+    let mut kinds = Vec::new();
+    for entries in [3_usize, 37] {
+        let mut bytes = fixture();
+        let slots = bytes.len();
+        let provinces = slots + (COUNT + 1) * 8;
+        let combat_slots = provinces + COUNT * 0x200;
+        bytes.resize(combat_slots + entries * 8, 0);
+        array(
+            &mut bytes,
+            STATE + cgame_state::PROVINCES,
+            slots,
+            COUNT as u32 + 1,
+        );
+        for index in 0..COUNT {
+            let pointer = provinces + index * 0x200;
+            put(
+                &mut bytes,
+                slots + (index + 1) * 8,
+                &(pointer as u64).to_le_bytes(),
+            );
+            put(&mut bytes, pointer, &(VTABLE_RVA as u64).to_le_bytes());
+            put(&mut bytes, pointer + ID, &(index as u32 + 1).to_le_bytes());
+            array(&mut bytes, pointer + COMBATS, combat_slots, entries as u32);
+        }
+        for index in 0..entries {
+            put(
+                &mut bytes,
+                combat_slots + index * 8,
+                &(NAVAL[0] as u64).to_le_bytes(),
+            );
+        }
+        assert!(matches!(
+            walk(&bytes, 0, 0).0.outcome,
+            Outcome::Truncated { .. }
+        ));
+        let captured = walk_direct_combats_growing(
+            &SliceMemory {
+                base: 0,
+                bytes: &bytes,
+            },
+            0,
+            STATE,
+            &mut rows,
+            &mut handles,
+            &mut kinds,
+        );
+        assert_eq!(captured.outcome, Outcome::Rows { len: COUNT });
+        assert_eq!(captured.required, COUNT * entries);
+        for (index, row) in rows[..COUNT].iter().enumerate() {
+            assert_eq!(row.combats, [index * entries, entries]);
+            assert_eq!(row.province, index as u32 + 1);
+        }
+        assert!(
+            kinds[..captured.required]
+                .iter()
+                .all(|&kind| kind == COMBAT_NAVAL)
+        );
+        assert!(
+            handles[..captured.required]
+                .iter()
+                .all(|&handle| handle == 7 << 32 | 4713)
+        );
+    }
+}

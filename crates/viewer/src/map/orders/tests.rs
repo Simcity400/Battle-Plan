@@ -142,6 +142,55 @@ fn order(kind: i32, group: u64, instance: u32, path: &[u32]) -> ArmyOrderRow {
     }
 }
 
+fn fixture_defines(smoothing: Smoothing) -> OrderDefines {
+    OrderDefines {
+        order_move: smoothing,
+        order_front: smoothing,
+        root_front: smoothing,
+        snapped_off_front: smoothing,
+        root_front_offset: 150_000,
+        root_front_max_intersection_tests_order: 25,
+        root_front_max_intersection_tests_front: 30,
+        max_offsets: 4,
+        ext_text_points_limit: 100,
+        virtual_color: [1.0; 4],
+        allied_color: [0.5; 4],
+        paradrop_height_to_len: 0.5,
+        paradrop_height_max: 3.0,
+    }
+}
+
+#[test]
+fn callback_colour_uses_virtual_then_owner_identity_and_display_group() {
+    let defines = fixture_defines(Smoothing {
+        smoothness: 50_000,
+        passes: 1,
+    });
+    assert_eq!(callback_color(&defines, true, None, None), Some([1.0; 4]));
+    assert_eq!(
+        callback_color(&defines, false, Some(false), None),
+        Some([0.5; 4])
+    );
+    let display = OrdersGroupPlanRow {
+        red: 0.1_f32.to_bits(),
+        green: 0.2_f32.to_bits(),
+        blue: 0.3_f32.to_bits(),
+        alpha: 0.4_f32.to_bits(),
+        ..Default::default()
+    };
+    assert_eq!(
+        callback_color(&defines, false, Some(true), Some(&display)),
+        Some([0.1, 0.2, 0.3, 0.4])
+    );
+    assert_eq!(callback_color(&defines, false, None, Some(&display)), None);
+    assert_eq!(callback_color(&defines, false, Some(true), None), None);
+    let nonfinite = OrderDefines {
+        allied_color: [f32::NAN; 4],
+        ..defines
+    };
+    assert_eq!(callback_color(&nonfinite, false, Some(false), None), None);
+}
+
 #[test]
 fn a_bound_line_is_identified_by_its_binding_and_styled_by_the_owner() {
     let line = order(TYPE_LINE, 9, 1, &[11, 12]);
@@ -389,7 +438,15 @@ fn group_roots_follow_theatre_then_subtype_roster_order() {
     let indexed = groups.iter().map(|group| (group.handle, group)).collect();
     let links = BTreeMap::from([(1, 1)]);
     let mut refused = BTreeMap::new();
-    let ordered = ordered_group_roots(&indexed, &theatres, &roots, &links, 1, &mut refused);
+    let ordered = ordered_group_roots(
+        &indexed,
+        &theatres,
+        &roots,
+        &links,
+        &[1],
+        false,
+        &mut refused,
+    );
     assert_eq!(
         ordered.iter().map(|group| group.group).collect::<Vec<_>>(),
         [4, 3, 2, 1]
@@ -401,7 +458,8 @@ fn group_roots_follow_theatre_then_subtype_roster_order() {
             &theatres,
             &roots,
             &BTreeMap::new(),
-            1,
+            &[1],
+            false,
             &mut refused
         )
         .is_empty(),
@@ -410,7 +468,15 @@ fn group_roots_follow_theatre_then_subtype_roster_order() {
     groups[2].theatre_ordinal = Some(0);
     let indexed = groups.iter().map(|group| (group.handle, group)).collect();
     let mut refused = BTreeMap::new();
-    let ordered = ordered_group_roots(&indexed, &theatres, &roots, &links, 1, &mut refused);
+    let ordered = ordered_group_roots(
+        &indexed,
+        &theatres,
+        &roots,
+        &links,
+        &[1],
+        false,
+        &mut refused,
+    );
     assert_eq!(ordered.len(), 3);
     assert_eq!(refused["duplicate theatre roster position"], 1);
 
@@ -420,8 +486,199 @@ fn group_roots_follow_theatre_then_subtype_roster_order() {
         ..Default::default()
     }];
     let mut refused = BTreeMap::new();
-    assert!(ordered_group_roots(&indexed, &theatres, &orphan, &links, 1, &mut refused).is_empty());
+    assert!(
+        ordered_group_roots(
+            &indexed,
+            &theatres,
+            &orphan,
+            &links,
+            &[1],
+            false,
+            &mut refused
+        )
+        .is_empty()
+    );
     assert_eq!(refused["group plan whose orders group is not recorded"], 1);
+}
+
+#[test]
+fn allied_roots_follow_country_occurrences_and_allow_cross_country_groups() {
+    let theatres = [
+        LandTheatreRow {
+            id: 10,
+            owner: 1,
+            ordinal: 0,
+            ..Default::default()
+        },
+        LandTheatreRow {
+            id: 20,
+            owner: 2,
+            ordinal: 0,
+            ..Default::default()
+        },
+    ];
+    let groups = [
+        OrdersGroupRow {
+            handle: 100,
+            country: 1,
+            theatre: 10,
+            theatre_ordinal: Some(0),
+            ..Default::default()
+        },
+        // Native141242380 removes this country guard when allied is on.
+        OrdersGroupRow {
+            handle: 200,
+            country: 3,
+            theatre: 20,
+            theatre_ordinal: Some(0),
+            ..Default::default()
+        },
+    ];
+    let indexed = groups.iter().map(|group| (group.handle, group)).collect();
+    let roots: Vec<_> = groups
+        .iter()
+        .map(|group| OrdersGroupPlanRow {
+            group: group.handle,
+            ..Default::default()
+        })
+        .collect();
+    let links = BTreeMap::from([(1, 1), (2, 2), (3, 3)]);
+    let mut refused = BTreeMap::new();
+    let ordered = ordered_group_roots(
+        &indexed,
+        &theatres,
+        &roots,
+        &links,
+        &[1, 2, 2],
+        true,
+        &mut refused,
+    );
+    assert_eq!(
+        ordered.iter().map(|root| root.group).collect::<Vec<_>>(),
+        [100, 200, 200]
+    );
+    assert!(refused.is_empty(), "{refused:?}");
+    assert!(
+        ordered_group_roots(
+            &indexed,
+            &theatres,
+            &roots,
+            &links,
+            &[2],
+            false,
+            &mut refused
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn theatre_admission_skips_known_foreign_and_refuses_unknown_identities() {
+    let theatres = [
+        LandTheatreRow {
+            id: 10,
+            owner: 1,
+            ordinal: 0,
+            ..Default::default()
+        },
+        LandTheatreRow {
+            id: 20,
+            owner: 2,
+            ordinal: 0,
+            ..Default::default()
+        },
+        LandTheatreRow {
+            id: 30,
+            owner: 88,
+            ordinal: 0,
+            ..Default::default()
+        },
+    ];
+    let groups = [
+        OrdersGroupRow {
+            handle: 100,
+            country: 1,
+            theatre: 10,
+            theatre_ordinal: Some(0),
+            ..Default::default()
+        },
+        OrdersGroupRow {
+            handle: 200,
+            country: 77,
+            theatre: 10,
+            theatre_ordinal: Some(1),
+            ..Default::default()
+        },
+        // A known foreign theatre is not traversed, even with an own group.
+        OrdersGroupRow {
+            handle: 300,
+            country: 1,
+            theatre: 20,
+            theatre_ordinal: None,
+            ..Default::default()
+        },
+        OrdersGroupRow {
+            handle: 400,
+            country: 1,
+            theatre: 30,
+            theatre_ordinal: Some(0),
+            ..Default::default()
+        },
+        OrdersGroupRow {
+            handle: 500,
+            country: 1,
+            theatre: 99,
+            theatre_ordinal: Some(0),
+            ..Default::default()
+        },
+    ];
+    let indexed = groups.iter().map(|group| (group.handle, group)).collect();
+    let roots: Vec<_> = groups
+        .iter()
+        .map(|group| OrdersGroupPlanRow {
+            group: group.handle,
+            ..Default::default()
+        })
+        .collect();
+    let links = BTreeMap::from([(1, 1), (2, 2)]);
+    let mut refused = BTreeMap::new();
+    let ordered = ordered_group_roots(
+        &indexed,
+        &theatres,
+        &roots,
+        &links,
+        &[1],
+        false,
+        &mut refused,
+    );
+    assert_eq!(
+        ordered.iter().map(|root| root.group).collect::<Vec<_>>(),
+        [100]
+    );
+    assert_eq!(
+        refused,
+        BTreeMap::from([
+            ("group country has no CountryLinks row", 1),
+            ("group whose theatre owner has no CountryLinks row", 1),
+            ("group whose theatre roster is not recorded", 1),
+        ])
+    );
+    refused.clear();
+    let ordered = ordered_group_roots(
+        &indexed,
+        &theatres,
+        &roots,
+        &links,
+        &[1],
+        true,
+        &mut refused,
+    );
+    assert_eq!(
+        ordered.iter().map(|root| root.group).collect::<Vec<_>>(),
+        [100, 200]
+    );
+    assert!(!refused.contains_key("group country has no CountryLinks row"));
+    assert!(!refused.contains_key("group without a theatre roster position"));
 }
 
 #[test]
@@ -574,6 +831,45 @@ fn ribbon_uses_fixed_smoothed_controls_and_interpolates_between_them() {
     assert_eq!(field.vertices[2].position[1], 1.0);
     assert_eq!(field.vertices[4].position[1], 4.0);
     assert_eq!(field.vertices[2].uv_head_variant[0], 10.00002 / 10.0);
+}
+
+#[test]
+fn paradrop_strip_lift_uses_control_indices_even_at_a_head_cut() {
+    let controls = [[0, 0], [10 * SCALE, 0], [30 * SCALE, 0]];
+    let lift = transport::Lift {
+        from: 2.0,
+        to: 8.0,
+        amplitude: 0.0,
+    };
+    for (head_length, expected_indices, body_end_height, tip_height) in [
+        (0.0, vec![0, 0, 1, 1, 2, 2], 6.0, 6.0),
+        (8.0, vec![0, 0, 1, 1, 2, 2, 4, 4, 5, 5], 4.4, 8.0),
+    ] {
+        let arrow = ArrowType {
+            body_width: [2.0; 2],
+            head_length,
+            ..Default::default()
+        };
+        let observed = std::cell::RefCell::new(Vec::new());
+        let mut field = OrderField::default();
+        emit(
+            &mut field,
+            &arrow,
+            &controls,
+            1.0,
+            [1.0; 4],
+            &|_, _, index| {
+                observed.borrow_mut().push(index);
+                lift.at_control(index, controls.len(), head_length > 0.0)
+            },
+        )
+        .unwrap();
+        assert_eq!(observed.into_inner(), expected_indices);
+        assert!((field.vertices[4].position[1] - body_end_height).abs() < 1e-5);
+        // Native corrects the head root from the crossed body rails. Its tip
+        // keeps sample C+2, while no-head ends at sample C-1 over divisor C.
+        assert!((field.vertices.last().unwrap().position[1] - tip_height).abs() < 1e-5);
+    }
 }
 
 #[test]
@@ -747,7 +1043,7 @@ fn bench_synthetic_1943_plan() {
     let kind = |a: u32, b: u32| adjacent(a, b).then_some(0u8);
     let chain_world = chain::ChainWorld {
         borders: &borders,
-        kind: &kind,
+        border_target: &|a, b| kind(a, b).map(|_| b),
         raster: None,
     };
     let smoothing = Smoothing {
@@ -781,6 +1077,7 @@ fn bench_synthetic_1943_plan() {
                 smoothing,
                 extra_units: 0,
                 offset: 150_000,
+                max_intersection_tests: 25,
                 probe_teeth: false,
             };
             let front = chain::build(&pairs, &chain_world, params).unwrap();
@@ -897,7 +1194,7 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
     use installed_content::movement::{Neighbour, ProvinceTerrain};
     use replay::{
         frame::{Metrics, TableView},
-        rows::{ProvinceRow, TableRows},
+        rows::{OrderExecutionInputs, ProvinceRow, Recorded, TableRows},
     };
     // Provinces 1..=4 in a row of 2x2-pixel blocks, then 5 to keep the
     // hop from 1 to 4 off the map seam; 9 has no pixels.
@@ -924,10 +1221,10 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
     ]);
     let types = ArrowTypes::parse(
         br#"
-        arrowType = { name = "paradrop" technique = "MapArrowNoHead" body_width = { 1 1 } texture_loop = 2 }
-        arrowType = { name = "invasion" technique = "MapArrowNoHead" body_width = { 1 1 } texture_loop = 2 }
-        arrowType = { name = "move_thick" technique = "MapArrowNoHead" body_width = { 1 1 } texture_loop = 2 }
-        arrowType = { name = "defence_line" technique = "MapArrowNoHead" body_width = { 1 1 } texture_loop = 2 }
+        arrowType = { name = "paradrop" technique = "MapArrowNoHead" body_width = { 1 1 } texture_loop = 2 texture_masks = { "assigned.dds" "unassigned.dds" } texture_patterns = { "assigned.dds" "unassigned.dds" } }
+        arrowType = { name = "invasion" technique = "MapArrowNoHead" body_width = { 1 1 } texture_loop = 2 texture_masks = { "assigned.dds" "unassigned.dds" } texture_patterns = { "assigned.dds" "unassigned.dds" } }
+        arrowType = { name = "move_thick" technique = "MapArrowNoHead" body_width = { 1 1 } texture_loop = 2 texture_masks = { "assigned.dds" "unassigned.dds" } texture_patterns = { "assigned.dds" "unassigned.dds" } }
+        arrowType = { name = "defence_line" technique = "MapArrowNoHead" body_width = { 1 1 } texture_loop = 2 texture_masks = { "assigned.dds" "unassigned.dds" } texture_patterns = { "assigned.dds" "unassigned.dds" } }
         "#,
     )
     .unwrap();
@@ -938,19 +1235,14 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
     let assets = OrderAssets {
         types,
         pages: BTreeMap::new(),
-        defines: OrderDefines {
-            order_move: smoothing,
-            order_front: smoothing,
-            root_front: smoothing,
-            snapped_off_front: smoothing,
-            root_front_offset: 150_000,
-            max_offsets: 4,
-            ext_text_points_limit: 100,
-            virtual_color: [1.0; 4],
-            paradrop_height_to_len: 0.5,
-            paradrop_height_max: 3.0,
-        },
+        defines: fixture_defines(smoothing),
         raid_defines: Err("not read in this test".into()),
+        execution: execution::Defines {
+            naval_days: Ok(1),
+            air_days: Ok(1),
+            unit_weight: Ok(100_000),
+            minimum_planes: Ok(1),
+        },
     };
     let heights = vec![0u8; (width * 2) as usize];
     let heights = HeightField {
@@ -964,7 +1256,7 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
         paradrop_target: source,
         ..order(kind, GROUP, instance, path)
     };
-    let orders = vec![
+    let mut orders = vec![
         // 1: a paradrop from province 1 to 4, drawn and lifted.
         with(1, TYPE_PARADROP, &[4], 1),
         // 2: an invasion, refused by name.
@@ -980,6 +1272,9 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
         // 7: an order type no arrow is known for.
         with(7, 9, &[2], 0),
     ];
+    // Once its own-country group is admitted, the callback does not gate
+    // this successor's independently recorded order-country metadata.
+    orders[2].country = 2;
     let plans: Vec<ArmyOrderPlanRow> = orders
         .iter()
         .map(|order| ArmyOrderPlanRow {
@@ -987,6 +1282,14 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
             instance: order.instance,
             front: 77,
             front_valid: u8::from(order.instance == 4),
+            // This geometry fixture observes a blocked paradrop, so its
+            // active ribbon has genuine callback inputs without transport demand.
+            execution: Recorded::Value((order.order_type == TYPE_PARADROP).then_some(
+                OrderExecutionInputs {
+                    route_is_ok: Some(0),
+                    paradrop: None,
+                },
+            )),
             ..Default::default()
         })
         .collect();
@@ -1054,6 +1357,7 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
             map: &map,
             heights: &heights,
             ours: 1,
+            show_allied: false,
             links: &links,
             labels: None,
         },
@@ -1097,5 +1401,171 @@ fn one_hour_builds_the_paradrop_and_counts_every_refusal_once() {
             .any(|line| line.contains("invasion")),
         "{:?}",
         report.warnings()
+    );
+}
+
+#[test]
+fn selected_texture_index_never_substitutes_a_missing_unassigned_resource() {
+    let mut arrow = ArrowType {
+        name: "modded".into(),
+        ..Default::default()
+    };
+    arrow.masks = vec!["assigned.dds".into(), "unassigned.dds".into()];
+    arrow.patterns = vec!["assigned.dds".into(), "unassigned.dds".into()];
+    assert_eq!(texture_choice(&arrow, false), Ok(0));
+    assert_eq!(texture_choice(&arrow, true), Ok(1));
+    arrow.patterns.pop();
+    assert_eq!(texture_choice(&arrow, false), Ok(0));
+    assert!(texture_choice(&arrow, true).is_err());
+    arrow.patterns.push("unassigned.dds".into());
+    arrow.masks.pop();
+    assert!(texture_choice(&arrow, true).is_err());
+    arrow.masks.clear();
+    assert!(texture_choice(&arrow, false).is_err());
+}
+
+#[test]
+fn assignment_count_preserves_virtual_and_empty_paths_but_requires_demanded_hq() {
+    let mut plan = ArmyOrderPlanRow {
+        assigned_divisions: vec![10, 11, 10],
+        ..Default::default()
+    };
+    assert!(assigned_count(&plan, None).is_err());
+    plan.virtual_order = 1;
+    assert_eq!(assigned_count(&plan, None), Ok(0));
+    plan.virtual_order = 0;
+    let mut group = OrdersGroupRow {
+        leader: 20,
+        hq_provider: 10,
+        ..Default::default()
+    };
+    assert_eq!(assigned_count(&plan, Some(&group)), Ok(1));
+    group.leader = 0;
+    assert_eq!(assigned_count(&plan, Some(&group)), Ok(3));
+    plan.assigned_divisions.clear();
+    assert_eq!(assigned_count(&plan, None), Ok(0));
+}
+
+#[test]
+fn own_order_count_preserves_decoded_admission_and_table_gaps() {
+    use replay::{
+        frame::TableView,
+        rows::{CountryLinkRow, TableRows},
+    };
+
+    let mut frame = DecodedFrame {
+        branch: 1,
+        hour: 42,
+        tables: std::array::from_fn(|index| {
+            TableView::Complete(TableRows::empty(TableId::ALL[index])).into()
+        }),
+        metrics: Default::default(),
+    };
+    *frame.tables[TableId::CountryLinks.index()] = TableView::Complete(TableRows::CountryLinks(
+        [(0, 1), (11, 1), (12, 1), (21, 2), (22, 2), (30, 0), (31, 0)]
+            .into_iter()
+            .map(|(id, canonical_slot)| CountryLinkRow { id, canonical_slot })
+            .collect(),
+    ));
+    let links = table_gate::rows::<tables::CountryLinks>(&frame)
+        .unwrap()
+        .rows()
+        .iter()
+        .map(|link| (link.id, link.canonical_slot))
+        .collect();
+    let group = |handle, country, theatre, ordinal| OrdersGroupRow {
+        handle,
+        country,
+        theatre,
+        theatre_ordinal: Some(ordinal),
+        ..Default::default()
+    };
+    *frame.tables[TableId::OrdersGroups.index()] =
+        TableView::Complete(TableRows::OrdersGroups(vec![
+            group(100, 11, 10, 0), // Different raw group/theatre owners alias our slot.
+            group(200, 21, 20, 0), // Known foreign group and theatre.
+            group(300, 77, 10, 1), // Group country has no link.
+            group(400, 11, 99, 0), // Theatre row missing.
+            group(500, 11, 30, 0), // Theatre owner has no link.
+            group(600, 11, 20, 1), // Own group in a known foreign theatre.
+            group(700, 0, 40, 0),  // Reserved raw zero ignores its conflicting link.
+            group(800, 30, 50, 0), // Nonzero raw references can alias canonical zero.
+        ]));
+    let theatre = |id, owner, ordinal| LandTheatreRow {
+        id,
+        owner,
+        ordinal,
+        volunteers_theatre: 0,
+    };
+    *frame.tables[TableId::LandTheatres.index()] =
+        TableView::Complete(TableRows::LandTheatres(vec![
+            theatre(10, 12, 0),
+            theatre(20, 22, 0),
+            theatre(30, 88, 0),
+            theatre(40, 0, 0),
+            theatre(50, 31, 1),
+        ]));
+    *frame.tables[TableId::OrdersGroupPlans.index()] =
+        TableView::Complete(TableRows::OrdersGroupPlans(
+            [100, 200, 300, 400, 500, 600, 700, 800, 900]
+                .into_iter()
+                .map(|group| OrdersGroupPlanRow {
+                    group,
+                    primary_orders: vec![1],
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+    *frame.tables[TableId::ArmyOrders.index()] = TableView::Complete(TableRows::ArmyOrders(vec![
+        order(TYPE_MOVE, 100, 1, &[]),
+        order(TYPE_LINE, 100, 2, &[]),
+        order(TYPE_MOVE, 200, 1, &[]),
+        order(TYPE_MOVE, 300, 1, &[]),
+        order(TYPE_MOVE, 400, 1, &[]),
+        order(TYPE_MOVE, 500, 1, &[]),
+        order(TYPE_MOVE, 600, 1, &[]),
+        order(TYPE_MOVE, 700, 1, &[]),
+        order(TYPE_MOVE, 800, 1, &[]),
+        order(TYPE_MOVE, 900, 1, &[]), // No group row.
+    ]));
+    assert_eq!(own_order_count(&frame, &links, 1).unwrap(), 2);
+    assert_eq!(own_order_count(&frame, &links, 0).unwrap(), 2);
+
+    let complete_orders = std::mem::replace(
+        &mut *frame.tables[TableId::ArmyOrders.index()],
+        TableView::Truncated {
+            rows: TableRows::ArmyOrders(vec![
+                order(TYPE_MOVE, 100, 1, &[]),
+                order(TYPE_LINE, 100, 2, &[]),
+            ]),
+            missing: 8,
+        },
+    );
+    assert_eq!(own_order_count(&frame, &links, 1).unwrap(), 2);
+    assert!(table_gate::limitations(&frame).lines().iter().any(|line| line ==
+        "Table ArmyOrders truncated (8 missing rows): the battle plan covers only recorded orders; missing orders are not drawn"));
+    *frame.tables[TableId::ArmyOrders.index()] = TableView::Unavailable {
+        reason: "order census refused".into(),
+    };
+    assert_eq!(own_order_count(&frame, &links, 1).unwrap(), 0);
+    assert!(table_gate::limitations(&frame).lines().iter().any(|line| line ==
+        "Table ArmyOrders unavailable: order census refused: the battle plan covers only recorded orders; missing orders are not drawn"));
+    *frame.tables[TableId::ArmyOrders.index()] = complete_orders;
+    let complete_roots = std::mem::replace(
+        &mut *frame.tables[TableId::OrdersGroupPlans.index()],
+        TableView::Unavailable {
+            reason: "group roots refused".into(),
+        },
+    );
+    assert_eq!(own_order_count(&frame, &links, 1).unwrap(), 0);
+    assert!(table_gate::limitations(&frame).lines().iter().any(|line| line ==
+        "Table OrdersGroupPlans unavailable: group roots refused: battle-plan colour and root order lists; absent colours are not guessed and a missing group's orders stay unresolved"));
+    *frame.tables[TableId::OrdersGroupPlans.index()] = complete_roots;
+    *frame.tables[TableId::ArmyOrders.index()] = TableView::Complete(TableRows::Clock(Vec::new()));
+    let error = own_order_count(&frame, &links, 1).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "hour 42 ArmyOrders contains another table's rows"
     );
 }

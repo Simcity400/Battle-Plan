@@ -21,19 +21,28 @@ fn equipment_destruction_detach_restores_other_families_after_a_refusal() {
     let mut previous_errors = [false; RestoreFamily::ALL.len()];
     let mut calls = Vec::new();
     assert_eq!(
-        restore_round(&mut restored, &mut previous_errors, |family| {
-            calls.push(family);
-            match family {
-                RestoreFamily::Hourly | RestoreFamily::EquipmentDestruction => {
-                    Err("synthetic enabled patch mismatch")
+        restore_round(
+            &mut restored,
+            &mut previous_errors,
+            || false,
+            |family| {
+                calls.push(family);
+                match family {
+                    RestoreFamily::Hourly | RestoreFamily::EquipmentDestruction => {
+                        Err("synthetic enabled patch mismatch")
+                    }
+                    RestoreFamily::Portrait => Ok(false),
+                    _ => Ok(true),
                 }
-                RestoreFamily::Portrait => Ok(false),
-                _ => Ok(true),
             }
-        }),
+        ),
         Ok(false)
     );
-    assert_eq!(calls, RestoreFamily::ALL);
+    assert_eq!(
+        calls,
+        RestoreFamily::ALL[..RestoreFamily::WorldLifetime as usize]
+    );
+    assert!(!restored[RestoreFamily::WorldLifetime as usize]);
     assert!(restored[RestoreFamily::History as usize]);
     assert!(restored[RestoreFamily::Relation as usize]);
     for family in [
@@ -54,13 +63,18 @@ fn equipment_destruction_detach_restores_other_families_after_a_refusal() {
 
     calls.clear();
     assert_eq!(
-        restore_round(&mut restored, &mut previous_errors, |family| {
-            calls.push(family);
-            match family {
-                RestoreFamily::Hourly => Err("synthetic enabled patch mismatch"),
-                _ => Ok(true),
+        restore_round(
+            &mut restored,
+            &mut previous_errors,
+            || false,
+            |family| {
+                calls.push(family);
+                match family {
+                    RestoreFamily::Hourly => Err("synthetic enabled patch mismatch"),
+                    _ => Ok(true),
+                }
             }
-        }),
+        ),
         Err("synthetic enabled patch mismatch")
     );
     assert_eq!(
@@ -73,18 +87,23 @@ fn equipment_destruction_detach_restores_other_families_after_a_refusal() {
     );
     assert_eq!(
         restored.iter().filter(|complete| **complete).count(),
-        RestoreFamily::ALL.len() - 1
+        RestoreFamily::ALL.len() - 2
     );
 
     calls.clear();
     assert_eq!(
-        restore_round(&mut restored, &mut previous_errors, |family| {
-            calls.push(family);
-            Ok(true)
-        }),
+        restore_round(
+            &mut restored,
+            &mut previous_errors,
+            || false,
+            |family| {
+                calls.push(family);
+                Ok(true)
+            }
+        ),
         Ok(true)
     );
-    assert_eq!(calls, [RestoreFamily::Hourly]);
+    assert_eq!(calls, [RestoreFamily::Hourly, RestoreFamily::WorldLifetime]);
 }
 
 #[test]
@@ -94,17 +113,25 @@ fn equipment_destruction_detach_skips_the_already_restored_hourly_hook() {
     restored[RestoreFamily::Hourly as usize] = true;
     let mut calls = Vec::new();
     assert_eq!(
-        restore_round(&mut restored, &mut previous_errors, |family| {
-            calls.push(family);
-            Ok(true)
-        }),
+        restore_round(
+            &mut restored,
+            &mut previous_errors,
+            || false,
+            |family| {
+                calls.push(family);
+                Ok(true)
+            }
+        ),
         Ok(true)
     );
     assert_eq!(calls, &RestoreFamily::ALL[1..]);
     assert_eq!(
-        restore_round(&mut restored, &mut previous_errors, |_| panic!(
-            "already restored"
-        )),
+        restore_round(
+            &mut restored,
+            &mut previous_errors,
+            || false,
+            |_| panic!("already restored")
+        ),
         Ok(true)
     );
 }
@@ -115,20 +142,25 @@ fn equipment_destruction_detach_transient_busy_is_not_a_persistent_error() {
     let mut previous_errors = [false; RestoreFamily::ALL.len()];
     for attempt in 0..4 {
         assert_eq!(
-            restore_round(&mut restored, &mut previous_errors, |family| {
-                if family != RestoreFamily::EquipmentDestruction {
-                    return Ok(true);
+            restore_round(
+                &mut restored,
+                &mut previous_errors,
+                || false,
+                |family| {
+                    if family != RestoreFamily::EquipmentDestruction {
+                        return Ok(true);
+                    }
+                    match attempt {
+                        0 | 2 => Err("transient OS error"),
+                        _ => Ok(false),
+                    }
                 }
-                match attempt {
-                    0 | 2 => Err("transient OS error"),
-                    _ => Ok(false),
-                }
-            }),
+            ),
             Ok(false)
         );
     }
     assert_eq!(
-        restore_round(&mut restored, &mut previous_errors, |_| Ok(true)),
+        restore_round(&mut restored, &mut previous_errors, || false, |_| Ok(true)),
         Ok(true)
     );
 }
@@ -140,17 +172,25 @@ fn equipment_destruction_persistent_error_still_visits_every_unfinished_family()
     for result in [Ok(false), Err("synthetic persistent patch error")] {
         let mut calls = Vec::new();
         assert_eq!(
-            restore_round(&mut restored, &mut previous_errors, |family| {
-                calls.push(family);
-                if family == RestoreFamily::Hourly {
-                    Err("synthetic persistent patch error")
-                } else {
-                    Ok(false)
+            restore_round(
+                &mut restored,
+                &mut previous_errors,
+                || false,
+                |family| {
+                    calls.push(family);
+                    if family == RestoreFamily::Hourly {
+                        Err("synthetic persistent patch error")
+                    } else {
+                        Ok(false)
+                    }
                 }
-            }),
+            ),
             result
         );
-        assert_eq!(calls, RestoreFamily::ALL);
+        assert_eq!(
+            calls,
+            RestoreFamily::ALL[..RestoreFamily::WorldLifetime as usize]
+        );
     }
 }
 
@@ -179,19 +219,27 @@ fn equipment_destruction_hourly_restoration_is_terminal_on_exactly_two_errors() 
         assert_eq!(hourly_calls.get(), 1 + usize::from(busy));
         let mut families = Vec::new();
         assert_eq!(
-            restore_round(&mut restored, &mut previous_errors, |family| {
-                families.push(family);
-                if family == RestoreFamily::Hourly {
-                    hourly_calls.set(hourly_calls.get() + 1);
-                    Err("synthetic persistent hourly error")
-                } else {
-                    Ok(true)
+            restore_round(
+                &mut restored,
+                &mut previous_errors,
+                || false,
+                |family| {
+                    families.push(family);
+                    if family == RestoreFamily::Hourly {
+                        hourly_calls.set(hourly_calls.get() + 1);
+                        Err("synthetic persistent hourly error")
+                    } else {
+                        Ok(true)
+                    }
                 }
-            }),
+            ),
             Err("synthetic persistent hourly error")
         );
         assert_eq!(hourly_calls.get() - waits.get(), 2);
-        assert_eq!(families, RestoreFamily::ALL);
+        assert_eq!(
+            families,
+            RestoreFamily::ALL[..RestoreFamily::WorldLifetime as usize]
+        );
     }
 }
 
@@ -269,10 +317,20 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
         }
     };
     assert_eq!(
-        restore_round(&mut restored, &mut previous_errors, &mut restore),
+        restore_round(
+            &mut restored,
+            &mut previous_errors,
+            observers_active,
+            &mut restore
+        ),
         Ok(false)
     );
-    let restore_result = restore_round(&mut restored, &mut previous_errors, &mut restore);
+    let restore_result = restore_round(
+        &mut restored,
+        &mut previous_errors,
+        observers_active,
+        &mut restore,
+    );
     let restoration_error = restore_result.unwrap_err();
     let admission = CaptureAdmission::new();
     admission.close();

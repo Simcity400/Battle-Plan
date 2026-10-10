@@ -139,6 +139,10 @@ fn oob_divisions() -> BTreeMap<u64, Division> {
 }
 
 fn run_oob(frame: &DecodedFrame, divisions: &BTreeMap<u64, Division>) -> Report {
+    run_oob_saved(frame, divisions, OOB_SAVE)
+}
+
+fn run_oob_saved(frame: &DecodedFrame, divisions: &BTreeMap<u64, Division>, text: &[u8]) -> Report {
     let germany = CountryRow {
         id: 7,
         canonical_slot: 1,
@@ -146,7 +150,7 @@ fn run_oob(frame: &DecodedFrame, divisions: &BTreeMap<u64, Division>) -> Report 
         ..CountryRow::default()
     };
     let links = BTreeMap::from([(7, &germany)]);
-    let saved = saved::parse(&installed_content::parser::parse(OOB_SAVE).unwrap().items).unwrap();
+    let saved = saved::parse(&installed_content::parser::parse(text).unwrap().items).unwrap();
     let mut report = Report::default();
     let _ = compare_order_of_battle(frame, divisions, &saved, &links, &mut report);
     report
@@ -161,6 +165,39 @@ fn a_matching_order_of_battle_has_no_differences() {
         "{:?}",
         report.failed_comparisons
     );
+}
+
+#[test]
+fn stored_command_names_compare_presence_before_the_first_nul_prefix() {
+    let original = String::from_utf8(OOB_SAVE.to_vec()).unwrap();
+    for (bytes, matching_key) in [
+        (b"".as_slice(), ""),
+        (b"\0retained".as_slice(), "name=\"\""),
+        (b"Army 1\0retained".as_slice(), "name=\"Army 1\""),
+    ] {
+        for saved_key in ["", "name=\"\"", "name=\"Army 1\""] {
+            let mut frame = oob_frame();
+            let TableView::Complete(TableRows::OrdersGroups(groups)) =
+                &mut *frame.tables[TableId::OrdersGroups.index()]
+            else {
+                unreachable!()
+            };
+            groups[0].name = Recorded::Value(Some(bytes.to_vec()));
+            let saved = original.replace("name=\"Army 1\"", saved_key);
+            let report = run_oob_saved(&frame, &oob_divisions(), saved.as_bytes());
+            assert!(
+                report.failed_comparisons.is_empty(),
+                "{:?}",
+                report.failed_comparisons
+            );
+            assert_eq!(
+                report.differences.is_empty(),
+                saved_key == matching_key,
+                "{:?}",
+                report.differences
+            );
+        }
+    }
 }
 
 #[test]
@@ -247,6 +284,9 @@ fn unavailable_tables_do_not_suppress_independent_naval_and_theatre_diagnostics(
         TableView::Complete(TableRows::RailCooldowns(vec![RailCooldownRow {
             province: 1,
             cooldown_ticks: 1,
+            building: replay::rows::Recorded::Value(None),
+            selection: replay::rows::Recorded::NotRecorded,
+            selection_hour: Default::default(),
         }]));
     *frame.tables[TableId::LandTheatres.index()] = TableView::Unavailable {
         reason: "land theatre read failed".into(),
@@ -359,10 +399,16 @@ fn railway_cooldown_omission_does_not_invent_zero() {
             RailCooldownRow {
                 province: 1,
                 cooldown_ticks: 2,
+                building: replay::rows::Recorded::Value(None),
+                selection: replay::rows::Recorded::NotRecorded,
+                selection_hour: Default::default(),
             },
             RailCooldownRow {
                 province: 2,
                 cooldown_ticks: i32::MIN,
+                building: replay::rows::Recorded::Value(None),
+                selection: replay::rows::Recorded::NotRecorded,
+                selection_hour: Default::default(),
             },
         ]));
     *frame.tables[TableId::RailEdges.index()] =
@@ -387,10 +433,16 @@ fn railway_cooldown_omission_does_not_invent_zero() {
             RailCooldownRow {
                 province: 1,
                 cooldown_ticks: 1,
+                building: replay::rows::Recorded::Value(None),
+                selection: replay::rows::Recorded::NotRecorded,
+                selection_hour: Default::default(),
             },
             RailCooldownRow {
                 province: 2,
                 cooldown_ticks: 1,
+                building: replay::rows::Recorded::Value(None),
+                selection: replay::rows::Recorded::NotRecorded,
+                selection_hour: Default::default(),
             },
         ]));
     compare_railways(&frame, &saved, &mut report).unwrap();
@@ -428,6 +480,78 @@ fn rail_rows() -> Vec<RailEdgeRow> {
     .into_iter()
     .map(|(from, to, level)| RailEdgeRow { from, to, level })
     .collect()
+}
+
+#[test]
+fn selected_railway_levels_compare_every_signed_index_without_inferring_pair_count() {
+    use replay::rows::{RailwaySelectionInputs, Recorded};
+    let saved = rail_save();
+    let rows: Vec<_> = saved
+        .railways
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|(&province, info)| RailCooldownRow {
+            province,
+            cooldown_ticks: 0,
+            selection_hour: Some(1).into(),
+            selection: Some(RailwaySelectionInputs {
+                levels: Some(info.levels.clone()),
+                pair_count: Some(-1),
+                building_level: None,
+            })
+            .into(),
+            ..Default::default()
+        })
+        .collect();
+    let mut frame = supremacy_frame(Vec::new());
+    *frame.tables[TableId::RailCooldowns.index()] =
+        TableView::Complete(TableRows::RailCooldowns(rows.clone()));
+    *frame.tables[TableId::RailEdges.index()] = TableView::Unavailable {
+        reason: "separate sorted-pair domain".into(),
+    };
+    let mut report = Report::default();
+    compare_railways(&frame, &saved, &mut report).unwrap();
+    assert!(report.differences.is_empty(), "{:?}", report.differences);
+    assert_eq!(report.compared_tables["RailCooldowns.selection.levels"], 4);
+    assert_eq!(report.scalar_checks, 12);
+    assert!(
+        report
+            .limitations
+            .keys()
+            .any(|reason| reason.contains("no +44 pair count"))
+    );
+    for case in 0..6 {
+        let mut changed = rows.clone();
+        match case {
+            0 => changed[0].selection = Recorded::NotRecorded,
+            1 => changed[0].selection = None.into(),
+            2 => changed[0].selection_hour = Some(0).into(),
+            _ => {
+                let packet = changed[0]
+                    .selection
+                    .require_mut("test")
+                    .unwrap()
+                    .as_mut()
+                    .unwrap();
+                match case {
+                    3 => packet.levels = None,
+                    4 => packet.levels.as_mut().unwrap()[1] = -1,
+                    _ => packet.pair_count = None,
+                }
+            }
+        }
+        *frame.tables[TableId::RailCooldowns.index()] =
+            TableView::Complete(TableRows::RailCooldowns(changed));
+        let mut report = Report::default();
+        compare_railways(&frame, &saved, &mut report).unwrap();
+        assert_eq!(
+            report.differences.len(),
+            usize::from(case != 0),
+            "case {case}: {:?}",
+            report.differences
+        );
+    }
 }
 
 #[test]
@@ -529,7 +653,7 @@ fn theatre_oracle_checks_typed_parent_handles_priority_and_membership_order() {
             theatre: land,
             ordinal: 0,
             priority: -1,
-            name: b"group".to_vec(),
+            name: b"group\0tail".to_vec(),
         }]));
     *frame.tables[TableId::LandTheatreMembers.index()] =
         TableView::Complete(TableRows::LandTheatreMembers(vec![LandTheatreMemberRow {
@@ -542,14 +666,14 @@ fn theatre_oracle_checks_typed_parent_handles_priority_and_membership_order() {
             id: air,
             owner: 123,
             ordinal: 0,
-            name: b"theatre".to_vec(),
+            name: b"theatre\0tail".to_vec(),
         }]));
     *frame.tables[TableId::AirTheatreGroups.index()] =
         TableView::Complete(TableRows::AirTheatreGroups(vec![AirTheatreGroupRow {
             id: 78,
             theatre: air,
             ordinal: 0,
-            name: b"air".to_vec(),
+            name: b"air\0tail".to_vec(),
         }]));
     *frame.tables[TableId::AirTheatreMembers.index()] =
         TableView::Complete(TableRows::AirTheatreMembers(vec![AirTheatreMemberRow {

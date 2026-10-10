@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, io};
 
 use super::{
     Decimal, Item, SavedDate, Value, block, boolean, bytes, decimal, field, integer, invalid,
-    required_block, required_bytes, scalar,
+    required_bytes, scalar,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -104,8 +104,8 @@ pub struct CompletedFocus {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Research {
-    /// ED02A0 deliberately filters the complete live technology census.
-    pub technologies: BTreeMap<Vec<u8>, Technology>,
+    /// 140ED02A0 filters instances independently, retaining native order and repeated keys.
+    pub technologies: Vec<(Vec<u8>, Technology)>,
     /// Saved array order and repeated idle/technology keys remain intact.
     pub slots: Vec<ResearchSlot>,
 }
@@ -363,7 +363,7 @@ fn parse_focus(items: &[Item]) -> io::Result<Focus> {
 }
 
 fn parse_research(items: &[Item]) -> io::Result<Research> {
-    let mut technologies = BTreeMap::new();
+    let mut technologies = Vec::new();
     for entry in optional_block(items, b"technologies")?.unwrap_or_default() {
         let token = entry
             .key
@@ -375,9 +375,7 @@ fn parse_research(items: &[Item]) -> io::Result<Research> {
             progress: decimal(fields, b"research_points")?,
             ahead_reduction: decimal(fields, b"ahead_reduction")?,
         };
-        if technologies.insert(token, technology).is_some() {
-            return Err(invalid("duplicate saved technology"));
-        }
+        technologies.push((token, technology));
     }
     let mut slots = Vec::new();
     for entry in optional_block(items, b"slots")?.unwrap_or_default() {
@@ -551,8 +549,16 @@ fn parse_power_balance(items: &[Item]) -> io::Result<PowerBalance> {
 }
 
 pub fn parse(items: &[Item]) -> io::Result<Pack> {
+    parse_with_countries(items, super::CountriesView::from_root(items)?)
+}
+
+pub(super) fn parse_with_countries(
+    items: &[Item],
+    countries: super::CountriesView<'_>,
+) -> io::Result<Pack> {
+    let country_items = countries.required()?;
     let mut countries = BTreeMap::new();
-    for entry in required_block(items, b"countries")? {
+    for entry in country_items {
         let tag = entry
             .key
             .clone()
@@ -658,6 +664,26 @@ mod tests {
 
     fn parse_text(text: &[u8]) -> io::Result<Pack> {
         parse(&crate::parser::parse(text)?.items)
+    }
+
+    #[test]
+    fn repeated_saved_technology_keys_retain_order_and_independent_state() {
+        let pack = parse_text(b"countries={AAA={technology={technologies={repeat={level=1} other={research_points=0.25} repeat={level=2 research_points=0.5}}}}}").unwrap();
+        let technologies = &pack.countries[b"AAA".as_slice()]
+            .research
+            .as_ref()
+            .unwrap()
+            .technologies;
+        assert_eq!(
+            technologies
+                .iter()
+                .map(|(token, _)| token.as_slice())
+                .collect::<Vec<_>>(),
+            [b"repeat".as_slice(), b"other", b"repeat"]
+        );
+        assert_eq!(technologies[0].1.level, Some(1));
+        assert_eq!(technologies[2].1.level, Some(2));
+        assert_eq!(technologies[2].1.progress.as_ref().unwrap().raw, 50_000);
     }
 
     #[test]
@@ -921,7 +947,6 @@ mod tests {
     fn malformed_or_ambiguous_state_never_becomes_empty() {
         for text in [
             b"countries={A={focus={completed={A x y}}}}".as_slice(),
-            b"countries={A={technology={technologies={x={} x={}}}}}",
             b"countries={A={dynamic_modifier={modifier={modifier=x enabled=yes value={0.000001}}}}}",
             b"countries={A={decision_status={active_timed_decision={decision=x days=1 state=unknown}}}}",
             b"countries={} tech_sharing_group={id=x countries={A B} bonuses={0}}",

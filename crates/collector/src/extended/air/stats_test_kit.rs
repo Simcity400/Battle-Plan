@@ -145,6 +145,43 @@ pub(crate) fn set_first_value(bytes: &mut [u8], value: i64) {
     p64(bytes, VALUES1, value as u64);
 }
 
+pub(crate) fn set_yearly_capacity(bytes: &mut Vec<u8>, capacity: u32) {
+    use engine::loop_history_window;
+    for (window, record) in [(WINDOW1, RECORD1), (WINDOW2, RECORD2)] {
+        let slots = bytes.len();
+        bytes.resize(slots + capacity as usize * 8, 0);
+        header(
+            bytes,
+            window + loop_history_window::RECORDS,
+            slots,
+            capacity,
+        );
+        p32(bytes, window + loop_history_window::CAPACITY, capacity);
+        p32(
+            bytes,
+            window + loop_history_window::CURRENT_SLOT,
+            capacity - 1,
+        );
+        p64(bytes, slots + (capacity as usize - 1) * 8, record as u64);
+    }
+}
+
+pub(crate) fn mod_fixture(count: usize) -> Vec<u8> {
+    let mut bytes = fixture();
+    let data = bytes.len();
+    bytes.resize(data + count * 8, 0);
+    header(
+        &mut bytes,
+        AIR + engine::cstrategic_air::HISTORY_TABLE,
+        data,
+        count as u32,
+    );
+    for index in 0..count {
+        p64(&mut bytes, data + index * 8, HISTORY1 as u64);
+    }
+    bytes
+}
+
 pub(crate) fn memory(bytes: &[u8]) -> SliceMemory<'_> {
     SliceMemory { base: 0, bytes }
 }
@@ -179,7 +216,7 @@ pub(crate) fn split(
         base: BASE,
         game_state: GAME_STATE,
     };
-    let mut first = AirStatsJob::new();
+    let mut first = AirStatsJob::fixture();
     let report = super::copy_air_stats_refresh(memory, ctx, &mut first);
     assert!(report.raw_ok);
     let mut captured = Captured::with_capacities(capacity);
@@ -207,5 +244,9 @@ pub(crate) fn assert_captured_matches_direct(captured: &super::Captured, direct:
         captured.statistics.outcome, direct.outcome,
         "statistics outcome"
     );
-    assert_eq!(&captured.statistics.rows, &direct.rows, "statistics rows");
+    assert_eq!(
+        &captured.statistics.rows[..captured.statistics.outcome.len()],
+        &direct.rows[..direct.outcome.len()],
+        "statistics rows"
+    );
 }

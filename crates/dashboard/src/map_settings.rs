@@ -112,14 +112,26 @@ impl Store {
             .entries
             .get(key)
             .and_then(|entry| entry.visual_mods.clone());
+        if !settings.use_game_graphics {
+            // An unrelated form save must not freeze a legacy inherited NATO choice.
+            settings.graphics.nato_counters = self
+                .entries
+                .get(key)
+                .and_then(|entry| entry.graphics.nato_counters);
+        }
         settings
     }
     pub fn get(&self, key: &str) -> CampaignMapSettings {
         let mut settings = self.entries.get(key).cloned().unwrap_or_default();
-        if settings.use_game_graphics || settings.visual_mods.is_none() {
+        if settings.use_game_graphics
+            || settings.visual_mods.is_none()
+            || settings.graphics.nato_counters.is_none()
+        {
             let parent = self.inherited(key);
             if settings.use_game_graphics {
                 settings.graphics = parent.graphics;
+            } else if settings.graphics.nato_counters.is_none() {
+                settings.graphics.nato_counters = parent.graphics.nato_counters;
             }
             if settings.visual_mods.is_none() {
                 settings.visual_mods = parent.visual_mods;
@@ -197,9 +209,13 @@ fn parse_game_graphics_keys(
             .unwrap_or(fallback)
     };
     let mut result = crate::protocol::MapGraphics::default();
+    let counters = installed_content::settings::Counters::read(keys).map_err(crate::invalid)?;
+    result.nato_counters = Some(counters.nato == 1);
+    result.full_resolution = map("draw_map_full_res", result.full_resolution);
     result.trees = map("draw_trees", result.trees);
-    result.shadows = keys.bool_at(&["graphics", "shadows"]).unwrap_or(true)
-        && map("draw_shadows", result.shadows);
+    // 140B481A0 gates map casters on map options+0x13. Graphics+0xf0's
+    // shadows flag only reaches the device support check at142224600.
+    result.shadows = map("draw_shadows", result.shadows);
     result.rivers = map("draw_rivers", result.rivers);
     // 1401FAA60 token0x3699 writes map options+0x18; used by141264830.
     result.high_gfx_shaders = map("high_gfx_shaders", result.high_gfx_shaders);
@@ -245,12 +261,14 @@ mod tests {
                 graphics: crate::protocol::MapGraphics {
                     samples: 4,
                     trees: false,
+                    day_night: false,
                     ..Default::default()
                 },
                 visual_mods: Some(vec!["mod/global.mod".into()]),
             },
         );
         assert!(!store.get("campaign/widget/map-a").graphics.trees);
+        assert!(!store.get("campaign/widget/map-a").graphics.day_night);
         assert_eq!(
             store.get("other").visual_mods,
             Some(vec!["mod/global.mod".into()])
@@ -267,6 +285,7 @@ mod tests {
             },
         );
         assert_eq!(store.get("campaign/widget/map-a").graphics.samples, 2);
+        assert!(store.get("campaign/widget/map-a").graphics.day_night);
         assert_eq!(store.get("campaign/widget/map-a").visual_mods, Some(vec![]));
         let key = "campaign/widget/map-a";
         store.entries.insert(
@@ -298,19 +317,46 @@ mod tests {
 
     #[test]
     fn imports_real_graphics_and_rejects_invalid_quality() {
-        let settings = parse_game_graphics(b"graphics={multi_sampling=0 shadows=no} mapRenderingOptions={draw_trees=no draw_shadows=yes texture_quality=2 draw_units=no high_gfx_shaders=no draw_water_reflections=no draw_sky=no}").unwrap();
+        let settings = parse_game_graphics(b"template_counter=1 graphics={multi_sampling=0 shadows=no} mapRenderingOptions={draw_trees=no draw_shadows=yes texture_quality=2 draw_units=no high_gfx_shaders=no draw_water_reflections=no draw_sky=no draw_map_full_res=no}").unwrap();
+        assert_eq!(settings.nato_counters, Some(true));
         assert_eq!(settings.samples, 1);
         assert_eq!(settings.texture_quality, 2);
         assert!(!settings.high_gfx_shaders);
         assert!(!settings.water_reflections);
         assert!(!settings.sky);
-        assert!(!settings.shadows && !settings.trees && !settings.units);
+        assert!(!settings.full_resolution);
+        assert!(settings.shadows);
+        assert!(!settings.trees && !settings.units);
         assert!(
             parse_game_graphics(b"graphics={multi_sampling=3} mapRenderingOptions={}").is_err()
         );
         assert!(
             parse_game_graphics(b"graphics={} mapRenderingOptions={texture_quality=9}").is_err()
         );
+        assert!(
+            parse_game_graphics(b"template_counter=invalid graphics={} mapRenderingOptions={}")
+                .is_err()
+        );
+        assert!(
+            parse_game_graphics(b"graphics={} mapRenderingOptions={draw_map_full_res=invalid}")
+                .unwrap()
+                .full_resolution
+        );
+    }
+    #[test]
+    fn map_shadow_option_is_independent_of_device_shadow_preference() {
+        for device in ["yes", "no"] {
+            for (map, expected) in [("yes", true), ("no", false)] {
+                let input = format!(
+                    "graphics={{shadows={device}}} mapRenderingOptions={{draw_shadows={map}}}"
+                );
+                assert_eq!(
+                    parse_game_graphics(input.as_bytes()).unwrap().shadows,
+                    expected,
+                    "{input}"
+                );
+            }
+        }
     }
     #[test]
     fn inherited_graphics_follow_game_changes_even_with_saved_mods() {
@@ -334,6 +380,79 @@ mod tests {
             Some(vec!["mod/art.mod".into()])
         );
         assert_eq!(store.get("explicit"), explicit);
+    }
+    #[test]
+    fn legacy_nato_inherits_after_unrelated_saves_and_explicit_scopes_keep_false() {
+        let legacy: CampaignMapSettings = serde_json::from_str(
+            r#"{"graphics":{"trees":false,"shadows":true,"rivers":true,"buildings":true,"units":true,"citySprawl":true,"weather":true},"visualMods":[]}"#,
+        )
+        .unwrap();
+        let mut store = Store::default();
+        store.game_graphics.nato_counters = Some(true);
+        store.entries.insert("campaign".into(), legacy);
+        assert_eq!(store.get("campaign").graphics.nato_counters, Some(true));
+        assert!(!store.get("campaign").graphics.trees);
+
+        let mut draft = store.preferences("campaign");
+        assert_eq!(draft.graphics.nato_counters, None);
+        draft.visual_mods = Some(vec!["mod/art.mod".into()]);
+        store.entries.insert("campaign".into(), draft);
+        // Exercise the same JSON representation saved and read by Store.
+        let bytes = serde_json::to_vec(&store.entries).unwrap();
+        let mut restored = Store {
+            entries: serde_json::from_slice(&bytes).unwrap(),
+            ..Default::default()
+        };
+        restored.game_graphics.nato_counters = Some(false);
+        assert_eq!(restored.get("campaign").graphics.nato_counters, Some(false));
+        assert_eq!(
+            restored.preferences("campaign").graphics.nato_counters,
+            None
+        );
+        assert!(!restored.get("campaign").graphics.trees);
+
+        let mut campaign = restored.preferences("campaign");
+        campaign.graphics.nato_counters = Some(true);
+        restored.entries.insert("campaign".into(), campaign);
+        let mut widget = CampaignMapSettings {
+            use_game_graphics: false,
+            graphics: crate::protocol::MapGraphics {
+                nato_counters: Some(false),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        restored
+            .entries
+            .insert("campaign/widget/map-a".into(), widget.clone());
+        assert_eq!(
+            restored.get("campaign/widget/map-a").graphics.nato_counters,
+            Some(false)
+        );
+        assert_eq!(
+            restored.get("campaign/widget/map-b").graphics.nato_counters,
+            Some(true)
+        );
+        assert_eq!(
+            restored.get("other/widget/map-a").graphics.nato_counters,
+            Some(false)
+        );
+        // Whole-graphics inheritance overrides even a stale stored field.
+        widget.use_game_graphics = true;
+        restored
+            .entries
+            .insert("campaign/widget/map-a".into(), widget);
+        assert_eq!(
+            restored.get("campaign/widget/map-a").graphics.nato_counters,
+            Some(true)
+        );
+        assert_eq!(
+            restored
+                .preferences("campaign/widget/map-a")
+                .graphics
+                .nato_counters,
+            Some(true)
+        );
     }
     #[test]
     fn settings_remain_local_to_the_campaign_and_keep_original_artwork_by_default() {

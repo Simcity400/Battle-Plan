@@ -1,7 +1,7 @@
 //! Pooled map-table reads. The spool grows reusable storage; the worker-only
 //! Orders job can also grow payloads from its original native observations.
 //!
-//! Combat and wing censuses fill typed pooled rows on the callback; the ship
+//! Combat, ship and order censuses run inside their worker jobs; the ship
 //! census runs inside the ShipModels job and the order census inside the Orders
 //! job. Dependent Air/Naval consumers run only when their own raw payload did
 //! not stage; the Players/HumanControllers pair keeps its worker split.
@@ -11,26 +11,45 @@ use crate::sampling::qpc;
 use crate::table_capture::{CaptureRows, grow_capacity, grow_vec};
 use engine::{
     Memory, cair_wing, cfleet, chuman, cland_combat, cnaval_combat, cnaval_combatant,
-    corder_instance, corders_group, cpdx_array::Array, cship, ctask_force, walk::Outcome,
+    corder_instance, corders_group, cship, ctask_force, walk::Outcome,
 };
 use replay::rows::TableId;
 use std::mem::size_of;
 
 pub const MAP_TABLES: usize = 10;
 
+mod combat;
+pub(crate) use combat::{CombatReport, CombatRequest};
+
 static AIR_WING_NAMES_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static AIR_WING_NAME_FAILURES: [std::sync::atomic::AtomicU64;
+    cair_wing::NameFailure::REASONS.len()] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; cair_wing::NameFailure::REASONS.len()];
+static AIR_WING_TRANSPORT_REFUSED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static AIR_WING_TRANSPORT_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 pub(crate) fn air_wing_name_data() -> impl serde::Serialize {
     let refused = AIR_WING_NAMES_REFUSED.load(std::sync::atomic::Ordering::Relaxed);
     crate::status::status!({
         "refused": refused,
+        "transport_fields_refused": AIR_WING_TRANSPORT_REFUSED.load(std::sync::atomic::Ordering::Relaxed),
+        "transport_source_bytes": AIR_WING_TRANSPORT_BYTES.load(std::sync::atomic::Ordering::Relaxed),
         "refusals": crate::status::map(std::iter::once(("air wing name guarded read or arena refusal", refused)).filter(|(_, count)| *count != 0)),
-        "scope": "cumulative stored air-wing name acquisition refusals; old AirWings columns remain available",
+        "worker_name_refusals": crate::status::map(cair_wing::NameFailure::REASONS.into_iter().zip(
+            AIR_WING_NAME_FAILURES.iter().map(|count| count.load(std::sync::atomic::Ordering::Relaxed))
+        ).filter(|(_, count)| *count != 0)),
+        "scope": "cumulative stored air-wing name and optional transport acquisition refusals; core AirWings columns remain available; transport_source_bytes covers owned wing acquisitions",
     })
 }
 
 pub(crate) fn observe_air_wing_name_refusals(count: usize) {
     AIR_WING_NAMES_REFUSED.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn observe_air_wing_name_failure(failure: cair_wing::NameFailure) {
+    AIR_WING_NAME_FAILURES[failure.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Inline source consumers own their state and validation. Return raw QPC ticks
@@ -95,19 +114,68 @@ pub struct MapCapacities {
 impl Default for MapCapacities {
     fn default() -> Self {
         Self {
-            rows: [64, 512, 512, 256, 512, 4096, 256, 2048, 1024, 1024],
-            player_names: 4096,
+            rows: [0; MAP_TABLES],
+            player_names: 0,
             air_wing_names: crate::country_scale::air_wing_name_bytes(),
-            land_participants: 8192,
-            order_geometry: 16384,
-            order_groups: 2048,
-            order_visits: 2048,
-            naval_groups: 64,
+            land_participants: 0,
+            order_geometry: 0,
+            order_groups: 0,
+            order_visits: 0,
+            naval_groups: 0,
         }
     }
 }
 
 impl MapCapacities {
+    /// Attach/input cadence only; mutable headers remain hints for the worker.
+    pub(crate) fn presize_combats(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+    ) -> Result<(), &'static str> {
+        let state = base
+            .checked_add(engine::cgame_state::SINGLETON_RVA)
+            .and_then(|address| engine::read::<u64>(memory, address))
+            .and_then(|pointer| usize::try_from(pointer).ok())
+            .filter(|pointer| *pointer != 0)
+            .ok_or("map combat sizing state unreadable")?;
+        let land = cland_combat::core_demand(memory, base, state);
+        let naval = cnaval_combat::storage_demand(memory, base, state);
+        let mut failure = None;
+        match land {
+            Ok(demand) => {
+                grow_capacity(&mut self.rows[2], demand.rows);
+                grow_capacity(&mut self.land_participants, demand.participants);
+            }
+            Err(reason) => failure = Some(reason),
+        }
+        for (index, outcome) in [(6, naval.combats), (7, naval.participants)] {
+            match outcome {
+                Outcome::Rows { len } => grow_capacity(&mut self.rows[index], len),
+                Outcome::Truncated { len, unread_rows } => grow_capacity(
+                    &mut self.rows[index],
+                    len.saturating_add(unread_rows as usize),
+                ),
+                Outcome::Unavailable { reason } => {
+                    failure.get_or_insert(reason);
+                }
+            }
+        }
+        grow_capacity(&mut self.naval_groups, naval.required_group_capacity);
+        failure.map_or(Ok(()), Err)
+    }
+
+    pub(crate) fn raise_air_wings(&mut self, count: usize) {
+        crate::country_scale::raise(&mut self.rows[8], crate::country_scale::rows(count, 1));
+    }
+
+    pub(crate) fn raise_naval(&mut self, index: usize, count: usize) {
+        crate::country_scale::raise(
+            &mut self.rows[index + 3],
+            crate::country_scale::rows(count, 1),
+        );
+    }
+
     pub(crate) fn raise_for_air_wing_names(&mut self, bytes: usize) {
         crate::country_scale::raise(&mut self.air_wing_names, bytes);
     }
@@ -168,7 +236,7 @@ impl ShipCensus {
         let mut reads = crate::read_accounting::table(tables[0]);
         let begin = qpc();
         models.begin_sources();
-        let naval = cfleet::walk_timed_with_names(
+        let naval = cfleet::walk_timed_growing_with_names(
             memory,
             base,
             state,
@@ -179,7 +247,7 @@ impl ShipCensus {
                 reads.select(tables[phase]);
                 qpc() as u64
             },
-            |pointer, row| models.visit_source(pointer, row),
+            |pointer, row| models.visit_source_growing(pointer, row),
             &mut self.fleet_names,
         );
         models.finish_sources(naval.capture.ships);
@@ -247,6 +315,10 @@ impl Orders {
             ticks: 0,
         }
     }
+    #[cfg(test)]
+    pub(crate) fn for_test(capacity: &MapCapacities) -> Self {
+        Self::new(capacity)
+    }
     /// Placeholder while the job owns the buffers.
     pub fn vacant() -> Self {
         Self::new(&MapCapacities {
@@ -278,9 +350,9 @@ impl Orders {
             + self.successors.allocated_bytes()
     }
     fn grow(&mut self, capacities: &mut MapCapacities) {
-        capacities.rows[9] = capacities.rows[9].max(self.rows.rows.capacity());
-        capacities.order_geometry = capacities.order_geometry.max(self.geometry.capacity());
-        capacities.order_visits = capacities.order_visits.max(self.visits.capacity());
+        capacities.rows[9] = capacities.rows[9].max(self.rows.outcome.len());
+        capacities.order_geometry = capacities.order_geometry.max(self.geometry_required);
+        capacities.order_visits = capacities.order_visits.max(self.visits_required);
         self.rows.grow(&mut capacities.rows[9]);
         grow_capacity(&mut capacities.order_geometry, self.geometry_required);
         grow_capacity(&mut capacities.order_groups, self.groups_required);
@@ -292,10 +364,22 @@ impl Orders {
     /// The orders-group registry census of this pass, taken once by the
     /// callback before the jobs that read it are queued: the Orders job's
     /// [`Self::walk`] and the Naval job's order-of-battle copy.
+    #[cfg(test)]
     pub fn walk_roots(&mut self, memory: &impl Memory, base: usize) {
         let _reads = crate::read_accounting::table(TableId::ArmyOrders);
         let begin = qpc();
         self.root_outcome = corders_group::walk_roots(memory, base, &mut self.groups);
+        self.roots_walked = true;
+        self.ticks = elapsed(begin);
+    }
+    pub(crate) fn fail_roots(&mut self, reason: &'static str) {
+        self.root_outcome = Outcome::Unavailable { reason };
+        self.roots_walked = true;
+    }
+    pub(crate) fn walk_roots_growing(&mut self, memory: &impl Memory, base: usize) {
+        let _reads = crate::read_accounting::table(TableId::ArmyOrders);
+        let begin = qpc();
+        self.root_outcome = corders_group::walk_roots_growing(memory, base, &mut self.groups);
         self.roots_walked = true;
         self.ticks = elapsed(begin);
     }
@@ -380,6 +464,8 @@ pub struct MapCaptured {
     pub air_wing_names_len: usize,
     air_wing_names_required: usize,
     pub(crate) air_wing_name_failures: usize,
+    air_transport: cair_wing::transport_operands::Scratch,
+    air_transport_capacity_charge: crate::raw_memory::Charge,
     pub orders: Orders,
     /// Raw-copy split gate for the hourly players pair (Players,
     /// HumanControllers). Set by the game thread every hour with a valid raw
@@ -401,19 +487,41 @@ pub struct MapCaptured {
     land_participants_required: usize,
     naval_groups: Vec<usize>,
     naval_groups_required: usize,
+    combat_ticks: Option<[u64; MAP_TABLES]>,
 }
 
 impl MapCaptured {
-    pub(crate) fn install_owned_air(&mut self, job: &crate::extended::air::AirWingJob) -> u64 {
+    pub(crate) fn install_owned_air(&mut self, job: &mut crate::extended::air::AirWingJob) -> u64 {
         if self.air_capture_failure.is_some() {
             return 0;
         }
         let begin = qpc();
         let len = job.map_outcome.len();
-        self.air_wings.rows[..len].copy_from_slice(&job.map_rows[..len]);
+        AIR_WING_TRANSPORT_REFUSED.fetch_add(
+            job.transport.failures as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        AIR_WING_TRANSPORT_BYTES.fetch_add(
+            job.transport_raw_bytes,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if len > self.air_wings.rows.len() {
+            // The allocating wing worker already owns complete storage.
+            // Park the old frame allocation in its job for off-thread reuse.
+            std::mem::swap(&mut self.air_wings.rows, &mut job.map_rows);
+        } else {
+            self.air_wings.rows[..len].copy_from_slice(&job.map_rows[..len]);
+        }
+        let names_swapped = job.names_len > self.air_wing_names.len();
+        if names_swapped {
+            std::mem::swap(&mut self.air_wing_names, &mut job.names);
+            self.air_wing_names_len = job.names_len;
+        }
         let names_fit = job.names_len <= self.air_wing_names.len();
         if names_fit {
-            self.air_wing_names[..job.names_len].copy_from_slice(&job.names[..job.names_len]);
+            if !names_swapped {
+                self.air_wing_names[..job.names_len].copy_from_slice(&job.names[..job.names_len]);
+            }
             self.air_wing_names_len = job.names_len;
         } else {
             self.air_wing_names_len = 0;
@@ -447,6 +555,12 @@ impl MapCaptured {
     }
 
     pub fn with_capacities(capacity: &MapCapacities) -> Self {
+        let air_transport = cair_wing::transport_operands::Scratch::owned(capacity.rows[8]);
+        let mut air_transport_capacity_charge = crate::raw_memory::Charge::default();
+        air_transport_capacity_charge.set(crate::raw_memory::Capacity {
+            auxiliary_vectors: air_transport.allocated_bytes() as u64,
+            ..Default::default()
+        });
         Self {
             players: CaptureRows::new(capacity.rows[0]),
             human_controllers: CaptureRows::new(capacity.rows[1]),
@@ -461,6 +575,8 @@ impl MapCaptured {
             air_wing_names_len: 0,
             air_wing_names_required: 0,
             air_wing_name_failures: 0,
+            air_transport,
+            air_transport_capacity_charge,
             owned_air_captured: false,
             air_capture_failure: None,
             orders: Orders::new(capacity),
@@ -479,6 +595,7 @@ impl MapCaptured {
             )),
             naval_groups_required: 0,
             players_raw_mode: false,
+            combat_ticks: None,
         }
     }
 
@@ -492,6 +609,7 @@ impl MapCaptured {
             + self.naval_combat_participants.allocated_bytes()
             + self.air_wings.allocated_bytes()
             + self.air_wing_names.capacity()
+            + self.air_transport.allocated_bytes()
             + self.orders.allocated_bytes()
             + self.player_names.capacity()
             + self.land_participants.capacity() * size_of::<u64>()
@@ -509,6 +627,7 @@ impl MapCaptured {
         self.air_wing_names_len = 0;
         self.air_wing_names_required = 0;
         self.air_wing_name_failures = 0;
+        self.air_transport.reset_metadata();
         self.owned_air_captured = false;
         self.air_capture_failure = None;
         self.orders.reset();
@@ -518,6 +637,7 @@ impl MapCaptured {
         self.land_participants_required = 0;
         self.naval_groups_required = 0;
         self.players_raw_mode = false;
+        self.combat_ticks = None;
     }
 
     pub fn outcomes(&self) -> [Outcome; MAP_TABLES] {
@@ -540,12 +660,27 @@ impl MapCaptured {
         self.players.grow(&mut capacities.rows[0]);
         self.human_controllers.grow(&mut capacities.rows[1]);
         self.land_combats.grow(&mut capacities.rows[2]);
+        capacities.rows[3] = capacities.rows[3].max(self.naval.fleets.rows.len());
         self.naval.fleets.grow(&mut capacities.rows[3]);
+        capacities.rows[4] = capacities.rows[4].max(self.naval.task_forces.rows.len());
         self.naval.task_forces.grow(&mut capacities.rows[4]);
+        capacities.rows[5] = capacities.rows[5].max(self.naval.ships.rows.len());
         self.naval.ships.grow(&mut capacities.rows[5]);
         self.naval_combats.grow(&mut capacities.rows[6]);
         self.naval_combat_participants.grow(&mut capacities.rows[7]);
+        capacities.rows[8] = capacities.rows[8].max(self.air_wings.rows.len());
         self.air_wings.grow(&mut capacities.rows[8]);
+        let _ = self.air_transport.grow(
+            self.air_wings
+                .rows
+                .len()
+                .max(self.air_transport.required_map_capacity),
+        );
+        self.air_transport_capacity_charge
+            .set(crate::raw_memory::Capacity {
+                auxiliary_vectors: self.air_transport.allocated_bytes() as u64,
+                ..Default::default()
+            });
         grow_capacity(
             &mut capacities.air_wing_names,
             self.air_wing_names_required
@@ -576,7 +711,7 @@ impl MapCaptured {
         state: usize,
         sources: &mut impl MapSources,
     ) -> [u64; MAP_TABLES] {
-        let mut ticks = [0; MAP_TABLES];
+        let mut ticks = self.combat_ticks.unwrap_or([0; MAP_TABLES]);
         // Raw-copy split (hourly players pair): every hour the game thread
         // stages raw bytes via `copy_players_refresh` and the decode worker
         // fills both rows before the ready handoff. Skip both typed walks
@@ -585,7 +720,7 @@ impl MapCaptured {
         if !self.players_raw_mode {
             let mut reads = crate::read_accounting::table(TableId::Players);
             let begin = qpc();
-            let names = chuman::walk(
+            let names = chuman::walk_growing(
                 memory,
                 base,
                 state,
@@ -599,46 +734,52 @@ impl MapCaptured {
 
             reads.select(TableId::HumanControllers);
             let begin = qpc();
-            self.human_controllers.outcome =
-                chuman::walk_controllers(memory, base, state, &mut self.human_controllers.rows);
+            self.human_controllers.outcome = chuman::walk_controllers_growing(
+                memory,
+                base,
+                state,
+                &mut self.human_controllers.rows,
+            );
             ticks[1] = (qpc() - begin).max(0) as u64;
         }
 
         let mut reads = crate::read_accounting::table(TableId::LandCombats);
-        let begin = qpc();
-        let mut nested = sources.begin_land();
-        let land = cland_combat::walk_with(
-            memory,
-            base,
-            state,
-            &mut self.land_combats.rows,
-            &mut self.land_participants,
-            |source| nested = nested.saturating_add(sources.land(source)),
-        );
-        nested = nested.saturating_add(sources.finish_land(land.outcome));
-        self.land_combats.outcome = land.outcome;
-        self.land_participants_len = land.participants_len;
-        self.land_participants_required = land.required_participants;
-        ticks[2] = ((qpc() - begin).max(0) as u64).saturating_sub(nested);
+        if self.combat_ticks.is_none() {
+            let begin = qpc();
+            let mut nested = sources.begin_land();
+            let land = cland_combat::walk_with(
+                memory,
+                base,
+                state,
+                &mut self.land_combats.rows,
+                &mut self.land_participants,
+                |source| nested = nested.saturating_add(sources.land(source)),
+            );
+            nested = nested.saturating_add(sources.finish_land(land.outcome));
+            self.land_combats.outcome = land.outcome;
+            self.land_participants_len = land.participants_len;
+            self.land_participants_required = land.required_participants;
+            ticks[2] = ((qpc() - begin).max(0) as u64).saturating_sub(nested);
 
-        let naval_tables = [TableId::NavalCombats, TableId::NavalCombatParticipants];
-        reads.select(naval_tables[0]);
-        let naval = cnaval_combat::walk_timed(
-            memory,
-            base,
-            state,
-            &mut self.naval_combats.rows,
-            &mut self.naval_combat_participants.rows,
-            &mut self.naval_groups,
-            |phase| {
-                reads.select(naval_tables[phase]);
-                qpc() as u64
-            },
-        );
-        self.naval_combats.outcome = naval.capture.combats;
-        self.naval_combat_participants.outcome = naval.capture.participants;
-        self.naval_groups_required = naval.capture.required_group_capacity;
-        ticks[6..8].copy_from_slice(&naval.read_ticks);
+            let naval_tables = [TableId::NavalCombats, TableId::NavalCombatParticipants];
+            reads.select(naval_tables[0]);
+            let naval = cnaval_combat::walk_timed(
+                memory,
+                base,
+                state,
+                &mut self.naval_combats.rows,
+                &mut self.naval_combat_participants.rows,
+                &mut self.naval_groups,
+                |phase| {
+                    reads.select(naval_tables[phase]);
+                    qpc() as u64
+                },
+            );
+            self.naval_combats.outcome = naval.capture.combats;
+            self.naval_combat_participants.outcome = naval.capture.participants;
+            self.naval_groups_required = naval.capture.required_group_capacity;
+            ticks[6..8].copy_from_slice(&naval.read_ticks);
+        }
         reads.select(TableId::AirWings);
         let begin = qpc();
         if let Some(reason) = self.air_capture_failure {
@@ -653,6 +794,11 @@ impl MapCaptured {
                 required: 0,
                 failures: 0,
             };
+            let mut transport = cair_wing::transport_operands::Pass::new(
+                base,
+                self.air_wings.rows.len(),
+                &mut self.air_transport,
+            );
             let walked = cair_wing::walk_game_score_with_owners(
                 memory,
                 base,
@@ -661,6 +807,7 @@ impl MapCaptured {
                 Some(&mut names),
                 score_limit,
                 |pointer, pool, row| {
+                    transport.capture(memory, pointer, pool, row);
                     nested.set(
                         nested
                             .get()
@@ -685,6 +832,10 @@ impl MapCaptured {
             self.air_wing_names_len = names.used;
             self.air_wing_names_required = names.required;
             self.air_wing_name_failures = names.failures;
+            AIR_WING_TRANSPORT_REFUSED.fetch_add(
+                self.air_transport.failures as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             observe_air_wing_name_refusals(names.failures);
             self.air_wings.outcome = walked.shared.map;
             let source = source.into_inner();
@@ -706,27 +857,24 @@ fn elapsed(begin: i64) -> u64 {
 // ===========================================================================
 // Hourly players raw-copy split (Players, HumanControllers).
 //
-// The game thread copies raw bytes only: live roster header with per-player
+// The acquisition worker copies raw bytes: live roster header with per-player
 // identity/flag/string spans plus heap name bytes, and the human-status
 // array with an authenticated country census plus per-canonical count bytes.
 // No row is decoded on the game thread. The single FIFO decode worker replays
-// the existing `chuman::walk` and `walk_controllers` against the recorded
-// spans (`crate::raw::Recorded`), so rows, ordinals, arenas, truncation and
+// the growing `chuman` readers against the recorded spans, so rows,
+// ordinals, arenas and
 // failure reasons are identical by construction (see `crate::raw`).
 //
-// The mirror traverses structurally and records every discoverable span,
-// never aborting except on overflow: validation, precedence and error scope
-// are local parses, so the replay derives every outcome from the same
-// recorded spans and later extras are harmless.
+// The mirror retains original field/gate order and stops each independent
+// source at its first failure. Worker growth never restarts native reads.
 // ===========================================================================
 
 /// Fault-attribution bits, one per players table in family order.
 const P_PLAYERS: u32 = 0x01;
 const P_CONTROLLERS: u32 = 0x02;
 
-/// One hour of raw players payload. Flat pools recycle capacities and the
-/// steady state allocates on neither thread; growth happens on the decode
-/// side only (see `crate::decode::recycle_players_job`).
+/// One hour of raw players payload. Worker growth extends each original
+/// span before acquisition; decode grows rows and text before publication.
 #[derive(Debug, Default)]
 pub(crate) struct PlayersJob {
     pub log: RawLog<2>,
@@ -736,10 +884,7 @@ pub(crate) struct PlayersJob {
 impl PlayersJob {
     pub fn new() -> Self {
         Self {
-            // One player with two names plus 439 controllers with a country
-            // census; both pools start above that so steady state never
-            // overflows.
-            log: RawLog::new(1 << 15, 4 << 20),
+            log: RawLog::new(0, 0),
             game_state: 0,
         }
     }
@@ -754,9 +899,7 @@ impl PlayersJob {
         self.log.grow_for_next()
     }
 
-    /// Double every pool off the game thread until copies fit. Converges like
-    /// the typed capacity growth; overflowed hours fall back to the typed
-    /// walk in the meantime, so sizing is a pure performance knob.
+    /// Retain acquired demand for reusable storage off the game thread.
     pub fn grow(&mut self) {
         self.log.grow();
     }
@@ -764,8 +907,7 @@ impl PlayersJob {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct PlayersCopyReport {
-    /// False when staging overflowed: the caller falls back to the typed walk
-    /// (identical rows through the existing path) and enqueues no payload.
+    /// False only when worker-owned staging cannot finish; no native retry.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 2],
     pub raw_bytes: [u64; 2],
@@ -782,10 +924,6 @@ fn ppool_u64(log: &RawLog<2>, start: usize) -> u64 {
     u64::from_le_bytes(log.bytes[start..start + 8].try_into().unwrap())
 }
 
-fn ppool_u32(log: &RawLog<2>, start: usize) -> u32 {
-    u32::from_le_bytes(log.bytes[start..start + 4].try_into().unwrap())
-}
-
 /// One mirrored span read. Bulk spans serve enclosed sub-reads (e.g., 4-byte
 /// keys inside roster elements) via `Recorded` containment.
 fn pspan(
@@ -798,132 +936,114 @@ fn pspan(
     log.take_bulk(memory, addr?, len, mask)
 }
 
-/// Heap payload and terminator takes for one parsed player string. Inline
-/// strings ride in the already-copied header span.
-fn copy_player_string(
+/// Original CHuman fields and string gates, without retrying a failed span.
+fn copy_player(
     log: &mut RawLog<2>,
     memory: &impl engine::Memory,
-    len: usize,
-    source: usize,
-    inline: bool,
-) {
-    if inline {
-        return;
-    }
-    if len != 0 {
-        let _ = pspan(log, memory, Some(source), len, P_PLAYERS);
-    }
-    let _ = pspan(log, memory, source.checked_add(len), 1, P_PLAYERS);
-}
-
-/// Mirror of one player's read set: vtable, key, country, flags, 64-byte
-/// string headers with heap payloads. Takes are unconditional; the replay
-/// validates vtables, keys, duplicate keys and string headers itself.
-fn copy_player(log: &mut RawLog<2>, memory: &impl engine::Memory, pointer: usize) {
+    pointer: usize,
+    vtable: usize,
+    keys: &mut Vec<i32>,
+) -> bool {
     use engine::{chuman, msvc_string};
-    let _ = pspan(log, memory, Some(pointer), 8, P_PLAYERS);
-    let _ = pspan(
-        log,
-        memory,
-        pointer.checked_add(chuman::PLAYER_KEY),
-        4,
-        P_PLAYERS,
-    );
-    let _ = pspan(
-        log,
-        memory,
-        pointer.checked_add(chuman::COUNTRY_TAG),
-        4,
-        P_PLAYERS,
-    );
-    let _ = pspan(
-        log,
-        memory,
-        pointer.checked_add(chuman::FLAGS),
-        1,
-        P_PLAYERS,
-    );
-    let strings = match pspan(
-        log,
-        memory,
-        pointer.checked_add(chuman::FIRST_STRING),
-        64,
-        P_PLAYERS,
-    ) {
-        Some(start) => start,
-        None => return,
+    let Some(key_address) = pointer.checked_add(chuman::PLAYER_KEY) else {
+        return false;
     };
-    let mut headers = [0u8; 64];
+    let Some(country_address) = pointer.checked_add(chuman::COUNTRY_TAG) else {
+        return false;
+    };
+    let Some(flags_address) = pointer.checked_add(chuman::FLAGS) else {
+        return false;
+    };
+    let Some(strings_address) = pointer.checked_add(chuman::FIRST_STRING) else {
+        return false;
+    };
+    // Fields::read acquires these five fields before validating their values.
+    let Some(identity) = pspan(log, memory, Some(pointer), 8, P_PLAYERS) else {
+        return false;
+    };
+    let Some(key) = pspan(log, memory, Some(key_address), 4, P_PLAYERS) else {
+        return false;
+    };
+    if pspan(log, memory, Some(country_address), 4, P_PLAYERS).is_none() {
+        return false;
+    }
+    if pspan(log, memory, Some(flags_address), 1, P_PLAYERS).is_none() {
+        return false;
+    }
+    let Some(strings) = pspan(log, memory, Some(strings_address), 64, P_PLAYERS) else {
+        return false;
+    };
+    let key = i32::from_le_bytes(log.bytes[key..key + 4].try_into().unwrap());
+    if ppool_u64(log, identity) != vtable as u64 || key == -1 || keys.contains(&key) {
+        return false;
+    }
+    keys.push(key);
+    let mut headers = [0_u8; 64];
     headers.copy_from_slice(&log.bytes[strings..strings + 64]);
-    for chunk in [&headers[..32], &headers[32..]] {
+    let mut payloads = [None; 2];
+    for (index, chunk) in headers.chunks_exact(32).enumerate() {
         let len = u64::from_le_bytes(chunk[16..24].try_into().unwrap());
         let capacity = u64::from_le_bytes(chunk[24..32].try_into().unwrap());
         if len > capacity || capacity < msvc_string::INLINE_CAPACITY {
-            continue;
+            return false;
         }
         let Ok(len) = usize::try_from(len) else {
-            continue;
+            return false;
         };
-        let inline = capacity == msvc_string::INLINE_CAPACITY;
-        if inline {
+        if capacity == msvc_string::INLINE_CAPACITY {
+            if chunk[len] != 0 {
+                return false;
+            }
             continue;
         }
-        let source = match usize::try_from(u64::from_le_bytes(chunk[..8].try_into().unwrap()))
+        let Some(source) = usize::try_from(u64::from_le_bytes(chunk[..8].try_into().unwrap()))
             .ok()
-            .filter(|&s| s != 0)
-        {
-            Some(s) => s,
-            None => continue,
+            .filter(|&source| source != 0)
+        else {
+            return false;
         };
-        if source.checked_add(len).is_none() {
-            continue;
+        let Some(terminator_address) = source.checked_add(len) else {
+            return false;
+        };
+        let Some(terminator) = pspan(log, memory, Some(terminator_address), 1, P_PLAYERS) else {
+            return false;
+        };
+        if log.bytes[terminator] != 0 {
+            return false;
         }
-        copy_player_string(log, memory, len, source, false);
-        if log.overflowed {
-            return;
+        payloads[index] = Some((source, len));
+    }
+    // 140BAD720/1401C0920 consume exact std::string payload lengths. Both
+    // original descriptor terminator gates precede either payload copy.
+    for (source, len) in payloads.into_iter().flatten() {
+        if pspan(log, memory, Some(source), len, P_PLAYERS).is_none() {
+            return false;
         }
     }
+    true
 }
 
-/// Mirror of one link-table read for the controller census with local bounds
-/// checks. Returns the resolved slot exactly when the typed resolve
-/// succeeds; the replay derives its own reason from the same recorded span.
-fn controller_link(
-    log: &mut RawLog<2>,
-    memory: &impl engine::Memory,
-    links: &Array,
-    countries: u32,
-    raw: u32,
-) -> Option<u32> {
-    if raw == 0 || raw >= links.count {
-        return None;
-    }
-    let offset = (raw as usize).checked_mul(4)?;
-    let start = pspan(
-        log,
-        memory,
-        links.data.checked_add(offset),
-        4,
-        P_CONTROLLERS,
-    )?;
-    let slot = ppool_u32(log, start);
-    if slot == 0 || slot >= countries {
-        return None;
-    }
-    Some(slot)
-}
-
-/// One structural pass: roster with players, then country census with
-/// controller counts. Stops at the first typed abort point; later extras
-/// are harmless.
+/// Independent original passes: live roster, then the controller census.
+/// A failed source preserves the other table's healthy acquisition.
 fn copy_players_pass(
     log: &mut RawLog<2>,
     memory: &impl engine::Memory,
     base: usize,
     game_state: usize,
 ) {
-    use engine::{ccountry, cgame_state, chuman, cpdx_array::Array};
-    let _ = base;
+    copy_player_roster(log, memory, base, game_state);
+    if !log.overflowed {
+        copy_controller_pass(log, memory, base, game_state);
+    }
+}
+
+fn copy_player_roster(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+) {
+    use engine::{cgame_state, chuman, cpdx_array::Array};
     log.has_bulk = true;
     // Live roster.
     let roster_start = match pspan(
@@ -942,150 +1062,58 @@ fn copy_players_pass(
         Some(a) => a,
         None => return,
     };
-    for index in 0..roster.count {
-        let addr = roster
-            .data
-            .checked_add((index as usize).saturating_mul(chuman::STRIDE));
-        // Roster elements are inline CHuman objects, not pointers.
-        if let Some(addr) = addr {
-            // Probe the vtable to discover live versus padding slots; the
-            // replay authenticates the same span and skips padding itself.
-            // Takes run unconditionally for every slot (a superset).
-            let vtable = pspan(log, memory, Some(addr), 8, P_PLAYERS);
-            if vtable.is_none() {
-                continue;
-            }
-            copy_player(log, memory, addr);
-            if log.overflowed {
-                return;
-            }
-        }
-        if log.overflowed {
-            return;
-        }
-    }
-    // Human-status array header plus country census for controllers.
-    let counts_start = match pspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::HUMAN_STATUS),
-        16,
-        P_CONTROLLERS,
-    ) {
-        Some(start) => start,
-        None => return,
-    };
-    let mut counts_raw = [0u8; 16];
-    counts_raw.copy_from_slice(&log.bytes[counts_start..counts_start + 16]);
-    let counts = match Array::from_header(counts_raw, 1) {
-        Some(a) => a,
-        None => return,
-    };
-    let countries_start = match pspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRIES),
-        16,
-        P_CONTROLLERS,
-    ) {
-        Some(start) => start,
-        None => return,
-    };
-    let links_start = match pspan(
-        log,
-        memory,
-        game_state.checked_add(cgame_state::COUNTRY_LINKS),
-        16,
-        P_CONTROLLERS,
-    ) {
-        Some(start) => start,
-        None => return,
-    };
-    let mut countries_raw = [0u8; 16];
-    countries_raw.copy_from_slice(&log.bytes[countries_start..countries_start + 16]);
-    let mut links_raw = [0u8; 16];
-    links_raw.copy_from_slice(&log.bytes[links_start..links_start + 16]);
-    let countries_array = match Array::from_header(countries_raw, 8) {
-        Some(a) => a,
-        None => return,
-    };
-    let links_array = match Array::from_header(links_raw, 4) {
-        Some(a) => a,
-        None => return,
-    };
-    if countries_array.count < 2 || links_array.count == 0 {
+    let Some(vtable) = base.checked_add(chuman::VTABLE_RVA) else {
         return;
-    }
-    let country_vtable = match base.checked_add(ccountry::VTABLE_RVA) {
-        Some(v) => v as u64,
-        None => return,
     };
-    for slot in 1..countries_array.count {
-        let ptr_addr = (slot as usize)
-            .checked_mul(8)
-            .and_then(|o| countries_array.data.checked_add(o));
-        let pointer = match pspan(log, memory, ptr_addr, 8, P_CONTROLLERS)
-            .and_then(|s| usize::try_from(ppool_u64(log, s)).ok().filter(|&p| p != 0))
-        {
-            Some(p) => p,
-            None => continue,
-        };
-        let vtable = match pspan(log, memory, Some(pointer), 8, P_CONTROLLERS) {
-            Some(s) => s,
-            None => continue,
-        };
-        if ppool_u64(log, vtable) != country_vtable {
+    let Ok(mut keys) = engine::allocation::vec(roster.count as usize) else {
+        return;
+    };
+    for index in 0..roster.count {
+        let Some(address) = roster.element(index, chuman::STRIDE) else {
             return;
-        }
-        let id = match pspan(
-            log,
-            memory,
-            pointer.checked_add(ccountry::ID),
-            4,
-            P_CONTROLLERS,
-        ) {
-            Some(s) => ppool_u32(log, s),
-            None => continue,
         };
-        let canonical = match controller_link(log, memory, &links_array, countries_array.count, id)
-        {
-            Some(c) => c,
-            None => return,
-        };
-        if controller_link(log, memory, &links_array, countries_array.count, slot)
-            != Some(canonical)
-        {
-            return;
-        }
-        if controller_link(log, memory, &links_array, countries_array.count, canonical)
-            != Some(canonical)
-        {
-            return;
-        }
-        let canon_addr = (canonical as usize)
-            .checked_mul(8)
-            .and_then(|o| countries_array.data.checked_add(o));
-        let canon_ptr = match pspan(log, memory, canon_addr, 8, P_CONTROLLERS) {
-            Some(s) => s,
-            None => continue,
-        };
-        if ppool_u64(log, canon_ptr) != pointer as u64 {
-            return;
-        }
-        // Controller count byte for the canonical slot. Null slots publish
-        // no row; the replay derives the same skip from the census.
-        if slot == canonical {
-            let count_addr = counts.data.checked_add(canonical as usize);
-            let _ = pspan(log, memory, count_addr, 1, P_CONTROLLERS);
-        }
-        if log.overflowed {
+        if !copy_player(log, memory, address, vtable, &mut keys) {
             return;
         }
     }
 }
 
-/// Copy one hourly players payload and record copy-only costs. Staging
-/// overflow falls back to the typed walk and enqueues no payload.
+fn copy_controller_pass(
+    log: &mut RawLog<2>,
+    memory: &impl engine::Memory,
+    base: usize,
+    game_state: usize,
+) {
+    use std::cell::RefCell;
+    struct ControllerCopy<'a, M> {
+        memory: &'a M,
+        log: RefCell<&'a mut RawLog<2>>,
+    }
+    impl<M: engine::Memory> engine::Memory for ControllerCopy<'_, M> {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            let mut log = self.log.borrow_mut();
+            let Some(start) = log.take(self.memory, address, output.len(), P_CONTROLLERS) else {
+                return false;
+            };
+            output.copy_from_slice(&log.bytes[start..start + output.len()]);
+            true
+        }
+    }
+    // The fixed walk still visits every country and count with no row storage.
+    // Reuse its first-failure and reserved-alias gates without another mirror.
+    let _ = chuman::walk_controllers(
+        &ControllerCopy {
+            memory,
+            log: RefCell::new(log),
+        },
+        base,
+        game_state,
+        &mut [],
+    );
+}
+
+/// Copy one hourly players payload and record copy-only costs. Worker storage
+/// grows before each original span; failures are never retried live.
 pub(crate) fn copy_players_refresh(
     memory: &impl engine::Memory,
     ctx: PlayersCopyContext,
@@ -1096,6 +1124,7 @@ pub(crate) fn copy_players_refresh(
     let started = qpc();
     job.clear();
     job.game_state = ctx.game_state;
+    job.log.enable_worker_growth();
     copy_players_pass(&mut job.log, memory, ctx.base, ctx.game_state);
     PlayersCopyReport {
         raw_ok: !job.log.overflowed,
@@ -1126,7 +1155,7 @@ impl MapCaptured {
     ) {
         let recorded = crate::raw::Recorded::build(&job.log);
         let started = qpc();
-        let walked = chuman::walk(
+        let walked = chuman::walk_growing(
             &recorded,
             base,
             job.game_state,
@@ -1138,7 +1167,7 @@ impl MapCaptured {
         self.player_names_required = walked.required_bytes;
         decode_ticks[0] += elapsed(started);
         let started = qpc();
-        self.human_controllers.outcome = chuman::walk_controllers(
+        self.human_controllers.outcome = chuman::walk_controllers_growing(
             &recorded,
             base,
             job.game_state,
@@ -1151,6 +1180,9 @@ impl MapCaptured {
 
 /// Hourly players split harness: one country with one inline player and one
 /// controller count, plus empty and fault-injection coverage.
+#[cfg(test)]
+mod players_sizing_tests;
+
 #[cfg(test)]
 mod players_split_tests {
     use super::NoSources;
@@ -1273,14 +1305,9 @@ mod players_split_tests {
     }
 
     #[test]
-    fn players_truncation_matrix_matches_direct_with_same_caps() {
-        // B3: zero/one/exact-fit/overflow-by-one/massive run typed AND
-        // copy→decode against the SAME memory with the SAME pooled caps,
-        // asserting identical outcome (incl. len/unread) and identical rows.
-        // Fixture holds 1 player and 1 controller census row, so cap 1 is
-        // both the one-row and exact-fit arm, cap 0 the zero/overflow
-        // (total 1 == cap+1)/massive arm. u32 unread saturation is not
-        // reachable and is covered by the walk's own saturating arithmetic.
+    fn players_cold_and_reusable_storage_match_direct() {
+        // Original headers grow both direct and owned decoding before output,
+        // independently of each reusable row buffer's prior length.
         let bytes = fixture();
         let memory = SliceMemory {
             base: GS,
@@ -1341,7 +1368,15 @@ mod players_split_tests {
             bytes: &bytes,
         };
         let mut job = PlayersJob::new();
-        super::copy_players_pass(&mut job.log, &memory, BASE, GS);
+        let report = copy_players_refresh(
+            &memory,
+            PlayersCopyContext {
+                base: BASE,
+                game_state: GS,
+            },
+            &mut job,
+        );
+        assert!(report.raw_ok);
         assert!(job.log.has_bulk);
         let recorded = crate::raw::Recorded::build(&job.log);
         let pair = job
@@ -1368,7 +1403,7 @@ mod players_split_tests {
     }
 
     #[test]
-    fn players_split_copy_matches_direct_walk_under_truncation() {
+    fn players_split_copy_matches_direct_walk_from_empty_rows() {
         let bytes = fixture();
         let memory = SliceMemory {
             base: GS,
@@ -1394,7 +1429,7 @@ mod players_split_tests {
     }
 
     #[test]
-    fn players_staging_overflow_falls_back_to_typed_walk() {
+    fn players_staging_grows_from_cold_storage_before_publication() {
         let bytes = fixture();
         let memory = SliceMemory {
             base: GS,
@@ -1410,16 +1445,19 @@ mod players_split_tests {
         };
         let report = copy_players_refresh(&memory, ctx, &mut tiny);
 
-        assert!(!report.raw_ok);
-        assert!(tiny.log.overflowed);
-        assert!(tiny.grow_for_next());
+        assert!(report.raw_ok);
+        assert!(!tiny.log.overflowed);
+        let mut captured = MapCaptured::with_capacities(&capacities());
+        captured.decode_players_payload(BASE, &tiny, &mut [0; 2]);
+        assert_eq!(captured.players.outcome, Outcome::Rows { len: 1 });
+        assert_eq!(captured.human_controllers.outcome, Outcome::Rows { len: 1 });
     }
 
     #[test]
-    fn players_worst_case_pools_start_above_late_campaign_caps() {
+    fn players_start_without_chosen_population_extents() {
         let job = PlayersJob::new();
-        assert!(job.log.spans.capacity() >= 16384);
-        assert!(job.log.bytes.capacity() >= (1 << 20));
+        assert_eq!(job.log.spans.capacity(), 0);
+        assert_eq!(job.log.bytes.capacity(), 0);
     }
 }
 
@@ -1581,8 +1619,14 @@ mod tests {
 
     #[test]
     fn pooled_growth_preserves_complete_rows_and_counts_whole_omissions() {
-        let mut captured = MapCaptured::new();
-        let mut capacity = MapCapacities::default();
+        let mut capacity = MapCapacities {
+            player_names: 4096,
+            land_participants: 8192,
+            order_geometry: 16384,
+            ..MapCapacities::default()
+        };
+        capacity.rows[5] = 4096;
+        let mut captured = MapCaptured::with_capacities(&capacity);
         captured.naval.ships.rows[0].id = u64::MAX;
         captured.naval.ships.outcome = Outcome::Truncated {
             len: capacity.rows[5],
@@ -1603,11 +1647,18 @@ mod tests {
 
         assert_eq!(captured.player_names.len(), 8192);
 
-        assert_eq!(captured.orders.geometry.len(), 32768);
+        assert_eq!(captured.orders.geometry.len(), 16384 + 23);
 
         let mut idle = MapCaptured::new();
         idle.grow(&mut capacity);
-        assert_eq!(idle.allocated_bytes(), captured.allocated_bytes());
+        assert_eq!(idle.naval.ships.rows.len(), captured.naval.ships.rows.len());
+        assert_eq!(
+            idle.land_participants.len(),
+            captured.land_participants.len()
+        );
+        assert_eq!(idle.player_names.len(), captured.player_names.len());
+        assert_eq!(idle.orders.geometry.len(), captured.orders.geometry.len());
+        assert!(idle.allocated_bytes() <= captured.allocated_bytes());
     }
 
     #[test]
@@ -1694,7 +1745,7 @@ mod tests {
         );
         let mut orders = Orders::new(&MapCapacities::default());
         let ((), counts) = world.counted(|memory| {
-            orders.walk_roots(memory, world.base);
+            orders.walk_roots_growing(memory, world.base);
             orders.walk(memory, world.base);
         });
         assert_eq!(
@@ -1723,22 +1774,28 @@ mod tests {
     }
 
     #[test]
-    fn worker_grown_order_visits_raise_the_shared_reuse_capacity() {
+    fn worker_order_demand_replenishes_reuse_without_allocator_headroom() {
         let mut capacity = MapCapacities::default();
         let mut orders = Orders::new(&capacity);
         orders
             .visits
-            .resize(capacity.order_visits * 2, corder_instance::Visit::default());
+            .resize(5_000, corder_instance::Visit::default());
+        orders.visits.reserve_exact(100_003);
+        orders.visits_required = 5_000;
         let worker_capacity = orders.visits.capacity();
         orders.grow(&mut capacity);
-        assert_eq!(capacity.order_visits, worker_capacity);
-        assert_eq!(Orders::new(&capacity).visits.len(), worker_capacity);
+        assert!(capacity.order_visits >= 5_000);
+        assert!(capacity.order_visits < worker_capacity);
+        assert_eq!(Orders::new(&capacity).visits.len(), capacity.order_visits);
     }
 
     #[test]
     fn unavailable_scratch_walks_grow_without_inventing_truncated_row_counts() {
-        let mut captured = MapCaptured::new();
-        let mut capacity = MapCapacities::default();
+        let mut capacity = MapCapacities {
+            order_groups: 2048,
+            ..MapCapacities::default()
+        };
+        let mut captured = MapCaptured::with_capacities(&capacity);
         captured.orders.rows.outcome = Outcome::Unavailable {
             reason: "orders scratch full",
         };

@@ -17,6 +17,10 @@ use super::{
     Decimal, Item, block, boolean, field, integer, invalid, object_id, scalar, typed_handle,
 };
 
+mod spotting_cache;
+pub use spotting_cache::MissionSpottingCaches;
+pub(in crate::save) use spotting_cache::spotting_caches;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pack {
     pub task_forces: BTreeMap<u64, TaskForce>,
@@ -38,11 +42,15 @@ pub struct TaskForce {
 }
 
 pub fn parse(items: &[Item]) -> io::Result<Pack> {
+    parse_with_countries(items, super::CountriesView::from_root(items)?)
+}
+
+pub(super) fn parse_with_countries(
+    _items: &[Item],
+    countries: super::CountriesView<'_>,
+) -> io::Result<Pack> {
     let mut pack = Pack::default();
-    let Some(countries) = field(items, b"countries")? else {
-        return Ok(pack);
-    };
-    for country in block(countries)? {
+    for country in countries.iter() {
         let tag = country
             .key
             .as_deref()

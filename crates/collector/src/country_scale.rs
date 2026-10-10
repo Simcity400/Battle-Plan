@@ -1,4 +1,4 @@
-//! Country-proportional capture sizing.
+//! Live registry and content-demand capture sizing.
 //!
 //! Tables with one (or a fixed few) rows per country slot are sized from the
 //! live country registry instead of a vanilla-sized default, so the first hour
@@ -7,7 +7,8 @@
 //! thread while it idles, which sees a save load (the game rebuilds the
 //! registry in `CGameState::reset`) before its first hourly tick. Allocation
 //! stays off the game thread. Capacities only ever rise; the ordinary
-//! truncation growth still covers anything these estimates miss.
+//! worker acquisitions grow from their original observations for populations
+//! that can change between sizing polls.
 
 use crate::{extended, map_capture::MapCapacities, sampling};
 use engine::{Memory, cgame_state, country_memory::Cache};
@@ -15,18 +16,22 @@ use std::sync::{
     Mutex,
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
+mod naval_movement;
+pub(crate) mod source_demand;
+pub(crate) mod table_demand;
+pub(crate) use table_demand::presize as presize_table_inputs;
 
 /// Largest registry observed this attachment, for raw-copy jobs whose pools
 /// live outside the frame. Only rises.
 static SLOTS_HINT: AtomicUsize = AtomicUsize::new(0);
 
-struct DemandFailures {
+pub(crate) struct DemandFailures {
     count: AtomicU64,
     last_reason: Mutex<Option<&'static str>>,
 }
 
 impl DemandFailures {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             count: AtomicU64::new(0),
             last_reason: Mutex::new(None),
@@ -35,7 +40,7 @@ impl DemandFailures {
 
     /// An unreadable sizing observation adds no hint, preserving the existing
     /// capacities. It is counted separately from a successful empty census.
-    fn observe<T>(&self, demand: Result<T, &'static str>) -> Result<T, &'static str> {
+    pub(crate) fn observe<T>(&self, demand: Result<T, &'static str>) -> Result<T, &'static str> {
         match demand {
             Ok(demand) => Ok(demand),
             Err(reason) => {
@@ -49,7 +54,7 @@ impl DemandFailures {
         }
     }
 
-    fn diagnostics(&self) -> impl serde::Serialize {
+    pub(crate) fn diagnostics(&self) -> impl serde::Serialize {
         let last_reason = *self
             .last_reason
             .lock()
@@ -68,10 +73,11 @@ static ADVISOR_MODIFIER_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
 static PRODUCTION_MODIFIER_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
 static LAND_EVENT_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
 static POLITICS_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
+static CO_BELLIGERENT_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
 
 pub(crate) fn demand_diagnostics() -> impl serde::Serialize {
     crate::status::status!({
-        "scope": "cumulative failed off-thread sizing observations; no hint added on failure; existing capacities retained",
+        "scope": "cumulative failed off-thread sizing observations; failed operands add no fabricated demand; existing capacities retained",
         "agency_upgrade_levels": AGENCY_UPGRADE_DEMAND_FAILURES.diagnostics(),
         "operations": OPERATION_DEMAND_FAILURES.diagnostics(),
         "fuel_unit_demand": FUEL_UNIT_DEMAND_FAILURES.diagnostics(),
@@ -79,6 +85,15 @@ pub(crate) fn demand_diagnostics() -> impl serde::Serialize {
         "production_modifiers": PRODUCTION_MODIFIER_DEMAND_FAILURES.diagnostics(),
         "land_event_words": LAND_EVENT_DEMAND_FAILURES.diagnostics(),
         "politics_records": POLITICS_DEMAND_FAILURES.diagnostics(),
+        "co_belligerents": CO_BELLIGERENT_DEMAND_FAILURES.diagnostics(),
+        "weather_display": extended::weather::display_demand_diagnostics(),
+        "transport": extended::transport_demand::status(),
+        "table_storage": table_demand::diagnostics(),
+        "source_storage": source_demand::diagnostics(),
+        "observer_boundary": extended::observer_boundary::status(),
+        "intel_tables": extended::intel::demand_status(),
+        "governance_tables": extended::governance::demand_status(),
+        "character_traits": extended::characters::demand_status(),
     })
 }
 
@@ -103,7 +118,7 @@ pub fn census_rows(minimum: usize) -> usize {
 /// Off the game thread: reserve a census vector for the observed registry.
 /// Returns whether the allocation grew.
 pub fn reserve_census<T>(census: &mut Vec<T>) -> bool {
-    reserve_rows(census, census_rows(0))
+    engine::allocation::advisory(|| reserve_rows(census, census_rows(0)))
 }
 
 fn reserve_rows<T>(census: &mut Vec<T>, target: usize) -> bool {
@@ -134,19 +149,16 @@ pub fn observe(memory: &impl Memory, base: usize) -> Option<usize> {
 /// Live saved-global row/name demand from the same bounded capture walk.
 /// Off-thread only; the empty output sizes strings without probing objects.
 pub fn observe_saved_targets(
-    memory: &impl engine::Memory,
+    memory: &impl Memory,
     base: usize,
-) -> Option<engine::saved_event_targets::Demand> {
-    let state = engine::read::<u64>(
-        memory,
-        base.checked_add(engine::cgame_state::SINGLETON_RVA)?,
-    )? as usize;
-    if state == 0 {
-        return None;
-    }
+) -> Result<Option<engine::saved_event_targets::Demand>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
     engine::saved_event_targets::demand(memory, base, state)
+        .map(Some)
+        .ok_or("saved target sizing demand unreadable or invalid")
 }
-
 /// Off-thread live fleet/first-site/wing header demand for all score buffers.
 /// These are capacity hints, never captured operands or completeness witnesses.
 pub fn observe_game_score(
@@ -160,18 +172,19 @@ pub fn observe_game_score(
     }
 }
 
-/// Live dense CountryIntel record total, or `None` when no consistent
-/// census is readable. Header words only; nothing observed is recorded.
-pub fn observe_country_intel(memory: &impl Memory, base: usize) -> Option<usize> {
-    // The same ceiling as `observe`: a registry past the engine's u16 slot
-    // limit is a torn read, and no owner's vector is longer than the registry.
-    let slots = observe(memory, base)?;
-    let game_state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
-    let state = usize::try_from(game_state)
-        .ok()
-        .filter(|state| *state != 0)?;
-    let rows = engine::ccountry_intel::native_rows(memory, base, state)?;
-    Some(rows.min(slots.saturating_mul(slots)))
+/// Live dense CountryIntel record total, or `None` without a game state.
+/// Failed header hints retain their reason; nothing observed is recorded.
+pub fn observe_country_intel(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<usize>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    let rows = engine::ccountry_intel::native_rows(memory, base, state)
+        .ok_or("country intel sizing census unreadable or invalid")?;
+    // 140CF2AE0 -> 140CEC1C0 writes the vectors' own counts, not registry².
+    Ok(Some(rows))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -204,6 +217,62 @@ pub(crate) fn observe_ace_names(
 }
 
 static AIR_WING_NAME_BYTES: AtomicUsize = AtomicUsize::new(0);
+static CARRIER_HINT: [AtomicUsize; 12] = [const { AtomicUsize::new(0) }; 12];
+
+pub(crate) fn carrier_demand() -> engine::cair_base::CarrierDemand {
+    let [
+        bases,
+        registrations,
+        pools,
+        indexed,
+        resolved,
+        country_terms,
+        aces,
+        forecasts,
+        countries,
+        name_bytes,
+        raw_spans,
+        raw_bytes,
+    ] = std::array::from_fn(|index| CARRIER_HINT[index].load(Ordering::Relaxed));
+    engine::cair_base::CarrierDemand {
+        bases,
+        registrations,
+        pools,
+        indexed,
+        resolved,
+        country_terms,
+        aces,
+        forecasts,
+        countries,
+        name_bytes,
+        raw_spans,
+        raw_bytes,
+        ..Default::default()
+    }
+}
+
+/// Live hints only raise idle storage. Failed observations retain earlier
+/// floors; a callback must still acquire all fields from its current world.
+pub(crate) fn note_carrier_demand(demand: engine::cair_base::CarrierDemand) -> bool {
+    let mut changed = false;
+    for (hint, count) in CARRIER_HINT.iter().zip([
+        demand.bases,
+        demand.registrations,
+        demand.pools,
+        demand.indexed,
+        demand.resolved,
+        demand.country_terms,
+        demand.aces,
+        demand.forecasts,
+        demand.countries,
+        demand.name_bytes,
+        demand.raw_spans,
+        demand.raw_bytes,
+    ]) {
+        changed |= hint.fetch_max(count, Ordering::Relaxed) < count;
+    }
+    changed
+}
 
 pub(crate) fn air_wing_name_bytes() -> usize {
     AIR_WING_NAME_BYTES.load(Ordering::Relaxed)
@@ -224,25 +293,31 @@ pub fn observe_air_wing_names(
     engine::cair_wing::name_demand(memory, base, state).map(Some)
 }
 
+static RAILWAY_GUN_PATHS: AtomicUsize = AtomicUsize::new(0);
 static RAILWAY_GUN_ROWS: AtomicUsize = AtomicUsize::new(0);
 static RAILWAY_GUN_NAME_BYTES: AtomicUsize = AtomicUsize::new(0);
 static RAILWAY_GUN_NAMED_BONUSES: AtomicUsize = AtomicUsize::new(0);
 static RAILWAY_GUN_SUPPLY_ORIGINS: AtomicUsize = AtomicUsize::new(0);
+static RAILWAY_GUN_COMBAT_REFERENCES: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn railway_gun_name_demand() -> engine::railway_gun_counter_inputs::NameDemand {
     engine::railway_gun_counter_inputs::NameDemand {
         rows: RAILWAY_GUN_ROWS.load(Ordering::Relaxed),
+        paths: RAILWAY_GUN_PATHS.load(Ordering::Relaxed),
         bytes: RAILWAY_GUN_NAME_BYTES.load(Ordering::Relaxed),
         named_bonuses: RAILWAY_GUN_NAMED_BONUSES.load(Ordering::Relaxed),
         supply_origins: RAILWAY_GUN_SUPPLY_ORIGINS.load(Ordering::Relaxed),
+        combat_references: RAILWAY_GUN_COMBAT_REFERENCES.load(Ordering::Relaxed),
     }
 }
 
 pub(crate) fn note_railway_gun_names(demand: engine::railway_gun_counter_inputs::NameDemand) {
     RAILWAY_GUN_ROWS.fetch_max(demand.rows, Ordering::Relaxed);
+    RAILWAY_GUN_PATHS.fetch_max(demand.paths, Ordering::Relaxed);
     RAILWAY_GUN_NAME_BYTES.fetch_max(demand.bytes, Ordering::Relaxed);
     RAILWAY_GUN_NAMED_BONUSES.fetch_max(demand.named_bonuses, Ordering::Relaxed);
     RAILWAY_GUN_SUPPLY_ORIGINS.fetch_max(demand.supply_origins, Ordering::Relaxed);
+    RAILWAY_GUN_COMBAT_REFERENCES.fetch_max(demand.combat_references, Ordering::Relaxed);
 }
 
 pub fn observe_railway_gun_names(
@@ -253,6 +328,121 @@ pub fn observe_railway_gun_names(
         return Ok(None);
     };
     engine::railway_gun_counter_inputs::name_demand(memory, base, state).map(Some)
+}
+
+/// Independent off-thread capacity hints. Failed operands retain their reason;
+/// none of these observations admits recorded data or supplies a zero value.
+pub(crate) struct FreshEtaDemand {
+    pub states: Result<usize, &'static str>,
+    pub provinces: Result<usize, &'static str>,
+    pub terrains: Result<usize, &'static str>,
+    pub rail_levels: Result<usize, &'static str>,
+    pub carrier: Result<engine::cair_base::CarrierDemand, &'static str>,
+    pub movement: engine::carmy::country_movement_inputs::LiveDemand,
+    pub naval: naval_movement::Demand,
+}
+
+impl FreshEtaDemand {
+    pub(crate) fn map_refusals(&self) -> impl Iterator<Item = &'static str> {
+        [
+            self.states.err(),
+            self.provinces.err(),
+            self.terrains.err(),
+            self.rail_levels.err(),
+            self.carrier.err(),
+            self.carrier.as_ref().ok().and_then(|hint| hint.failure),
+            self.movement.country_slots.err(),
+            self.movement.raw_links.err(),
+            self.movement.controller_bound.err(),
+            self.movement.region_bound.err(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
+
+/// A completed count only: geometry and province/terrain arenas are temporary.
+/// The engine owns this key's session/root law and authenticates it every poll.
+#[derive(Default)]
+pub(crate) struct FreshEtaMapCache {
+    completed: Option<(engine::cprovince::StaticGeometryKey, usize, usize)>,
+}
+
+impl FreshEtaMapCache {
+    fn demand(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(usize, usize), &'static str> {
+        let key = match engine::cprovince::static_geometry_demand_key(memory, base, state) {
+            Ok(key) => key,
+            Err(reason) => {
+                self.completed = None;
+                return Err(reason);
+            }
+        };
+        if let Some((seen, provinces, terrains)) = self.completed
+            && seen == key
+        {
+            return Ok((provinces, terrains));
+        }
+        self.completed = None;
+        let (captured_key, provinces, terrains) =
+            engine::carmy::fresh_counter_eta_map_demand_keyed(memory, base, state)?;
+        if captured_key != key {
+            return Err("fresh ETA sizing map key changed during census");
+        }
+        self.completed = Some((key, provinces, terrains));
+        Ok((provinces, terrains))
+    }
+}
+
+/// Presize complete-map fresh ETA and only the owners of moving units. The
+/// singleton is the only shared gate: a failed terrain or owner census cannot
+/// discard an independently readable States/province/region header floor.
+pub(crate) fn observe_fresh_eta(
+    memory: &impl Memory,
+    base: usize,
+    map: &mut FreshEtaMapCache,
+    naval_foreign_scratch: &mut usize,
+) -> Result<Option<FreshEtaDemand>, &'static str> {
+    let state = base
+        .checked_add(cgame_state::SINGLETON_RVA)
+        .and_then(|address| engine::read::<u64>(memory, address))
+        .ok_or("fresh ETA sizing game state unreadable")
+        .inspect_err(|_| map.completed = None)?;
+    let state = usize::try_from(state)
+        .map_err(|_| "fresh ETA sizing game state overflow")
+        .inspect_err(|_| map.completed = None)?;
+    if state == 0 {
+        map.completed = None;
+        return Ok(None);
+    }
+    let states = state
+        .checked_add(cgame_state::STATES)
+        .and_then(|address| engine::cpdx_array::Array::read(memory, address, 8))
+        .map(|array| array.count as usize)
+        .ok_or("fresh ETA sizing state census unreadable or invalid");
+    let (provinces, terrains) = match engine::carmy::counter_land_terrain_capacity(memory, state) {
+        Ok(floor) => match map.demand(memory, base, state) {
+            Ok((count, terrains)) => (Ok(floor.max(count)), Ok(terrains)),
+            Err(reason) => (Ok(floor), Err(reason)),
+        },
+        Err(reason) => {
+            map.completed = None;
+            (Err(reason), Err(reason))
+        }
+    };
+    Ok(Some(FreshEtaDemand {
+        states,
+        provinces,
+        terrains,
+        rail_levels: engine::crailway_manager::selected_inputs::demand(memory, base, state),
+        carrier: engine::cair_base::carrier_demand(memory, base, state),
+        movement: extended::country_counters::movement_demand(memory, base, state),
+        naval: naval_movement::observe(memory, base, state, naval_foreign_scratch),
+    }))
 }
 
 /// Only the shared army census and the singleton attrition getter's requested
@@ -322,38 +512,41 @@ pub(crate) fn combat_hint_status() -> CombatHintStatus {
     }
 }
 
+/// Validated native modifier table count, observed only for idle storage.
+/// This never supplies current metadata values or turns a failed hint into zero.
+pub(crate) fn observe_ship_strike_metadata(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<usize, &'static str> {
+    engine::modifier_definition::table(memory, base)
+        .map(|table| table.count as usize)
+        .map_err(|_| "ship strike modifier metadata sizing header unavailable")
+}
+
 /// Shared count-only land details with mutable-header consistency checks.
 pub fn observe_land_details(
     memory: &impl Memory,
     base: usize,
-) -> Option<engine::cland_combat::DetailDemand> {
-    let state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
-    let state = usize::try_from(state).ok().filter(|state| *state != 0)?;
-    match engine::cland_combat::detail_demand(memory, base, state) {
-        Ok(demand) => Some(demand),
-        Err(_) => {
-            note_combat_hint_failure(0);
-            None
-        }
-    }
+) -> Result<Option<engine::cland_combat::DetailDemand>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    engine::cland_combat::detail_demand(memory, base, state)
+        .map(Some)
+        .inspect_err(|_| note_combat_hint_failure(0))
 }
-
 /// Shared native source selection and count-only modifier tree census.
 pub fn observe_naval_breakdowns(
     memory: &impl Memory,
     base: usize,
-) -> Option<engine::naval_ship_modifier_breakdown::Demand> {
-    let state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
-    let state = usize::try_from(state).ok().filter(|state| *state != 0)?;
-    match engine::naval_ship_modifier_breakdown::demand(memory, base, state) {
-        Ok(demand) => Some(demand),
-        Err(_) => {
-            note_combat_hint_failure(1);
-            None
-        }
-    }
+) -> Result<Option<engine::naval_ship_modifier_breakdown::Demand>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    engine::naval_ship_modifier_breakdown::demand(memory, base, state)
+        .map(Some)
+        .inspect_err(|_| note_combat_hint_failure(1))
 }
-
 /// The raid arenas whose per-country demand content decides, not the slot
 /// count: the raid type tokens of every raid parent and of the player cache,
 /// every country's convoy reservation words, and the session's path memo.
@@ -365,42 +558,56 @@ pub struct RaidArenas {
     pub facility_rows: usize,
     pub air_regions: usize,
     pub counteroperatives: usize,
+    pub(crate) failures: [Option<&'static str>; 5],
 }
 
-/// Live raid arena demand, or `None` when no raid system or country census
-/// is readable (at the main menu, say). Header words and the raid parents'
+/// Live raid arena demand, or `None` without a game state.
+/// Failures retain their reason. Header words and the raid parents'
 /// batched records only; nothing observed is recorded.
-pub fn observe_raid_arenas(memory: &impl Memory, base: usize) -> Option<RaidArenas> {
-    let game_state = engine::read::<u64>(memory, base.checked_add(cgame_state::SINGLETON_RVA)?)?;
-    let state = usize::try_from(game_state)
-        .ok()
-        .filter(|state| *state != 0)?;
-    let parents = engine::craid_system::required_type_tokens(memory, base, state).ok()?;
-    let player = engine::cplayer_status_cache::required_tokens(memory, base, state).unwrap_or(0);
-    let reservation_words =
-        engine::raid_launch_inputs::required_reservations(memory, base, state).ok()?;
-    // An empty destination counts native roster occurrences without reading
-    // the programs or resolving active projects. This is only a sizing hint.
+pub fn observe_raid_arenas(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<RaidArenas>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    let parents = engine::craid_system::required_type_tokens(memory, base, state)?;
+    let player = engine::cplayer_status_cache::required_tokens(memory, base, state);
+    let reservation_words = engine::raid_launch_inputs::required_reservations(memory, base, state)?;
+    // Keep independently readable floors when optional hints fail.
     let facility_rows = match engine::raid_facilities::walk(memory, base, state, &mut []) {
-        engine::walk::Outcome::Rows { len } => len,
-        engine::walk::Outcome::Truncated { unread_rows, .. } => unread_rows as usize,
-        engine::walk::Outcome::Unavailable { .. } => 0,
+        engine::walk::Outcome::Rows { len } => Ok(len),
+        engine::walk::Outcome::Truncated { len, unread_rows } => len
+            .checked_add(unread_rows as usize)
+            .ok_or("raid facility sizing count overflow"),
+        engine::walk::Outcome::Unavailable { reason } => Err(reason),
     };
     let air_regions = state
         .checked_add(cgame_state::STRATEGIC_REGIONS)
         .and_then(|at| engine::cpdx_array::Array::read(memory, at, 8))
-        .map_or(0, |array| array.count as usize);
-    Some(RaidArenas {
-        type_tokens: parents.checked_add(player)?,
+        .map(|array| array.count as usize)
+        .ok_or("raid region sizing header unreadable or invalid");
+    let path_rows = engine::raid_path_memo::required_rows(memory, base, state)
+        .ok_or("raid path sizing header unreadable or invalid");
+    let counteroperatives = engine::raid_intel_inputs::required_operatives(memory, base, state);
+    Ok(Some(RaidArenas {
+        type_tokens: parents
+            .checked_add(player.unwrap_or(0))
+            .ok_or("raid token sizing count overflow")?,
         reservation_words,
-        path_rows: engine::raid_path_memo::required_rows(memory, base, state).unwrap_or(0),
-        facility_rows,
-        air_regions,
-        counteroperatives: engine::raid_intel_inputs::required_operatives(memory, base, state)
-            .unwrap_or(0),
-    })
+        path_rows: path_rows.unwrap_or(0),
+        facility_rows: facility_rows.unwrap_or(0),
+        air_regions: air_regions.unwrap_or(0),
+        counteroperatives: counteroperatives.unwrap_or(0),
+        failures: [
+            player.err(),
+            path_rows.err(),
+            facility_rows.err(),
+            air_regions.err(),
+            counteroperatives.err(),
+        ],
+    }))
 }
-
 /// Live character and script scope demand: the Characters rows and text
 /// bytes, the flags of every ScriptFlags scope and the ScriptVariables
 /// stores (global, countries, states and characters).
@@ -430,6 +637,18 @@ pub fn observe_characters(
         variables: extended::intel::script_variable_demand(memory, base, state)
             .ok_or("script variable demand unreadable")?,
     }))
+}
+
+/// The actual receiver0 matrix header is independent of the positive political
+/// census. Failed optional hints retain prior floors and acquire no payload.
+pub(crate) fn observe_reserved_visibility(
+    memory: &impl Memory,
+    base: usize,
+) -> Result<Option<usize>, &'static str> {
+    let Some(state) = demand_game_state(memory, base)? else {
+        return Ok(None);
+    };
+    engine::crelation_status::reserved_visibility_demand(memory, base, state).map(Some)
 }
 
 /// An absent or empty world is pending, not a failed census or a zero hint.
@@ -557,8 +776,8 @@ pub(crate) fn observe_fuel_unit_demand(
 /// records, CountryRetiredCharacters' retired ones, PartyLeaders' party
 /// leaders, CountryCivilWars' entries, AvailableAdvisors' ideas,
 /// AdvisorTokens' keys and bytes, FactionAdvisors' occupied slots and token
-/// bytes, the country state/leader rosters and owned wargoals, and the
-/// character inputs' rows and values.
+/// bytes, the country state/leader rosters, registered pride-ship names,
+/// owned wargoals, and the character inputs' rows and values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PoliticsDemand {
     pub war_overview: engine::cwar_relation::overview::Demand,
@@ -582,6 +801,10 @@ pub struct PoliticsDemand {
     pub available_advisor_bytes: usize,
     pub advisor_modifiers: engine::cadvisor::ModifierDemand,
     pub country_rosters: engine::ccountry::RosterDemand,
+    /// Valid cached-name byte floor; an optional failure does not certify zero.
+    pub pride_name_bytes: usize,
+    pub pride_name_failure: Option<&'static str>,
+    optional_failures: [Option<&'static str>; 4],
     pub timed_ideas: engine::cpolitical_status::IdeaDemand,
     pub decision_random_items: engine::cdecision_status::RandomItemDemand,
     pub effect_rosters: engine::ccountry::EffectRosterDemand,
@@ -590,12 +813,20 @@ pub struct PoliticsDemand {
     pub reserved_naming_bytes: usize,
     pub original_tag_lists: engine::original_tag_lists::Demand,
     pub country_array: usize,
+    pub co_belligerents: usize,
     pub owned_wargoals: engine::cwar_goal::Demand,
     pub character_inputs: crate::extended::character_inputs::Demand,
 }
 
 impl PoliticsDemand {
-    /// Whether any field exceeds `seen`'s.
+    pub(crate) fn failures(&self) -> impl Iterator<Item = &'static str> {
+        [self.pride_name_failure]
+            .into_iter()
+            .chain(self.optional_failures)
+            .flatten()
+    }
+
+    /// Whether any capacity floor exceeds `seen`'s.
     pub fn exceeds(&self, seen: &Self) -> bool {
         self.agency_name_bytes > seen.agency_name_bytes
             || self.agency_upgrade_rows > seen.agency_upgrade_rows
@@ -625,8 +856,10 @@ impl PoliticsDemand {
             || self.original_tag_lists.buckets > seen.original_tag_lists.buckets
             || self.original_tag_lists.members > seen.original_tag_lists.members
             || self.country_array > seen.country_array
+            || self.co_belligerents > seen.co_belligerents
             || self.country_rosters.states > seen.country_rosters.states
             || self.country_rosters.leaders > seen.country_rosters.leaders
+            || self.pride_name_bytes > seen.pride_name_bytes
             || self.owned_wargoals.rows > seen.owned_wargoals.rows
             || self.owned_wargoals.states > seen.owned_wargoals.states
             || self.active_characters > seen.active_characters
@@ -640,7 +873,7 @@ impl PoliticsDemand {
             || self.character_inputs.exceeds(&seen.character_inputs)
     }
 
-    /// The field-wise maximum.
+    /// Retain maximum capacity floors and the new poll's optional refusal.
     pub fn max(self, other: Self) -> Self {
         Self {
             war_overview: engine::cwar_relation::overview::Demand {
@@ -710,6 +943,7 @@ impl PoliticsDemand {
             reserved_naming_bytes: self.reserved_naming_bytes.max(other.reserved_naming_bytes),
             original_tag_lists: self.original_tag_lists.max(other.original_tag_lists),
             country_array: self.country_array.max(other.country_array),
+            co_belligerents: self.co_belligerents.max(other.co_belligerents),
             country_rosters: engine::ccountry::RosterDemand {
                 states: self
                     .country_rosters
@@ -720,6 +954,10 @@ impl PoliticsDemand {
                     .leaders
                     .max(other.country_rosters.leaders),
             },
+            pride_name_bytes: self.pride_name_bytes.max(other.pride_name_bytes),
+            // Keep this poll's refusal separate from retained capacity floors.
+            pride_name_failure: other.pride_name_failure,
+            optional_failures: other.optional_failures,
             owned_wargoals: engine::cwar_goal::Demand {
                 rows: self.owned_wargoals.rows.max(other.owned_wargoals.rows),
                 states: self.owned_wargoals.states.max(other.owned_wargoals.states),
@@ -786,12 +1024,46 @@ fn observe_politics_with_failures(
         engine::ccountry_characters::demand_available(memory, base, state)?;
     let goals = engine::cwar_goal::walk(memory, base, state, &mut [], &mut []);
     demand(goals.outcome)?;
+    let advisor_modifiers = extended::characters::advisors::live_modifier_demand();
+    let mut pride_name_bytes = 0_usize;
+    let mut pride_name_failure = None;
+    let mut references = engine::creference_registry::ScopedResolver::new(base);
+    let country_rosters = engine::ccountry::counter_roster_demand_with_pride_observer(
+        memory,
+        base,
+        state,
+        &mut |reference| {
+            let observed = reference
+                .and_then(|handle| pride_name_demand(memory, base, handle, &mut references))
+                .and_then(|bytes| {
+                    pride_name_bytes
+                        .checked_add(bytes)
+                        .ok_or("pride ship name sizing byte overflow")
+                });
+            match observed {
+                Ok(bytes) => pride_name_bytes = bytes,
+                Err(reason) => {
+                    pride_name_failure.get_or_insert(reason);
+                }
+            }
+        },
+    )?;
     let upgrades = upgrade_failures.observe(engine::agency_upgrade_levels::native_demand(
         memory, base, state,
     ))?;
     let operations = operation_failures.observe(engine::ccountry_operation_manager::demand(
         memory, base, state,
     ))?;
+    let reserved_naming_bytes = engine::ccountry::read_country_naming_demand(memory, base, state);
+    let original_tag_lists = engine::original_tag_lists::demand(memory, state);
+    let country_array = engine::country_roster::demand(memory, base, state);
+    let (co_belligerents, co_belligerent_failure) =
+        extended::country_counters::co_belligerent_demand(
+            memory,
+            base,
+            state,
+            &CO_BELLIGERENT_DEMAND_FAILURES,
+        );
     Ok(Some(PoliticsDemand {
         war_overview: engine::cwar_relation::overview::demand(memory, base, state)?,
         agency_name_bytes: agencies.required_bytes,
@@ -804,8 +1076,10 @@ fn observe_politics_with_failures(
         operative_name_bytes: operatives.required_bytes,
         available_advisors,
         available_advisor_bytes,
-        advisor_modifiers: extended::characters::advisors::live_modifier_demand(),
-        country_rosters: engine::ccountry::counter_roster_demand(memory, base, state)?,
+        advisor_modifiers,
+        country_rosters,
+        pride_name_bytes,
+        pride_name_failure,
         timed_ideas: engine::cpolitical_status::timed_idea_demand(memory, base, state)?,
         decision_random_items: engine::cdecision_status::random_item_demand(memory, base, state)?,
         effect_rosters: engine::ccountry::counter_effect_roster_demand(memory, base, state)?,
@@ -817,10 +1091,16 @@ fn observe_politics_with_failures(
         )?,
         // These independent optional sizing hints retain each other's known
         // floors. Actual hourly reads still refuse missing native data.
-        reserved_naming_bytes: engine::ccountry::read_country_naming_demand(memory, base, state)
-            .unwrap_or_default(),
-        original_tag_lists: engine::original_tag_lists::demand(memory, state).unwrap_or_default(),
-        country_array: engine::country_roster::demand(memory, base, state).unwrap_or_default(),
+        reserved_naming_bytes: reserved_naming_bytes.unwrap_or_default(),
+        original_tag_lists: original_tag_lists.unwrap_or_default(),
+        country_array: country_array.unwrap_or_default(),
+        optional_failures: [
+            reserved_naming_bytes.err(),
+            original_tag_lists.err(),
+            country_array.err(),
+            co_belligerent_failure,
+        ],
+        co_belligerents,
         owned_wargoals: goals.required,
         active_characters,
         retired_characters,
@@ -837,6 +1117,21 @@ fn observe_politics_with_failures(
         faction_advisor_bytes: factions.required_bytes,
         character_inputs: crate::extended::character_inputs::Demand::observe(memory, base, state)?,
     }))
+}
+
+fn pride_name_demand(
+    memory: &impl Memory,
+    base: usize,
+    handle: u64,
+    references: &mut engine::creference_registry::ScopedResolver,
+) -> Result<usize, &'static str> {
+    if handle == 0 {
+        return Ok(0);
+    }
+    let Some(ship) = references.resolve(memory, handle)? else {
+        return Ok(0);
+    };
+    engine::cship::cached_name_demand(memory, base, ship, handle)
 }
 
 /// Rows for `per_country` rows per slot, with a third of headroom so the
@@ -876,6 +1171,7 @@ impl Sizing {
             content: engine::cdlc_manager::Counts::default(),
         };
         sizing.raise_for_slots(slots);
+        sizing.extended.raise_for_states(sizing.core[3]);
         sizing
     }
 
@@ -889,11 +1185,139 @@ impl Sizing {
             Cache::cells_for_countries(slots, MIN_COUNTRY_CELLS),
         );
     }
+
+    /// A partial hint raises its readable floors independently. Terrain rows
+    /// use each range's existing division census times complete distinct LAND
+    /// terrain count; province slots size only map scratch and rail rows.
+    pub(crate) fn raise_for_fresh_map(&mut self, demand: &FreshEtaDemand) -> std::io::Result<()> {
+        if let Ok(levels) = demand.rail_levels {
+            raise(&mut self.extended.naval_history.rail_levels, levels);
+        }
+        if let Ok(states) = demand.states {
+            raise(&mut self.core[3], states);
+        }
+        self.extended.raise_for_states(self.core[3]);
+        if let Ok(provinces) = demand.provinces {
+            raise(&mut self.core[1], provinces.saturating_sub(1));
+        }
+        self.extended
+            .raise_for_fresh_map(demand.provinces.unwrap_or(0), demand.terrains.unwrap_or(0))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MapKeyMemory {
+        session: i64,
+        refused: bool,
+    }
+
+    impl Memory for MapKeyMemory {
+        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+            if self.refused {
+                return false;
+            }
+            if address == BASE + cgame_state::PLAY_SESSION_STARTED_AT_RVA && output.len() == 8 {
+                output.copy_from_slice(&self.session.to_le_bytes());
+            } else if address == STATE + cgame_state::PROVINCES && output.len() == 16 {
+                output[..8].copy_from_slice(&(TABLE as u64).to_le_bytes());
+                output[8..12].copy_from_slice(&2_u32.to_le_bytes());
+                output[12..16].copy_from_slice(&2_u32.to_le_bytes());
+            } else {
+                return false;
+            }
+            true
+        }
+    }
+
+    /// A warm hint needs only its native key. Reloads and failed key reads
+    /// cannot reuse the prior count when the replacement census also fails.
+    #[test]
+    fn fresh_eta_map_hint_reuses_only_a_readable_matching_native_key() {
+        let mut memory = MapKeyMemory {
+            session: 1,
+            refused: false,
+        };
+        let key = engine::cprovince::static_geometry_demand_key(&memory, BASE, STATE).unwrap();
+        let mut cache = FreshEtaMapCache {
+            completed: Some((key, 2, 1)),
+        };
+        // No province objects are readable: a repeated cold census would fail.
+        assert_eq!(cache.demand(&memory, BASE, STATE), Ok((2, 1)));
+
+        memory.session = 2;
+        assert!(cache.demand(&memory, BASE, STATE).is_err());
+        assert!(cache.completed.is_none());
+
+        memory.session = 1;
+        cache.completed = Some((key, 2, 1));
+        memory.refused = true;
+        assert!(cache.demand(&memory, BASE, STATE).is_err());
+        assert!(cache.completed.is_none());
+        memory.refused = false;
+        assert!(cache.demand(&memory, BASE, STATE).is_err());
+        assert!(cache.completed.is_none());
+    }
+
+    #[test]
+    fn optional_political_hint_failures_preserve_floors_and_clear_after_recovery() {
+        let seen = PoliticsDemand {
+            reserved_naming_bytes: 300,
+            country_array: 5000,
+            ..Default::default()
+        };
+        let failed = PoliticsDemand {
+            optional_failures: [
+                Some("country naming sizing header changed"),
+                None,
+                None,
+                None,
+            ],
+            ..Default::default()
+        };
+        let retained = seen.max(failed);
+        assert_eq!(retained.reserved_naming_bytes, 300);
+        assert_eq!(retained.country_array, 5000);
+        assert_eq!(
+            retained.failures().collect::<Vec<_>>(),
+            ["country naming sizing header changed"]
+        );
+        assert!(
+            retained
+                .max(PoliticsDemand::default())
+                .failures()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn failed_co_belligerent_hint_keeps_prior_floor_and_requests_diagnostics() {
+        let seen = PoliticsDemand {
+            co_belligerents: 5_000,
+            ..Default::default()
+        };
+        let failed = PoliticsDemand {
+            co_belligerents: 3,
+            optional_failures: [None, None, None, Some("diplomacy vtable mismatch")],
+            ..Default::default()
+        };
+        let retained = seen.max(failed);
+        assert_eq!(retained.co_belligerents, 5_000);
+        assert_eq!(
+            retained.failures().collect::<Vec<_>>(),
+            ["diplomacy vtable mismatch"]
+        );
+        assert!(
+            retained
+                .max(PoliticsDemand::default())
+                .failures()
+                .next()
+                .is_none()
+        );
+    }
 
     #[test]
     fn politics_staging_demand_presizes_the_daily_backlog_without_a_loaded_world() {
@@ -959,6 +1383,7 @@ mod tests {
             facility_rows: 10_000,
             counteroperatives: 5000 * 11,
             air_regions: 700,
+            ..Default::default()
         };
         let mut sizing = Sizing::for_slots(440);
         let default_tokens = sizing.extended.projects.raid_type_tokens;
@@ -1125,6 +1550,67 @@ mod tests {
     }
 
     #[test]
+    fn zero_pride_hint_skips_registry_and_positive_unreadable_ref_is_not_empty() {
+        struct Unreadable(std::cell::Cell<usize>);
+        impl Memory for Unreadable {
+            fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+                self.0.set(self.0.get() + 1);
+                false
+            }
+        }
+        let memory = Unreadable(std::cell::Cell::new(0));
+        let mut references = engine::creference_registry::ScopedResolver::new(0);
+        assert_eq!(pride_name_demand(&memory, 0, 0, &mut references), Ok(0));
+        assert_eq!(memory.0.get(), 0);
+        assert_eq!(
+            pride_name_demand(&memory, 0, (3 << 32) | 51, &mut references),
+            Err("reference root unreadable")
+        );
+        assert_eq!(memory.0.get(), 1);
+    }
+
+    #[test]
+    fn failed_pride_hint_keeps_known_floor_and_independent_roster_growth() {
+        let seen = PoliticsDemand {
+            pride_name_bytes: 50000,
+            country_rosters: engine::ccountry::RosterDemand {
+                states: 30,
+                leaders: 20,
+            },
+            ..Default::default()
+        };
+        let failed = PoliticsDemand {
+            pride_name_failure: Some("ship cached name header invalid"),
+            country_rosters: engine::ccountry::RosterDemand {
+                states: 60,
+                leaders: 20,
+            },
+            ..Default::default()
+        };
+        assert!(failed.exceeds(&seen));
+        let combined = seen.max(failed);
+        assert_eq!(combined.pride_name_bytes, 50000);
+        assert_eq!(combined.pride_name_failure, failed.pride_name_failure);
+        assert_eq!(combined.country_rosters.states, 60);
+        let recovered = PoliticsDemand {
+            pride_name_bytes: 3,
+            ..Default::default()
+        };
+        assert!(!recovered.exceeds(&combined));
+        let retained = combined.max(recovered);
+        assert_eq!(retained.pride_name_bytes, 50000);
+        assert_eq!(retained.pride_name_failure, None);
+        assert_eq!(retained.country_rosters.states, 60);
+        let mut capacity = crate::extended::country_counters::Capacities::default();
+        let initial = capacity;
+        capacity.raise_for_pride_names(retained.pride_name_bytes);
+        assert!(capacity != initial);
+        let grown = capacity;
+        capacity.raise_for_pride_names(0);
+        assert!(capacity == grown);
+    }
+
+    #[test]
     fn fuel_sizing_waits_for_the_late_air_manager_and_its_country_slots() {
         struct Loading {
             manager: usize,
@@ -1208,6 +1694,7 @@ mod tests {
                 members: count * 2,
             },
             country_array: count + 1,
+            co_belligerents: count * 6,
             advisor_modifiers: engine::cadvisor::ModifierDemand {
                 rows: count * 4,
                 bytes: count * 4 * 12,
@@ -1236,6 +1723,7 @@ mod tests {
                 members: count * 4,
             },
             country_array: count * 2 + 1,
+            co_belligerents: count * 12,
             ..demand
         };
         assert!(larger.exceeds(&demand));
@@ -1720,7 +2208,7 @@ mod tests {
             air: None,
             relocated: None,
         };
-        let native = observe_country_intel(&memory, BASE).unwrap();
+        let native = observe_country_intel(&memory, BASE).unwrap().unwrap();
         assert_eq!(native, LIVE * (LIVE + 1));
         let mut sizing = Sizing::for_slots(observe(&memory, BASE).unwrap());
         let vanilla = sizing.extended.intel.rows[15];
@@ -1743,6 +2231,49 @@ mod tests {
         // the dense total among live countries) the three-quarters rule does
         // not double this buffer after its first full hour.
         assert!(native * 9 / 10 < capacity - capacity / 4);
+    }
+
+    #[test]
+    fn country_intel_sizing_uses_native_headers_without_a_registry_ceiling() {
+        const RECORD_COUNT: usize = 8;
+        struct LongerVectors(World);
+        impl Memory for LongerVectors {
+            fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+                for (index, byte) in output.iter_mut().enumerate() {
+                    let at = address + index;
+                    *byte = if (INTEL_TABLES..INTEL_TABLES + self.0.slots * 0x20).contains(&at)
+                        && (0x18..0x20).contains(&((at - INTEL_TABLES) % 0x20))
+                    {
+                        (RECORD_COUNT as u32).to_le_bytes()[(at - INTEL_TABLES) % 4]
+                    } else if (INTEL_RECORDS
+                        ..INTEL_RECORDS + RECORD_COUNT * country_intel_row::STRIDE)
+                        .contains(&at)
+                    {
+                        1
+                    } else {
+                        self.0.byte(at)
+                    };
+                }
+                true
+            }
+        }
+        let memory = LongerVectors(World {
+            slots: 3,
+            intel: true,
+            ..world()
+        });
+        let native = observe_country_intel(&memory, BASE).unwrap().unwrap();
+        assert_eq!(native, 2 * RECORD_COUNT);
+        let mut capacity = extended::intel::Capacities::default();
+        capacity.rows[15] = 0;
+        capacity.raise_for_country_intel(native);
+        let mut rows = vec![country_intel_row::Row::default(); capacity.rows[15]];
+        let mut scratch = vec![0; 2 * country_intel_row::STRIDE];
+        assert_eq!(
+            ccountry_intel::walk(&memory, BASE, STATE, &mut rows, &mut scratch),
+            Outcome::Rows { len: native }
+        );
+        assert_eq!(rows[native - 1].target_index, RECORD_COUNT as u32 - 1);
     }
 
     #[test]
@@ -1817,10 +2348,10 @@ mod tests {
         let mut small =
             country_appearance::Captured::with_capacities(&vanilla.extended.country_appearance);
         small.capture(&memory, BASE, STATE);
-        assert!(matches!(small.outcomes()[0], Outcome::Truncated { .. }));
+        assert_eq!(small.outcomes()[0], Outcome::Rows { len: COUNTRIES });
 
-        // Every country's tactic unlock list fits its per-country arena on
-        // the first day; the vanilla-sized arena truncated it.
+        // The hinted and cold workers admit every original tactic occurrence
+        // on the first day, without waiting for a recycled frame.
         let mut unlocks = country_tactic_unlocks::Captured::with_capacities(
             &sizing.extended.country_tactic_unlocks,
         );
@@ -1830,7 +2361,7 @@ mod tests {
             &vanilla.extended.country_tactic_unlocks,
         );
         small.capture(&memory, BASE, STATE, 0, true);
-        assert!(matches!(small.outcomes()[0], Outcome::Truncated { .. }));
+        assert_eq!(small.outcomes()[0], Outcome::Rows { len: COUNTRIES });
 
         // The country authentication cache holds the whole census.
         let mut cache =
@@ -2665,8 +3196,16 @@ mod tests {
             assert_eq!(
                 hour.decode(&mut next, 2),
                 Outcome::Rows {
-                    len: (slots - 1) * 10
+                    len: (slots - 1) * 11
                 }
+            );
+            // Each changed history owner emits ten records and one witness.
+            // Slot zero has no air object; its unchanged witness was already
+            // published at hour zero and is outside hour two's slice.
+            assert_eq!(
+                next.selection().read_owners().collect::<Vec<_>>(),
+                (1..slots as u32).collect::<Vec<_>>(),
+                "part {part}"
             );
             let mut fresh = Hour::new();
             let unobserved = crate::history_changes::Unobserved;
@@ -2713,8 +3252,14 @@ mod tests {
         assert_eq!(
             next.outcome,
             Outcome::Rows {
-                len: (slots - 1) * 10
+                len: (slots - 1) * 11
             }
+        );
+        // Recovery republishes the changed positive owners, including each
+        // witness. The unchanged slot-zero witness remains carried from hour zero.
+        assert_eq!(
+            frame.selection().read_owners().collect::<Vec<_>>(),
+            (1..slots as u32).collect::<Vec<_>>()
         );
     }
 
@@ -2735,19 +3280,60 @@ mod tests {
         let _hint = crate::country_scale::hint_guard();
         let bytes = |slots| {
             let sizing = Sizing::for_slots(slots);
-            sampling::Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended)
+            // Initial fuel demand has country rows only; all live unit and
+            // context arenas remain empty until their independent census.
+            assert!(
+                sizing.extended.economy.demand.rows[1..]
+                    .iter()
+                    .all(|&n| n == 0)
+            );
+            let frame =
+                sampling::Captured::with_capacities(&sizing.core, &sizing.map, &sizing.extended)
+                    .unwrap();
+            let added_packs = [
+                "game_score",
+                "naval_result_sources",
+                "experience_gains",
+                "event_feed",
+                "air_losses",
+                "building_bombing",
+                "operation_outcomes",
+                "war_overview",
+                "production_modifiers",
+                "politics",
+                "peace_settlements",
+                "peace_bids",
+                "land_events",
+                "fuel_awards",
+            ];
+            let added = frame
+                .extended
+                .allocated_by_pack()
                 .unwrap()
-                .allocated_bytes()
+                .into_iter()
+                .filter(|(name, _)| added_packs.contains(name))
+                .map(|(_, bytes)| bytes)
+                .sum::<usize>()
+                + sizing.extended.economy.demand.rows[0]
+                    * std::mem::size_of::<engine::fuel_demand::Country>();
+            (frame.allocated_bytes(), added)
         };
-        let vanilla = bytes(0);
-        let per_state = bytes(1_501);
-        let large = bytes(5_001);
+        let (vanilla, _) = bytes(0);
+        let (per_state, added_per_state) = bytes(1_501);
+        let (large, added_large) = bytes(5_001);
         assert!(vanilla <= per_state && per_state <= large);
-        // Bound per-slot growth across the 1,501- and 5,001-slot frames.
-        // This includes the added score and current fuel-demand country buffers.
+        // Preserve the composed transport/political 29 KiB per-slot bound
+        // and charge the widget packs and exact fuel country Vec separately.
+        // Content-sized arenas still follow live demand.
         assert!(
-            large - per_state <= 3_500 * 25 * 1024,
+            large - per_state <= 3_500 * 29 * 1024 + (added_large - added_per_state),
             "vanilla {vanilla}, 1,501 slots {per_state}, 5,001 slots {large}"
+        );
+        // New capture storage must itself remain at most linear, including
+        // its fixed arenas, between the same two native registry sizes.
+        assert!(
+            (added_large as u128) * 1_501 <= (added_per_state as u128) * 5_001,
+            "added capture bytes: 1,501 slots {added_per_state}, 5,001 slots {added_large}"
         );
     }
 
@@ -2975,7 +3561,7 @@ mod tests {
         let small = Sizing::for_slots(0);
         let mut large = Sizing::for_slots(COUNTRIES + 1);
         assert!(large.core[0] > COUNTRIES && large.core[2] > COUNTRIES);
-        assert!(large.country_cells >= COUNTRIES * 8);
+        assert!(large.country_cells >= COUNTRIES * 6 + 2);
         let before = large;
         large.raise_for_slots(10);
         assert!(large == before);

@@ -30,8 +30,18 @@ impl Names {
         *bytes = self.bytes;
     }
 
-    fn walk(&mut self, memory: &impl Memory, base: usize, game_state: usize) -> Outcome {
-        let names = cfaction::walk(memory, base, game_state, &mut self.rows, &mut self.bytes);
+    fn walk(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        game_state: usize,
+        growing: bool,
+    ) -> Outcome {
+        let names = if growing {
+            cfaction::walk_growing(memory, base, game_state, &mut self.rows, &mut self.bytes)
+        } else {
+            cfaction::walk(memory, base, game_state, &mut self.rows, &mut self.bytes)
+        };
         self.bytes_len = names.bytes_len;
         self.required_bytes = names.required_bytes;
         names.outcome
@@ -80,20 +90,34 @@ impl Report {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn run(request: &mut Request, memory: &impl Memory) -> Report {
+    run_with(request, memory, false)
+}
+
+pub(crate) fn run_growing(request: &mut Request, memory: &impl Memory) -> Report {
+    run_with(request, memory, true)
+}
+
+fn run_with(request: &mut Request, memory: &impl Memory, growing: bool) -> Report {
     let _factions_reads = crate::read_accounting::table(replay::rows::TableId::Factions);
     let cached = request.countries.view(memory);
     let names = &mut request.factions;
     let (base, game_state) = (names.base, names.game_state);
     let started = qpc();
-    let factions = names.run(|payload| payload.walk(&cached, base, game_state));
+    let factions = names.run(|payload| payload.walk(&cached, base, game_state, growing));
     let faction_ticks = qpc().saturating_sub(started).max(0) as u64;
     let _members_reads = crate::read_accounting::table(replay::rows::TableId::FactionMembers);
     let members = &mut request.members;
     let (base, game_state) = (members.base, members.game_state);
     let started = qpc();
-    let members =
-        members.run(|rows| cfaction_system::walk_members(&cached, base, game_state, rows));
+    let members = members.run(|rows| {
+        if growing {
+            cfaction_system::walk_members_growing(&cached, base, game_state, rows)
+        } else {
+            cfaction_system::walk_members(&cached, base, game_state, rows)
+        }
+    });
     Report {
         factions,
         members,
@@ -317,6 +341,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn growing_factions_preserves_the_sufficient_fixed_read_trace() {
+        let bytes = fixture();
+        let countries = snapshot(&bytes, 512);
+        let reference = Traced::new(&bytes);
+        let actual = Traced::new(&bytes);
+        let mut expected_rows = vec![cfaction::Row::default(); 2];
+        let mut expected_text = vec![0; 16];
+        let mut expected_members = vec![cfaction_system::MemberRow::default(); 2];
+        let mut expected = take(
+            &countries,
+            &mut expected_rows,
+            &mut expected_text,
+            &mut expected_members,
+        );
+        let fixed = run(&mut expected, &reference);
+        let mut rows = Vec::new();
+        let mut text = Vec::new();
+        let mut members = Vec::new();
+        let mut request = take(&countries, &mut rows, &mut text, &mut members);
+        let growing = run_growing(&mut request, &actual);
+        assert_eq!(growing.factions.result, fixed.factions.result);
+        assert_eq!(growing.members.result, fixed.members.result);
+        assert_eq!(*actual.calls.borrow(), *reference.calls.borrow());
+        assert_eq!(request.restore(&mut rows, &mut text, &mut members), (4, 4));
+        assert_eq!(rows, expected.factions.payload.rows);
+        assert_eq!(members, expected.members.payload);
+        assert_eq!(&text[..4], &NAME);
     }
 
     #[test]

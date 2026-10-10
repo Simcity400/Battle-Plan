@@ -51,6 +51,48 @@ fn laid(text: &str, limits: Limits) -> (String, Vec<i32>) {
     (laid.text.iter().collect(), laid.widths)
 }
 
+///1422894D0 distinguishes an empty parsed icon name from the nonempty frame selector |1.
+#[test]
+fn empty_inline_icon_name_skips_even_a_defined_empty_stem() {
+    let calls = std::cell::Cell::new(0);
+    let sprite = |name: &[u8]| {
+        calls.set(calls.get() + 1);
+        (name == b"GFX_").then_some(([100, 100], 1))
+    };
+    let limits = Limits {
+        icons_add_height: true,
+        ..limits(i32::MAX)
+    };
+    let empty: Vec<_> = "a\u{13} b".chars().collect();
+    let laid = lay_out(&Mono, &sprite, &empty, limits).unwrap();
+    assert_eq!(laid.widths, [14]);
+    assert_eq!(laid.heights, [14]);
+    let colors = Colors {
+        own: [1.; 4],
+        font: &BTreeMap::new(),
+        global: &BTreeMap::new(),
+    };
+    let pieces = draw(
+        &Mono,
+        &sprite,
+        &laid,
+        true,
+        &Placement {
+            top: 0,
+            start: &|_, _| 0,
+        },
+        &colors,
+    )
+    .unwrap();
+    assert_eq!(pieces.len(), 2);
+    assert_eq!(calls.get(), 0);
+    let nonempty: Vec<_> = "a\u{13}|1 b".chars().collect();
+    let laid = lay_out(&Mono, &sprite, &nonempty, limits).unwrap();
+    assert_eq!(laid.widths, [114]);
+    assert_eq!(laid.heights, [100]);
+    assert_eq!(calls.get(), 1);
+}
+
 /// Words move to the next line whole, a line's width drops only the last space's advance,
 /// and a single word wider than the box breaks inside it.
 #[test]

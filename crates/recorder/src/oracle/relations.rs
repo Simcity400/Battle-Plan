@@ -1,4 +1,5 @@
 use std::{
+    cell::LazyCell,
     collections::{BTreeMap, BTreeSet},
     io,
 };
@@ -13,6 +14,27 @@ use super::{
     CountryContext, Report, TokenNames, complete, country_tag, invalid, required_country_tag,
     tag_text,
 };
+
+#[path = "relations/reverse_visibility.rs"]
+mod reverse_visibility;
+
+#[path = "relations/reserved_intel.rs"]
+mod reserved_intel;
+
+pub(super) fn compare_reserved_reverse_visibility(
+    frame: &DecodedFrame,
+    report: &mut Report,
+) -> io::Result<()> {
+    reverse_visibility::compare(frame, report)
+}
+
+pub(super) fn compare_reserved_country_intel(
+    frame: &DecodedFrame,
+    save: &Save,
+    report: &mut Report,
+) -> io::Result<()> {
+    reserved_intel::compare(frame, save, report)
+}
 
 /// The canonical slot of a saved country tag, through the context's tag map.
 /// `country_context` proves every tagged country links to itself and every
@@ -496,9 +518,10 @@ pub(super) fn compare_relation_tuples(
 ///
 /// The recorded table is sparse (see `CountryIntelRow`): an owner's native
 /// count is its greatest recorded index plus one, an index below it without a
-/// row has zero army and air lanes and compares as such, and an index at or
-/// past it is absent. Every saved index is still compared, on the two recorded
-/// lanes; the saved civilian and navy lanes have no recorded counterpart.
+/// row has four zero lanes and compares as such, and an index at or past it is
+/// absent. Every saved index still compares all four lanes. Actual owner0 is
+/// compared independently against its paired admission certificate and the
+/// validated original country-emission projection.
 pub(super) fn compare_country_intel(
     frame: &DecodedFrame,
     save: &Save,
@@ -510,7 +533,7 @@ pub(super) fn compare_country_intel(
     let counts = replay::rows::CountryIntelRow::native_counts(rows);
     let mut recorded: BTreeMap<&[u8], (u32, BTreeMap<u32, &replay::rows::CountryIntelRow>)> =
         BTreeMap::new();
-    for row in rows {
+    for row in rows.iter().filter(|row| row.owner_country != 0) {
         let owner = required_country_tag(row.owner_country, links)?;
         let count = counts[&row.owner_country];
         let (known, records) = recorded.entry(owner).or_insert((count, BTreeMap::new()));
@@ -525,6 +548,9 @@ pub(super) fn compare_country_intel(
     }
     let zero = replay::rows::CountryIntelRow::default();
     for (tag, records) in &save.country_intel {
+        if reserved_intel::is_serialized_reserved_tag(save, tag) {
+            continue;
+        }
         saved_country_slot(tag, save, countries)?;
         let owner = String::from_utf8_lossy(tag).into_owned();
         let (count, captured) = recorded.remove(tag.as_slice()).unwrap_or_default();
@@ -580,6 +606,28 @@ pub(super) fn compare_factions(
     report: &mut Report,
 ) -> io::Result<()> {
     let links = &countries.links;
+    // CFaction::Serialize@140D7B4D0 spells every stored member through
+    // tag_string@140BA5C20, including the reserved country. Its country block
+    // is omitted unless the physical census contains a positive reserved alias.
+    // Its faction membership is saved normally in either case. Demand this exact
+    // tag only for a reached zero join.
+    let zero_tag = LazyCell::new(|| -> io::Result<&[u8]> {
+        let [reserved] = frame.complete::<tables::ReservedCountryNaming>()? else {
+            return Err(invalid(
+                "reserved faction-member tag requires one naming row",
+            ));
+        };
+        let tag = reserved.tag.as_slice();
+        if countries.by_tag.contains_key(tag)
+            || (save.countries.contains_key(tag)
+                && !reserved_intel::is_serialized_reserved_tag(save, tag))
+        {
+            return Err(invalid(
+                "reserved faction-member tag overlaps a positive country",
+            ));
+        }
+        Ok(tag)
+    });
     let mut factions = BTreeMap::new();
     for faction in frame.complete::<tables::Factions>()? {
         if faction.id == 0 || factions.insert(faction.id, faction).is_some() {
@@ -589,7 +637,13 @@ pub(super) fn compare_factions(
     let mut members: BTreeMap<u64, BTreeMap<u32, &[u8]>> = BTreeMap::new();
     let mut member_countries = BTreeSet::new();
     for member in frame.complete::<tables::FactionMembers>()? {
-        let tag = required_country_tag(member.country, links)?;
+        let tag = if member.country == 0 {
+            *zero_tag
+                .as_ref()
+                .map_err(|error| invalid(error.to_string()))?
+        } else {
+            required_country_tag(member.country, links)?
+        };
         if !factions.contains_key(&member.faction) {
             return Err(invalid("faction member references an absent faction"));
         }
@@ -629,7 +683,21 @@ pub(super) fn compare_factions(
             return Err(invalid("invalid saved full faction identity"));
         }
         for tag in &expected.members {
-            if !saved_members.insert(saved_country_slot(tag, save, countries)?) {
+            let slot = if countries.by_tag.contains_key(tag.as_slice()) {
+                saved_country_slot(tag, save, countries)?
+            } else {
+                let reserved = *zero_tag
+                    .as_ref()
+                    .map_err(|error| invalid(error.to_string()))?;
+                if tag.as_slice() != reserved {
+                    return Err(invalid(format!(
+                        "unknown saved country {}",
+                        String::from_utf8_lossy(tag)
+                    )));
+                }
+                0
+            };
+            if !saved_members.insert(slot) {
                 return Err(invalid(
                     "duplicate resolved country in saved faction membership",
                 ));
@@ -641,12 +709,12 @@ pub(super) fn compare_factions(
             continue;
         };
         report.factions += 1;
-        if actual.name != expected.name {
-            report.difference(
-                format!("{label}.literal_name"),
-                &actual.name,
-                &expected.name,
-            );
+        // CFaction::Serialize@140D7B4D0 gates +0x18 on stored length +0x28.
+        let name_label = format!("{label}.literal_name");
+        let name = (!actual.name.is_empty())
+            .then(|| super::serialized_text(report, &name_label, &actual.name));
+        if name != expected.name.as_deref() {
+            report.difference(name_label, name, expected.name.as_deref());
         }
         compare_faction_presentation(&label, actual, expected, tokens.as_ref(), report);
         let actual_members = members.remove(&id).unwrap_or_default();
@@ -772,3 +840,7 @@ pub(super) fn saved_colour(components: [u32; 4]) -> Vec<i64> {
     }
     written
 }
+
+#[cfg(test)]
+#[path = "relations/zero_member_tests.rs"]
+mod zero_member_tests;

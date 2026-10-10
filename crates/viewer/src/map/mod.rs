@@ -3,10 +3,12 @@
 
 // counters
 mod air_participants;
+mod air_range;
 mod air_reachability;
 mod air_registry_sources;
 pub mod aircraft;
 mod aircraft_count;
+mod aircraft_model;
 pub mod allegiance;
 mod arrow_shader;
 pub mod atlas_pages;
@@ -30,6 +32,7 @@ pub mod country_index;
 // borders: the demilitarised-zone bucket bank
 pub mod demilitarized;
 // counters: the one ETA source, recorded or derived
+mod directed_wars;
 pub mod division_eta;
 pub mod entity_animation;
 pub mod entity_effects;
@@ -64,6 +67,7 @@ pub mod native_text;
 pub mod naval_combat_grid;
 pub mod naval_combat_occurrences;
 pub mod naval_count_approx;
+pub mod naval_dominance;
 // counters: the viewing country and what it can see
 pub mod perspective;
 pub mod presentation;
@@ -72,6 +76,7 @@ pub mod province_pick;
 pub mod province_schedule;
 pub mod province_tooltips;
 // orders: the recorded player's battle plan
+pub mod movement_arrows;
 pub mod orders;
 // political fill
 pub mod pointlights;
@@ -106,6 +111,7 @@ pub mod textures;
 pub mod trees;
 // the screen-space interface's scale
 pub mod ui_scale;
+pub mod unit_selection;
 // close zoom: the 3D land-model selectors and their inputs
 pub mod camouflage;
 pub mod equipment_graphics;

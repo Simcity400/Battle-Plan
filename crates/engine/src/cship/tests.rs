@@ -2,6 +2,261 @@ use super::*;
 use crate::{equipment_entry, memory::SliceMemory};
 use std::cell::{Cell, RefCell};
 
+#[test]
+fn transport_model_union_keeps_decisive_pool_flag_before_later_original_failure() {
+    let mut bytes = fixture();
+    word(&mut bytes, FORMATION_FLAGS, 0);
+    word(&mut bytes, BANK + 8, 1);
+    word(&mut bytes, BANK + 24, 1);
+    word(
+        &mut bytes,
+        VARIANTS[0] + cequipment_variant::CLASSIFIER_FLAGS,
+        1 << 22,
+    );
+    word(&mut bytes, VARIANTS[1], 0);
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let trace = Trace::new(&source);
+    let row = Row {
+        id: SHIP_ID,
+        task_force: PARENT_ID,
+        ..Default::default()
+    };
+    let mut observed = TransportModelObservation::default();
+    assert!(
+        read_model_with_selection_observed(
+            &trace,
+            0,
+            BASE,
+            &row,
+            &mut ModelMemo::default(),
+            &mut observed
+        )
+        .is_err()
+    );
+    assert_eq!(observed.positive_equipment_flags, Some(Ok(1 << 22)));
+    let original_reads = trace.reads.borrow().len();
+    let completed = read_transport_model(&trace, 0, BASE, SHIP_ID, observed);
+    assert_eq!(completed.carrier_air_base, Some(Ok(None)));
+    assert_eq!(
+        &trace.reads.borrow()[original_reads..],
+        &[(BASE + CARRIER_AIR_BASE, 8)]
+    );
+}
+
+#[test]
+fn original_model_number_fault_lends_flags_and_original_flags_fault_cannot_retry() {
+    let bytes = fixture();
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let row = Row {
+        id: SHIP_ID,
+        task_force: PARENT_ID,
+        ..Default::default()
+    };
+    for failed in [2, 3] {
+        let mut trace = Trace::new(&source);
+        trace.fault = Some((failed, 0));
+        let mut observed = TransportModelObservation::default();
+        assert_eq!(
+            read_model_with_selection_observed(
+                &trace,
+                0,
+                BASE,
+                &row,
+                &mut ModelMemo::default(),
+                &mut observed
+            )
+            .err(),
+            Some("ship model fields unreadable")
+        );
+        let original_reads = trace.reads.borrow().len();
+        let completed = read_transport_model(&trace, 0, BASE, SHIP_ID, observed);
+        if failed == 2 {
+            assert!(completed.formation_flags.unwrap().is_err());
+            assert_eq!(trace.reads.borrow().len(), original_reads);
+        } else {
+            assert_eq!(completed.formation_flags, Some(Ok(u64::MAX)));
+            assert_eq!(
+                &trace.reads.borrow()[original_reads..],
+                &[(BASE + CARRIER_AIR_BASE, 8)]
+            );
+        }
+    }
+}
+
+#[test]
+fn transport_original_union_demands_nonpositive_flags_and_cannot_retry_their_failure() {
+    let mut bytes = fixture();
+    word(&mut bytes, FORMATION_FLAGS, 0);
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let mut trace = Trace::new(&source);
+    // Find the optional nonpositive first-variant flags attempt in a healthy
+    // original union, then fail it independently of the old model reader.
+    let row = Row {
+        id: SHIP_ID,
+        task_force: PARENT_ID,
+        ..Default::default()
+    };
+    let mut observed = TransportModelObservation::default();
+    assert!(
+        read_model_with_selection_observed(
+            &trace,
+            0,
+            BASE,
+            &row,
+            &mut ModelMemo::default(),
+            &mut observed
+        )
+        .is_ok()
+    );
+    let fault = trace
+        .reads
+        .borrow()
+        .iter()
+        .position(|&(at, _)| at == BASE + VARIANTS[0] + cequipment_variant::CLASSIFIER_FLAGS)
+        .unwrap();
+    trace.reads.borrow_mut().clear();
+    trace.fault = Some((fault, 0));
+    let mut observed = TransportModelObservation::default();
+    assert!(
+        read_model_with_selection_observed(
+            &trace,
+            0,
+            BASE,
+            &row,
+            &mut ModelMemo::default(),
+            &mut observed
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        observed.positive_equipment_flags,
+        Some(Err("ship equipment flags unreadable"))
+    );
+    let reads = trace.reads.borrow().len();
+    let completed = read_transport_model(&trace, 0, BASE, SHIP_ID, observed);
+    assert_eq!(
+        completed.positive_equipment_flags,
+        observed.positive_equipment_flags
+    );
+    assert_eq!(trace.reads.borrow().len(), reads);
+}
+
+#[test]
+fn transport_flag22_false_pass_survives_later_model_failure_for_ship_flag37() {
+    let mut bytes = fixture();
+    word(&mut bytes, FORMATION_FLAGS, 1 << 37);
+    word(&mut bytes, FALLBACK_SPRITE, (BASE + HEAP) as u64);
+    word(
+        &mut bytes,
+        FALLBACK_SPRITE + 16,
+        MODEL_TEXT_CAPACITY as u64 + 1,
+    );
+    word(
+        &mut bytes,
+        FALLBACK_SPRITE + 24,
+        MODEL_TEXT_CAPACITY as u64 + 1,
+    );
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let trace = Trace::new(&source);
+    let row = Row {
+        id: SHIP_ID,
+        task_force: PARENT_ID,
+        ..Default::default()
+    };
+    let mut observed = TransportModelObservation::default();
+    assert_eq!(
+        read_model_with_selection_observed(
+            &trace,
+            0,
+            BASE,
+            &row,
+            &mut ModelMemo::default(),
+            &mut observed
+        )
+        .err(),
+        Some("ship model sprite exceeds owned capacity")
+    );
+    assert_eq!(observed.positive_equipment_flags, Some(Ok(0)));
+    let reads = trace.reads.borrow().len();
+    assert_eq!(
+        read_transport_model(&trace, 0, BASE, SHIP_ID, observed).carrier_air_base,
+        Some(Ok(None))
+    );
+    assert_eq!(
+        &trace.reads.borrow()[reads..],
+        &[(BASE + CARRIER_AIR_BASE, 8)]
+    );
+}
+
+#[test]
+fn transport_union_keeps_large_model_pool_from_original_header_once() {
+    let mut bytes = fixture();
+    word(&mut bytes, FORMATION_FLAGS, 0);
+    bytes.resize(BANK + 5000 * equipment_entry::STRIDE, 0);
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::CAPACITY,
+        5000,
+    );
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+        5000,
+    );
+    for ordinal in 0..5000 {
+        word(
+            &mut bytes,
+            BANK + ordinal * equipment_entry::STRIDE,
+            (BASE + VARIANTS[0]) as u64,
+        );
+        word(&mut bytes, BANK + ordinal * equipment_entry::STRIDE + 8, 0);
+    }
+    let source = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let trace = Trace::new(&source);
+    let row = Row {
+        id: SHIP_ID,
+        task_force: PARENT_ID,
+        ..Default::default()
+    };
+    let mut observed = TransportModelObservation::default();
+    assert!(
+        read_model_with_selection_observed(
+            &trace,
+            0,
+            BASE,
+            &row,
+            &mut ModelMemo::default(),
+            &mut observed
+        )
+        .is_ok()
+    );
+    assert_eq!(observed.positive_equipment_flags, Some(Ok(0)));
+    assert_eq!(
+        trace
+            .reads
+            .borrow()
+            .iter()
+            .filter(|&&(at, _)| at == BASE + EQUIPMENT_POOL + cequipment_variant_pool::ITEMS)
+            .count(),
+        1
+    );
+}
+
 const BASE: usize = 0x1000;
 const PARENT: usize = 0x1000;
 const VARIANTS: [usize; 2] = [0x2000, 0x2500];
@@ -301,23 +556,43 @@ fn pool_selection_crosses_bounded_batch_boundary_and_checks_all_amounts() {
 }
 
 #[test]
-fn oversized_pool_is_unavailable_before_any_entry_is_read() {
+fn mod_sized_model_pool_has_no_chosen_limit_and_preserves_original_read_faults() {
     let mut bytes = fixture();
-    let count = cequipment_variant_pool::MODEL_SELECTION_CAPACITY + 1;
-    dword(
-        &mut bytes,
-        EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
-        count,
-    );
-    dword(
-        &mut bytes,
-        EQUIPMENT_POOL + cequipment_variant_pool::CAPACITY,
-        count,
-    );
-    assert_eq!(
-        model(&bytes[..BANK]),
-        Err("ship model equipment pool exceeds selection capacity")
-    );
+    for count in [5_000, 12_001] {
+        bytes.resize(BANK + count * equipment_entry::STRIDE, 0);
+        dword(
+            &mut bytes,
+            EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+            count as u32,
+        );
+        dword(
+            &mut bytes,
+            EQUIPMENT_POOL + cequipment_variant_pool::CAPACITY,
+            count as u32,
+        );
+        for slot in 0..count {
+            word(
+                &mut bytes,
+                BANK + slot * equipment_entry::STRIDE,
+                (BASE + VARIANTS[0]) as u64,
+            );
+            word(
+                &mut bytes,
+                BANK + slot * equipment_entry::STRIDE + 8,
+                slot as u64,
+            );
+        }
+        word(
+            &mut bytes,
+            BANK + (count - 1) * equipment_entry::STRIDE,
+            (BASE + VARIANTS[1]) as u64,
+        );
+        assert_eq!(model(&bytes).unwrap().variant, (2 << 32) | 70);
+        assert_eq!(
+            model(&bytes[..BANK]),
+            Err("equipment model pool entries unreadable")
+        );
+    }
 }
 
 struct Scalar<'a, M>(&'a M);
@@ -388,6 +663,106 @@ impl<M: Memory> Memory for Trace<'_, M> {
         self.prefetched.set(self.prefetched.get() + 1);
         self.copy_scattered(addresses, destinations)
     }
+}
+
+#[test]
+fn subunit_index_preserves_signed_words_and_authenticates_the_embedded_copy() {
+    for (token, valid, index) in [
+        (0, 1, i32::MIN),
+        (0, 1, -1),
+        (0x165, 0, 0), // The null singleton is copied with the ordinary vtable.
+        (0, 1, 17),    // A later rejected-name definition may also have token0.
+        (u32::MAX, 255, i32::MAX),
+    ] {
+        let mut bytes = fixture();
+        word(
+            &mut bytes,
+            SUBUNIT_DEFINITION,
+            crate::csub_unit_definition::VTABLE_RVA as u64,
+        );
+        dword(&mut bytes, CLASS_DATABASE_ID, token);
+        bytes[DEFINITION_VALID] = valid;
+        dword(&mut bytes, SUBUNIT_INDEX, index as u32);
+        let source = Row {
+            class_id: token as i32,
+            ..Default::default()
+        };
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let trace = Trace::new(&memory);
+        assert_eq!(
+            read_model_subunit_index(&trace, 0, BASE, &source),
+            Ok(index)
+        );
+        assert_eq!(
+            *trace.reads.borrow(),
+            [(BASE + SUBUNIT_DEFINITION, 12), (BASE + SUBUNIT_INDEX, 4)]
+        );
+        // The optional read does not change the original model's result.
+        assert_eq!(model(&bytes).unwrap().subunit_index, None);
+        for at in [SUBUNIT_DEFINITION, CLASS_DATABASE_ID] {
+            bytes[at] ^= 1;
+            let memory = SliceMemory {
+                base: BASE,
+                bytes: &bytes,
+            };
+            let trace = Trace::new(&memory);
+            assert_eq!(
+                read_model_subunit_index(&trace, 0, BASE, &source),
+                Err("ship subunit identity differs from census")
+            );
+            assert_eq!(trace.reads.borrow().len(), 1);
+            bytes[at] ^= 1;
+        }
+    }
+}
+
+#[test]
+fn subunit_index_guard_faults_never_retry_or_return_partial_words() {
+    let mut bytes = fixture();
+    word(
+        &mut bytes,
+        SUBUNIT_DEFINITION,
+        crate::csub_unit_definition::VTABLE_RVA as u64,
+    );
+    dword(&mut bytes, SUBUNIT_INDEX, i32::MIN as u32);
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let source = Row::default();
+    for (field, len, reason) in [
+        (0, 12, "ship subunit identity unreadable"),
+        (1, 4, "ship subunit index unreadable"),
+    ] {
+        for partial in 0..=len {
+            let mut trace = Trace::new(&memory);
+            trace.fault = Some((field, partial));
+            assert_eq!(
+                read_model_subunit_index(&trace, 0, BASE, &source),
+                Err(reason)
+            );
+            assert_eq!(trace.reads.borrow().len(), field + 1);
+        }
+    }
+    let trace = Trace::new(&memory);
+    assert_eq!(
+        read_model_subunit_index(&trace, 0, 0, &source),
+        Err("ship subunit address overflow")
+    );
+    assert_eq!(
+        read_model_subunit_index(&trace, 0, usize::MAX - SUBUNIT_DEFINITION + 1, &source),
+        Err("ship subunit address overflow")
+    );
+    assert!(trace.reads.borrow().is_empty());
+    let trace = Trace::new(&memory);
+    assert_eq!(
+        read_model_subunit_index(&trace, usize::MAX, BASE, &source),
+        Err("ship subunit module overflow")
+    );
+    assert_eq!(trace.reads.borrow().len(), 1);
 }
 
 struct CounterSource(usize);
@@ -666,8 +1041,11 @@ fn full_model_reads() -> Vec<(usize, usize, &'static str)> {
 
 #[test]
 fn model_hull_reuse_retains_exact_bytes_and_bounded_native_savings() {
-    // Fixed one-slot state, with no heap or per-ship memo growth.
-    assert!(std::mem::size_of::<ModelMemo>() <= 304);
+    // The fixed reader starts with an empty one-slot cache and retains its
+    // sprite inline, including payloads that use native heap storage.
+    let bounded_memo = ModelMemo::default();
+    assert!(!bounded_memo.growing);
+    assert!(bounded_memo.hull.is_none());
     for (heap, len, extra_calls, extra_bytes) in
         [(false, 3, 0, 0), (true, 0, 1, 1), (true, 256, 2, 257)]
     {
@@ -691,12 +1069,15 @@ fn model_hull_reuse_retains_exact_bytes_and_bounded_native_savings() {
         let mut memo = ModelMemo::default();
         let cold = traced_model_memo(&census, &mut memo).unwrap();
         assert_eq!(cold.hull_sprite.as_bytes(), payload);
+        let cached_sprite = &memo.hull.as_ref().unwrap().sprite;
+        assert_eq!(cached_sprite.as_bytes(), payload);
+        assert_eq!(cached_sprite.allocated_bytes(), 0);
         assert_eq!(
             (census.calls(), census.spans(), census.bytes()),
             (17 + extra_calls, 26 + extra_calls, 309 + extra_bytes)
         );
         census.reset();
-        assert_eq!(traced_model_memo(&census, &mut memo), Ok(cold));
+        assert_eq!(traced_model_memo(&census, &mut memo), Ok(cold.clone()));
         assert_eq!(
             (census.calls(), census.spans(), census.bytes()),
             (15, 24, 265)
@@ -1153,6 +1534,357 @@ fn model_pool_lookahead_preserves_chunks_ties_and_every_positive_duplicate_read(
                 Ok((selected, flags | (1 << 63)))
             );
             assert_eq!(*memory.reads.borrow(), reads);
+        }
+    }
+}
+
+// Append beside the existing cship tests. No helper or new suffix executes
+// inside the original model reader; all optional capture follows max-org.
+#[test]
+fn selected_companion_preserves_the_original_model_read_sequence_and_fault_prefix() {
+    let bytes = fixture();
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let source = Row {
+        id: SHIP_ID,
+        task_force: PARENT_ID,
+        ..Default::default()
+    };
+    // The existing fixture's signed-MIN bank amounts do not read positive flags.
+    // Inline sprites use only their descriptors, without live payload rereads.
+    let expected = [
+        (BASE, 16),
+        (BASE + TASK_FORCE, 8),
+        (BASE + FORMATION_FLAGS, 8),
+        (BASE + MODEL_NUMBER, 4),
+        (BASE + PARENT, 8),
+        (BASE + PARENT + cunit::HANDLE, 8),
+        (BASE + EQUIPMENT_POOL, 8),
+        (BASE + EQUIPMENT_POOL + cequipment_variant_pool::ITEMS, 16),
+        (BASE + BANK, 2 * equipment_entry::STRIDE),
+        (BASE + FALLBACK_SPRITE, crate::msvc_string::STRIDE),
+        (BASE + DEFINITION_VALID, 1),
+        (BASE + MAXIMUM_STRENGTH, 8),
+        (BASE + CARRIER_AIR_BASE, 8),
+        (BASE + ANTI_AIR_BASE, 8),
+        (BASE + VARIANTS[0], 16),
+        (BASE + VARIANTS[0] + cequipment_variant::EQUIPMENT_TOKEN, 4),
+        (BASE + VARIANTS[0] + cequipment_variant::DEFINITION, 8),
+        (BASE + DEFINITIONS[0], 12),
+        (
+            BASE + DEFINITIONS[0] + cequipment_type::HULL_SPRITE,
+            crate::msvc_string::STRIDE,
+        ),
+    ];
+    let trace = Trace::new(&memory);
+    let row = read_model(&trace, 0, BASE, &source, &mut ModelMemo::default()).unwrap();
+    assert_eq!(*trace.reads.borrow(), expected);
+    let trace = Trace::new(&memory);
+    let (with_source, selected) =
+        read_model_with_selection(&trace, 0, BASE, &source, &mut ModelMemo::default()).unwrap();
+    assert_eq!(with_source, row);
+    assert_eq!(*trace.reads.borrow(), expected);
+    let selected = selected.unwrap();
+    assert_eq!(
+        (
+            selected.pointer,
+            selected.handle,
+            selected.definition,
+            selected.token
+        ),
+        (
+            BASE + VARIANTS[0],
+            row.variant,
+            BASE + DEFINITIONS[0],
+            11_u32.to_le_bytes(),
+        )
+    );
+    for (ordinal, &(_, len)) in expected.iter().enumerate() {
+        for partial in [0, len / 2, len] {
+            let mut wrapper = Trace::new(&memory);
+            wrapper.fault = Some((ordinal, partial));
+            let mut companion = Trace::new(&memory);
+            companion.fault = Some((ordinal, partial));
+            let old = read_model(&wrapper, 0, BASE, &source, &mut ModelMemo::default());
+            let new =
+                read_model_with_selection(&companion, 0, BASE, &source, &mut ModelMemo::default())
+                    .map(|(row, _)| row);
+            assert!(old.is_err());
+            assert_eq!(new, old);
+            assert_eq!(*wrapper.reads.borrow(), expected[..=ordinal]);
+            assert_eq!(*companion.reads.borrow(), expected[..=ordinal]);
+        }
+    }
+}
+
+#[test]
+fn empty_selected_pool_has_no_companion_and_the_memo_keeps_current_selectors() {
+    let mut bytes = fixture();
+    let source = Row {
+        id: SHIP_ID,
+        task_force: PARENT_ID,
+        ..Default::default()
+    };
+    let mut memo = ModelMemo::default();
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let (first, selected) =
+        read_model_with_selection(&memory, 0, BASE, &source, &mut memo).unwrap();
+    assert_eq!(selected.unwrap().handle, first.variant);
+    // Reuse the sprite memo, but still mint from the fresh selected fields.
+    word(
+        &mut bytes,
+        VARIANTS[0] + cequipment_variant::TYPE,
+        (9 << 32) | 70,
+    );
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let (current, selected) =
+        read_model_with_selection(&memory, 0, BASE, &source, &mut memo).unwrap();
+    let selected = selected.unwrap();
+    assert_eq!(selected.handle, current.variant);
+    assert_eq!(selected.handle, (9 << 32) | 70);
+    assert_eq!(selected.definition, BASE + DEFINITIONS[0]);
+    dword(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::COUNT,
+        0,
+    );
+    word(
+        &mut bytes,
+        EQUIPMENT_POOL + cequipment_variant_pool::ITEMS,
+        0,
+    );
+    let memory = SliceMemory {
+        base: BASE,
+        bytes: &bytes,
+    };
+    let (empty, selected) =
+        read_model_with_selection(&memory, 0, BASE, &source, &mut memo).unwrap();
+    assert_eq!(empty.variant, 0);
+    assert!(selected.is_none());
+}
+
+struct NativeNullModelMemory<'a> {
+    bytes: &'a [u8],
+    singleton: u64,
+}
+
+impl Memory for NativeNullModelMemory<'_> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        if address == hull_variant::NULL_DEFINITION_SINGLETON_RVA && output.len() == 8 {
+            output.copy_from_slice(&self.singleton.to_le_bytes());
+            true
+        } else {
+            SliceMemory {
+                base: BASE,
+                bytes: self.bytes,
+            }
+            .copy(address, output)
+        }
+    }
+}
+
+fn native_null_model_fixture() -> Vec<u8> {
+    let mut bytes = fixture();
+    word(
+        &mut bytes,
+        DEFINITIONS[0],
+        hull_variant::NULL_DEFINITION_VTABLE_RVA as u64,
+    );
+    dword(
+        &mut bytes,
+        DEFINITIONS[0] + cequipment_type::TOKEN,
+        hull_variant::NULL_DEFINITION_TOKEN,
+    );
+    dword(
+        &mut bytes,
+        VARIANTS[0] + cequipment_variant::EQUIPMENT_TOKEN,
+        hull_variant::NULL_DEFINITION_TOKEN,
+    );
+    dword(
+        &mut bytes,
+        DEFINITIONS[0] + cequipment_type::ARCHETYPE_ID,
+        (-1_i32) as u32,
+    );
+    bytes[DEFINITIONS[0] + cequipment_type::HULL_SPRITE
+        ..DEFINITIONS[0] + cequipment_type::HULL_SPRITE + crate::msvc_string::STRIDE]
+        .fill(0);
+    inline(
+        &mut bytes,
+        DEFINITIONS[0] + cequipment_type::HULL_SPRITE,
+        b"",
+    );
+    bytes
+}
+
+#[test]
+fn registered_variant_null_type_keeps_handle_and_reads_its_actual_empty_sprite() {
+    let bytes = native_null_model_fixture();
+    let memory = NativeNullModelMemory {
+        bytes: &bytes,
+        singleton: (BASE + DEFINITIONS[0]) as u64,
+    };
+    let trace = Trace::new(&memory);
+    let source = Row {
+        id: SHIP_ID,
+        task_force: PARENT_ID,
+        ..Default::default()
+    };
+    let (row, selected) =
+        read_model_with_selection(&trace, 0, BASE, &source, &mut ModelMemo::default()).unwrap();
+    assert_eq!(
+        row.variant,
+        (1 << 32) | cequipment_variant::REFERENCE_TYPE as u64
+    );
+    assert_eq!(row.hull_sprite.as_bytes(), b"");
+    assert_eq!(row.fallback_sprite.as_bytes(), b"destroyer");
+    assert_eq!(selected.unwrap().handle, row.variant);
+    let spans = trace.reads.into_inner();
+    let singleton = spans
+        .iter()
+        .position(|&(at, _)| at == hull_variant::NULL_DEFINITION_SINGLETON_RVA)
+        .unwrap();
+    assert_eq!(
+        spans[singleton + 1],
+        (BASE + DEFINITIONS[0] + cequipment_type::ACTIVE, 1)
+    );
+    assert_eq!(
+        spans[singleton + 2],
+        (
+            BASE + DEFINITIONS[0] + cequipment_type::HULL_SPRITE,
+            crate::msvc_string::STRIDE
+        )
+    );
+    for ordinal in singleton..spans.len() {
+        let mut trace = Trace::new(&memory);
+        trace.fault = Some((ordinal, 0));
+        assert!(
+            read_model_with_selection(&trace, 0, BASE, &source, &mut ModelMemo::default()).is_err()
+        );
+        assert_eq!(*trace.reads.borrow(), spans[..=ordinal]);
+    }
+}
+
+#[test]
+fn null_type_impostors_and_unregistered_variants_do_not_widen_model_admission() {
+    for change in 0..4 {
+        let mut bytes = native_null_model_fixture();
+        let mut singleton = (BASE + DEFINITIONS[0]) as u64;
+        match change {
+            0 => singleton += 8,
+            1 => bytes[DEFINITIONS[0] + cequipment_type::ACTIVE] = 1,
+            2 => dword(&mut bytes, DEFINITIONS[0] + cequipment_type::TOKEN, 0x166),
+            3 => word(
+                &mut bytes,
+                VARIANTS[0] + 8,
+                cequipment_variant::REFERENCE_TYPE as u64,
+            ),
+            _ => unreachable!(),
+        }
+        let memory = NativeNullModelMemory {
+            bytes: &bytes,
+            singleton,
+        };
+        assert_eq!(
+            read_model(
+                &memory,
+                0,
+                BASE,
+                &Row {
+                    id: SHIP_ID,
+                    task_force: PARENT_ID,
+                    ..Default::default()
+                },
+                &mut ModelMemo::default()
+            )
+            .unwrap_err(),
+            "ship model equipment definition identity mismatch"
+        );
+    }
+}
+
+#[test]
+fn a_warm_null_sprite_memo_still_requires_each_selected_variant_to_be_registered() {
+    let mut bytes = native_null_model_fixture();
+    let source = Row {
+        id: SHIP_ID,
+        task_force: PARENT_ID,
+        ..Default::default()
+    };
+    let mut memo = ModelMemo::default();
+    let memory = NativeNullModelMemory {
+        bytes: &bytes,
+        singleton: (BASE + DEFINITIONS[0]) as u64,
+    };
+    assert!(read_model_with_selection(&memory, 0, BASE, &source, &mut memo).is_ok());
+    // Only the fresh selected CID changes; the memo key's definition/token
+    // match must not hide the null-source admission guard on that new variant.
+    word(
+        &mut bytes,
+        VARIANTS[0] + 8,
+        cequipment_variant::REFERENCE_TYPE as u64,
+    );
+    let memory = NativeNullModelMemory {
+        bytes: &bytes,
+        singleton: (BASE + DEFINITIONS[0]) as u64,
+    };
+    let trace = Trace::new(&memory);
+    assert_eq!(
+        read_model_with_selection(&trace, 0, BASE, &source, &mut memo).err(),
+        Some("ship model equipment definition identity mismatch")
+    );
+    assert!(
+        !trace
+            .reads
+            .borrow()
+            .iter()
+            .any(|&(at, _)| at == hull_variant::NULL_DEFINITION_SINGLETON_RVA)
+    );
+}
+
+#[test]
+fn worker_model_text_keeps_mod_sized_sprites_and_original_hull_memo() {
+    let mut bytes = fixture();
+    word(&mut bytes, BANK + 8, 1);
+    word(&mut bytes, BANK + equipment_entry::STRIDE + 8, 0);
+    let (fallback, hull) = (0x10000, 0x30000);
+    let source = Row {
+        id: SHIP_ID,
+        task_force: PARENT_ID,
+        ..Row::default()
+    };
+    for (length, occurrences) in [(8_193, 5_000), (32_769, 1)] {
+        bytes.resize(hull + length + 1, 0);
+        for (descriptor, payload, byte) in [
+            (FALLBACK_SPRITE, fallback, 0xff),
+            (DEFINITIONS[0] + cequipment_type::HULL_SPRITE, hull, b'X'),
+        ] {
+            word(&mut bytes, descriptor, (BASE + payload) as u64);
+            word(&mut bytes, descriptor + 16, length as u64);
+            word(&mut bytes, descriptor + 24, length as u64);
+            bytes[payload..payload + length].fill(byte);
+        }
+        assert_eq!(
+            model(&bytes),
+            Err("ship model sprite exceeds owned capacity")
+        );
+        let memory = SliceMemory {
+            base: BASE,
+            bytes: &bytes,
+        };
+        let mut memo = ModelMemo::default();
+        memo.enable_worker_growth();
+        for _ in 0..occurrences {
+            let row = read_model(&memory, 0, BASE, &source, &mut memo).unwrap();
+            assert_eq!(row.fallback_sprite.as_bytes(), vec![0xff; length]);
+            assert_eq!(row.hull_sprite.as_bytes(), vec![b'X'; length]);
         }
     }
 }

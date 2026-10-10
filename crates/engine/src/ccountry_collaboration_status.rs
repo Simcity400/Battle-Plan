@@ -99,6 +99,29 @@ fn relation(
 /// incoming/outgoing membership. Link aliases are resolved only for validation;
 /// the row retains its target's original link and the source object's native id.
 pub fn walk(memory: &impl Memory, base: usize, game_state: usize, output: &mut [Row]) -> Outcome {
+    walk_buffer(memory, base, game_state, crate::walk::Buffer::Fixed(output))
+}
+
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: &mut Vec<Row>,
+) -> Outcome {
+    walk_buffer(
+        memory,
+        base,
+        game_state,
+        crate::walk::Buffer::Growing(output),
+    )
+}
+
+pub fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    game_state: usize,
+    output: crate::walk::Buffer<'_, Row>,
+) -> Outcome {
     match walk_inner(memory, base, game_state, output) {
         Ok((len, 0)) => Outcome::Rows { len },
         Ok((len, unread_rows)) => Outcome::Truncated { len, unread_rows },
@@ -110,11 +133,11 @@ fn walk_inner<M: Memory>(
     memory: &M,
     base: usize,
     game_state: usize,
-    output: &mut [Row],
+    mut output: crate::walk::Buffer<'_, Row>,
 ) -> Result<(usize, u32), &'static str> {
     let countries = Reader::new(memory, base, game_state)?;
     let mut observed = false;
-    let mut len = 0;
+    let mut len = 0_usize;
     let mut unread_rows = 0_u32;
     for slot in 1..countries.count() {
         let Some(country) = countries.at(slot)? else {
@@ -122,6 +145,10 @@ fn walk_inner<M: Memory>(
         };
         observed = true;
         let own_status = status(memory, base, country)?;
+        output.ensure(
+            len.checked_add(own_status.outgoing.count as usize)
+                .ok_or("collaboration row count overflow")?,
+        )?;
         for index in 0..own_status.outgoing.count {
             if len == output.len() {
                 unread_rows = unread_rows
@@ -203,6 +230,120 @@ mod tests {
         put(bytes, address, &data.to_le_bytes());
         put(bytes, address + cpdx_array::CAPACITY, &count.to_le_bytes());
         put(bytes, address + cpdx_array::COUNT, &count.to_le_bytes());
+    }
+
+    #[test]
+    fn cold_and_later_collaboration_buffers_keep_five_thousand_country_edges() {
+        const COUNT: usize = 5_000;
+        let slots = COUNT + 1;
+        let countries = 0x2000;
+        let links = countries + slots * 8;
+        let objects = links + slots * 4;
+        let statuses = objects + slots * 0x2000;
+        let relations = statuses + slots * 0x80;
+        let outgoing = relations + slots * 2 * 0x40;
+        let incoming = outgoing + slots * 16;
+        let mut rows = Vec::new();
+        for edges in [1_usize, 2] {
+            let mut bytes = vec![0; incoming + slots * 8 - 0x1000];
+            array(
+                &mut bytes,
+                0x1000 + cgame_state::COUNTRIES,
+                countries as u64,
+                slots as u32,
+            );
+            array(
+                &mut bytes,
+                0x1000 + cgame_state::COUNTRY_LINKS,
+                links as u64,
+                slots as u32,
+            );
+            for id in 1..slots {
+                let country = objects + id * 0x2000;
+                let status = statuses + id * 0x80;
+                put(
+                    &mut bytes,
+                    countries + id * 8,
+                    &(country as u64).to_le_bytes(),
+                );
+                put(&mut bytes, links + id * 4, &(id as u32).to_le_bytes());
+                put(
+                    &mut bytes,
+                    country,
+                    &(ccountry::VTABLE_RVA as u64).to_le_bytes(),
+                );
+                put(
+                    &mut bytes,
+                    country + ccountry::ID,
+                    &(id as u32).to_le_bytes(),
+                );
+                put(
+                    &mut bytes,
+                    country + ccountry::COLLABORATION_STATUS,
+                    &(status as u64).to_le_bytes(),
+                );
+                put(&mut bytes, status, &(VTABLE_RVA as u64).to_le_bytes());
+                put(&mut bytes, status + OWNER, &(country as u64).to_le_bytes());
+                array(
+                    &mut bytes,
+                    status + RELATIONS,
+                    (outgoing + id * 16) as u64,
+                    edges as u32,
+                );
+                array(
+                    &mut bytes,
+                    status + INCOMING_COUNTRIES,
+                    (incoming + id * 8) as u64,
+                    edges as u32,
+                );
+                for edge in 0..edges {
+                    let pointer = relations + (id * 2 + edge) * 0x40;
+                    let target = (id - 1 + edge + 1) % COUNT + 1;
+                    let source = (id - 1 + COUNT - edge - 1) % COUNT + 1;
+                    put(
+                        &mut bytes,
+                        outgoing + id * 16 + edge * 8,
+                        &(pointer as u64).to_le_bytes(),
+                    );
+                    put(
+                        &mut bytes,
+                        incoming + id * 8 + edge * 4,
+                        &(source as u32).to_le_bytes(),
+                    );
+                    put(
+                        &mut bytes,
+                        pointer,
+                        &(ccountry_collaboration_data::VTABLE_RVA as u64).to_le_bytes(),
+                    );
+                    put(
+                        &mut bytes,
+                        pointer + ccountry_collaboration_data::TARGET_COUNTRY,
+                        &(target as u32).to_le_bytes(),
+                    );
+                    put(
+                        &mut bytes,
+                        pointer + ccountry_collaboration_data::PROGRESS,
+                        &123_i64.to_le_bytes(),
+                    );
+                }
+            }
+            let memory = SliceMemory {
+                base: 0x1000,
+                bytes: &bytes,
+            };
+            assert_eq!(
+                walk_growing(&memory, 0, 0x1000, &mut rows),
+                Outcome::Rows { len: COUNT * edges }
+            );
+            assert_eq!(rows[COUNT * edges - 1].source, COUNT as u32);
+            assert_eq!(rows[COUNT * edges - 1].progress, 123);
+            let mut expected = vec![Row::default(); COUNT * edges];
+            assert_eq!(
+                walk(&memory, 0, 0x1000, &mut expected),
+                Outcome::Rows { len: COUNT * edges }
+            );
+            assert_eq!(&rows[..COUNT * edges], expected.as_slice());
+        }
     }
 
     fn fixture() -> Vec<u8> {

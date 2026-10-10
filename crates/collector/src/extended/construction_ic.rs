@@ -38,8 +38,8 @@ pub struct Observation;
 impl output_continuity::Observation for Observation {
     type Entry = Entry;
     const ASSEMBLED_BY_SPOOL: &'static str = ASSEMBLED_BY_SPOOL;
-    fn drain(entries: &mut [Entry]) -> Result<Drained, &'static str> {
-        crate::construction_ic::drain(entries)
+    fn drain_growing(entries: &mut Vec<Entry>) -> Result<Drained, &'static str> {
+        crate::construction_ic::drain_growing(entries)
     }
 }
 pub type Captured = output_continuity::Captured<Observation>;
@@ -64,6 +64,7 @@ struct Line {
     /// Published as ended; dropped at the next written publication.
     ended: bool,
     completion: Option<ConstructionCompletion>,
+    count_reset: i64,
 }
 
 /// The branch's per-line totals, owned by the spool for one campaign.
@@ -248,6 +249,7 @@ impl Totals {
                 linked: line.linked,
                 ended: line.ended,
                 completion: Recorded::Value(line.completion),
+                count_reset: Recorded::Value(line.count_reset),
             }
         }))?;
         rows.sort_unstable_by_key(|row| row.line);
@@ -280,6 +282,13 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) -> Result<(), &'st
     }
     if line.completion.is_some() {
         return Err("construction output after native completion");
+    }
+    if let Some(count) = entry.count_reset {
+        line.count_reset = line
+            .count_reset
+            .checked_add(i64::from(count))
+            .ok_or("construction count reset total overflow")?;
+        return Ok(());
     }
     let sum = |a: i64, b: i64| a.checked_add(b).ok_or("construction output total overflow");
     if entry.instant {
@@ -324,6 +333,37 @@ fn add(lines: &mut OutputMap<Line>, entry: &Entry, hour: i32) -> Result<(), &'st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_count_resets_are_separate_from_completed_cost_debits() {
+        let mut lines = OutputMap::default();
+        add(
+            &mut lines,
+            &Entry {
+                line: 19,
+                amount: 1_000_350,
+                ..Default::default()
+            },
+            100,
+        )
+        .unwrap();
+        add(
+            &mut lines,
+            &Entry {
+                line: 19,
+                count_reset: Some(2),
+                ..Default::default()
+            },
+            100,
+        )
+        .unwrap();
+        let line = &lines[&19];
+        assert_eq!(
+            (line.construction, line.count_reset, line.ticks),
+            (1_000_350, 2, 1)
+        );
+        assert_eq!(line.completion, None);
+    }
     use replay::frame::TABLE_COUNT;
 
     const LINE_A: u64 = 0x10_0000_003b;

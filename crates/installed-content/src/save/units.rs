@@ -42,6 +42,11 @@ pub struct RailwayGun {
     pub support_attack: Option<u32>,
     pub full_path: Vec<u32>,
     pub strategic_redeployment: bool,
+    /// CRailwayGun E78CF0 delegates to BF7010 on its secondary receiver;
+    /// primary+0x2AE emits token 0x2D0D `exile` iff nonzero, as bool truth.
+    pub exile: bool,
+    /// CUnit::Serialize@140BF7010 emits `withdraw=yes` iff primary+0x24D is nonzero.
+    pub withdrawal: bool,
     pub strength: Decimal,
     /// The gun's own combat reference array (CRailwayGun+0x420, token 0x2916,
     /// `CRailwayGun::Serialize@140E78CF0`) in native order; `CUnit::Serialize`
@@ -88,6 +93,15 @@ pub struct DivisionPresentation {
     pub full_path: Vec<u32>,
     pub previous: Option<u32>,
     pub movement_progress: Option<Decimal>,
+    /// CUnit BF7010 writes `withdraw` for a nonzero primary+0x24D byte.
+    pub withdrawal: bool,
+    /// CArmy C80E00 delegates to CUnit BF7010 on its secondary receiver.
+    /// Primary+0x2AE emits token 0x2D0D `exile` iff nonzero, as bool truth.
+    /// Omission certifies zero; nonzero byte magnitude is not serialized.
+    pub exile: bool,
+    /// BF7010 omits priority 1. 141937E20 writes front_order (0),
+    /// player_order (2) or ai_player_order (3); preserve key presence.
+    pub movement_priority: Option<i32>,
     pub dig_in: Option<Decimal>,
     pub dig_in_cap: Option<Decimal>,
     /// 140C80EA0/AF writes secondary+0x5F0 (primary+0x600) unconditionally.
@@ -140,9 +154,19 @@ impl Acclimatization {
 pub struct DivisionTemplate {
     pub template: u64,
     pub country: Vec<u8>,
+    /// Saved bytes, still empty for either omission or an emitted empty value.
     pub name: Vec<u8>,
-    /// Composition +0x28; 140B977F0 writes `localization_key` only when nonempty.
+    /// `name` key presence, independent of its saved byte length. Native writer
+    /// CDivisionTemplateData::Serialize@140B977F0 gates token 0x1B on the
+    /// composition+0x18 stored length of the +8 string. WriteString@1424ADF40
+    /// -> 1424AF5A0 emits its first-NUL prefix, including `name=""` when a
+    /// stored-nonempty string starts with NUL; stored-empty strings are omitted.
+    pub name_present: bool,
+    /// Composition +0x28 saved bytes; omission still reads as empty here.
     pub name_key: Vec<u8>,
+    /// The same writer independently gates token 0x31F `localization_key` on
+    /// stored length at +0x38, then emits the +0x28 string's first-NUL prefix.
+    pub name_key_present: bool,
     pub custom_icon: i32,
     pub custom_icon_nato: bool,
     /// `foreign_template_tag`, verbatim.
@@ -179,9 +203,12 @@ pub struct Fleet {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TaskForce {
     pub id: u64,
-    /// CUnit::Serialize140BF7010 writes primary+258 only when nonempty.
-    pub name: Option<Vec<u8>>,
     pub fleet: u64,
+    /// `CTaskForce::Serialize@140D66770` delegates to CUnit `140BF7010` at
+    /// primary +0x10. With checksum mode off it writes primary +0x258 as
+    /// `name` only when its raw length is nonzero; text ends at the first NUL.
+    /// Omission and saved empty text remain distinct.
+    pub name: Option<Vec<u8>>,
     pub roster_owner: Vec<u8>,
     pub logical_owner: Vec<u8>,
     pub expeditionary_owner: Option<Vec<u8>>,
@@ -204,6 +231,14 @@ pub struct TaskForce {
     /// primary `+0x1A8` combat vector is not serialized ([`NavalCombat::attackers`] is the
     /// saved membership).
     pub alternate_path: Vec<u32>,
+    /// CUnit BF7010 writes primary+0x240 only when nonzero, as `movement_progress`.
+    pub movement_progress: Option<Decimal>,
+    /// BF7010 writes primary+0x24C/+0x24D as `retreat`/`withdraw` truth only.
+    pub retreat: bool,
+    pub withdrawal: bool,
+    /// TaskForce D66770 delegates to CUnit BF7010 at primary+0x10. Its
+    /// primary+0x2AE byte emits token 0x2D0D `exile` iff nonzero, as bool truth.
+    pub exile: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -328,11 +363,18 @@ pub(super) fn parse_division_templates(
                 }
             }
         }
+        // Keep native emission presence without changing the legacy byte fields
+        // or the shared bytes() reader's duplicate/scalar validation.
+        let country = required_bytes(fields, b"country")?;
+        let name = bytes(fields, b"name")?;
+        let name_key = bytes(fields, b"localization_key")?;
         let row = DivisionTemplate {
             template,
-            country: required_bytes(fields, b"country")?,
-            name: bytes(fields, b"name")?.unwrap_or_default(),
-            name_key: bytes(fields, b"localization_key")?.unwrap_or_default(),
+            country,
+            name_present: name.is_some(),
+            name: name.unwrap_or_default(),
+            name_key_present: name_key.is_some(),
+            name_key: name_key.unwrap_or_default(),
             custom_icon: integer(&required_bytes(fields, b"template_counter")?)?,
             custom_icon_nato: boolean(
                 field(fields, b"ingame_set_template_counter")?
@@ -404,6 +446,8 @@ pub(super) fn parse_railway_gun(roster_owner: &[u8], items: &[Item]) -> io::Resu
             .map(boolean)
             .transpose()?
             .unwrap_or(false),
+        exile: flag(items, b"exile")?,
+        withdrawal: flag(items, b"withdraw")?,
         strength: Decimal::parse(&required_bytes(items, b"strength")?)?,
         combats,
         country_intel: country_intel(items)?,
@@ -472,6 +516,9 @@ pub(super) fn parse_division(roster_owner: &[u8], items: &[Item]) -> io::Result<
                 .map(|b| integer(&b))
                 .transpose()?,
             movement_progress: decimal(items, b"movement_progress")?,
+            withdrawal: flag(items, b"withdraw")?,
+            exile: flag(items, b"exile")?,
+            movement_priority: movement_priority(items)?,
             dig_in: decimal(items, b"dig_in")?,
             dig_in_cap: decimal(items, b"dig_in_cap")?,
             max_supply: decimal(items, b"max_supply")?,
@@ -500,6 +547,26 @@ pub(super) fn division_name(items: &[Item]) -> io::Result<DivisionName> {
         custom: bytes(items, b"override")?,
         programmatic: flag(b"override_set_programmatically")?,
     })
+}
+
+fn flag(items: &[Item], key: &[u8]) -> io::Result<bool> {
+    Ok(field(items, key)?
+        .map(boolean)
+        .transpose()?
+        .unwrap_or(false))
+}
+
+/// BF7010 never writes the default priority. Unknown native words take the
+/// front_order branch in 141937E20, so its spelling cannot certify their bits.
+fn movement_priority(items: &[Item]) -> io::Result<Option<i32>> {
+    bytes(items, b"move_priority")?
+        .map(|value| match value.as_slice() {
+            b"front_order" => Ok(0),
+            b"player_order" => Ok(2),
+            b"ai_player_order" => Ok(3),
+            _ => Err(invalid("unsupported saved move_priority")),
+        })
+        .transpose()
 }
 
 fn acclimatization(items: &[Item]) -> io::Result<Option<Acclimatization>> {
@@ -597,8 +664,8 @@ pub(super) fn parse_fleet(owner: &[u8], items: &[Item]) -> io::Result<Fleet> {
 pub(super) fn parse_task_force(owner: &[u8], fleet: u64, items: &[Item]) -> io::Result<TaskForce> {
     Ok(TaskForce {
         id: object_id(items)?,
-        name: bytes(items, b"name")?,
         fleet,
+        name: bytes(items, b"name")?,
         roster_owner: owner.to_vec(),
         logical_owner: required_bytes(items, b"logical_country")?,
         expeditionary_owner: bytes(items, b"expeditionary_owner")?,
@@ -615,6 +682,10 @@ pub(super) fn parse_task_force(owner: &[u8], fleet: u64, items: &[Item]) -> io::
             .map(|value| integer::<i32>(scalar(value)?).map(|id| id as u32))
             .transpose()?,
         alternate_path: integer_list(items, b"full_path")?,
+        movement_progress: decimal(items, b"movement_progress")?,
+        retreat: flag(items, b"retreat")?,
+        withdrawal: flag(items, b"withdraw")?,
+        exile: flag(items, b"exile")?,
     })
 }
 

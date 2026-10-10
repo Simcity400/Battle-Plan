@@ -23,6 +23,15 @@ pub const EFFECT_KINDS: [&str; 5] = ["rain_light", "rain_heavy", "snow", "blizza
 pub struct EffectPair {
     pub entity: Vec<Particle>,
     pub fading_entity: Vec<Particle>,
+    /// Dummy parent spheres of the two members, independent of their particles.
+    pub parents: [Option<EffectParent>; 2],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectParent {
+    pub name: String,
+    ///1423694A0: authored cull radius times the parent's maximum basis length.
+    pub radius: f32,
 }
 
 /// Effect pairs by (kind index, `small`), in authored order: the producer
@@ -355,7 +364,7 @@ fn entity_particles(
     name: &str,
     entities: &Descriptors,
     catalog: &Catalog,
-) -> io::Result<Vec<Particle>> {
+) -> io::Result<(Vec<Particle>, EffectParent)> {
     let refuse = |why: &str| invalid(format!("weather entity {name}: {why}"));
     let mut link = name;
     for _ in 0..=entities.entities.len() {
@@ -375,6 +384,10 @@ fn entity_particles(
     let scale = entity.scale.unwrap_or(1.0);
     if !scale.is_finite() || scale <= 0.0 {
         return Err(refuse("has an unsupported scale"));
+    }
+    let radius = entity.cull_radius.unwrap_or(1.0) * (scale * scale).sqrt();
+    if !radius.is_finite() {
+        return Err(refuse("has a non-finite transformed cull radius"));
     }
     let state = entity.default_state.unwrap_or(mesh::DEFAULT_STATE);
     let [state] = entity
@@ -400,74 +413,34 @@ fn entity_particles(
         particle.scale *= scale;
         out.push(particle);
     }
-    Ok(out)
-}
-
-/// Whether `bytes` holds any of `names` as a whole identifier: a cheap filter
-/// so only descriptor files naming a weather entity are parsed.
-fn mentions(bytes: &[u8], names: &[String]) -> bool {
-    bytes
-        .split(|&byte| !(byte.is_ascii_alphanumeric() || byte == b'_'))
-        .any(|word| !word.is_empty() && names.iter().any(|name| name.as_bytes() == word))
-}
-
-/// Entity descriptors for `names` and their `clone` parents, from the files
-/// in `paths` that mention them, merged in path order.
-fn weather_descriptors(
-    paths: &[String],
-    mut names: Vec<String>,
-    mut read: impl FnMut(&str) -> io::Result<Vec<u8>>,
-) -> io::Result<Descriptors> {
-    let mut parsed: BTreeMap<usize, Descriptors> = BTreeMap::new();
-    loop {
-        for (index, path) in paths.iter().enumerate() {
-            if parsed.contains_key(&index) {
-                continue;
-            }
-            let bytes = read(path)?;
-            if mentions(&bytes, &names) {
-                let descriptors = mesh::parse_descriptors(&bytes, path)
-                    .map_err(|error| invalid(format!("{path}: {error}")))?;
-                parsed.insert(index, descriptors);
-            }
-        }
-        let mut merged = Descriptors::default();
-        for descriptors in parsed.values() {
-            merged.entities.extend(descriptors.entities.clone());
-        }
-        let before = names.len();
-        for name in names.clone() {
-            if let Some(parent) = merged.entities.get(&name).and_then(|e| e.clone.clone())
-                && !names.contains(&parent)
-            {
-                names.push(parent);
-            }
-        }
-        if names.len() == before {
-            return Ok(merged);
-        }
-    }
+    Ok((
+        out,
+        EffectParent {
+            name: name.to_owned(),
+            radius,
+        },
+    ))
 }
 
 /// The weather effects of the stack, each entity resolved to its particles.
 pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects> {
     let names = parse_effect_names(&layers.read(PATH)?)
         .map_err(|error| invalid(format!("{PATH}: {error}")))?;
-    let mut wanted: Vec<String> = names
-        .values()
-        .flatten()
-        .flatten()
-        .flatten()
-        .cloned()
-        .collect();
-    wanted.sort();
-    wanted.dedup();
-    let entities =
-        weather_descriptors(catalog.assets(), wanted, |path| layers.read_uncovered(path))?;
-    let resolve = |name: &Option<String>| -> io::Result<Vec<Particle>> {
+    //The existing memoized registry is also used by entity lights/models.
+    //Clones copy the parent's registration-time definition, not its final one.
+    let roster = layers.descriptor_roster()?;
+    let resolve = |name: &Option<String>| -> io::Result<(Vec<Particle>, Option<EffectParent>)> {
         match name {
-            Some(name) => entity_particles(name, &entities, catalog),
-            None => Ok(Vec::new()),
+            Some(name) => {
+                if let Some(path) = roster.unreadable_names.get(name) {
+                    return Err(invalid(format!(
+                        "weather entity {name}: unreadable descriptor {path}"
+                    )));
+                }
+                let (particles, parent) = entity_particles(name, &roster.descriptors, catalog)?;
+                Ok((particles, Some(parent)))
+            }
+            None => Ok((Vec::new(), None)),
         }
     };
     names
@@ -476,9 +449,12 @@ pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects
             let pairs = pairs
                 .iter()
                 .map(|[entity, fading]| {
+                    let (entity, primary) = resolve(entity)?;
+                    let (fading_entity, fading) = resolve(fading)?;
                     Ok(EffectPair {
-                        entity: resolve(entity)?,
-                        fading_entity: resolve(fading)?,
+                        entity,
+                        fading_entity,
+                        parents: [primary, fading],
                     })
                 })
                 .collect::<io::Result<_>>()?;

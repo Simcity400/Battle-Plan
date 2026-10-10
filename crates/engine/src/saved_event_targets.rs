@@ -21,7 +21,12 @@
 //! cannot reconstruct name aliases. An empty registry remains complete.
 //! Synthetic memory covers strings, ID wrapping, invalid reads and exact
 //! capacity demand; live capture is unverified.
-use crate::{Memory, cpdx_array::Array, creference_registry, read, read_slice, walk::Outcome};
+use crate::{
+    Memory,
+    cpdx_array::Array,
+    creference_registry, read, read_slice,
+    walk::{Buffer, Outcome},
+};
 
 /// CGameState's saved-global CPdxArray (1401DB7B0, 1401ECF60).
 pub const REGISTRY: usize = 0x6c0;
@@ -108,6 +113,40 @@ pub fn walk(
     output: &mut [Row],
     text: &mut [u8],
 ) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        state,
+        Buffer::Fixed(output),
+        Buffer::Fixed(text),
+    )
+}
+
+/// 1401F2A20/14052F780 visit the saved registry and its retained name lengths.
+/// Grow owned worker storage from those original observations before copying.
+pub fn walk_growing(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    output: &mut Vec<Row>,
+    text: &mut Vec<u8>,
+) -> Walk {
+    walk_buffer(
+        memory,
+        base,
+        state,
+        Buffer::Growing(output),
+        Buffer::Growing(text),
+    )
+}
+
+fn walk_buffer(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+    mut output: Buffer<'_, Row>,
+    mut text: Buffer<'_, u8>,
+) -> Walk {
     let mut len = 0usize;
     let mut used = 0usize;
     let mut required = Demand::default();
@@ -142,6 +181,7 @@ pub fn walk(
                 "saved event target intern IDs have wrapped: name aliases are not recorded",
             );
         }
+        output.ensure(required.rows)?;
         for i in 0..registry.count {
             let at = registry
                 .element(i, STRIDE)
@@ -164,6 +204,10 @@ pub fn walk(
                 .bytes
                 .checked_add(name_len)
                 .ok_or("saved event target name arena overflow")?;
+            text.ensure(
+                used.checked_add(name_len)
+                    .ok_or("saved event target name arena overflow")?,
+            )?;
             if len == output.len()
                 || used
                     .checked_add(name_len)
@@ -554,5 +598,48 @@ mod tests {
                 reason: "saved event target registry changed during read"
             }
         ));
+    }
+
+    #[test]
+    fn worker_saved_targets_grow_rows_and_names_before_first_and_later_publication() {
+        let mut rows = Vec::new();
+        let mut text = Vec::new();
+        for (count, name_len) in [(1_500, 23), (5_000, 23), (5_000, 311)] {
+            let mut fixture = Fixture::new();
+            fixture.array(0x1000 + REGISTRY, 0xa000, count as u32);
+            fixture.put(0xa000, &vec![0; STRIDE * count]);
+            let name = vec![b'z'; name_len];
+            let mut terminated = name.clone();
+            terminated.push(0);
+            fixture.put(0x4000, &terminated);
+            let mut h = [0u8; 32];
+            h[..8].copy_from_slice(&0x4000u64.to_le_bytes());
+            h[16..24].copy_from_slice(&(name_len as u64).to_le_bytes());
+            h[24..].copy_from_slice(&(name_len as u64).to_le_bytes());
+            fixture.put(0x3040, &h);
+            for ordinal in 0..count {
+                let at = 0xa000 + ordinal * STRIDE;
+                fixture.put(at, &(VTABLE_RVA as u64).to_le_bytes());
+                fixture.put(at + 0xc, &(ordinal as i32 + 1).to_le_bytes());
+                fixture.put(at + 0x68, &2u16.to_le_bytes());
+            }
+            assert_eq!(
+                walk(&fixture, 0, 0x1000, &mut [], &mut []).outcome,
+                Outcome::Truncated {
+                    len: 0,
+                    unread_rows: count as u32
+                }
+            );
+            let acquired = walk_growing(&fixture, 0, 0x1000, &mut rows, &mut text);
+            assert_eq!(acquired.outcome, Outcome::Rows { len: count });
+            assert_eq!(acquired.bytes, count * name_len);
+            for (ordinal, row) in rows[..count].iter().enumerate() {
+                assert_eq!(
+                    (row.ordinal, row.country),
+                    (ordinal as u32, ordinal as i32 + 1)
+                );
+                assert_eq!(&text[row.name_start..row.name_start + row.name_len], name);
+            }
+        }
     }
 }

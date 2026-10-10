@@ -92,13 +92,13 @@ fn effects_keep_banks_pair_members_and_authored_order() {
 fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
     let entities = mesh::parse_descriptors(
         br#"
-        entity = { name = base scale = 2 default_state = idle
+        entity = { name = base scale = 2 cull_radius = 3 default_state = idle
             state = { name = idle state_time = 2 looping = no
                 event = { time = 0 particle = drops keep_particle = yes }
                 event = { trigger_once = yes sound = { soundeffect = rain } }
             }
         }
-        entity = { name = custom clone = base }
+        entity = { name = custom clone = base cull_radius = 99 }
         entity = { name = timed state = { name = idle event = { time = 1 particle = drops keep_particle = yes } } }
         entity = { name = orphan clone = absent }
         "#,
@@ -109,12 +109,18 @@ fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
     catalog.add_test_particle("drops", "unrelated_id", 0.5, "gfx/particles/x/file.asset");
     assert_eq!(
         entity_particles("custom", &entities, &catalog).unwrap(),
-        [Particle {
-            path: "gfx/particles/x/file.asset".into(),
-            name: "unrelated_id".into(),
-            scale: 1.0,
-            registration: 0,
-        }]
+        (
+            vec![Particle {
+                path: "gfx/particles/x/file.asset".into(),
+                name: "unrelated_id".into(),
+                scale: 1.0,
+                registration: 0,
+            }],
+            EffectParent {
+                name: "custom".into(),
+                radius: 6.
+            }
+        )
     );
     for name in ["timed", "orphan", "absent"] {
         assert!(
@@ -125,30 +131,122 @@ fn entities_resolve_through_clones_and_refuse_unsupported_forms() {
 }
 
 #[test]
-fn descriptors_come_from_files_that_name_the_entities_and_follow_clone_parents() {
-    let paths = ["a.asset", "units.asset", "storm.asset", "late.asset"].map(String::from);
-    let files = BTreeMap::from([
-        ("a.asset", &b"entity = { name = base scale = 2 }"[..]),
-        // Unrelated files may be malformed: they are never parsed.
-        ("units.asset", b"entity = { name = stormtrooper"),
-        ("storm.asset", b"entity = { name = storm clone = base }"),
-        ("late.asset", b"entity = { name = base scale = 3 }"),
-    ]);
-    let entities =
-        weather_descriptors(
-            &paths,
-            vec!["storm".into()],
-            |path| Ok(files[path].to_vec()),
-        )
-        .unwrap();
-    assert_eq!(entities.entities.len(), 2);
-    assert_eq!(entities.inherit("storm").unwrap().scale, Some(3.0));
-    assert!(
-        weather_descriptors(&paths[1..2], vec!["stormtrooper".into()], |path| {
-            Ok(files[path].to_vec())
-        })
-        .is_err()
+fn cull_radius_scans_byte_prefixes_and_refuses_unported_carriers() {
+    let entities = mesh::parse_descriptors(
+        b"entity={name=raw cull_radius=\"2.5\x80\" state={name=idle}}",
+        "gfx/entities/weather.asset",
+    )
+    .unwrap();
+    let (_, parent) = entity_particles("raw", &entities, &Catalog::default()).unwrap();
+    assert_eq!(parent.radius, 2.5);
+    let quoted = mesh::parse_descriptors(
+        b"entity={name=quoted cull_radius=\"@radius\" state={name=idle}}",
+        "gfx/entities/weather.asset",
+    )
+    .unwrap();
+    assert_eq!(
+        entity_particles("quoted", &quoted, &Catalog::default())
+            .unwrap()
+            .1
+            .radius,
+        1.
     );
+    for value in ["@radius", "{}", "rgb {1 2 3}"] {
+        let text = format!("entity={{name=raw cull_radius={value} state={{name=idle}}}}");
+        let error = mesh::parse_descriptors(text.as_bytes(), "gfx/entities/weather.asset")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("entity raw cull_radius"), "{error}");
+        assert!(error.contains("unsupported native consumption"), "{error}");
+    }
+}
+
+#[test]
+fn weather_uses_registered_clone_snapshots_versions_and_held_radius_reads() {
+    let root = std::env::temp_dir().join(format!("hoi4-weather-registry-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("common")).unwrap();
+    std::fs::create_dir_all(root.join("gfx/entities")).unwrap();
+    std::fs::write(root.join(PATH), b"weather_effects={rain_light={weather_effect={entity=storm fading_entity=base} weather_effect={entity=plain} weather_effect={entity=held_clone} weather_effect={entity=scanned}}}").unwrap();
+    std::fs::write(
+        root.join("gfx/entities/weather.asset"),
+        br#"
+        entity={name=base scale=2 cull_radius=3 state={name=idle}}
+        entity={name=storm clone=base cull_radius=99}
+        entity={name=base scale=3 cull_radius=4 state={name=idle}}
+        entity={name=plain cull_radius=7 state={name=idle}}
+        entity={name=plain state={name=idle}}
+        entity={name=held version=5 cull_radius=8 state={name=idle}}
+        entity={name=held version=4 cull_radius=99 state={name=idle}}
+        entity={name=held_clone clone=held cull_radius=99}
+        entity={name=scanned cull_radius=bad cull_radius=2.5junk cull_radius=bad state={name=idle}}
+        entity={name=dropped clone=later}
+        entity={name=later state={name=idle}}
+    "#,
+    )
+    .unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    let before = layers.descriptor_roster().unwrap();
+    let effects = effects(&layers, &Catalog::default()).unwrap();
+    let after = layers.descriptor_roster().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&before, &after));
+    let pairs = &effects[&(0, false)];
+    assert_eq!(
+        pairs[0]
+            .parents
+            .each_ref()
+            .map(|p| p.as_ref().map(|p| p.radius)),
+        [Some(6.), Some(12.)]
+    );
+    assert_eq!(pairs[1].parents[0].as_ref().unwrap().radius, 1.);
+    assert_eq!(pairs[2].parents[0].as_ref().unwrap().radius, 8.);
+    assert_eq!(pairs[3].parents[0].as_ref().unwrap().radius, 2.5);
+    assert!(
+        entity_particles("dropped", &before.descriptors, &Catalog::default())
+            .unwrap_err()
+            .to_string()
+            .contains("dropped")
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn weather_refuses_a_requested_name_from_an_unreadable_later_descriptor() {
+    let root = std::env::temp_dir().join(format!("hoi4-weather-uncertain-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("common")).unwrap();
+    std::fs::create_dir_all(root.join("gfx/entities")).unwrap();
+    std::fs::write(
+        root.join(PATH),
+        b"weather_effects={rain_light={weather_effect={entity=uncertain}}}",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("gfx/entities/a.asset"),
+        b"entity={name=uncertain state={name=idle}}",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("gfx/entities/b.asset"),
+        b"entity={name=uncertain cull_radius=@radius state={name=idle}}",
+    )
+    .unwrap();
+    let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+    //A prior valid definition does not make the later unknown overwrite safe.
+    assert!(
+        layers
+            .descriptor_roster()
+            .unwrap()
+            .descriptors
+            .entities
+            .contains_key("uncertain")
+    );
+    let error = effects(&layers, &Catalog::default())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("weather entity uncertain: unreadable descriptor gfx/entities/b.asset"),
+        "{error}"
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

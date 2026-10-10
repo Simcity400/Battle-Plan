@@ -12,16 +12,11 @@ pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::DivisionCensus];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
 }
 
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { rows: 512 }
-    }
-}
 impl Capacities {
     pub(crate) fn raise_for_countries(&mut self, slots: usize) {
         crate::country_scale::raise(&mut self.rows, crate::country_scale::rows(slots, 1));
@@ -57,6 +52,12 @@ impl Captured {
         )]
     }
     pub(crate) fn install(&mut self, census: &Census) {
+        if let Err(reason) =
+            engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(census.country_count())
+        {
+            self.rows.outcome = Outcome::Unavailable { reason };
+            return;
+        }
         self.rows.outcome = census.install_counts(&mut self.rows.rows);
     }
     pub(crate) fn fail(&mut self, reason: &'static str) {

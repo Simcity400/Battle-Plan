@@ -27,12 +27,7 @@
 //!
 //! LendLeaseEquipment: daily, each giver's lend-lease exchanges' delivered
 //! and sunk equipment per variant.
-use crate::{
-    sampling::qpc,
-    slicing::{FINGERPRINT_OWNERS, SliceSelection},
-    spooling::table,
-    table_capture::CaptureRows,
-};
+use crate::{sampling::qpc, slicing::SliceSelection, spooling::table, table_capture::CaptureRows};
 use engine::{
     Memory, allocation, clend_lease_exchange as lend_lease,
     ncombat_log_cequipment_loss::month_bucket, ncombat_log_cmanager as native, walk::Outcome,
@@ -60,13 +55,6 @@ pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 /// update entered at raw hour `% 24 == 23`, after that hour's sample.
 pub const PRUNE_HOUR: i32 = 23;
 
-/// Rows the first capture is sized for. Demand follows the stored orders
-/// groups, months and variants across all countries. A larger read grows the
-/// buffer off-thread after truncation; player status never sizes or selects it.
-const ROWS: usize = 4096;
-/// Lend-lease rows the first capture is sized for: a few exchanges' designs.
-const LEND_LEASE_ROWS: usize = 512;
-
 /// Hours a published final is kept, to be published again if the frame that
 /// published it turns out unpublished. The spool reports an unpublished frame
 /// ([`forget_reads`], or a full-refresh retry) when it takes the frame, which
@@ -83,8 +71,8 @@ struct Final {
 }
 
 /// The Combat Log state every capture buffer shares, for one session (load
-/// signal). Captures run one at a time: each hour's Slow job, or its inline
-/// fallback, completes inside that hour's callback. So the lock is never
+/// signal). Captures run one at a time: each hour's Slow worker completes
+/// inside that hour's callback. So the lock is never
 /// contended; only the capture takes it, and the game thread only raises
 /// [`FORGET`].
 struct Store {
@@ -92,9 +80,42 @@ struct Store {
     /// The last sample hour the store was brought to.
     hour: Option<i32>,
     finals: Vec<Final>,
-    /// Each country's last complete read hour ([`NEVER`] when none), by
-    /// country below [`FINGERPRINT_OWNERS`]; allocated at the first capture.
-    read_hour: Vec<i32>,
+    /// Each observed country's last complete read hour, sorted by raw owner.
+    /// Native manager headers retain these links (`140CC87C0`, `140CD0E30`).
+    read_hour: Vec<(u32, i32)>,
+}
+
+impl Store {
+    fn last_read(&self, country: u32) -> i32 {
+        self.read_hour
+            .binary_search_by_key(&country, |&(owner, _)| owner)
+            .map(|index| self.read_hour[index].1)
+            .unwrap_or(NEVER)
+    }
+
+    fn remember_reads(&mut self, countries: &[u32], hour: i32) -> Result<(), &'static str> {
+        let new = countries
+            .iter()
+            .filter(|&&country| {
+                self.read_hour
+                    .binary_search_by_key(&country, |&(owner, _)| owner)
+                    .is_err()
+            })
+            .count();
+        allocation::reserve(&mut self.read_hour, new)
+            .map_err(crate::allocation::io)
+            .map_err(|_| "combat log read-hour allocation failed")?;
+        for &country in countries {
+            match self
+                .read_hour
+                .binary_search_by_key(&country, |&(owner, _)| owner)
+            {
+                Ok(index) => self.read_hour[index].1 = hour,
+                Err(index) => self.read_hour.insert(index, (country, hour)),
+            }
+        }
+        Ok(())
+    }
 }
 
 const EMPTY_STORE: Store = Store {
@@ -181,17 +202,28 @@ fn needs_all(last: i32, hour: i32) -> bool {
     last == NEVER || last > hour || month_bucket(last) < month_bucket(hour).saturating_sub(1)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
     lend_lease: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self {
-            rows: ROWS,
-            lend_lease: LEND_LEASE_ROWS,
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        // Keep each successful hint when the independent sibling is unreadable.
+        let logs = native::row_demand(memory, base, state);
+        let lend = lend_lease::row_demand(memory, base, state);
+        if let Ok(rows) = logs {
+            crate::country_scale::raise(&mut self.rows, rows);
         }
+        if let Ok(rows) = lend {
+            crate::country_scale::raise(&mut self.lend_lease, rows);
+        }
+        logs.and(lend).map(|_| ())
     }
 }
 
@@ -317,7 +349,7 @@ impl Captured {
             let _reads = crate::read_accounting::table(TABLES[2]);
             let started = qpc();
             self.lend_lease.outcome =
-                lend_lease::walk(memory, base, game_state, &mut self.lend_lease.rows);
+                lend_lease::walk_growing(memory, base, game_state, &mut self.lend_lease.rows);
             qpc().saturating_sub(started).max(0) as u64
         } else {
             self.lend_lease.outcome = Outcome::Unavailable {
@@ -334,23 +366,19 @@ impl Captured {
     /// since the previous sample add theirs. Whether those prunes were all
     /// observed.
     fn begin(&mut self, store: &mut Store, hour: i32, force_full: bool) -> bool {
-        if store.read_hour.len() != FINGERPRINT_OWNERS {
-            let Ok(read_hour) = allocation::filled(FINGERPRINT_OWNERS, NEVER) else {
-                return false;
-            };
-            store.read_hour = read_hour;
-        }
         // A load (a new signal; an earlier hour could only be one too):
         // nothing kept describes the new branch.
         if store.signal != Some(self.signal) || store.hour.is_some_and(|last| hour < last) {
             store.signal = Some(self.signal);
             store.finals.clear();
-            store.read_hour.fill(NEVER);
+            store.read_hour.clear();
         }
         store.hour = Some(hour);
         let forget = take_forget();
         if forget {
-            store.read_hour.fill(NEVER);
+            for (_, last) in &mut store.read_hour {
+                *last = NEVER;
+            }
         }
         if forget || force_full {
             // A full hour is also how the spool retries an unpublished frame.
@@ -404,10 +432,10 @@ impl Captured {
             };
         }
         let selection = &self.selection;
-        let read_hour = &store.read_hour;
+        let history = &*store;
         let visited = &mut self.visited;
         visited.clear();
-        let outcome = native::walk_prepared(
+        let outcome = native::walk_prepared_growing(
             memory,
             base,
             game_state,
@@ -423,9 +451,7 @@ impl Captured {
                         .map_err(|_| "collector allocation failed")?;
                 }
                 visited.push(country);
-                // A country above the tracked range is read at every hour
-                // and read whole.
-                let last = read_hour.get(country as usize).copied().unwrap_or(NEVER);
+                let last = history.last_read(country);
                 Ok(Some(if force_full || needs_all(last, hour) {
                     native::Months::All
                 } else {
@@ -445,12 +471,17 @@ impl Captured {
             .iter()
             .filter(|kept| kept.published.is_none())
             .count();
-        let free = self.rows.rows.len() - len;
-        if pending > free {
-            return Outcome::Truncated {
-                len,
-                unread_rows: u32::try_from(pending).unwrap_or(u32::MAX),
+        let Some(required) = len.checked_add(pending) else {
+            return Outcome::Unavailable {
+                reason: "combat log final row demand overflow",
             };
+        };
+        if let Err(reason) = engine::walk::Buffer::Growing(&mut self.rows.rows).ensure(required) {
+            return Outcome::Unavailable { reason };
+        }
+        // Reserve all original visited owners before publishing any new read.
+        if let Err(reason) = store.remember_reads(&self.visited, hour) {
+            return Outcome::Unavailable { reason };
         }
         let mut at = len;
         for kept in store
@@ -461,12 +492,6 @@ impl Captured {
             self.rows.rows[at] = kept.row;
             kept.published = Some(hour);
             at += 1;
-        }
-        // The read is complete: each country it covered is current now.
-        for &country in &self.visited {
-            if let Some(last) = store.read_hour.get_mut(country as usize) {
-                *last = hour;
-            }
         }
         Outcome::Rows { len: at }
     }
@@ -843,16 +868,73 @@ mod tests {
         let bytes = logged_state();
         let [mut a, ..] = buffers();
         capture(&mut a, &bytes, SIGNAL, 5, false);
-        let last = |country: usize| with_store(|store| store.read_hour[country]);
-        with_store(|store| store.read_hour[29] = 5);
+        let last = |country| with_store(|store| store.last_read(country));
+        with_store(|store| store.remember_reads(&[29], 5).unwrap());
         capture(&mut a, &bytes, SIGNAL, 6, false);
         assert_eq!(last(29), 5, "kept while nothing went unpublished");
         forget_reads();
         capture(&mut a, &bytes, SIGNAL, 7, false);
         assert_eq!(last(29), NEVER);
-        with_store(|store| store.read_hour[29] = 7);
+        with_store(|store| store.remember_reads(&[29], 7).unwrap());
         capture(&mut a, &bytes, SIGNAL + 1, 8, true);
         assert_eq!(last(29), NEVER, "a load");
+    }
+
+    #[test]
+    fn original_5000_sparse_owners_grow_read_history_without_a_country_id_ceiling() {
+        use engine::ncombat_log_corders_group_logs as groups;
+        let mut captured = Captured::with_capacities(&Capacities::default());
+        for (hour, count) in [(day(1941, 10), 1_500), (day(1941, 11), 5_000)] {
+            let pointers = 0x2000;
+            let managers = pointers + (count + 1) * 8;
+            let group_pointer = managers + count * native::SIZE;
+            let group = group_pointer + 8;
+            let mut bytes = vec![0; group + groups::SIZE - 0x1000];
+            let mut put = |address: usize, value: &[u8]| {
+                bytes[address - 0x1000..address - 0x1000 + value.len()].copy_from_slice(value);
+            };
+            let header = 0x1000 + engine::cgame_state::COMBAT_LOGS;
+            put(header, &(pointers as u64).to_le_bytes());
+            put(header + 8, &((count + 1) as u32).to_le_bytes());
+            put(header + 12, &((count + 1) as u32).to_le_bytes());
+            for index in 0..count {
+                let manager = managers + index * native::SIZE;
+                put(pointers + (index + 1) * 8, &(manager as u64).to_le_bytes());
+                put(manager, &(native::VTABLE_RVA as u64).to_le_bytes());
+                put(
+                    manager + native::GROUPS,
+                    &(group_pointer as u64).to_le_bytes(),
+                );
+                put(manager + native::GROUPS + 8, &1_u32.to_le_bytes());
+                put(manager + native::GROUPS + 12, &1_u32.to_le_bytes());
+                put(
+                    manager + native::COUNTRY,
+                    &(u32::MAX - index as u32).to_le_bytes(),
+                );
+            }
+            put(group_pointer, &(group as u64).to_le_bytes());
+            put(group, &(groups::VTABLE_RVA as u64).to_le_bytes());
+            let reference = (7_u64 << 32) | u64::from(engine::corders_group::REFERENCE_TYPE);
+            put(group + groups::GROUP, &reference.to_le_bytes());
+            let memory = engine::memory::SliceMemory {
+                base: 0x1000,
+                bytes: &bytes,
+            };
+            captured.set_signal(SIGNAL);
+            captured.capture(&memory, 0, 0x1000, hour, true);
+            assert_eq!(captured.rows.outcome, Outcome::Rows { len: 0 });
+            assert_eq!(captured.visited.len(), count);
+            with_store(|store| {
+                assert_eq!(store.read_hour.len(), count);
+                assert_eq!(store.last_read(u32::MAX), hour);
+                assert_eq!(store.last_read(u32::MAX - count as u32 + 1), hour);
+                assert!(!needs_all(store.last_read(u32::MAX), hour + 1));
+                let capacity = store.read_hour.capacity();
+                store.remember_reads(&captured.visited, hour + 1).unwrap();
+                assert_eq!(store.read_hour.capacity(), capacity);
+                assert_eq!(store.last_read(1), NEVER);
+            });
+        }
     }
 
     #[test]

@@ -103,7 +103,8 @@ impl World {
     fn new(provinces: usize) -> Self {
         let snow = PROVINCE_DATA + provinces * sweather_per_province::STRIDE;
         let mud = snow + provinces;
-        let mut bytes = vec![0; mud + provinces];
+        let clocks = mud + provinces;
+        let mut bytes = vec![0; clocks + provinces * sweather_per_province::CLOCK_STRIDE];
         let origin = bytes.as_ptr() as usize;
         let mut put = |offset: usize, value: &[u8]| {
             bytes[offset..offset + value.len()].copy_from_slice(value)
@@ -121,6 +122,7 @@ impl World {
             (cweather_manager::PROVINCES, PROVINCE_DATA, provinces),
             (cweather_manager::DISPLAY_SNOW, snow, provinces),
             (cweather_manager::DISPLAY_MUD, mud, provinces),
+            (cweather_manager::PROVINCE_CLOCKS, clocks, provinces),
         ] {
             put(MANAGER + offset, &((origin + data) as u64).to_le_bytes());
             put(MANAGER + offset + 8, &(count as u32).to_le_bytes());
@@ -147,6 +149,15 @@ impl World {
             put(
                 row + sweather_per_province::RAW_MUD,
                 &[(slot % 2 * 7) as u8],
+            );
+            let clock = clocks + slot * sweather_per_province::CLOCK_STRIDE;
+            put(
+                clock + sweather_per_province::CLOCK_LOCAL_HOUR,
+                &(slot as i32 % 25).to_le_bytes(),
+            );
+            put(
+                clock + sweather_per_province::CLOCK_NIGHT_FACTOR,
+                &((slot as i64 % 2) * 100_000).to_le_bytes(),
             );
         }
         Self { bytes, origin }
@@ -214,6 +225,7 @@ fn province_hover_weather_changes_in_place_and_delta_is_temperature_only() {
         let provinces = world.array().count as usize;
         let mut captured = Captured::with_capacities(&Capacities {
             rows: [1, provinces],
+            ..Default::default()
         });
         let read = |world: &World, captured: &mut Captured| {
             captured.capture(
@@ -248,6 +260,7 @@ fn province_hover_weather_bench() {
         let provinces = world.array().count as usize;
         let mut captured = Captured::with_capacities(&Capacities {
             rows: [1, provinces],
+            ..Default::default()
         });
         let mut job = WeatherJob::new();
         let mut old_payload = DensePayload::new(provinces * 28);
@@ -273,7 +286,10 @@ fn province_hover_weather_bench() {
             let report = copy_weather_refresh(
                 &live,
                 WeatherCopyContext {
+                    base: 0,
+                    hour: 0,
                     game_state: world.state(),
+                    attack_guard: Ok(()),
                 },
                 &mut job,
             );
@@ -327,7 +343,10 @@ fn province_hover_weather_bench() {
         copy_weather_refresh(
             &memory,
             WeatherCopyContext {
+                base: 0,
+                hour: 0,
                 game_state: world.state(),
+                attack_guard: Ok(()),
             },
             &mut job,
         );

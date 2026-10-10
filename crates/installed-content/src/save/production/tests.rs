@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn deployment_conveyor_requires_its_unconditional_name_key() {
+    let parse = |field: &str| {
+        let doc = crate::parser::parse(format!("military_deployment_conveyor={{id={{id=1 type=8}} division_template_id={{id=2 type=9}} amount=1 location=0 priority=1 {field}}}").as_bytes()).unwrap();
+        parse_deployment(&doc.items)
+    };
+    assert!(parse("").unwrap_err().to_string().contains("name"));
+    assert!(parse("name=\"\"").unwrap()[0].name.is_empty());
+    assert_eq!(parse("name=Custom").unwrap()[0].name, b"Custom");
+}
+
+#[test]
+fn deployment_name_ordered_retains_presence_and_refuses_malformed_flags() {
+    for (flag, expected) in [("", None), ("is_name_ordered=no", Some(false))] {
+        let text = format!("id={{id=17 type=63}} division_name={{type=0 {flag}}}");
+        let fields = crate::parser::parse(text.as_bytes()).unwrap();
+        assert_eq!(
+            parse_deployment_line(&fields.items).unwrap().name_ordered,
+            expected
+        );
+    }
+    for flag in [
+        "is_name_ordered={}",
+        "is_name_ordered=no is_name_ordered=no",
+        "is_name_ordered=unknown",
+    ] {
+        let text = format!("id={{id=17 type=63}} division_name={{type=0 {flag}}}");
+        let fields = crate::parser::parse(text.as_bytes()).unwrap();
+        assert!(parse_deployment_line(&fields.items).is_err());
+    }
+}
+
+#[test]
 fn equipment_rosters_keep_saved_order_repeats_and_absence() {
     let production = |text: &[u8]| {
         let document = crate::parser::parse(text).unwrap();
@@ -229,6 +261,38 @@ fn production_country_wrapper_and_variant_children_preserve_native_keys_and_orde
             .replace("LEVEL", level);
         let doc = crate::parser::parse(text.as_bytes()).unwrap();
         assert!(parse(&doc.items).is_err(), "{level}");
+    }
+}
+
+#[test]
+fn selected_variant_organisation_marker_keeps_signed_values_and_omission() {
+    for (suffix, expected) in [
+        ("", None),
+        ("number_of_design_team_traits=0", Some(0)),
+        ("number_of_design_team_traits=-2147483648", Some(i32::MIN)),
+        ("number_of_design_team_traits=2147483647", Some(i32::MAX)),
+    ] {
+        let doc = crate::parser::parse(
+            format!("equipments={{type={{id={{id=1 type=70}} {suffix}}}}}").as_bytes(),
+        )
+        .unwrap();
+        let pack = parse(&doc.items).unwrap();
+        assert_eq!(
+            pack.variants.as_ref().unwrap()[&((1 << 32) | 70)].organisation_marker,
+            expected
+        );
+    }
+    for suffix in [
+        "number_of_design_team_traits=2147483648",
+        "number_of_design_team_traits=-2147483649",
+        "number_of_design_team_traits={}",
+        "number_of_design_team_traits=1 number_of_design_team_traits=1",
+    ] {
+        let doc = crate::parser::parse(
+            format!("equipments={{type={{id={{id=1 type=70}} {suffix}}}}}").as_bytes(),
+        )
+        .unwrap();
+        assert!(parse(&doc.items).is_err(), "{suffix}");
     }
 }
 

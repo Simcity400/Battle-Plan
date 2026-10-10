@@ -250,6 +250,42 @@ fn content_readers_ask_the_keyword_helper() {
             "characters.rs",
             "if !built.tag.eq_ignore_ascii_case(character) {",
         ),
+        // Advisor identity is hashed text (140606100, 1406A6460,
+        // 1406A6EC0), not a parser keyword. Character references are
+        // dynamic tokens (1424A65A0); keep the authored spellings.
+        (
+            "characters.rs",
+            "self.character.eq_ignore_ascii_case(&other.character)",
+        ),
+        (
+            "characters.rs",
+            "&& self.slot.eq_ignore_ascii_case(&other.slot)",
+        ),
+        (
+            "characters.rs",
+            "&& self.idea_token.eq_ignore_ascii_case(&other.idea_token)",
+        ),
+        (
+            "characters.rs",
+            "let identity = idea_token.to_ascii_lowercase();",
+        ),
+        (
+            "characters.rs",
+            ".contains(&idea_token.to_ascii_lowercase())",
+        ),
+        (
+            "characters.rs",
+            ".filter(|role| role.idea_token.eq_ignore_ascii_case(idea_token));",
+        ),
+        (
+            "characters.rs",
+            "let identity = role.idea_token.to_ascii_lowercase();",
+        ),
+        ("characters.rs", "token.to_ascii_lowercase(),"),
+        (
+            "characters.rs",
+            ".insert(token.to_ascii_lowercase(), token.to_owned());",
+        ),
         // 1413DBE40 keys country-leader roles by the registered ideology
         // token, whose text is folded by 1424A6500 -> 1424A65A0.
         ("characters.rs", "ideology.to_ascii_lowercase(),"),

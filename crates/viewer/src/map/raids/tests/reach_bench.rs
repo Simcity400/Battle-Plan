@@ -121,6 +121,7 @@ pub(super) fn hour(countries: u32) -> DecodedFrame {
             })
             .collect(),
     );
+    super::reserved_faction(&mut frame, 1);
     // Wars among the other countries, and military access between them.
     put::<tables::WarRelations>(
         &mut frame,
@@ -142,6 +143,7 @@ pub(super) fn hour(countries: u32) -> DecodedFrame {
                     country: raw(slot),
                     target_index: (slot + step * 7) % countries,
                     links: RelationLinkRow::MILITARY_ACCESS,
+                    transport_subject: Default::default(),
                 })
             })
             .collect(),

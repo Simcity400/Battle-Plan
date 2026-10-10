@@ -135,7 +135,7 @@ fn compare_experience(
         }
     }
     let mut count = 0;
-    for (tag, country) in &saved.countries {
+    for (tag, country) in report.canonical_countries(&saved.countries) {
         let label = format!("{}.experience", String::from_utf8_lossy(tag));
         let Some(actual) = actual.remove(tag.as_slice()) else {
             report.difference(label, "absent", "saved country present");
@@ -356,7 +356,7 @@ fn compare_resources(
         }
     }
     // A saved name with no captured row to join.
-    for (tag, country) in &saved.countries {
+    for (tag, country) in report.canonical_countries(&saved.countries) {
         let Some(pools) = &country.pools else {
             continue;
         };
@@ -488,7 +488,7 @@ fn compare_exchanges(
     }
     let mut count = 0;
     let mut saved_ids = std::collections::BTreeSet::new();
-    for (tag, country) in &saved.countries {
+    for (tag, country) in report.canonical_countries(&saved.countries) {
         let Some(exports) = &country.exports else {
             report.difference(
                 format!("{}.resources", String::from_utf8_lossy(tag)),
@@ -833,7 +833,7 @@ fn compare_fuel(
         }
     }
     let mut count = 0;
-    for (tag, country) in &saved.countries {
+    for (tag, country) in report.canonical_countries(&saved.countries) {
         let label = format!("{}.fuel", String::from_utf8_lossy(tag));
         let Some(actual) = actual.remove(tag.as_slice()) else {
             report.difference(label, "absent", "saved country present");
@@ -1043,7 +1043,7 @@ fn compare_fuel_consumers(
         }
     }
     let mut count = 0;
-    for (tag, country) in &saved.countries {
+    for (tag, country) in report.canonical_countries(&saved.countries) {
         let Some(fuel) = &country.fuel else {
             continue;
         };
@@ -1124,7 +1124,7 @@ fn compare_logistics(
         }
     }
     let mut count = 0;
-    for (tag, country) in &saved.countries {
+    for (tag, country) in report.canonical_countries(&saved.countries) {
         let name = String::from_utf8_lossy(tag);
         let history = match &country.logistics {
             Some(economy::Logistics::History(history)) => Some(history),

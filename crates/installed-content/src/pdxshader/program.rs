@@ -146,8 +146,29 @@ struct File {
 /// `effect` is the sprite's name as its bytes, and every path is opened by its bytes
 /// ([`ResolvedLayers::read_uncovered_path`]), as `PHYSFS_openRead@1424DFAC0` is given them.
 pub fn read(layers: &ResolvedLayers, effect: &[u8]) -> Result<Program, String> {
+    read_layers(layers, effect, false)
+}
+
+/// Ordinary reporting reads retain uncovered source paths in the stack's shared diagnostics.
+/// The caller must retain `ResolvedLayers::report_uncovered_reads()` at its reporting boundary.
+pub fn read_reported(layers: &ResolvedLayers, effect: &[u8]) -> Result<Program, String> {
+    let program = read_layers(layers, effect, true)?;
+    for warning in &program.warnings {
+        layers.note_shader_warning(warning.clone());
+    }
+    Ok(program)
+}
+
+fn read_layers(layers: &ResolvedLayers, effect: &[u8], reported: bool) -> Result<Program, String> {
     let errors = std::cell::RefCell::new(Vec::new());
-    let result = read_with(effect, &|path| match layers.read_uncovered_path(path) {
+    let read = |path: &[u8]| {
+        if reported {
+            layers.read_path(path)
+        } else {
+            layers.read_uncovered_path(path)
+        }
+    };
+    let result = read_with(effect, &|path| match read(path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => {
@@ -168,7 +189,7 @@ pub fn read(layers: &ResolvedLayers, effect: &[u8]) -> Result<Program, String> {
         .filter(|path| !layers.covered_path(path))
         .map(|path| lossy(path))
         .collect();
-    if !uncovered.is_empty() {
+    if !reported && !uncovered.is_empty() {
         program.warnings.push(format!("Effect {:?} reads sources outside the content coverage policy; these bytes are not hash-verified: {}", lossy(effect), uncovered.join(", ")));
     }
     Ok(program)

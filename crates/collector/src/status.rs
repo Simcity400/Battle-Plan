@@ -6,6 +6,36 @@ use serde::{
 };
 use std::fmt;
 
+/// Worker-only refusal diagnostics retain each original error independently.
+#[derive(Default)]
+pub(crate) struct RefusalReasons(std::sync::Mutex<Vec<(&'static str, u64)>>);
+impl RefusalReasons {
+    pub(crate) const fn new() -> Self {
+        Self(std::sync::Mutex::new(Vec::new()))
+    }
+    pub(crate) fn record(&self, reason: &'static str) {
+        let mut reasons = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, count)) = reasons.iter_mut().find(|(name, _)| *name == reason) {
+            *count = count.saturating_add(1);
+        } else if engine::allocation::reserve_push_batch(&mut reasons, 1).is_ok() {
+            reasons.push((reason, 1));
+            reasons.sort_unstable_by_key(|&(name, _)| name);
+        }
+    }
+}
+impl Serialize for RefusalReasons {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let reasons = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        map(reasons.iter().copied()).serialize(serializer)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Empty;
 #[derive(Clone)]

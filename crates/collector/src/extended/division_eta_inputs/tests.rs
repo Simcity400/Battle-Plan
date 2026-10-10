@@ -2,6 +2,140 @@ use super::*;
 use engine::memory::SliceMemory;
 
 #[test]
+fn cold_eta_capacity_has_no_chosen_population_or_arena_floor() {
+    for capacity in [
+        Capacities::default(),
+        Capacities::with_ranges(1),
+        Capacities::with_ranges(3),
+        Capacities::with_ranges(MAX_RANGES),
+    ] {
+        assert_eq!(
+            (
+                capacity.rows,
+                capacity.terrain,
+                capacity.fresh_terrain,
+                capacity.legs,
+                capacity.geometry.provinces,
+                capacity.geometry.neighbour_entries,
+                capacity.modifiers.nodes,
+                capacity.modifiers.entries,
+            ),
+            (0, 0, 0, 0, 0, 0, 0, 0),
+        );
+        let captured = Captured::with_capacities(&capacity);
+        assert_eq!(captured.ranges.len(), capacity.ranges);
+        assert_eq!(captured.allocated_bytes(), 0);
+        assert!(
+            captured
+                .ranges
+                .iter()
+                .all(|range| range.allocated_bytes() == 0)
+        );
+    }
+}
+
+#[test]
+fn scoped_reserved_eta_result_is_sticky_without_a_positive_roster_or_cached_bytes() {
+    struct PreparedRoot(Result<engine::ccountry::Country, &'static str>);
+    impl Memory for PreparedRoot {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            panic!("a prepared reserved result must not trigger a native read");
+        }
+        fn authenticated_reserved_country(
+            &self,
+            _: usize,
+            _: usize,
+        ) -> Option<Result<engine::ccountry::Country, &'static str>> {
+            Some(self.0)
+        }
+    }
+    struct FreshOnly(std::cell::Cell<usize>);
+    impl Memory for FreshOnly {
+        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
+            self.0.set(self.0.get() + 1);
+            false
+        }
+        fn authenticated_reserved_country(
+            &self,
+            _: usize,
+            _: usize,
+        ) -> Option<Result<engine::ccountry::Country, &'static str>> {
+            panic!("a supplied reserved result was lost and retried");
+        }
+    }
+    for root in [
+        Ok(engine::ccountry::Country {
+            pointer: 0x3000,
+            canonical_slot: 0,
+            id: 0,
+        }),
+        Err("prepared reserved header failed"),
+    ] {
+        let fresh = FreshOnly(std::cell::Cell::new(0));
+        let mut range = RangeCaptured::vacant();
+        let context = CaptureContext {
+            base: 0,
+            game_state: 0x1000,
+            hour: 1,
+            force_full: true,
+            span: (0, 0),
+            partition: (0, 1),
+        };
+        let observation = engine::ccountry::read_reserved_observation(
+            &PreparedRoot(root),
+            context.base,
+            context.game_state,
+        );
+        range.capture(
+            &fresh,
+            context,
+            Sources {
+                rows: &[],
+                outcome: Outcome::Rows { len: 0 },
+            },
+            Sources {
+                rows: &[],
+                outcome: Outcome::Rows { len: 0 },
+            },
+            None,
+            Some(observation),
+        );
+        let memory = ModifierMemory {
+            inner: &fresh,
+            arena: &range.modifiers,
+            definitions: &range.definitions,
+            air_defense: &range.air_defense,
+            countries: None,
+            reserved: Some((context.base, context.game_state, observation)),
+        };
+        assert!(
+            memory
+                .authenticated_countries(context.base, context.game_state)
+                .is_none()
+        );
+        assert_eq!(
+            memory.authenticated_reserved_country_observation(context.base, context.game_state),
+            Some(observation),
+        );
+        assert_eq!(
+            memory.authenticated_reserved_country_observation(context.base + 1, context.game_state),
+            None,
+        );
+        assert_eq!(
+            engine::ccountry::read_reserved_root(&memory, context.base, context.game_state),
+            root
+        );
+        let before = fresh.0.get();
+        assert!(!memory.copy(0x5000, &mut [0; 8]));
+        assert_eq!(
+            fresh.0.get(),
+            before + 1,
+            "fresh bytes were served from another cache"
+        );
+    }
+}
+
+#[test]
 fn cadence_loan_survives_worker_panic_and_callback_reset_keeps_row_storage() {
     struct Panics;
     impl Memory for Panics {
@@ -50,6 +184,7 @@ fn cadence_loan_survives_worker_panic_and_callback_reset_keeps_row_storage() {
                 rows: &[seed],
                 outcome: Outcome::Rows { len: 1 },
             },
+            None,
             None,
         );
     }));
@@ -149,6 +284,7 @@ fn air_defense_hits_preserve_fresh_operands_and_first_native_failure() {
         definitions: &PassDefinitions::default(),
         air_defense: &air_defense,
         countries: None,
+        reserved: None,
     };
     let addresses = [
         STATS,
@@ -216,6 +352,7 @@ fn air_defense_storage_grows_with_rows_off_capture_and_accounts_for_capacity() {
     let mut capacities = Capacities {
         rows: 1,
         terrain: 0,
+        fresh_terrain: 0,
         legs: 0,
         geometry: cprovince::GeometryCapacities {
             provinces: 0,
@@ -239,7 +376,9 @@ fn air_defense_storage_grows_with_rows_off_capture_and_accounts_for_capacity() {
         assert_eq!((memo.requests, memo.hits), (2, 1));
         assert_eq!(
             range.allocated_bytes(),
-            range.packet.allocated_bytes() + range.air_defense.borrow().allocated_bytes()
+            range.packet.allocated_bytes()
+                + range.fresh.allocated_bytes()
+                + range.air_defense.borrow().allocated_bytes()
         );
     }
     range.reset();
@@ -335,6 +474,7 @@ fn country_roster_reuse_keeps_ordinary_eta_reads_fresh_and_scoped() {
         definitions: &PassDefinitions::default(),
         air_defense: &air_defense,
         countries: Some((0, 0x1000, roster)),
+        reserved: None,
     };
     source.reads.set(0);
     source.scalars.set(0);
@@ -376,6 +516,7 @@ fn country_roster_reuse_keeps_ordinary_eta_reads_fresh_and_scoped() {
     assert_eq!(*source.spans.borrow(), [(0x1700 + 7 * 4, 4)]);
     let direct = ModifierMemory {
         countries: None,
+        reserved: None,
         ..memory
     };
     source.fault.set(None);
@@ -491,6 +632,7 @@ fn the_modifier_snapshot_reads_each_accumulator_once_a_walk() {
         definitions: &PassDefinitions::default(),
         air_defense: &air_defense,
         countries: None,
+        reserved: None,
     };
     let values =
         keys.map(|key| engine::modifier_accumulator::lookup_at(&memory, ACCUMULATOR, key).unwrap());
@@ -519,6 +661,7 @@ fn the_modifier_snapshot_reads_each_accumulator_once_a_walk() {
         definitions: &PassDefinitions::default(),
         air_defense: &air_defense,
         countries: None,
+        reserved: None,
     };
     source.reads.set(0);
     assert_eq!(
@@ -539,6 +682,7 @@ fn the_modifier_snapshot_reads_each_accumulator_once_a_walk() {
         definitions: &PassDefinitions::default(),
         air_defense: &air_defense,
         countries: None,
+        reserved: None,
     };
     source.reads.set(0);
     assert_eq!(
@@ -581,6 +725,7 @@ fn the_modifier_snapshot_reads_each_accumulator_once_a_walk() {
             definitions: &PassDefinitions::default(),
             air_defense: &air_defense,
             countries: None,
+            reserved: None,
         };
         assert_eq!(
             memory.modifier_accumulator_value(ACCUMULATOR, keys[0]),
@@ -623,6 +768,7 @@ fn a_failed_census_never_becomes_an_empty_eta_input_table() {
             partition,
         },
         sources,
+        None,
         None,
     );
     assert!(range.cadence.is_some());
@@ -822,6 +968,7 @@ pub(crate) fn allocation_failure_route_exercise(
     let capacities = Capacities {
         rows: 1,
         terrain: 0,
+        fresh_terrain: 0,
         legs: LEGS,
         geometry: cprovince::GeometryCapacities {
             provinces: 4,
@@ -853,6 +1000,11 @@ pub(crate) fn allocation_failure_route_exercise(
                 rows: std::slice::from_ref(&fixture.seed),
                 outcome: Outcome::Rows { len: 1 },
             },
+            Sources {
+                rows: std::slice::from_ref(&fixture.seed),
+                outcome: Outcome::Rows { len: 1 },
+            },
+            None,
             None,
         );
         let result = (range.outcome(), range.counters.legs);
@@ -893,4 +1045,435 @@ pub(crate) fn allocation_failure_route_exercise(
 fn inline_eta_route_fixture_scans_every_leg() {
     assert!(allocation_failure_route_exercise(0)());
     assert!(allocation_failure_route_exercise(1)());
+}
+
+struct FreshMapFixture {
+    bytes: Vec<u8>,
+    session: std::cell::Cell<Option<i64>>,
+    province_slots: std::cell::Cell<usize>,
+    refuse_route: std::cell::Cell<bool>,
+    route_reads: std::cell::Cell<usize>,
+}
+
+impl FreshMapFixture {
+    const STATE: usize = 0x1000;
+    const ROUTE: usize = 0x7000;
+
+    fn new() -> Self {
+        let mut bytes = vec![0; 0x8000];
+        let word = |bytes: &mut [u8], at: usize, value: u64| {
+            bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        };
+        let root = Self::STATE + engine::cgame_state::PROVINCES;
+        word(&mut bytes, root, 0x2000);
+        word(&mut bytes, root + 8, 4 | (4 << 32));
+        for id in 1..4_u32 {
+            let province = 0x3000 + id as usize * 0x200;
+            let definition = 0x4000 + id as usize * 0x200;
+            let terrain = 0x6000 + id as usize * 0x200;
+            word(&mut bytes, 0x2000 + id as usize * 8, province as u64);
+            word(&mut bytes, province, cprovince::VTABLE_RVA as u64);
+            bytes[province + cprovince::ID..province + cprovince::ID + 4]
+                .copy_from_slice(&id.to_le_bytes());
+            word(
+                &mut bytes,
+                province + cprovince::DEFINITION,
+                definition as u64,
+            );
+            bytes[definition + engine::province_definition::ID
+                ..definition + engine::province_definition::ID + 4]
+                .copy_from_slice(&id.to_le_bytes());
+            bytes[definition + engine::province_definition::TERRAIN_FLAGS] = 1;
+            word(
+                &mut bytes,
+                definition + engine::province_definition::TERRAIN,
+                terrain as u64,
+            );
+            word(
+                &mut bytes,
+                terrain,
+                engine::cterrain_type::VTABLE_RVA as u64,
+            );
+            bytes[terrain + engine::cterrain_type::DATABASE_INDEX
+                ..terrain + engine::cterrain_type::DATABASE_INDEX + 4]
+                .copy_from_slice(&(id as i32 * 3).to_le_bytes());
+        }
+        bytes[Self::ROUTE..Self::ROUTE + 4].copy_from_slice(&1_u32.to_le_bytes());
+        Self {
+            bytes,
+            session: std::cell::Cell::new(Some(1)),
+            province_slots: std::cell::Cell::new(0),
+            refuse_route: std::cell::Cell::new(false),
+            route_reads: std::cell::Cell::new(0),
+        }
+    }
+
+    fn seed(division: u64) -> DivisionSeed {
+        let mut route = [0; 16];
+        route[..8].copy_from_slice(&(Self::ROUTE as u64).to_le_bytes());
+        route[8..12].copy_from_slice(&1_u32.to_le_bytes());
+        route[12..].copy_from_slice(&1_u32.to_le_bytes());
+        DivisionSeed {
+            division,
+            pointer: 0x7200 + division as usize * 8,
+            primary_vtable: Some(carmy::VTABLE_RVA as u64),
+            handle: Some(division),
+            ordinary_route: Some(route),
+            // A selected first-edge fault is independent of the unqueried
+            // normal/rail branches of an authentic transfer member.
+            location: Some(0),
+            naval_transfer_membership: Some(1),
+            ..Default::default()
+        }
+    }
+
+    fn idle_seed(division: u64) -> DivisionSeed {
+        let mut seed = Self::seed(division);
+        let mut route = seed.ordinary_route.unwrap();
+        let count = engine::cpdx_array::COUNT;
+        route[count..count + 4].copy_from_slice(&0_u32.to_le_bytes());
+        let decoded = engine::cpdx_array::Array::from_header(route, 4)
+            .expect("idle fixture retains a valid native array header");
+        assert_eq!(decoded.count, 0);
+        assert_eq!(decoded.data, Self::ROUTE);
+        assert_eq!(u32::from_le_bytes(route[8..12].try_into().unwrap()), 1);
+        assert_eq!(decoded.element(0, 4), None);
+        seed.ordinary_route = Some(route);
+        seed
+    }
+
+    fn capacities(rows: usize) -> Capacities {
+        Capacities {
+            rows,
+            terrain: 0,
+            fresh_terrain: 0,
+            legs: 0,
+            geometry: cprovince::GeometryCapacities {
+                provinces: 4,
+                neighbour_entries: 0,
+            },
+            modifiers: SnapshotCapacity::default(),
+            ranges: 1,
+        }
+    }
+
+    fn capture(&self, range: &mut RangeCaptured, hour: i32, seeds: &[DivisionSeed]) {
+        self.capture_with_legacy(range, hour, seeds, &[]);
+    }
+
+    fn capture_with_legacy(
+        &self,
+        range: &mut RangeCaptured,
+        hour: i32,
+        seeds: &[DivisionSeed],
+        legacy: &[DivisionSeed],
+    ) {
+        range.capture(
+            self,
+            CaptureContext {
+                hour,
+                force_full: false,
+                base: 0,
+                game_state: Self::STATE,
+                span: (0, seeds.len()),
+                partition: (0, 1),
+            },
+            Sources {
+                rows: legacy,
+                outcome: Outcome::Rows { len: legacy.len() },
+            },
+            Sources {
+                rows: seeds,
+                outcome: Outcome::Rows { len: seeds.len() },
+            },
+            None,
+            None,
+        );
+    }
+}
+
+impl Memory for FreshMapFixture {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        if address == engine::cgame_state::PLAY_SESSION_STARTED_AT_RVA {
+            let Some(session) = self.session.get() else {
+                return false;
+            };
+            let bytes = session.to_le_bytes();
+            let Some(source) = bytes.get(..output.len()) else {
+                return false;
+            };
+            output.copy_from_slice(source);
+            return true;
+        }
+        if (0x2000..0x2020).contains(&address) {
+            self.province_slots.set(self.province_slots.get() + 1);
+        }
+        if address == Self::ROUTE {
+            self.route_reads.set(self.route_reads.get() + 1);
+            if self.refuse_route.get() {
+                return false;
+            }
+        }
+        SliceMemory {
+            base: 0,
+            bytes: &self.bytes,
+        }
+        .copy(address, output)
+    }
+}
+
+#[test]
+fn refused_legacy_route_skips_cold_land_and_fresh_getters_but_retains_known_demand() {
+    for warm in [false, true] {
+        let memory = FreshMapFixture::new();
+        let mut capacity = FreshMapFixture::capacities(2);
+        capacity.legs = 1;
+        let mut range = RangeCaptured::with_capacities(&capacity);
+        let seeds = [FreshMapFixture::seed(7), FreshMapFixture::idle_seed(8)];
+        if warm {
+            memory.capture(&mut range, 11, &seeds);
+            assert_eq!(range.land_len, Some(3));
+        }
+        memory.province_slots.set(0);
+        memory.route_reads.set(0);
+        memory.refuse_route.set(true);
+        memory.capture_with_legacy(&mut range, 12, &seeds, &seeds[..1]);
+        let unavailable = Outcome::Unavailable {
+            reason: "division ETA input route unreadable",
+        };
+        assert_eq!(range.packet.outcome().outcome, unavailable);
+        assert_eq!(range.fresh.outcome().outcome, unavailable);
+        assert_eq!(memory.route_reads.get(), 1);
+        assert_eq!(memory.province_slots.get(), 0);
+        assert!(range.fresh.rows().is_empty());
+        assert_eq!(range.fresh.outcome().required_rows, 2);
+        assert_eq!(range.required_provinces, 4);
+        assert_eq!(range.land_len, warm.then_some(3));
+        assert_eq!(
+            range.required_fresh_terrain().unwrap(),
+            if warm { 6 } else { 0 }
+        );
+
+        let capture = Captured {
+            ranges: vec![range],
+            plan: [(0, 1); MAX_RANGES],
+            planned: 1,
+        };
+        assert_eq!(capture.outcomes(), [unavailable]);
+        assert!(capture.fresh_profile(7, 12).is_none());
+        assert!(capture.fresh_profile(8, 12).is_none());
+        let mut work = FreshWork::default();
+        work.observe(&capture).unwrap();
+        let status = serde_json::to_value(work.status()).unwrap();
+        assert_eq!(status["ranges_refused"], 1);
+        assert_eq!(status["rows_captured"], 0);
+        assert_eq!(status["rows_refused"], 0);
+        assert_eq!(status["rows_required"], 2);
+        assert_eq!(status["map_provinces_required_per_range"], 4);
+        assert_eq!(status["terrain_required"], if warm { 6 } else { 0 });
+        range = capture.ranges.into_iter().next().unwrap();
+        range.fail_owned_capture("worker rejected mandatory prefix");
+        range.grow(&mut capacity);
+        assert!(capacity.geometry.provinces >= 4);
+        assert!(capacity.rows >= 2);
+        assert!(capacity.fresh_terrain >= if warm { 6 } else { 0 });
+    }
+}
+
+#[test]
+fn fresh_land_roster_reuses_only_a_complete_authenticated_map_key() {
+    let memory = FreshMapFixture::new();
+    let mut range = RangeCaptured::with_capacities(&FreshMapFixture::capacities(1));
+    let seeds = [FreshMapFixture::seed(7)];
+    memory.capture(&mut range, 11, &seeds);
+    assert_eq!(range.land_len, Some(3));
+    assert!(memory.province_slots.get() > 0);
+    memory.province_slots.set(0);
+    memory.capture(&mut range, 12, &seeds);
+    assert_eq!(range.land_len, Some(3));
+    assert_eq!(memory.province_slots.get(), 0);
+    memory.session.set(None);
+    memory.capture(&mut range, 13, &seeds);
+    assert_eq!(range.land_len, None);
+    memory.session.set(Some(2));
+    memory.province_slots.set(0);
+    memory.capture(&mut range, 14, &seeds);
+    assert_eq!(range.land_len, Some(3));
+    assert!(memory.province_slots.get() > 0);
+}
+
+#[test]
+fn current_profile_authority_keeps_carried_eta_bytes_independent_and_expires_on_reset() {
+    let memory = FreshMapFixture::new();
+    let mut range = RangeCaptured::with_capacities(&FreshMapFixture::capacities(1));
+    let seed = FreshMapFixture::seed(7);
+    let legacy = Arc::new(DivisionEtaInputsRow {
+        division: 7,
+        sample_hour: 10,
+        speed_base: 12345,
+        current_speed: -9,
+        leg_river_combined: vec![i64::MIN, 0, i64::MAX],
+        ..Default::default()
+    });
+    let mut expected_bytes = Vec::new();
+    replay::rows::RowCodec::encode_fields(legacy.as_ref(), &mut expected_bytes).unwrap();
+    for hour in [11, 12] {
+        memory.capture(&mut range, hour, &[seed]);
+        range.carried = Some(vec![Arc::clone(&legacy)]);
+        let capture = Captured {
+            ranges: vec![range],
+            plan: [(0, 1); MAX_RANGES],
+            planned: 1,
+        };
+        let [TableView::Complete(replay::rows::TableRows::DivisionEtaInputs(rows))] =
+            capture.tables()
+        else {
+            panic!("legacy prefix unavailable");
+        };
+        assert_eq!(rows, vec![legacy.as_ref().clone()]);
+        let mut bytes = Vec::new();
+        replay::rows::RowCodec::encode_fields(&rows[0], &mut bytes).unwrap();
+        assert_eq!(bytes, expected_bytes);
+        let profile = capture
+            .fresh_profile(7, hour)
+            .expect("current acquired profile");
+        let projected = profile.project();
+        assert!(profile.matches(&projected));
+        assert!(!profile.matches(&Recorded::NotRecorded));
+        assert!(!profile.matches(&Recorded::Value(None)));
+        let Recorded::Value(Some(fresh)) = &projected else {
+            panic!("current profile missing");
+        };
+        assert_eq!(fresh.sample_hour, hour);
+        assert_eq!(fresh.current_speed, None);
+        assert!(capture.fresh_profile(7, hour - 1).is_none());
+        assert!(capture.fresh_profile(7, hour + 1).is_none());
+        assert!(capture.fresh_profile(0, hour).is_none());
+        assert!(capture.fresh_profile(8, hour).is_none());
+        range = capture.ranges.into_iter().next().unwrap();
+    }
+    range.reset();
+    range.captured_current = true;
+    let capture = Captured {
+        ranges: vec![range],
+        plan: [(0, 1); MAX_RANGES],
+        planned: 1,
+    };
+    let [TableView::Complete(replay::rows::TableRows::DivisionEtaInputs(rows))] = capture.tables()
+    else {
+        panic!("legacy prefix unavailable");
+    };
+    assert_eq!(rows, vec![legacy.as_ref().clone()]);
+    assert!(capture.fresh_profile(7, 12).is_none());
+}
+
+#[test]
+fn idle_profile_does_not_read_a_first_edge_and_status_distinguishes_unreached() {
+    let memory = FreshMapFixture::new();
+    memory.refuse_route.set(true);
+    let mut range = RangeCaptured::with_capacities(&FreshMapFixture::capacities(1));
+    memory.capture(&mut range, 12, &[FreshMapFixture::idle_seed(7)]);
+    assert_eq!(memory.route_reads.get(), 0);
+    assert_eq!(range.fresh.outcome().required_rows, 1);
+    assert_eq!(range.fresh.rows()[0].current_speed, Ok(None));
+    let capture = Captured {
+        ranges: vec![range],
+        plan: [(0, 1); MAX_RANGES],
+        planned: 1,
+    };
+    let Recorded::Value(Some(profile)) = capture.fresh_profile(7, 12).unwrap().project() else {
+        panic!("idle simulation profile missing");
+    };
+    assert_eq!(profile.current_speed, None);
+    assert_eq!(profile.normal, None); // Authentic transfer skips this branch.
+    assert_eq!(profile.rail, None);
+    let mut work = FreshWork::default();
+    work.observe(&capture).unwrap();
+    let status = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(status["rows_captured"], 1);
+    assert_eq!(status["current_speed"]["captured"], 0);
+    assert_eq!(status["current_speed"]["unreached"], 1);
+    assert_eq!(status["current_speed"]["refused"], 0);
+}
+
+pub(crate) fn fresh_transfer_profile_fixture(hour: i32, idle: bool) -> Captured {
+    let memory = FreshMapFixture::new();
+    let mut range = RangeCaptured::with_capacities(&FreshMapFixture::capacities(1));
+    let seed = if idle {
+        FreshMapFixture::idle_seed(7)
+    } else {
+        FreshMapFixture::seed(7)
+    };
+    memory.capture(&mut range, hour, &[seed]);
+    Captured {
+        ranges: vec![range],
+        plan: [(0, 1); MAX_RANGES],
+        planned: 1,
+    }
+}
+
+#[test]
+fn unplanned_or_duplicate_full_handle_profiles_never_supply_a_borrowed_packet() {
+    let mut acquired = fresh_transfer_profile_fixture(12, true);
+    assert!(acquired.fresh_profile(7, 12).is_some());
+    acquired.planned = 0;
+    assert!(acquired.fresh_profile(7, 12).is_none());
+    let memory = FreshMapFixture::new();
+    let mut range = RangeCaptured::with_capacities(&FreshMapFixture::capacities(2));
+    let repeated = [FreshMapFixture::idle_seed(7); 2];
+    memory.capture(&mut range, 12, &repeated);
+    assert!(range.fresh_failure.is_some());
+    let acquired = Captured {
+        ranges: vec![range],
+        plan: [(0, 2); MAX_RANGES],
+        planned: 1,
+    };
+    assert!(acquired.fresh_profile(7, 12).is_none());
+}
+
+#[test]
+fn fresh_row_shortfall_grows_complete_terrain_demand_without_legacy_route_storage() {
+    let memory = FreshMapFixture::new();
+    let mut capacity = FreshMapFixture::capacities(1);
+    let mut range = RangeCaptured::with_capacities(&capacity);
+    let seeds = [FreshMapFixture::seed(7), FreshMapFixture::seed(8)];
+    memory.capture(&mut range, 11, &seeds);
+    assert_eq!(range.fresh.outcome().required_rows, 2);
+    assert!(matches!(
+        range.fresh.outcome().outcome,
+        Outcome::Truncated {
+            len: 1,
+            unread_rows: 1
+        }
+    ));
+    assert_eq!(range.required_fresh_terrain().unwrap(), 6);
+    let capture = Captured {
+        ranges: vec![range],
+        plan: [(0, 2); MAX_RANGES],
+        planned: 1,
+    };
+    assert!(capture.fresh_profile(7, 11).is_some());
+    assert!(capture.fresh_profile(8, 11).is_none());
+    let mut work = FreshWork::default();
+    work.observe(&capture).unwrap();
+    let status = serde_json::to_value(work.status()).unwrap();
+    assert_eq!(status["rows_captured"], 1);
+    assert_eq!(status["rows_refused"], 1);
+    assert_eq!(status["current_speed"]["refused"], 1);
+    assert_eq!(status["normal"]["unreached"], 1);
+    assert_eq!(status["rail"]["unreached"], 1);
+    assert_eq!(status["terrain_required"], 6);
+    range = capture.ranges.into_iter().next().unwrap();
+    range.fail_owned_capture("worker interrupted after native acquisition");
+    range.grow(&mut capacity);
+    assert!(capacity.rows >= 2);
+    assert!(capacity.fresh_terrain >= 6);
+    assert_eq!(capacity.legs, 0);
+    range.reserve(&capacity);
+    memory.capture(&mut range, 12, &seeds);
+    assert!(matches!(
+        range.fresh.outcome().outcome,
+        Outcome::Rows { len: 2 }
+    ));
+    assert_eq!(range.packet.leg_count(), 0);
 }

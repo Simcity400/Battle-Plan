@@ -108,7 +108,7 @@ fn fixture() -> Vec<u8> {
         put(
             &mut bytes,
             template + ctechnology_template::DATABASE_INDEX,
-            (handle as i32 + 20).to_le_bytes(),
+            (if template == TEMPLATE_A { 3_i32 } else { 1_i32 }).to_le_bytes(),
         );
         put(
             &mut bytes,
@@ -233,9 +233,9 @@ fn full_census_preserves_native_widths_holes_and_independent_inventory() {
     assert_eq!(rows[0].ahead_reduction_years_raw, -8_123_456_789);
     assert_eq!(definitions.outcome(), Outcome::Rows { len: 2 });
     assert_eq!(definitions.required_bytes, 8);
-    assert_eq!(definitions.entry(3).unwrap().row.database_index, 23);
+    assert_eq!(definitions.entry(3).unwrap().row.database_index, 3);
     assert_eq!(
-        definitions.entry(17).unwrap().row.research_cost_raw,
+        definitions.entry(1).unwrap().row.research_cost_raw,
         7_654_321_234
     );
     let mut slots = [cresearch_slot::Row::default(); 2];
@@ -252,6 +252,7 @@ fn full_census_preserves_native_widths_holes_and_independent_inventory() {
         (0, 1, 0)
     );
     assert_eq!(slots[1].technology_handle, cresearch_slot::IDLE_HANDLE);
+    assert_eq!((slots[0].database_index, slots[1].database_index), (3, 0));
     assert_eq!(slots[0].research_speed_raw, 5_123_456_789);
     assert_eq!(slots[0].banked_days_raw, -5_234_567_890);
     assert_eq!(slots[1].applied_days_raw, 6_345_678_901);
@@ -331,7 +332,7 @@ fn dictionary_resets_each_callback_and_refuses_conflicting_templates() {
         );
         assert_eq!(definitions.outcome(), Outcome::Rows { len: 2 });
         assert_eq!(definitions.required_bytes, 8);
-        definitions.admit(&memory, TEMPLATE_B, 3);
+        definitions.admit(&memory, TEMPLATE_B, 3, 3);
         assert!(matches!(definitions.outcome(), Outcome::Unavailable { .. }));
     }
     put(
@@ -551,6 +552,11 @@ fn bulk_fixture() -> Vec<u8> {
         );
         put(
             &mut bytes,
+            template + ctechnology_template::DATABASE_INDEX,
+            (handle as i32).to_le_bytes(),
+        );
+        put(
+            &mut bytes,
             template + ctechnology_template::TECHNOLOGY_HANDLE,
             handle.to_le_bytes(),
         );
@@ -716,8 +722,14 @@ fn whole_rosters_batch_reads_and_reuse_definitions_only_within_one_pass() {
             );
             let batches = BULK_COUNT.div_ceil(ctechnology::BATCH);
             assert_eq!(memory.instance_batches.get(), pass * batches);
-            assert_eq!(memory.instance_spans.get(), pass * BULK_COUNT * 5);
-            assert_eq!(memory.instance_bytes.get(), pass * BULK_COUNT * 52);
+            assert_eq!(
+                memory.instance_spans.get(),
+                pass * BULK_COUNT * ctechnology::FIELDS.len()
+            );
+            assert_eq!(
+                memory.instance_bytes.get(),
+                pass * BULK_COUNT * ctechnology::INSTANCE_BYTES
+            );
             assert_eq!(memory.identity_batches.get(), 0);
             assert_eq!(memory.identity_spans.get(), 0);
             assert_eq!(memory.identity_bytes.get(), 0);
@@ -728,7 +740,7 @@ fn whole_rosters_batch_reads_and_reuse_definitions_only_within_one_pass() {
             let pages = BULK_COUNT.div_ceil(ctechnology::BATCH)
                 + BULK_COMPLETED_COUNT.div_ceil(ctechnology::BATCH);
             // The shared dictionary reads each definition once per pass,
-            // so its 3 guards, 5 spans and 61 bytes per handle are charged
+            // so its 3 guards, 5 spans and 61 bytes per template are charged
             // to the first walk only.
             assert_eq!(
                 memory.guards.get(),
@@ -736,11 +748,13 @@ fn whole_rosters_batch_reads_and_reuse_definitions_only_within_one_pass() {
             );
             assert_eq!(
                 memory.spans.get(),
-                pass * (5 + pages + 5 * BULK_COUNT) + 5 * BULK_COUNT
+                pass * (5 + pages + ctechnology::FIELDS.len() * BULK_COUNT) + 5 * BULK_COUNT
             );
             assert_eq!(
                 memory.bytes.get(),
-                pass * (56 + 8 * (BULK_COUNT + BULK_COMPLETED_COUNT) + 52 * BULK_COUNT)
+                pass * (56
+                    + 8 * (BULK_COUNT + BULK_COMPLETED_COUNT)
+                    + ctechnology::INSTANCE_BYTES * BULK_COUNT)
                     + 61 * BULK_COUNT
             );
             for (index, row) in rows.iter().enumerate() {
@@ -840,8 +854,14 @@ fn first_capture_growth_keeps_all_rows_indexes_and_exact_native_work() {
                 memory.instance_batches.get(),
                 BULK_COUNT.div_ceil(ctechnology::BATCH)
             );
-            assert_eq!(memory.instance_spans.get(), BULK_COUNT * 5);
-            assert_eq!(memory.instance_bytes.get(), BULK_COUNT * 52);
+            assert_eq!(
+                memory.instance_spans.get(),
+                BULK_COUNT * ctechnology::FIELDS.len()
+            );
+            assert_eq!(
+                memory.instance_bytes.get(),
+                BULK_COUNT * ctechnology::INSTANCE_BYTES
+            );
             assert_eq!(memory.identity_batches.get(), 0);
             assert_eq!(memory.identity_spans.get(), 0);
             assert_eq!(memory.identity_bytes.get(), 0);
@@ -970,7 +990,7 @@ fn oversized_definition_name_does_not_allocate_before_its_payload_read() {
     let mut entries = Vec::new();
     let mut names = Vec::new();
     let mut definitions = ctechnology_template::Dictionary::new(&mut entries, &mut names);
-    definitions.admit(&memory, TEMPLATE_B, 17);
+    definitions.admit(&memory, TEMPLATE_B, 17, 1);
     assert_eq!(
         definitions.outcome(),
         Outcome::Unavailable {
@@ -1032,7 +1052,7 @@ fn researched_pointer_aliases_require_authentication_and_exact_owned_membership(
                 assert_eq!(rows[0].progress_raw, i64::MAX - 8);
                 assert_eq!(rows[1].progress_raw, i64::MIN + 9);
                 assert_eq!((rows[0].researched, rows[1].researched), (0, 0));
-                assert_eq!(memory.instance_bytes.get(), 2 * 52);
+                assert_eq!(memory.instance_bytes.get(), 2 * ctechnology::INSTANCE_BYTES);
                 assert_eq!(
                     (memory.identity_spans.get(), memory.identity_bytes.get()),
                     (2, 28)
@@ -1062,7 +1082,7 @@ fn researched_pointer_aliases_require_authentication_and_exact_owned_membership(
             reason: "researched technology missing from country roster"
         }
     );
-    assert_eq!(memory.instance_bytes.get(), 52);
+    assert_eq!(memory.instance_bytes.get(), ctechnology::INSTANCE_BYTES);
     assert_eq!(memory.identity_bytes.get(), 28);
 }
 
@@ -1110,7 +1130,7 @@ fn pointer_scratch_reuse_ignores_previous_roster_tail() {
         );
         assert_eq!(source_pointers, [TECHNOLOGY_B, TECHNOLOGY_A, usize::MAX]);
         assert_eq!((rows[0].country, rows[0].researched), (8, 0));
-        assert_eq!(memory.instance_bytes.get(), 52);
+        assert_eq!(memory.instance_bytes.get(), ctechnology::INSTANCE_BYTES);
         assert_eq!(memory.identity_bytes.get(), 28);
     }
 }
@@ -1245,5 +1265,169 @@ fn slots_refuse_contradictory_idle_identity_and_duplicate_ordinals() {
             walk_slots(&memory, MODULE, COUNTRY_POINTER, 7, &mut slots),
             Outcome::Unavailable { .. }
         ));
+    }
+}
+
+#[test]
+fn repeated_handles_keep_native_occurrences_and_exact_researched_membership_at_country_scale() {
+    let mut bytes = fixture();
+    let handle = 0xffff_fffe_u32;
+    for pointer in [TECHNOLOGY_A, TECHNOLOGY_B] {
+        put(
+            &mut bytes,
+            pointer + ctechnology::DEFINITION_INDEX,
+            handle.to_le_bytes(),
+        );
+    }
+    for template in [TEMPLATE_A, TEMPLATE_B] {
+        put(
+            &mut bytes,
+            template + ctechnology_template::TECHNOLOGY_HANDLE,
+            handle.to_le_bytes(),
+        );
+    }
+    put(
+        &mut bytes,
+        TEMPLATE_A + ctechnology_template::YEAR,
+        2001_i32.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        TEMPLATE_A + ctechnology_template::MAX_LEVEL,
+        2_i32.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        TEMPLATE_A + ctechnology_template::RESEARCH_COST,
+        17_i64.to_le_bytes(),
+    );
+    put(
+        &mut bytes,
+        TECHNOLOGY_A + ctechnology::APPLIED_BONUS_IDS + 12,
+        3_i32.to_le_bytes(),
+    );
+    let memory = ObservedMemory::new(&bytes);
+    let mut rows = Vec::new();
+    let mut pointers = Vec::new();
+    let mut entries = Vec::new();
+    let mut names = Vec::new();
+    let mut dictionary = ctechnology_template::Dictionary::new(&mut entries, &mut names);
+    for country in 0..5_000 {
+        assert_eq!(
+            walk_technologies(
+                &memory,
+                MODULE,
+                COUNTRY_POINTER,
+                country,
+                (&mut rows, &mut pointers),
+                0,
+                &mut dictionary
+            ),
+            Outcome::Rows { len: 2 }
+        );
+        assert_eq!((rows[0].database_index, rows[1].database_index), (1, 3));
+        assert_eq!(
+            (rows[0].technology_handle, rows[1].technology_handle),
+            (handle, handle)
+        );
+        assert_eq!((rows[0].researched, rows[1].researched), (1, 0));
+        assert_ne!(rows[0].level, rows[1].level);
+        assert_ne!(rows[0].progress_raw, rows[1].progress_raw);
+        assert_eq!(rows[1].applied_bonus_count, 3);
+    }
+    assert_eq!(dictionary.outcome(), Outcome::Rows { len: 2 });
+    assert_eq!(dictionary.entry(3).unwrap().row.year, 2001);
+    assert_eq!(dictionary.entry(3).unwrap().row.max_level, 2);
+    assert_eq!(dictionary.entry(3).unwrap().row.research_cost_raw, 17);
+    // Two template headers, terminators and names, independent of country population.
+    assert_eq!(
+        memory.spans.get() - 5_000 * (5 + 2 + ctechnology::FIELDS.len() * 2),
+        10
+    );
+}
+
+#[test]
+fn repeated_handles_survive_dictionary_rehash_without_rereading_templates() {
+    for shared in [None, Some(0xffff_fffe_u32)] {
+        let mut bytes = bulk_fixture();
+        for index in 0..BULK_COUNT {
+            let handle = shared.unwrap_or((index / 2 + 1) as u32);
+            put(
+                &mut bytes,
+                BULK_INSTANCES + index * 0x200 + ctechnology::DEFINITION_INDEX,
+                handle.to_le_bytes(),
+            );
+            put(
+                &mut bytes,
+                BULK_TEMPLATES + index * 0x400 + ctechnology_template::TECHNOLOGY_HANDLE,
+                handle.to_le_bytes(),
+            );
+        }
+        let researched_count = if shared.is_some() { 1 } else { BULK_COUNT / 2 };
+        array(
+            &mut bytes,
+            STATUS_POINTER + RESEARCHED_DATA,
+            BULK_COMPLETED,
+            researched_count as u32,
+        );
+        for index in 0..researched_count {
+            put(
+                &mut bytes,
+                BULK_COMPLETED + index * 8,
+                (BULK_INSTANCES as u64
+                    + (if shared.is_some() {
+                        BULK_COUNT - 1
+                    } else {
+                        index * 2
+                    }) as u64
+                        * 0x200)
+                    .to_le_bytes(),
+            );
+        }
+        let memory = ObservedMemory::new(&bytes);
+        let mut rows = Vec::new();
+        let mut pointers = Vec::new();
+        let mut entries = Vec::new();
+        let mut names = Vec::new();
+        let mut dictionary = ctechnology_template::Dictionary::new(&mut entries, &mut names);
+        for country in 0..2 {
+            assert_eq!(
+                walk_technologies(
+                    &memory,
+                    MODULE,
+                    COUNTRY_POINTER,
+                    country,
+                    (&mut rows, &mut pointers),
+                    0,
+                    &mut dictionary,
+                ),
+                Outcome::Rows { len: BULK_COUNT }
+            );
+            for (index, row) in rows.iter().enumerate() {
+                assert_eq!(row.database_index, (index + 1) as i32);
+                assert_eq!(
+                    row.technology_handle,
+                    shared.unwrap_or((index / 2 + 1) as u32)
+                );
+                assert_eq!(
+                    row.researched,
+                    u8::from(if shared.is_some() {
+                        index == BULK_COUNT - 1
+                    } else {
+                        index % 2 == 0
+                    })
+                );
+            }
+        }
+        assert_eq!(dictionary.outcome(), Outcome::Rows { len: BULK_COUNT });
+        assert_eq!(memory.identity_batches.get(), 0);
+        assert_eq!(
+            memory.spans.get(),
+            2 * (5
+                + BULK_COUNT.div_ceil(ctechnology::BATCH)
+                + researched_count.div_ceil(ctechnology::BATCH)
+                + BULK_COUNT * ctechnology::FIELDS.len())
+                + 5 * BULK_COUNT
+        );
     }
 }

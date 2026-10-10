@@ -238,7 +238,8 @@ impl AirMemory {
 }
 
 #[test]
-fn populated_5000_country_capture_reuses_one_region_then_owns_compact_current_contexts() {
+fn cold_and_later_populated_5000_country_capture_grows_air_text_and_weather_from_original_headers()
+{
     use engine::{
         air_fuel_defines as defines, air_mission, cair_base, cair_wing, cair_wing_pool, ccountry,
         ccountry_air_container as container, cgame_state, cprovince, cstrategic_air,
@@ -263,6 +264,7 @@ fn populated_5000_country_capture_reuses_one_region_then_owns_compact_current_co
     const PROVINCES: usize = 0x2650000;
     const PROVINCE: usize = 0x2660000;
     const COSTS: usize = 0x2680000;
+    const NAME: usize = 0x2690000;
     let mut memory = AirMemory::default();
     for (address, size) in [
         (STATE, 0x2000),
@@ -275,15 +277,16 @@ fn populated_5000_country_capture_reuses_one_region_then_owns_compact_current_co
         (REGION, 0x80),
         (WEATHER, 0x380),
         (GRID, 24 * 24),
-        (LIST, 16),
+        (LIST, 32),
         (CONTAINERS, 5001 * 8),
         (ENTRY, 0xf8),
         (POOL, 0x48),
         (POOLS, 8),
-        (WINGS, 16),
-        (PROVINCES, 100 * 8),
+        (WINGS, 24),
+        (PROVINCES, 250 * 8),
         (PROVINCE, 0xb0),
         (COSTS, 8),
+        (NAME, 301),
     ] {
         memory.span(address, size);
     }
@@ -326,8 +329,10 @@ fn populated_5000_country_capture_reuses_one_region_then_owns_compact_current_co
     memory.put(BASE, &(cair_base::VTABLE_RVA as u64).to_le_bytes());
     memory.put(BASE + cair_base::HANDLE, &base_ref.to_le_bytes());
     memory.array(BASE + cair_base::COUNTRY_CONTAINERS, CONTAINERS, 5001);
-    for ordinal in 0..2 {
+    for ordinal in 0..4 {
         memory.put(LIST + ordinal * 8, &(BASE as u64).to_le_bytes());
+    }
+    for ordinal in 0..3 {
         memory.put(WINGS + ordinal * 8, &(WING as u64).to_le_bytes());
     }
     memory.put(ENTRY, &(container::VTABLE_RVA as u64).to_le_bytes());
@@ -348,10 +353,7 @@ fn populated_5000_country_capture_reuses_one_region_then_owns_compact_current_co
         WING + cair_wing::MISSION + air_mission::REGION,
         &(REGION as u64).to_le_bytes(),
     );
-    memory.put(
-        WING + cair_wing::NAME + msvc_string::CAPACITY,
-        &15_u64.to_le_bytes(),
-    );
+    memory.put(WING + cair_wing::NAME, &(NAME as u64).to_le_bytes());
     memory.put(
         REGION,
         &(cstrategic_region::VTABLE_RVA as u64).to_le_bytes(),
@@ -359,7 +361,7 @@ fn populated_5000_country_capture_reuses_one_region_then_owns_compact_current_co
     memory.put(REGION + cstrategic_region::ID, &7001_u32.to_le_bytes());
     memory.array(REGION + cstrategic_region::PROVINCES, PROVINCES, 100);
     memory.put(PROVINCE, &(cprovince::VTABLE_RVA as u64).to_le_bytes());
-    for ordinal in 0..100 {
+    for ordinal in 0..250 {
         memory.put(PROVINCES + ordinal * 8, &(PROVINCE as u64).to_le_bytes());
     }
     memory.put(
@@ -382,30 +384,56 @@ fn populated_5000_country_capture_reuses_one_region_then_owns_compact_current_co
         memory.put(address, &value.to_le_bytes());
     }
     memory.put(COSTS, &100_000_i64.to_le_bytes());
-    let mut capacity = Capacities::default();
-    capacity.rows[0] = 5000;
-    capacity.rows[4] = 15_000;
-    capacity.rows[5] = 30_000;
-    capacity.rows[6] = 2400;
-    capacity.rows[7] = 1;
-    let mut captured = Captured::with_capacities(&capacity);
-    for (hour, weather_cell, expected) in [(123, 75_000_i64, 600_000_i64), (124, 25_000, 0)] {
+    let mut captured = Captured::with_capacities(&Capacities { rows: [0; N] });
+    for (hour, weather_cell, expected, first_sites, wings, provinces, name_len) in [
+        (
+            123,
+            75_000_i64,
+            600_000_i64,
+            2_u32,
+            2_u32,
+            100_u32,
+            64_usize,
+        ),
+        (124, 25_000, 0, 4, 3, 250, 300),
+    ] {
+        for id in 1..=5000 {
+            let air = 0x1000000 + id * 0x100;
+            memory.array(air + cstrategic_air::FIRST_AIR_SITES, LIST, first_sites);
+        }
+        memory.array(POOL + cair_wing_pool::WINGS, WINGS, wings);
+        memory.array(REGION + cstrategic_region::PROVINCES, PROVINCES, provinces);
+        memory.put(NAME, &vec![b'x'; name_len]);
+        memory.put(NAME + name_len, &[0]);
+        memory.put(
+            WING + cair_wing::NAME + msvc_string::LENGTH,
+            &(name_len as u64).to_le_bytes(),
+        );
+        memory.put(
+            WING + cair_wing::NAME + msvc_string::CAPACITY,
+            &(name_len as u64).to_le_bytes(),
+        );
         for slot in 0..24 {
             memory.put(GRID + slot * 24, &weather_cell.to_le_bytes());
         }
         memory.weather_reads.set(0);
-        captured.capture(&memory, 0, STATE, hour);
+        captured.capture_growing(&memory, 0, STATE, hour);
         assert_eq!(captured.reason, None);
-        assert_eq!(captured.lengths[6], 2400);
+        let weather_rows = provinces as usize * 24;
+        assert_eq!(captured.lengths[0], 5000);
+        assert_eq!(captured.lengths[4], 5000 * (first_sites as usize + 1));
+        assert_eq!(captured.lengths[5], captured.lengths[4] * wings as usize);
+        assert_eq!(captured.lengths[6], weather_rows);
         assert_eq!(captured.lengths[7], 1);
+        assert_eq!(captured.lengths[8], captured.lengths[5] * name_len);
         assert_eq!(
             memory.weather_reads.get(),
-            2400,
+            weather_rows,
             "one raw context per supplying boundary"
         );
         let raw_rate = native::wing_rate(
             captured.wings[0].inputs.as_ref().unwrap(),
-            &captured.weather[..2400],
+            &captured.weather[..weather_rows],
         )
         .unwrap();
         let owned = captured.owned().unwrap();
@@ -424,12 +452,19 @@ fn populated_5000_country_capture_reuses_one_region_then_owns_compact_current_co
                     .iter()
                     .map(|site| (site.list, site.ordinal, site.wings.len()))
                     .collect::<Vec<_>>(),
-                [(0, 0, 2), (0, 1, 2), (1, 0, 2)]
+                (0..first_sites)
+                    .map(|ordinal| (0, ordinal, wings as usize))
+                    .chain(std::iter::once((1, 0, wings as usize)))
+                    .collect::<Vec<_>>()
             );
             assert_eq!(pack.native_rates(), [Ok(0), Ok(0), Ok(expected)]);
             assert_eq!(pack.wing_rate(&pack.sites[0].wings[0]), Ok(raw_rate));
             assert_eq!(pack.sites[0].wings[0].country_override, Some(1));
-            assert_eq!(pack.contexts[0].sums, [weather_cell * 100; 24]);
+            assert_eq!(pack.contexts[0].sums, [weather_cell * provinces as i64; 24]);
+            assert_eq!(
+                pack.sites[0].wings[0].name.as_ref().unwrap(),
+                &vec![b'x'; name_len]
+            );
         }
     }
 }

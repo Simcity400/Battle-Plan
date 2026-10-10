@@ -7,6 +7,24 @@ use std::io;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
+thread_local! {
+    static ADVISORY_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Scope a synchronous sizing census and all its nested worker readers to
+/// nonterminal allocation. Capture hooks remain installed for other threads.
+pub fn advisory<T>(read: impl FnOnce() -> T) -> T {
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            ADVISORY_DEPTH.with(|depth| depth.set(depth.get() - 1));
+        }
+    }
+    ADVISORY_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    let _scope = Scope;
+    read()
+}
+
 static FAILED: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 static STOPPED: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 #[cfg(feature = "alloc-fault-injection")]
@@ -46,11 +64,15 @@ pub fn capture_stopped() -> bool {
 
 pub fn oom() -> io::Error {
     let callback = FAILED.load(Ordering::Acquire);
-    if !callback.is_null() {
+    if !callback.is_null() && !advisory_active() {
         // Only set_hooks stores this allocation-free function pointer.
         unsafe { std::mem::transmute::<*mut (), fn()>(callback)() };
     }
     io::Error::from(io::ErrorKind::OutOfMemory)
+}
+
+fn advisory_active() -> bool {
+    ADVISORY_DEPTH.with(|depth| depth.get() != 0)
 }
 
 pub fn allocation_attempt() -> io::Result<()> {
@@ -60,7 +82,7 @@ pub fn allocation_attempt() -> io::Result<()> {
     #[cfg(feature = "alloc-fault-injection")]
     {
         let callback = BEFORE.load(Ordering::Acquire);
-        if !callback.is_null()
+        if !advisory_active() && !callback.is_null()
             // Only set_hooks stores this allocation-free function pointer.
             && unsafe { std::mem::transmute::<*mut (), fn() -> bool>(callback)() }
         {
@@ -95,16 +117,38 @@ pub fn allocation_error(error: io::Error) -> io::Error {
 /// Checked capture construction/projections may use this fallback only behind
 /// collector runtime::run's pre-install guard, or the publication
 /// guards in decode::process_owned_job and spooling::Processor::write_prepared.
+/// Advisory constructors may also abandon their optional storage without stopping capture.
 /// Do not grow the returned empty Vec.
 pub fn owned_vec<T>(result: io::Result<Vec<T>>) -> Vec<T> {
     match result {
         Ok(values) => values,
         Err(error) => {
-            assert!(is_allocation_error(&error) && capture_active());
+            let advisory = advisory_active();
+            assert!(is_allocation_error(&error) && (advisory || capture_active()));
             let _ = oom();
-            assert!(capture_stopped());
+            assert!(advisory || capture_stopped());
             Vec::new()
         }
+    }
+}
+
+pub fn boxed<T>(value: T) -> io::Result<Box<T>> {
+    let layout = Layout::new::<T>();
+    let pointer = if layout.size() == 0 {
+        NonNull::<T>::dangling().as_ptr()
+    } else {
+        allocation_attempt()?;
+        // SAFETY: layout describes T's size and alignment; null is refused.
+        unsafe { alloc(layout).cast::<T>() }
+    };
+    if pointer.is_null() {
+        return Err(oom());
+    }
+    // SAFETY: storage is aligned and writable for T (or dangling for a ZST).
+    // The value moves exactly once and Box owns the matching allocation.
+    unsafe {
+        pointer.write(value);
+        Ok(Box::from_raw(pointer))
     }
 }
 
@@ -275,8 +319,140 @@ pub fn boxed_slice<T>(mut values: Vec<T>) -> io::Result<Box<[T]>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    struct DeniedAllocator;
+    #[global_allocator]
+    static ALLOCATOR: DeniedAllocator = DeniedAllocator;
+    thread_local! {
+        static DENY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    unsafe impl std::alloc::GlobalAlloc for DeniedAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            if DENY.try_with(|deny| deny.get()).unwrap_or(false) {
+                std::ptr::null_mut()
+            } else {
+                unsafe { std::alloc::System.alloc(layout) }
+            }
+        }
+        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+            if DENY.try_with(|deny| deny.get()).unwrap_or(false) {
+                std::ptr::null_mut()
+            } else {
+                unsafe { std::alloc::System.realloc(pointer, layout, size) }
+            }
+        }
+        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+            unsafe { std::alloc::System.dealloc(pointer, layout) };
+        }
+    }
+    #[cfg(feature = "alloc-fault-injection")]
+    pub(crate) fn with_allocations_denied<T>(run: impl FnOnce() -> T) -> T {
+        struct Reset(bool);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                DENY.set(self.0);
+            }
+        }
+        let _reset = Reset(DENY.replace(true));
+        run()
+    }
+
+    #[cfg(feature = "alloc-fault-injection")]
+    #[test]
+    #[ignore = "run alone: allocation hooks are process-global"]
+    fn advisory_owned_constructor_denial_does_not_require_terminal_state() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        static STOP: AtomicBool = AtomicBool::new(false);
+        static FAILURES: AtomicUsize = AtomicUsize::new(0);
+        static ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+        fn before() -> bool {
+            ATTEMPTS.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+        fn failed() {
+            FAILURES.fetch_add(1, Ordering::SeqCst);
+            STOP.store(true, Ordering::SeqCst);
+        }
+        fn stopped() -> bool {
+            STOP.load(Ordering::SeqCst)
+        }
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_hooks(None, None);
+                set_stop_hook(None);
+            }
+        }
+        let _reset = Reset;
+        STOP.store(false, Ordering::SeqCst);
+        FAILURES.store(0, Ordering::SeqCst);
+        ATTEMPTS.store(0, Ordering::SeqCst);
+        set_hooks(Some(before), Some(failed));
+        set_stop_hook(Some(stopped));
+        advisory(|| {
+            struct Tracked;
+            impl Drop for Tracked {
+                fn drop(&mut self) {
+                    DROPS.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            static DROPS: AtomicUsize = AtomicUsize::new(0);
+            let denied = with_allocations_denied(|| boxed((Tracked, 1_u64)));
+            assert!(denied.is_err());
+            assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+            let values =
+                with_allocations_denied(|| advisory(|| owned_vec(default_vec::<u64>(5_001))));
+            assert!(values.is_empty());
+            assert!(!capture_stopped());
+            assert_eq!(FAILURES.load(Ordering::SeqCst), 0);
+            assert_eq!(ATTEMPTS.load(Ordering::SeqCst), 0);
+            assert_eq!(boxed(53_u64).unwrap().as_ref(), &53);
+        });
+        let values = owned_vec(default_vec::<u64>(5_001));
+        assert!(values.is_empty());
+        assert!(capture_stopped());
+        assert!(FAILURES.load(Ordering::SeqCst) > 0);
+        assert_eq!(ATTEMPTS.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "alloc-fault-injection")]
+    #[test]
+    fn real_allocator_denial_preserves_retained_storage_and_advisory_owned_fallback() {
+        let mut retained = vec::<u64>(2).unwrap();
+        retained.push(53);
+        let capacity = retained.capacity();
+        let denied = with_allocations_denied(|| {
+            advisory(|| {
+                assert!(reserve(&mut retained, 5_001).is_err());
+                assert!(boxed(53_u64).is_err());
+                owned_vec(default_vec::<u64>(5_001))
+            })
+        });
+        assert!(denied.is_empty());
+        assert_eq!(retained, [53]);
+        assert_eq!(retained.capacity(), capacity);
+    }
+
+    #[test]
+    fn checked_box_preserves_alignment_value_and_zero_sized_drop() {
+        #[repr(align(256))]
+        struct Aligned(u64);
+        let value = boxed(Aligned(53)).unwrap();
+        assert_eq!(value.0, 53);
+        assert_eq!(std::ptr::from_ref(value.as_ref()) as usize % 256, 0);
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+        struct Empty;
+        impl Drop for Empty {
+            fn drop(&mut self) {
+                DROPS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        drop(boxed(Empty).unwrap());
+        assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn checked_push_batches_preserve_the_sequential_capacity_trace() {
@@ -349,5 +525,44 @@ mod tests {
         }
         let ordinary = allocation_error(io::Error::from_raw_os_error(2));
         assert_eq!(ordinary.raw_os_error(), Some(2));
+    }
+
+    #[test]
+    #[ignore = "run alone: allocation hooks are process-global"]
+    fn advisory_failure_preserves_hooks_nesting_unwind_and_other_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static FAILURES: AtomicUsize = AtomicUsize::new(0);
+        fn failed() {
+            FAILURES.fetch_add(1, Ordering::SeqCst);
+        }
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_hooks(None, None);
+            }
+        }
+        let _reset = Reset;
+        FAILURES.store(0, Ordering::SeqCst);
+        set_hooks(None, Some(failed));
+        let mut retained = vec::<u8>(8).unwrap();
+        retained.extend_from_slice(b"kept");
+        let capacity = retained.capacity();
+        advisory(|| {
+            advisory(|| assert!(reserve(&mut retained, usize::MAX).is_err()));
+            assert!(reserve(&mut retained, usize::MAX).is_err());
+            assert_eq!(FAILURES.load(Ordering::SeqCst), 0);
+            std::thread::spawn(|| {
+                assert!(vec::<u8>(usize::MAX).is_err());
+            })
+            .join()
+            .unwrap();
+            assert_eq!(FAILURES.load(Ordering::SeqCst), 1);
+        });
+        assert_eq!(retained, b"kept");
+        assert_eq!(retained.capacity(), capacity);
+        assert!(std::panic::catch_unwind(|| advisory(|| panic!("synthetic unwind"))).is_err());
+        assert!(vec::<u8>(usize::MAX).is_err());
+        assert_eq!(FAILURES.load(Ordering::SeqCst), 2);
+        assert_eq!(vec::<u8>(16).unwrap().capacity(), 16);
     }
 }

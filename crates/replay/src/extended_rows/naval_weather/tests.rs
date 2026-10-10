@@ -2,6 +2,41 @@ use super::*;
 use crate::rows::{decode_row, encode_row};
 
 #[test]
+fn weather_display_boundary_deltas_keep_zero_bytes_and_refresh_identity() {
+    let before = WeatherProvinceRow {
+        display: Recorded::Value(None),
+        ..Default::default()
+    };
+    let after = WeatherProvinceRow {
+        display: Recorded::Value(Some(WeatherDisplay {
+            width: 1,
+            height: 1,
+            refresh_interval: i64::MIN,
+            refresh_identity: u64::MAX,
+            edges: vec![0, 0],
+        })),
+        ..before.clone()
+    };
+    let delta = after.delta(Some(&before)).unwrap().unwrap();
+    assert_eq!(delta.mask, 1 << 8);
+    assert_eq!(
+        WeatherProvinceRow::apply_delta(&delta, Some(before)).unwrap(),
+        after
+    );
+    let mut bytes = vec![];
+    after.encode_fields(&mut bytes).unwrap();
+    assert_eq!(
+        WeatherProvinceRow::decode_fields(after.key(), &mut Decoder::new(&bytes)).unwrap(),
+        after
+    );
+    assert_ne!(after.display, Recorded::NotRecorded);
+    assert_ne!(
+        Recorded::<Option<WeatherDisplay>>::Value(None),
+        Recorded::NotRecorded
+    );
+}
+
+#[test]
 fn temperature_and_raw_mud_deltas_keep_extreme_native_words() {
     let before = WeatherProvinceRow {
         id: 13_413,
@@ -25,6 +60,35 @@ fn temperature_and_raw_mud_deltas_keep_extreme_native_words() {
         WeatherProvinceRow::decode_fields(after.key(), &mut Decoder::new(&bytes)).unwrap(),
         after
     );
+}
+
+#[test]
+fn held_clock_deltas_preserve_zero_hour_and_full_signed_native_words() {
+    let before = WeatherProvinceRow {
+        id: 13_413,
+        local_hour: i32::MIN.into(),
+        night_factor: i64::MAX.into(),
+        ..Default::default()
+    };
+    for (hour, night) in [(0, 0), (i32::MAX, i64::MIN)] {
+        let after = WeatherProvinceRow {
+            local_hour: hour.into(),
+            night_factor: night.into(),
+            ..before.clone()
+        };
+        let delta = after.delta(Some(&before)).unwrap().unwrap();
+        assert_eq!(delta.mask, (1 << 6) | (1 << 7));
+        assert_eq!(
+            WeatherProvinceRow::apply_delta(&delta, Some(before.clone())).unwrap(),
+            after
+        );
+        let mut bytes = Vec::new();
+        after.encode_fields(&mut bytes).unwrap();
+        assert_eq!(
+            WeatherProvinceRow::decode_fields(after.key(), &mut Decoder::new(&bytes)).unwrap(),
+            after
+        );
+    }
 }
 
 #[test]

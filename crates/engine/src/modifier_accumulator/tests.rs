@@ -980,3 +980,24 @@ fn arbitrary_accumulator_preserves_presence_and_absence_without_metadata() {
         );
     }
 }
+
+mod read_only;
+
+#[test]
+fn snapshot_population_demand_excludes_allocator_spare_capacity() {
+    let memory = SnapshotMemory::new(5_001, None);
+    let mut arena = SnapshotArena::new(SnapshotCapacity {
+        nodes: 1,
+        entries: 0,
+    });
+    arena.enable_worker_growth();
+    crate::allocation::reserve_exact(&mut arena.entries, 30_000).unwrap();
+    arena.capture(&memory, 0x1000, 1).unwrap();
+    assert_eq!(arena.capacity().entries, 5_001);
+    assert_eq!(arena.required_capacity().entries, 5_001);
+    let demand = arena.capacity();
+    for _ in 0..20 {
+        arena.try_grow(demand).unwrap();
+        assert_eq!(arena.capacity(), demand);
+    }
+}

@@ -415,6 +415,16 @@ pub fn parse(bytes: &[u8]) -> io::Result<Document> {
     Parser::new(bytes, false, false).document()
 }
 
+/// Projects native save writer output. CVariables::vf2@140BB9D60 ->
+/// 1424ADC10 -> 1424ADB70 emits a raw empty name as `=fixed5` inside
+/// `variables`. Native text loading (1424A7A90 -> 1424AC5E0) instead takes
+/// `=` as a key with a retained value; that recovery is not the saved state.
+pub(crate) fn parse_save(bytes: &[u8]) -> io::Result<Document> {
+    let mut parser = Parser::new(bytes, false, false);
+    parser.save_variables = true;
+    parser.document()
+}
+
 /// The 1-based lines of one block's `{` and `}`, counting `\n` only, as the
 /// game's reader counts them (`CFile::CFile@1424DC040` starts at 1 and
 /// `CMemoryFile::ReadNextCharacter@1424D92C0` adds one on the character after
@@ -606,6 +616,7 @@ struct Parser<'a> {
     lines: Option<Lines>,
     /// The offset of the last closing brace a block ended on.
     closed_at: usize,
+    save_variables: bool,
 }
 
 struct Lines {
@@ -644,12 +655,13 @@ impl<'a> Parser<'a> {
                 blocks: Vec::new(),
             }),
             closed_at: 0,
+            save_variables: false,
         }
     }
 
     fn document(&mut self) -> io::Result<Document> {
         Ok(Document {
-            items: self.items(0, false)?,
+            items: self.items(0, false, false)?,
         })
     }
 
@@ -667,7 +679,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn items(&mut self, depth: usize, in_block: bool) -> io::Result<Vec<Item>> {
+    fn items(&mut self, depth: usize, in_block: bool, variable_map: bool) -> io::Result<Vec<Item>> {
         let mut items = Vec::new();
         while let Some(token) = self.next()? {
             match token.kind {
@@ -676,6 +688,39 @@ impl<'a> Parser<'a> {
                     return Ok(items);
                 }
                 TokenKind::Close => return Err(invalid(token.offset, "unexpected closing brace")),
+                TokenKind::Operator(Operator::Equals) if variable_map => {
+                    let value = self.next()?.ok_or_else(|| {
+                        invalid(token.offset, "empty saved variable key lacks a value")
+                    })?;
+                    let TokenKind::Scalar {
+                        bytes,
+                        quoted: false,
+                    } = value.kind
+                    else {
+                        return Err(invalid(
+                            value.offset,
+                            "empty saved variable requires fixed5",
+                        ));
+                    };
+                    // 1424AF9A0 -> 1424B89F0 writes signed fixed5 with at
+                    // most five fractional digits and no leading plus.
+                    let decimal = crate::save::Decimal::parse(&bytes).map_err(|error| {
+                        invalid(value.offset, &format!("empty saved variable: {error}"))
+                    })?;
+                    if bytes.starts_with(b"+") || decimal.fractional_digits > 5 {
+                        return Err(invalid(
+                            value.offset,
+                            "empty saved variable requires fixed5",
+                        ));
+                    }
+                    items.push(Item {
+                        key: Some(Vec::new()),
+                        key_quoted: false,
+                        operator: Operator::Equals,
+                        value: Value::Scalar(bytes),
+                        kind: Kind::Bare,
+                    });
+                }
                 TokenKind::Operator(Operator::Equals) => {
                     return Err(invalid(token.offset, "expected an item before '='"));
                 }
@@ -692,7 +737,7 @@ impl<'a> Parser<'a> {
                     key: None,
                     key_quoted: false,
                     operator: Operator::Equals,
-                    value: Value::Block(self.block(depth, token.offset)?),
+                    value: Value::Block(self.block(depth, token.offset, false)?),
                     kind: Kind::Open,
                 }),
                 TokenKind::Scalar { bytes, quoted } => {
@@ -702,7 +747,11 @@ impl<'a> Parser<'a> {
                         let operator = *operator;
                         self.next()?;
                         let key_quoted = quoted;
-                        let (value, kind) = self.value(depth)?;
+                        let variable_map = self.save_variables
+                            && !quoted
+                            && bytes == b"variables"
+                            && operator == Operator::Equals;
+                        let (value, kind) = self.value(depth, variable_map)?;
                         items.push(Item {
                             key: Some(bytes),
                             key_quoted,
@@ -737,12 +786,15 @@ impl<'a> Parser<'a> {
     }
 
     /// A value, and its token's kind.
-    fn value(&mut self, depth: usize) -> io::Result<(Value, Kind)> {
+    fn value(&mut self, depth: usize, variable_map: bool) -> io::Result<(Value, Kind)> {
         let token = self
             .next()?
             .ok_or_else(|| invalid(self.lexer.position, "expected a value before end of input"))?;
         match token.kind {
-            TokenKind::Open => Ok((Value::Block(self.block(depth, token.offset)?), Kind::Open)),
+            TokenKind::Open => Ok((
+                Value::Block(self.block(depth, token.offset, variable_map)?),
+                Kind::Open,
+            )),
             TokenKind::Scalar { bytes, quoted } => {
                 let value = self.scalar_or_tag(bytes, quoted, depth)?;
                 let kind = tree_kind(&value, quoted);
@@ -769,14 +821,14 @@ impl<'a> Parser<'a> {
             let offset = self.next()?.expect("peeked opening brace").offset;
             Ok(Value::Tagged {
                 tag: bytes,
-                items: self.block(depth, offset)?,
+                items: self.block(depth, offset, false)?,
             })
         } else {
             Ok(Value::Scalar(bytes))
         }
     }
 
-    fn block(&mut self, depth: usize, offset: usize) -> io::Result<Vec<Item>> {
+    fn block(&mut self, depth: usize, offset: usize, variable_map: bool) -> io::Result<Vec<Item>> {
         if depth == MAX_DEPTH {
             return Err(invalid(
                 offset,
@@ -788,7 +840,7 @@ impl<'a> Parser<'a> {
             lines.blocks.push(BlockLines { open, close: open });
             lines.blocks.len() - 1
         });
-        let items = self.items(depth + 1, true)?;
+        let items = self.items(depth + 1, true, variable_map)?;
         if let (Some(index), Some(lines)) = (index, self.lines.as_mut()) {
             lines.blocks[index].close = lines.line(self.closed_at);
         }

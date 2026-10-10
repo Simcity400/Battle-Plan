@@ -28,14 +28,14 @@ impl Renderer<'_, '_, '_> {
             .complete::<tables::TechnologyDefinitions>()
             .map_err(|why| why.to_string())?
             .iter()
-            .find(|row| Token::c_str(&row.id) == Token::c_str(&template.id))
+            .find(|row| c_string(&row.id).eq_ignore_ascii_case(c_string(&template.id)))
             .ok_or("TechnologyDefinitions lacks bound technology identity (140EBFDA0)")?;
         let status = frame
             .complete::<tables::ResearchTechnologies>()
             .map_err(|why| why.to_string())?
             .iter()
             .any(|row| {
-                row.technology_handle == definition.technology_handle
+                row.database_index == definition.database_index
                     && world.slot(row.country) == Some(country)
             });
         if !status {

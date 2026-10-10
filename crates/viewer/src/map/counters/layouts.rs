@@ -191,6 +191,7 @@ pub(super) fn gun_counter(
     Ok(Some(GunCounter {
         size: window_size(gun, GUN_WINDOW)?,
         plate: child(gun, Button, "count_bg", GUN_WINDOW, missing)?,
+        selected: child(gun, Icon, "count_selected", GUN_WINDOW, missing)?,
         group_marker: child(gun, Icon, "group_marker", GUN_WINDOW, missing)?,
         overlay: child(gun, Icon, "counter_overlay", GUN_WINDOW, missing)?,
         no_orders: child(gun, Icon, "no_orders", GUN_WINDOW, missing)?,
@@ -285,6 +286,7 @@ pub(super) fn land_counter(
     Ok(LandCounter {
         size: window_size(land, LAND_WINDOW)?,
         plate: child(land, Button, "count_bg", LAND_WINDOW, missing)?,
+        selected: child(land, Icon, "count_selected", LAND_WINDOW, missing)?,
         overlay: child(land, Icon, "counter_overlay", LAND_WINDOW, missing)?,
         type_icon: child(land, Icon, "type", LAND_WINDOW, missing)?,
         bar_org: child(land, Icon, "bar_org", LAND_WINDOW, missing)?,

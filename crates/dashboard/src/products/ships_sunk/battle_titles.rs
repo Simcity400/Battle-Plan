@@ -138,20 +138,14 @@ fn geography(source: &Source, cat: &Arc<Catalogue>) -> Result<Arc<Geography>, St
 // Exe keys/argument at 1415B06C0 and 142727E7C; the game passes text, not a key.
 fn title(cat: &Catalogue, name: &str) -> Result<String, String> {
     let key = "NAVAL_BATTLE_TITLE";
-    if cat.localisation.get(key).is_none() {
-        return Err(format!("content does not define {key}"));
-    }
-    let value = catalogue::localised_with(
+    // 1415B06C0 returns 142230F20's result without an emptiness gate;
+    // a missing key is copied by 142230940, a defined empty value survives.
+    catalogue::localised_with(
         &cat.localisation,
         key,
         &[("NAME", Argument::Text(name))],
         View::Plain,
-    )?;
-    if value.is_empty() {
-        Err(format!("{key} is empty"))
-    } else {
-        Ok(value)
-    }
+    )
 }
 
 /// None is the native region fallback; Some is the exact scored name province.
@@ -202,12 +196,6 @@ pub(crate) fn check_content(cat: &Catalogue) -> Result<Vec<String>, String> {
             Ok(_) => (),
             Err(reason) => refused.note(reason, format!("strategic region {}", region.id)),
         }
-    }
-    if cat.localisation.get("NAVAL_BATTLE_TITLE").is_none() {
-        refused.note(
-            "content does not define NAVAL_BATTLE_TITLE",
-            "NAVAL_BATTLE_TITLE",
-        );
     }
     warnings.extend(refused.lines("Ships sunk battle titles"));
     Ok(warnings)
@@ -437,11 +425,8 @@ impl Product for ShipsSunkBattleTitles {
                                 .ok_or_else(|| "Battle-name province not recorded".to_owned())?
                         } else {
                             let key = &geo.regions[region].name_key;
-                            if cat.localisation.get(key).is_none() {
-                                return Err(format!(
-                                    "content does not define strategic-region name {key}"
-                                ));
-                            }
+                            // 1415B06C0 copies GetName@140E0EB10's text,
+                            // including the template's empty default.
                             catalogue::localised(&cat.localisation, key, View::Plain)?
                         };
                         title(&cat, &name)

@@ -740,6 +740,10 @@ fn setup(capacity: usize, designs: usize) {
     POOL_CAPACITY.store(pool_bound, Ordering::Release);
     HOURLY_PEAK_EVENTS.store(0, Ordering::Relaxed);
     HOURLY_PEAK_CAPACITY.store(0, Ordering::Relaxed);
+    EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
+    CALL_ATTEMPTS.store(0, Ordering::Relaxed);
+    EVENT_REQUIRED.store(0, Ordering::Relaxed);
+    POOL_REQUIRED.store(0, Ordering::Relaxed);
     ENABLED.store(true, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(true, Ordering::SeqCst);
     POISONED.store(false, Ordering::SeqCst);
@@ -3110,6 +3114,147 @@ fn destruction_scale_bench() {
             }
             queue_churn_bench(countries, designs);
         }
+    }
+    ENABLED.store(false, Ordering::SeqCst);
+    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
+}
+
+#[test]
+fn worker_drain_grows_empty_and_recycled_frames_for_every_owned_entry() {
+    let _serial = SERIAL.lock().unwrap();
+    let mut output = Vec::new();
+    for count in [5000, 10003] {
+        setup(count, 1);
+        boundary(clock(1, 1));
+        assert!(drain_growing(&mut output).is_err());
+        boundary(clock(2, 1));
+        {
+            let mut store = STORE.lock().unwrap();
+            crate::allocation_failure_tests::with_allocations_denied(|| {
+                for index in 0..count {
+                    store
+                        .append(
+                            SiteId::Attrition,
+                            Entry {
+                                country: (index % 5000) as u32,
+                                cause: native::Cause::Attrition,
+                                variant: ((index as u64 + 1) << 32) | 0x46,
+                                amount_raw: index as i64 + 1,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                }
+            });
+        }
+        assert_eq!(drain_growing(&mut output), Ok(count));
+        assert_eq!(output[count - 1].amount_raw, count as i64);
+        assert_eq!(output[count - 1].variant, (count as u64) << 32 | 0x46);
+    }
+    ENABLED.store(false, Ordering::SeqCst);
+    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
+}
+
+#[test]
+fn rejected_rows_and_calls_prepare_the_full_burst_without_country_growth() {
+    let _serial = SERIAL.lock().unwrap();
+    setup(1, 1);
+    boundary(clock(1, 1));
+    boundary(clock(2, 1));
+    let entry = Entry {
+        country: 1,
+        cause: native::Cause::Attrition,
+        variant: 0xf00300000046,
+        amount_raw: 1,
+        ..Default::default()
+    };
+    {
+        let mut store = STORE.lock().unwrap();
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            for index in 0..10003 {
+                assert_eq!(store.append(SiteId::Attrition, entry).is_ok(), index == 0);
+            }
+        });
+        assert_eq!(EVENT_REQUIRED.load(Ordering::Relaxed), 10003);
+        store.refuse(
+            Some(SiteId::Attrition as usize),
+            event_overflow(SiteId::Attrition),
+        );
+    }
+    crate::allocation_failure_tests::with_allocations_denied(|| {
+        for _ in 0..12007 {
+            let call = Call::enter(SiteId::Attrition);
+            call.run(|| ());
+        }
+    });
+    assert_eq!(EVENT_REQUIRED.load(Ordering::Relaxed), 12007);
+    let mut memory = StateMemory::new(1);
+    memory.population(&[1]);
+    prepare(&memory, 0, 1);
+    assert!(capacity() >= 12007);
+    boundary(clock(3, 1));
+    assert!(drain_growing(&mut Vec::new()).is_err());
+    assert!(STORE.lock().unwrap().entries.capacity() >= 12007);
+    assert_eq!(EVENT_ATTEMPTS.load(Ordering::Relaxed), 0);
+    assert_eq!(CALL_ATTEMPTS.load(Ordering::Relaxed), 0);
+    assert_eq!(EVENT_REQUIRED.load(Ordering::Relaxed), 12007);
+    boundary(clock(4, 1));
+    {
+        let mut store = STORE.lock().unwrap();
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            for _ in 0..12007 {
+                store.append(SiteId::Attrition, entry).unwrap();
+            }
+        });
+    }
+    assert_eq!(drain_growing(&mut Vec::new()), Ok(12007));
+    ENABLED.store(false, Ordering::SeqCst);
+    SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);
+}
+
+#[test]
+fn rejected_original_pool_headers_prepare_every_scratch_arena_without_country_growth() {
+    let _serial = SERIAL.lock().unwrap();
+    setup(1, 1);
+    boundary(clock(1, 1));
+    boundary(clock(2, 1));
+    let mut memory = StateMemory::new(1);
+    memory.population(&[1]);
+    for (hour, count) in [(3, 5000), (4, 10003)] {
+        let world = World::new(count);
+        let live = unsafe { engine::memory::LiveMemory::new() };
+        let mut short = [equipment_entry::Row::default(); 1];
+        crate::allocation_failure_tests::with_allocations_denied(|| {
+            assert_eq!(
+                snapshot(
+                    &live,
+                    0,
+                    world.army() + carmy::EQUIPMENT_POOL,
+                    &mut short,
+                    7
+                ),
+                Err("destruction pool exceeds live design capacity")
+            );
+            assert_eq!(
+                variant_amount(
+                    &live,
+                    0,
+                    world.army() + carmy::EQUIPMENT_POOL,
+                    world.design(0),
+                    &mut [0; 16]
+                ),
+                Err("destruction pool exceeds live design capacity")
+            );
+        });
+        assert_eq!(POOL_REQUIRED.load(Ordering::Relaxed), count + 7);
+        prepare(&memory, 0, 1);
+        boundary(clock(hour, 1));
+        let store = STORE.lock().unwrap();
+        assert!(store.before.len() >= count + 7);
+        assert!(store.after.len() >= count + 7);
+        assert!(store.held.len() >= count + 7);
+        assert!(store.raw.len() >= (count + 7) * equipment_entry::STRIDE);
+        assert!(store.net.len() >= (count + 7) * 3);
     }
     ENABLED.store(false, Ordering::SeqCst);
     SUPPLEMENTAL_ENABLED.store(false, Ordering::SeqCst);

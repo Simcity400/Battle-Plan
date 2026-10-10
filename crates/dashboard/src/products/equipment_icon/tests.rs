@@ -26,6 +26,214 @@ fn equipment_icon_warnings_name_every_refused_technology() {
 }
 
 #[test]
+fn equipment_icons_keep_null_archetype_fallbacks() {
+    use super::{Icon, IconContent, IconHour, variant_icon};
+    use installed_content::{
+        equipment_graphics,
+        technology::{Enabler, Enablers},
+    };
+    use replay::rows::VariantDefinitionRow;
+
+    let units = equipment_types(&[br#"
+        equipments = {
+            bare_type = { }
+            technology_type = { }
+            family_member = { family = bare_type }
+            pooled_type = { }
+            undrawn_type = { }
+        }
+    "#])
+    .unwrap();
+    assert!(units.equipment.iter().all(|kind| kind.archetype.is_none()));
+    let enablers = Enablers {
+        plain: [
+            (
+                "technology_type".to_owned(),
+                vec![Enabler {
+                    id: "mod_technology".into(),
+                    parent: None,
+                }],
+            ),
+            (
+                String::new(),
+                vec![Enabler {
+                    id: "null_technology".into(),
+                    parent: None,
+                }],
+            ),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let make_content = |pools: &[&[u8]]| {
+        IconContent::from_parts(
+            units.clone(),
+            enablers.clone(),
+            equipment_graphics::Content::from_texts(
+                pools,
+                &equipment_graphics::Names {
+                    countries: Default::default(),
+                    continents: Default::default(),
+                },
+            )
+            .unwrap(),
+            Default::default(),
+            [
+                "GFX_bare_type_medium",
+                "GFX_mod_technology_medium",
+                "GFX_null_technology_medium",
+                "GFX_pool_picture",
+                "GFX_null_pool",
+                "GFX__medium",
+                "GFX__capital_medium",
+            ]
+            .map(str::to_owned)
+            .into(),
+            Default::default(),
+        )
+    };
+    let content = make_content(&[br#"
+        default = { pooled_type = { pool = { icons = { GFX_pool_picture } } } }
+    "#]);
+    let frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
+    let hour = IconHour::read(&frame, &content).unwrap();
+    let row = VariantDefinitionRow::default();
+    // 140B3D270 admits the type's own sprite before testing its archetype's
+    // validity. 140B36C60 continues through technology, family and pools.
+    for (token, expected) in [
+        ("bare_type", "GFX_bare_type_medium"),
+        ("technology_type", "GFX_mod_technology_medium"),
+        ("family_member", "GFX_bare_type_medium"),
+        ("pooled_type", "GFX_pool_picture"),
+    ] {
+        assert_eq!(
+            variant_icon(&content, &hour, &row, token),
+            Ok(Some(Icon::Sprite(expected.into()))),
+            "{token}"
+        );
+    }
+    // Null archetype sprites and technologies are skipped, even when their
+    // would-be string-only matches exist (140AB8D20 checks the cached hash).
+    let capital = VariantDefinitionRow {
+        classifier_flags: 1 << 6,
+        ..Default::default()
+    };
+    for row in [&row, &capital] {
+        assert_eq!(variant_icon(&content, &hour, row, "undrawn_type"), Ok(None));
+    }
+    let auto = VariantDefinitionRow {
+        icon_active: 1,
+        icon_kind: 1,
+        icon: b".".to_vec(),
+        ..Default::default()
+    };
+    assert_eq!(
+        variant_icon(&content, &hour, &auto, "pooled_type"),
+        Ok(Some(Icon::Sprite("GFX_pool_picture".into())))
+    );
+    // 1409F13F0/1409F1540 visit the null object's empty NAME, but its sentinel
+    // hash -1 (140C82B50) cannot match an authored empty-key pool.
+    let null_pool = make_content(&[br#"
+        default = { "" = { pool = { icons = { GFX_null_pool } } } }
+    "#]);
+    assert_eq!(
+        variant_icon(&null_pool, &hour, &row, "undrawn_type"),
+        Ok(None)
+    );
+    let reason = variant_icon(&content, &hour, &row, "undeclared_type").unwrap_err();
+    assert!(reason.contains("undeclared_type"), "{reason}");
+}
+
+#[test]
+fn equipment_icons_distinguish_real_empty_names_from_null_archetypes() {
+    use super::{Icon, IconContent, IconHour, variant_icon};
+    use installed_content::equipment_graphics;
+    use replay::rows::VariantDefinitionRow;
+
+    // 1409E5170 registers the NAME/hash before dynamic-token registration;
+    // 140C82D60/140BBA180 retain a real empty NAME's hash, not the null sentinel.
+    // Archetype/family references read strings, not token ids
+    // (140C89CC0 -> 1424ABB50 -> GetTypeByName 1409EB8B0).
+    let units = equipment_types(&[br#"
+        equipments = {
+            "" = { is_archetype = yes }
+            empty_parent = { archetype = "" }
+            family_member = { family = "" }
+            bare_type = { }
+        }
+    "#])
+    .unwrap();
+    let empty = units.get("").unwrap();
+    assert_eq!(units.equipment[empty].archetype, Some(empty));
+    let content = IconContent::from_parts(
+        units,
+        Default::default(),
+        equipment_graphics::Content::from_texts(
+            &[br#"default = { "" = { pool = { icons = { GFX_empty_pool } } } }"#],
+            &equipment_graphics::Names {
+                countries: Default::default(),
+                continents: Default::default(),
+            },
+        )
+        .unwrap(),
+        Default::default(),
+        ["GFX_empty_pool".to_owned()].into(),
+        Default::default(),
+    );
+    let frame = production_frame(PRODUCTION_HOUR, true, true, 9001, &[], Some(&[]));
+    let hour = IconHour::read(&frame, &content).unwrap();
+    let row = VariantDefinitionRow::default();
+    for token in ["", "empty_parent", "family_member"] {
+        assert_eq!(
+            variant_icon(&content, &hour, &row, token),
+            Ok(Some(Icon::Sprite("GFX_empty_pool".into()))),
+            "{token:?}"
+        );
+    }
+    assert_eq!(variant_icon(&content, &hour, &row, "bare_type"), Ok(None));
+}
+
+#[test]
+fn authored_equipment_icons_keep_null_archetype_candidates() {
+    use super::{Icon, IconContent};
+    use installed_content::technology::{Enabler, Enablers};
+
+    let content = IconContent::from_parts(
+        equipment_types(&[b"equipments = { bare_type = { } }"]).unwrap(),
+        Enablers {
+            plain: [(
+                "bare_type".to_owned(),
+                vec![Enabler {
+                    id: "mod_technology".into(),
+                    parent: None,
+                }],
+            )]
+            .into(),
+            ..Default::default()
+        },
+        Default::default(),
+        Default::default(),
+        [
+            "GFX_bare_type_medium",
+            "GFX_mod_technology_medium",
+            "GFX__medium",
+        ]
+        .map(str::to_owned)
+        .into(),
+        Default::default(),
+    );
+    let authored = content.authored_icons().unwrap();
+    assert_eq!(authored.len(), 1);
+    let authored = authored.into_iter().next().unwrap();
+    assert_eq!(authored.token, "bare_type");
+    assert!(authored.refusals.is_empty(), "{:?}", authored.refusals);
+    assert_eq!(
+        authored.icons,
+        ["GFX_bare_type_medium", "GFX_mod_technology_medium"].map(|name| Icon::Sprite(name.into()))
+    );
+}
+
+#[test]
 fn equipment_icons_follow_the_production_rows_rule() {
     use crate::products::equipment_icon::{Icon, IconContent, IconHour, variant_icon};
     use installed_content::{

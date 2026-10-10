@@ -3,7 +3,8 @@
 //! wait, or call a game getter. A failed interval is unavailable; a fresh
 //! authenticated boundary can start the next complete interval.
 use crate::hook::{Hook, Registers, Tap};
-use engine::{Memory, ccountry, cgame_state::Clock, experience_gain_sites as native, read};
+type Clock = engine::cgame_state::Clock<u64>;
+use engine::{Memory, ccountry, experience_gain_sites as native, read};
 use replay::rows::CountryExperienceGainRow;
 use std::{
     collections::HashMap,
@@ -82,6 +83,7 @@ impl Store {
             .ok_or("experience hourly gain overflow")?;
         Ok(())
     }
+    #[cfg(test)]
     fn snapshot(
         &mut self,
         memory: &impl Memory,
@@ -89,7 +91,23 @@ impl Store {
         state: usize,
         rows: &mut [CountryExperienceGainRow],
     ) -> Result<usize, &'static str> {
+        self.snapshot_buffer(memory, base, state, engine::walk::Buffer::Fixed(rows))
+    }
+    fn snapshot_buffer(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        mut rows: engine::walk::Buffer<'_, CountryExperienceGainRow>,
+    ) -> Result<usize, &'static str> {
         let countries = ccountry::Reader::new(memory, base, state)?;
+        // 1401D8120 visits the live +310/+31C country roster. The worker sizes
+        // row and owner storage from this original census before publication;
+        // native interval writers retain their allocation-free add path.
+        if rows.is_growing() {
+            self.prepare(countries.count() as usize)?;
+        }
+        rows.ensure(countries.count().saturating_sub(1) as usize)?;
         if countries.count() as usize > self.owners.len() {
             return Err("experience gain country identity storage too small");
         }
@@ -157,12 +175,31 @@ impl Store {
         Ok(len)
     }
 
+    #[cfg(test)]
     fn snapshot_interval(
         &mut self,
         memory: &impl Memory,
         base: usize,
         state: usize,
         rows: &mut [CountryExperienceGainRow],
+        refused: bool,
+        checks: (&AtomicUsize, &AtomicBool),
+    ) -> Result<usize, &'static str> {
+        self.snapshot_interval_buffer(
+            memory,
+            base,
+            state,
+            engine::walk::Buffer::Fixed(rows),
+            refused,
+            checks,
+        )
+    }
+    fn snapshot_interval_buffer(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        rows: engine::walk::Buffer<'_, CountryExperienceGainRow>,
         refused: bool,
         checks: (&AtomicUsize, &AtomicBool),
     ) -> Result<usize, &'static str> {
@@ -177,7 +214,7 @@ impl Store {
             if active.load(Ordering::SeqCst) != 0 {
                 return Err("experience gain writer active at drain");
             }
-            let len = self.snapshot(memory, base, state, rows)?;
+            let len = self.snapshot_buffer(memory, base, state, rows)?;
             if active.load(Ordering::SeqCst) != 0 || poisoned.load(Ordering::SeqCst) {
                 return Err("experience gain writer overlaps drain");
             }
@@ -305,7 +342,7 @@ pub fn drain(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    rows: &mut [CountryExperienceGainRow],
+    rows: &mut Vec<CountryExperienceGainRow>,
 ) -> Result<usize, &'static str> {
     if !ENABLED.load(Ordering::SeqCst) || UNHOOKED.get().is_some() {
         return Err("experience gain hooks unavailable");
@@ -323,11 +360,11 @@ pub fn drain(
             .take()
             .unwrap_or("experience gain observation incomplete")
     });
-    let result = store.snapshot_interval(
+    let result = store.snapshot_interval_buffer(
         memory,
         base,
         state,
-        rows,
+        engine::walk::Buffer::Growing(rows),
         refused.is_some(),
         (&ACTIVE, &POISONED),
     );
@@ -388,7 +425,9 @@ impl Hooks {
     }
     pub fn set_enabled(&mut self, enabled: bool) -> Result<bool, &'static str> {
         ENABLED.store(false, Ordering::SeqCst);
-        let mut hooks: Vec<&mut Hook> = self.taps.iter_mut().map(Tap::publication_hook).collect();
+        let mut hooks = crate::hook::publication_storage(self.taps.len(), enabled)
+            .map_err(|_| "experience gain hook family allocation failed")?;
+        hooks.extend(self.taps.iter_mut().map(Tap::publication_hook));
         // A failed batch may have published a tap; retain storage until quiet.
         self.publication_attempted |= enabled;
         let result = Hook::set_enabled_batch(&mut hooks, enabled)
@@ -573,6 +612,33 @@ mod tests {
         bytes[last + 8..last + 12].copy_from_slice(&10001_u32.to_le_bytes());
         bytes[LINKS + 10001 * 4..LINKS + 10002 * 4].copy_from_slice(&5000_u32.to_le_bytes());
         let mut cache = Cache::try_with_capacity(Cache::cells_for_countries(COUNT, 0)).unwrap();
+        let mut growing_store = Store::default();
+        let mut growing_rows = Vec::new();
+        let initial_memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        assert_eq!(
+            growing_store.snapshot(&cache.prepare(&initial_memory, 0, 0), 0, 0, &mut []),
+            Err("experience gain country identity storage too small")
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                growing_store
+                    .snapshot_buffer(
+                        &cache.prepare(&initial_memory, 0, 0),
+                        0,
+                        0,
+                        engine::walk::Buffer::Growing(&mut growing_rows)
+                    )
+                    .unwrap(),
+                5000
+            );
+            assert_eq!(growing_rows[4999].country, 10001);
+            // An undersized returned worker frame grows within this acquisition.
+            growing_rows.truncate(1);
+            growing_store.owners.truncate(1);
+        }
         let mut store = Store {
             owners: vec![None; COUNT],
             partial: true,

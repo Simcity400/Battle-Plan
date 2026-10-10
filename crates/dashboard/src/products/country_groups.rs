@@ -507,7 +507,16 @@ impl NameOperands {
             recorded_language,
             |name| self.tokens.token_of(name),
         )
-        .and_then(|text| catalogue::plain_text(&text))
+        .and_then(|text| {
+            let plain = catalogue::plain_text(&text)?;
+            // 140D77360 / 14238F090 can return known empty text;
+            // nonempty rich text still needs a plain representation.
+            if !text.is_empty() && plain.is_empty() {
+                Err("Faction name has no plain display text".into())
+            } else {
+                Ok(plain)
+            }
+        })
     }
 }
 
@@ -984,8 +993,7 @@ pub(crate) fn name_runs<'a>(
             recorded_language,
         );
         let (name, reason) = match resolved {
-            Ok(name) if !name.is_empty() => (Some(name), None),
-            Ok(_) => (None, Some("Faction name has no plain display text".into())),
+            Ok(name) => (Some(name), None),
             Err(reason) => (None, Some(reason)),
         };
         if let Some(reason) = &reason {

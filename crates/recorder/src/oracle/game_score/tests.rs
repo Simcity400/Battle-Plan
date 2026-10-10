@@ -95,6 +95,32 @@ fn game_score_rosters_compare_order_counts_and_missing_zero() {
 }
 
 #[test]
+fn game_score_land_keeps_unowned_provinces_out_of_positive_country_counts() {
+    let (mut frame, mut saved, membership, _) = super::super::tests::fixture();
+    saved.states.get_mut(&1).unwrap().owner = None;
+    saved.states.get_mut(&1).unwrap().controller = None;
+    saved.provinces.clear();
+    let mut input = row();
+    input.land_count = Some(0);
+    inputs(&mut frame, vec![input.clone()]);
+    let context = super::super::country_context(&frame).unwrap();
+    let mut report = Report::default();
+    land(&frame, &saved, &membership, &context.links, &mut report).unwrap();
+    assert!(report.differences.is_empty());
+    assert_eq!(
+        report.compared_tables["CountryGameScoreInputs.land_count"],
+        1
+    );
+    drop(context);
+    input.land_count = Some(1);
+    inputs(&mut frame, vec![input]);
+    let context = super::super::country_context(&frame).unwrap();
+    let mut report = Report::default();
+    land(&frame, &saved, &membership, &context.links, &mut report).unwrap();
+    assert_eq!(report.differences.len(), 1);
+}
+
+#[test]
 fn game_score_land_uses_state_owner_omissions_and_refuses_unknown_membership() {
     let (mut frame, mut saved, mut membership, _) = super::super::tests::fixture();
     let mut other = saved.countries.values().next().unwrap().clone();

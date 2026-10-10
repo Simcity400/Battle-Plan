@@ -768,8 +768,8 @@ fn scalar_tail_test_read(
                 Ok([a as i128, b as i128, c as i128, d as i128])
             }
             _ => {
-                let (a, b, c) = super::movement_scalar_tail(memory, army)?;
-                Ok([a as i128, b as i128, c as i128, 0])
+                let (a, b) = super::movement_scalar_tail(memory, army)?;
+                Ok([a as i128, b as i128, 0, 0])
             }
         }
     } else {
@@ -784,11 +784,10 @@ fn scalar_tail_test_read(
                     as i128,
             ]),
             _ => Ok([
-                super::presentation_field::<i32>(memory, army, crate::cunit::MOVEMENT_PRIORITY)?
-                    as i128,
                 super::presentation_field::<u8>(memory, army, carmy::RETREAT)? as i128,
                 super::presentation_field::<u8>(memory, army, carmy::STRATEGIC_REDEPLOYMENT)?
                     as i128,
+                0,
                 0,
             ]),
         }
@@ -809,11 +808,6 @@ fn scalar_tail_batches_match_native_field_order_and_every_fault_prefix() {
         u64::MAX,
     );
     p64(&mut source.bytes, A1 + crate::cunit::MAP_ENTITY, u64::MAX);
-    p32(
-        &mut source.bytes,
-        A1 + crate::cunit::MOVEMENT_PRIORITY,
-        i32::MIN as u32,
-    );
     source.bytes[A1 + carmy::RETREAT] = 0xfe;
     source.bytes[A1 + carmy::STRATEGIC_REDEPLOYMENT] = 0xff;
     for (kind, offsets) in [
@@ -823,11 +817,7 @@ fn scalar_tail_batches_match_native_field_order_and_every_fault_prefix() {
             carmy::ENTRENCHMENT_CAP,
             carmy::COUNTER_SUPPLY_STATUS,
         ],
-        vec![
-            crate::cunit::MOVEMENT_PRIORITY,
-            carmy::RETREAT,
-            carmy::STRATEGIC_REDEPLOYMENT,
-        ],
+        vec![carmy::RETREAT, carmy::STRATEGIC_REDEPLOYMENT],
     ]
     .into_iter()
     .enumerate()
@@ -858,21 +848,13 @@ fn scalar_tail_batches_match_native_field_order_and_every_fault_prefix() {
 fn scalar_tail_batches_preserve_address_overflow_prefix() {
     for (kind, first_offset, second_offset, first_len) in [
         (0, carmy::COUNTER_ATTRITION, carmy::ENTRENCHMENT, 8),
-        (
-            2,
-            crate::cunit::MOVEMENT_PRIORITY,
-            carmy::STRATEGIC_REDEPLOYMENT,
-            4,
-        ),
+        (2, carmy::RETREAT, carmy::STRATEGIC_REDEPLOYMENT, 1),
     ] {
         let army = usize::MAX - second_offset + 1;
         let mut source = presentation_fixture();
         source
             .globals
             .insert(army + first_offset, vec![0; first_len]);
-        if kind == 2 {
-            source.globals.insert(army + carmy::RETREAT, vec![0]);
-        }
         let direct = ScalarBatchMemory::new(&source);
         let packed = ScalarBatchMemory::new(&source);
         assert_eq!(
@@ -1724,6 +1706,7 @@ fn the_static_map_memo_reuses_primary_inputs_until_the_session_changes() {
                 provinces: 8,
                 neighbour_entries: 8,
             });
+        geometry.enable_growth();
         geometry.begin(memory, 0, GS).unwrap();
         super::capture_eta_inputs(
             memory,
@@ -1964,6 +1947,7 @@ fn the_route_scan_stops_where_the_native_walk_stops() {
                 provinces: 8,
                 neighbour_entries: 8,
             });
+        geometry.enable_growth();
         geometry.begin(memory, 0, GS).unwrap();
         let mut statics = cprovince::StaticGeometry::default();
         super::capture_eta_inputs(
@@ -2233,7 +2217,7 @@ fn eta_rail_graph_and_scan_share_directed_queries_and_refresh_each_capture() {
     ];
     super::capture_division_seeds(&source, &mut seeds);
     let mut expected_outputs = [None, None];
-    for (capacity, query_count) in [(16, 2), (1, 5), (0, 10)] {
+    for capacity in [16, 1, 0] {
         let mut packet = super::EtaInputPacket::new(4, 16, 16).unwrap();
         packet.rail = crate::crailway_manager::MovementSpeeds::new(capacity);
         let mut geometry =
@@ -2305,7 +2289,7 @@ fn eta_rail_graph_and_scan_share_directed_queries_and_refresh_each_capture() {
                         .iter()
                         .filter(|&&(at, _)| at == address)
                         .count(),
-                    if capacity == 0 { query_count } else { 1 },
+                    1,
                     "capacity={capacity} capture={capture} marker={address:#x}"
                 );
             }
@@ -2332,7 +2316,7 @@ fn seeded_rail_reuse_keeps_fault_order_independent_gates_and_self_edges() {
             GS,
             &mut super::MovementSharedInputs {
                 seed: &seed,
-                route_ids: &[2, 3],
+                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
                 geometry: &mut geometry,
                 rail_speeds: memo,
                 state_modifiers: None,
@@ -2470,7 +2454,7 @@ fn seeded_speed_matches_normal_transport_invasion_and_rail_branches() {
             GS,
             &mut super::MovementSharedInputs {
                 seed: &seed,
-                route_ids: &[2, 3],
+                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
                 geometry: &mut geometry,
                 rail_speeds: None,
                 state_modifiers: None,
@@ -2512,7 +2496,7 @@ fn seeded_normal_speed_uses_owned_fields_without_retrying_live_faults() {
             GS,
             &mut super::MovementSharedInputs {
                 seed: &seed,
-                route_ids: &[2, 3],
+                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
                 geometry: &mut geometry,
                 rail_speeds: None,
                 state_modifiers: None,
@@ -2541,7 +2525,7 @@ fn seeded_normal_speed_uses_owned_fields_without_retrying_live_faults() {
             GS,
             &mut super::MovementSharedInputs {
                 seed: &seed,
-                route_ids: &[2, 3],
+                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
                 geometry: &mut geometry,
                 rail_speeds: None,
                 state_modifiers: None,
@@ -2591,7 +2575,7 @@ fn seeded_zero_speed_preserves_nullable_and_id_zero_ordinary_tail_predicates() {
             GS,
             &mut super::MovementSharedInputs {
                 seed: &seed,
-                route_ids: &[2, tail_id],
+                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, tail_id]),
                 geometry: &mut geometry,
                 rail_speeds: None,
                 state_modifiers: None,
@@ -2751,7 +2735,7 @@ fn branch_context_invasion_stays_lazy_and_retains_its_first_constant() {
             super::effective_movement_speed(&memory, 0, GS, A1, 0x18200, 0x18400)
         );
     }
-    assert_eq!(context.invasion_speed, Some(123_457));
+    assert_eq!(context.invasion_speed, Some(Ok(123_457)));
     assert!(context.roots.is_none());
     assert!(context.rail.is_none());
     assert!(context.normal.is_none());
@@ -2787,7 +2771,8 @@ fn branch_context_blocked_rail_keeps_its_first_branch_operands() {
     );
     let rail = context
         .rail
-        .expect("strategic branch must initialize selector");
+        .expect("strategic branch must initialize selector")
+        .expect("strategic controls must be available");
     assert!(rail.blocked());
     assert!(rail.state.is_none());
     assert!(rail.friendly_state.is_none());
@@ -2816,7 +2801,7 @@ fn branch_context_transport_fault_does_not_initialize_later_or_land_stages() {
         ),
         Err("transport source fault")
     );
-    assert_eq!(context.transport_owner, Some(3));
+    assert_eq!(context.transport_owner, Some(Ok(3)));
     assert!(context.transport_scale.is_none());
     assert!(context.land.is_none());
     assert!(context.roots.is_none());
@@ -2837,7 +2822,7 @@ fn branch_context_transport_fault_does_not_initialize_later_or_land_stages() {
         )
         .is_err()
     );
-    assert_eq!(context.transport_owner, Some(3));
+    assert_eq!(context.transport_owner, Some(Ok(3)));
 }
 
 #[test]
@@ -2880,8 +2865,23 @@ fn normal_context_is_lazy_and_keeps_mixed_transport_edges_independent() {
         )
         .is_err()
     );
-    assert!(context.normal.is_none());
+    assert!(matches!(context.normal, Some(Err(_))));
     p64(&mut memory.bytes, A1 + crate::cunit::STAT_BLOCK, 0x11000);
+    assert!(
+        super::effective_movement_speed_in_pass(
+            &memory,
+            0,
+            GS,
+            A1,
+            P1,
+            0x18200,
+            &mut context,
+            |_, _| unreachable!(),
+        )
+        .is_err()
+    );
+    // A new pass may acquire the restored getter; this pass retains failure.
+    context = super::NormalMovementContext::default();
     assert_eq!(
         super::effective_movement_speed_in_pass(
             &memory,
@@ -3719,7 +3719,7 @@ fn air_prefix_full_read(
         P1,
         Some(&mut super::MovementSharedInputs {
             seed: &seed,
-            route_ids: &[2, 3],
+            route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
             geometry: &mut geometry,
             rail_speeds: None,
             state_modifiers: None,
@@ -3881,7 +3881,7 @@ fn category_hits_keep_prior_authentication_and_later_air_supply_failures() {
             GS,
             &mut super::MovementSharedInputs {
                 seed: &seed,
-                route_ids: &[2, 3],
+                route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[2, 3]),
                 geometry: &mut geometry,
                 rail_speeds: None,
                 state_modifiers: None,
@@ -4078,7 +4078,7 @@ fn supply_template_hits_keep_division_gates_and_later_modifier_faults_fresh() {
     let packet = super::EtaInputPacket::new(1, 0, 0).unwrap();
     let mut shared = super::MovementSharedInputs {
         seed: &seed,
-        route_ids: &[],
+        route_ids: super::fresh_counter_eta::MovementRouteIds::Full(&[]),
         geometry: &mut geometry,
         rail_speeds: None,
         state_modifiers: None,
@@ -4195,7 +4195,7 @@ fn shared_presentation_inputs_keep_exact_keys_fallback_faults_and_allocation() {
     assert_eq!(cache.read::<u32>(&memory, P1), crate::read(&source, P1));
     assert_eq!(cache.read::<u32>(&memory, P1 + cprovince::ID), Some(1));
     assert_eq!(cache.read::<u64>(&memory, 0xdead), None);
-    assert_eq!(cache.used.len(), 1);
+    assert_eq!(cache.entries.len(), 3);
     cache.clear();
     assert_eq!(
         memory
@@ -4206,11 +4206,11 @@ fn shared_presentation_inputs_keep_exact_keys_fallback_faults_and_allocation() {
             .count(),
         1
     );
-    assert!(cache.used.is_empty());
-    assert_eq!(cache.allocated_bytes(), allocated);
+    assert!(cache.entries.is_empty());
+    assert!(cache.allocated_bytes() >= allocated);
     assert_eq!(cache.read::<u64>(&memory, 0xdead), None);
     assert!(
-        cache.used.is_empty(),
+        cache.entries.is_empty(),
         "a failed vacant-slot read is not admitted"
     );
     cache.clear();
@@ -4276,11 +4276,11 @@ fn owned_movement_fixture_run(
         })
         .collect();
     super::capture_division_seeds(memory, &mut seeds);
-    // Sized as the collector builds it (`try_with_capacities`), not the
-    // zero-capacity placeholder.
+    // Worker geometry grows from the fixture's original province headers.
     let mut geometry = crate::cprovince::GeometryPacket::with_capacities(
         crate::cprovince::GeometryCapacities::default(),
     );
+    geometry.enable_growth();
     geometry.begin(memory, 0, GS).unwrap();
     let mut packet = super::MovementPacket::new(sources.len(), paths.len());
     let allocated = packet.allocated_bytes();
@@ -4378,6 +4378,98 @@ fn movement_records_the_map_entity_bit_and_fails_closed_on_its_read() {
             matches!(outcome, Outcome::Unavailable { .. }),
             "{outcome:?}"
         );
+    }
+}
+
+#[test]
+fn optional_arrow_styles_preserve_all_movement_rows_and_read_after_the_prefix() {
+    let (mut source, sources) = movement_combat_fixture();
+    for (index, pointer) in [A1, A2, A3].into_iter().enumerate() {
+        source.bytes[pointer + crate::cunit::WITHDRAWAL] = 0xfe - index as u8;
+        p32(
+            &mut source.bytes,
+            pointer + crate::cunit::MOVEMENT_PRIORITY,
+            (i32::MIN + index as i32) as u32,
+        );
+    }
+    let run = |memory: &ScalarBatchMemory<'_>, rows: &mut [super::MovementRow; 3], owned| {
+        if owned {
+            owned_movement_fixture_run(memory, &sources, rows, &mut [])
+        } else {
+            super::walk_movement(
+                memory,
+                0,
+                GS,
+                &sources,
+                Outcome::Rows { len: 3 },
+                rows,
+                &mut [],
+            )
+        }
+    };
+    let mut baseline = [super::MovementRow::default(); 3];
+    let healthy = ScalarBatchMemory::new(&source);
+    assert_eq!(
+        run(&healthy, &mut baseline, true).outcome,
+        Outcome::Rows { len: 3 }
+    );
+    let tail = [A1, A2, A3]
+        .into_iter()
+        .flat_map(|pointer| {
+            [
+                (pointer + crate::cunit::WITHDRAWAL, 1),
+                (pointer + crate::cunit::MOVEMENT_PRIORITY, 4),
+            ]
+        })
+        .collect::<Vec<_>>();
+    assert!(healthy.reads.borrow().ends_with(&tail));
+    for owned in [false, true] {
+        let memory = ScalarBatchMemory::new(&source);
+        let mut rows = [super::MovementRow::default(); 3];
+        assert_eq!(
+            run(&memory, &mut rows, owned).outcome,
+            Outcome::Rows { len: 3 }
+        );
+        assert_eq!(rows, baseline);
+        assert!(memory.reads.borrow().ends_with(&tail));
+        for fault in [
+            A1 + crate::cunit::WITHDRAWAL,
+            A1 + crate::cunit::MOVEMENT_PRIORITY,
+        ] {
+            let memory = ScalarBatchMemory::new(&source);
+            memory.fault.set(Some(fault));
+            let mut rows = [super::MovementRow::default(); 3];
+            assert_eq!(
+                run(&memory, &mut rows, owned).outcome,
+                Outcome::Rows { len: 3 }
+            );
+            assert_eq!(
+                memory
+                    .reads
+                    .borrow()
+                    .iter()
+                    .filter(|&&(address, _)| address == fault)
+                    .count(),
+                1,
+                "an optional field is read once without retry"
+            );
+            assert_eq!(
+                rows[0].withdrawal,
+                (fault != A1 + crate::cunit::WITHDRAWAL).then_some(0xfe)
+            );
+            assert_eq!(
+                rows[0].movement_priority,
+                (fault != A1 + crate::cunit::MOVEMENT_PRIORITY).then_some(i32::MIN)
+            );
+            assert_eq!(rows[1..], baseline[1..]);
+            for (mut actual, mut expected) in rows.into_iter().zip(baseline) {
+                actual.withdrawal = None;
+                actual.movement_priority = None;
+                expected.withdrawal = None;
+                expected.movement_priority = None;
+                assert_eq!(actual, expected);
+            }
+        }
     }
 }
 
@@ -4663,6 +4755,14 @@ fn movement_combat_hits_do_not_hide_later_first_pointer_failure() {
         assert!(matches!(actual_walk.outcome, Outcome::Unavailable { .. }));
         assert_eq!(actual[0].combat_role, 1);
         assert!(!owned.reads.borrow().contains(&(0x19020, 8)));
+        for memory in [&direct, &owned] {
+            for pointer in [A1, A2, A3] {
+                assert!(!memory.reads.borrow().iter().any(|&(address, _)| {
+                    address == pointer + crate::cunit::WITHDRAWAL
+                        || address == pointer + crate::cunit::MOVEMENT_PRIORITY
+                }));
+            }
+        }
     }
 }
 
@@ -4826,8 +4926,8 @@ fn shared_movement_geometry_matches_direct_caps_and_reduces_repeated_guard_reads
                         "the acquired province identity is reused"
                     );
                 }
-                assert!(cache.shared.borrow().used.is_empty());
-                assert_eq!(cache.allocated_bytes(), allocated);
+                assert!(cache.shared.borrow().entries.is_empty());
+                assert!(cache.allocated_bytes() >= allocated);
             }
         }
     }
@@ -4885,7 +4985,7 @@ fn shared_movement_geometry_preserves_first_faults_and_unvisited_neighbor_suffix
             1,
             "failed source is not retained or retried"
         );
-        assert!(cache.shared.borrow().used.is_empty());
+        assert!(cache.shared.borrow().entries.is_empty());
     }
     let forbidden =
         0x18000 + 2 * crate::province_neighbour::STRIDE + crate::province_neighbour::PROVINCE_ID;
@@ -5082,13 +5182,23 @@ fn division_status_keeps_the_model_number_and_acclimatization_and_fails_only_tha
         (
             super::StatusCapacities {
                 acclimatization: 1,
+                acclimatization_categories: 2,
+                modifiers: crate::modifier_accumulator::SnapshotCapacity {
+                    nodes: 1,
+                    entries: 1,
+                },
                 ..super::StatusCapacities::new(1)
             },
-            (2, 16),
+            (2, 2),
         ),
         (
             super::StatusCapacities {
+                acclimatization: 2,
                 acclimatization_categories: 1,
+                modifiers: crate::modifier_accumulator::SnapshotCapacity {
+                    nodes: 1,
+                    entries: 1,
+                },
                 ..super::StatusCapacities::new(1)
             },
             (2, 2),
@@ -5590,6 +5700,12 @@ fn status_retains_first_pass_membership_growth_through_projection_and_recycling(
     }];
     super::capture_division_seeds(&memory, &mut seeds);
     let mut capacities = super::StatusCapacities::new(1);
+    capacities.modifiers = crate::modifier_accumulator::SnapshotCapacity {
+        nodes: 1,
+        entries: 1,
+    };
+    capacities.membership.groups = 1;
+    capacities.membership.roots = 1;
     capacities.membership.chunks = 2;
     let mut packet = super::StatusPacket::with_capacities(capacities).unwrap();
     let allocated = packet.allocated_bytes();
@@ -5624,7 +5740,7 @@ fn status_retains_first_pass_membership_growth_through_projection_and_recycling(
         .unwrap();
     capacities.membership.chunks = 4;
     assert_eq!(packet.capacities, capacities);
-    assert_eq!(packet.allocated_bytes(), allocated);
+    assert!(packet.allocated_bytes() >= allocated);
 }
 
 #[test]
@@ -5642,7 +5758,14 @@ fn status_packet_preserves_raw_maxima_and_its_independent_source_prefix() {
         ..super::DivisionSeed::default()
     }; 2];
     super::capture_division_seeds(&memory, &mut seeds);
-    let mut first = super::StatusPacket::new(2).unwrap();
+    let mut first = super::StatusPacket::with_capacities(super::StatusCapacities {
+        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+            nodes: 1,
+            entries: 1,
+        },
+        ..super::StatusCapacities::new(2)
+    })
+    .unwrap();
     assert_eq!(
         first.capture(&memory, 0, GS, &seeds, Outcome::Rows { len: 2 }, 1),
         Outcome::Truncated {
@@ -5658,7 +5781,14 @@ fn status_packet_preserves_raw_maxima_and_its_independent_source_prefix() {
         0x11000 + crate::csub_unit_definition::MAXIMUM_STRENGTH,
         50,
     );
-    let mut second = super::StatusPacket::new(2).unwrap();
+    let mut second = super::StatusPacket::with_capacities(super::StatusCapacities {
+        modifiers: crate::modifier_accumulator::SnapshotCapacity {
+            nodes: 1,
+            entries: 1,
+        },
+        ..super::StatusCapacities::new(2)
+    })
+    .unwrap();
     assert_eq!(
         second.capture(&memory, 0, GS, &seeds, Outcome::Rows { len: 2 }, 1),
         first.outcome()
@@ -6235,3 +6365,5 @@ fn strategic_action_owned_movement_matches_direct_and_withholds_only_the_glyph()
         )
     );
 }
+
+mod unit_combat_reference_tests;

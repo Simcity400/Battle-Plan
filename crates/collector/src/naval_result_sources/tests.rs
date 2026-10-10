@@ -109,6 +109,8 @@ pub(crate) fn setup(capacity: usize, base: usize) {
         next: None,
         retired: None,
     };
+    EVENT_ATTEMPTS.store(0, Ordering::Relaxed);
+    BIRTH_ATTEMPTS.store(0, Ordering::Relaxed);
     EVENT_DEMAND.store(0, Ordering::Relaxed);
     BIRTH_DEMAND.store(0, Ordering::Relaxed);
     HOURLY_PEAK.store(0, Ordering::Relaxed);
@@ -285,6 +287,36 @@ fn actual_new_merge_transient_skipped_and_five_thousand_sources() {
         assert_eq!(event.game_hour, 12);
     }
     assert_eq!(active(), 0);
+}
+
+#[test]
+fn worker_drain_grows_empty_and_recycled_storage_for_every_owned_source() {
+    let _observation = Observation::new();
+    let mut output = Vec::new();
+    for count in [5000, 10003] {
+        setup(count, 0);
+        boundary(clock(10, 1));
+        assert!(drain_growing(&mut output).is_err());
+        boundary(clock(11, 1));
+        {
+            let mut store = store().lock().unwrap();
+            crate::allocation_failure_tests::with_allocations_denied(|| {
+                for index in 0..count {
+                    store.entries.push(Entry {
+                        id: index as u64 + 1,
+                        game_hour: 10,
+                        result: ((index as u64 + 1) << 32) | 0x46,
+                        combat: u64::MAX,
+                        transient: true,
+                        ..Default::default()
+                    });
+                }
+            });
+        }
+        assert_eq!(drain_growing(&mut output), Ok(count));
+        assert_eq!(output[count - 1].id, count as u64);
+        assert_eq!(output[count - 1].result, (count as u64) << 32 | 0x46);
+    }
 }
 
 #[test]
@@ -557,11 +589,12 @@ fn an_overflow_grows_enough_to_capture_the_repeated_event_burst() {
         unsafe { fill(world.result(), world.combat()) };
     }
     assert_eq!(drain(&mut output).unwrap(), 4);
+    assert_eq!(EVENT_DEMAND.load(Ordering::Relaxed), 4);
     assert_eq!(output.map(|row| row.id), [3, 4, 5, 6]);
 }
 
 #[test]
-fn birth_overflow_grows_from_the_stored_reservation() {
+fn birth_overflow_grows_from_the_complete_attempted_burst() {
     let _observation = Observation::new();
     let mut world = World::new();
     setup(3, world.base());
@@ -572,7 +605,7 @@ fn birth_overflow_grows_from_the_stored_reservation() {
     for pointer in 1..=reserved + 1 {
         unsafe { constructor(pointer, world.base() + 0xba845d) };
     }
-    assert_eq!(BIRTH_DEMAND.load(Ordering::Relaxed), reserved * 2);
+    assert_eq!(BIRTH_DEMAND.load(Ordering::Relaxed), reserved + 1);
     presize(3);
     boundary(clock(12, 1));
     assert_eq!(
@@ -586,11 +619,12 @@ fn birth_overflow_grows_from_the_stored_reservation() {
     );
     boundary(clock(14, 1));
     world.hour(14);
-    assert_eq!(BIRTH_CAPACITY.load(Ordering::Acquire), reserved * 2);
-    for pointer in 1..=reserved * 2 {
+    assert_eq!(BIRTH_CAPACITY.load(Ordering::Acquire), reserved + 1);
+    for pointer in 1..=reserved + 1 {
         unsafe { constructor(pointer, world.base() + 0xba845d) };
     }
-    assert_eq!(store().lock().unwrap().births.len(), reserved * 2);
+    assert_eq!(store().lock().unwrap().births.len(), reserved + 1);
+    assert_eq!(BIRTH_DEMAND.load(Ordering::Relaxed), reserved + 1);
     assert_eq!(drain(&mut []).unwrap(), 0);
 }
 

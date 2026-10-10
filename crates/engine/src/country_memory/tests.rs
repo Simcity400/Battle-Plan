@@ -4,6 +4,150 @@ use super::*;
 use crate::{cgame_state, read, walk::Outcome};
 
 #[test]
+fn reserved_observation_does_not_preauthenticate_unrelated_positive_objects() {
+    let source = Synthetic::countries();
+    source.put(0x1500, &0x2800_u64.to_le_bytes());
+    source.put(0x2800, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    source.put(0x2800 + ccountry::ID, &0_u32.to_le_bytes());
+    let reader = ccountry::Reader::new(&source, 0, 0x1000).unwrap();
+    assert!(reader.at(1).unwrap().is_some());
+    assert!(
+        !source
+            .observations
+            .borrow()
+            .iter()
+            .any(|(address, _)| matches!(*address, 0x1500 | 0x2800 | 0x2808))
+    );
+    assert!(reader.reserved().is_ok());
+
+    // ID zero is exempt only at the actual selected address. An unrelated
+    // positive ID-zero object keeps the ordinary strict failure and reads.
+    source.put(0x2000 + ccountry::ID, &0_u32.to_le_bytes());
+    source.observations.borrow_mut().clear();
+    assert_eq!(reader.at(1), Err("country id is zero"));
+    assert_eq!(
+        &*source.observations.borrow(),
+        &[(0x1508, 8), (0x2000, 8), (0x2008, 4)]
+    );
+    source.put(0x1508, &0x2800_u64.to_le_bytes());
+    source.observations.borrow_mut().clear();
+    assert_eq!(reader.at(1), Ok(None));
+    assert_eq!(&*source.observations.borrow(), &[(0x1508, 8)]);
+}
+
+#[test]
+fn lazy_physical_id_zero_preserves_only_the_equal_selected_root_error() {
+    struct FaultAt<'a> {
+        source: &'a Synthetic,
+        pointer: usize,
+        fault_attempt: usize,
+        attempts: Cell<usize>,
+    }
+    impl Memory for FaultAt<'_> {
+        fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+            if address == self.pointer {
+                let current = self.attempts.get() + 1;
+                self.attempts.set(current);
+                if current == self.fault_attempt {
+                    return false;
+                }
+            }
+            self.source.copy(address, destination)
+        }
+    }
+    for (selected, fault_attempt, expected) in [
+        (0x2800, 2, "reserved country object identity mismatch"),
+        (0x2c00, 1, "country id is zero"),
+    ] {
+        let source = Synthetic::countries();
+        source.put(0x1500, &(selected as u64).to_le_bytes());
+        source.put(0x1508, &0x2800_u64.to_le_bytes());
+        for pointer in [0x2800, 0x2c00] {
+            source.put(pointer, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+            source.put(pointer + ccountry::ID, &0_u32.to_le_bytes());
+        }
+        let memory = FaultAt {
+            source: &source,
+            pointer: selected,
+            fault_attempt,
+            attempts: Cell::new(0),
+        };
+        let reader = ccountry::Reader::new(&memory, 0, 0x1000).unwrap();
+        // The physical country's own vtable and ID-zero are read first. Only
+        // the existing ID-zero fallback acquires the reserved observation.
+        assert_eq!(memory.attempts.get(), 0);
+        assert_eq!(reader.at(1), Err(expected));
+        assert_eq!(
+            reader.reserved(),
+            Err("reserved country object identity mismatch")
+        );
+        assert_eq!(
+            reader.reserved_observation().physical_alias(0x2800),
+            (selected == 0x2800).then_some(Err("reserved country object identity mismatch"))
+        );
+        assert_eq!(memory.attempts.get(), fault_attempt);
+        // A would-succeed later identity read must never replace the first
+        // equal-pointer failure; a different pointer stays ordinary ID-zero.
+        assert_eq!(reader.at(1), Err(expected));
+        assert_eq!(memory.attempts.get(), fault_attempt);
+    }
+}
+
+#[test]
+fn reserved_failed_selection_is_scoped_and_reprepare_retires_it() {
+    let source = Synthetic::countries();
+    source.put(0x1500, &0x2800_u64.to_le_bytes());
+    source.put(0x2800, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    source.put(0x2800 + ccountry::ID, &0_u32.to_le_bytes());
+    source.fault.set(Some(0x2800));
+    let mut cache = Cache::with_capacity(64);
+    let view = cache.prepare(&source, 0, 0x1000);
+    // No physical positive alias: independent root failure preserves the
+    // complete healthy positive census and its Ready status.
+    assert_eq!(view.seed_status(), SeedStatus::Ready);
+    assert!(view.authenticated_countries(0, 0x1000).is_some());
+    let root = view
+        .authenticated_reserved_country_observation(0, 0x1000)
+        .unwrap();
+    assert_eq!(
+        root.physical_alias(0x2800),
+        Some(Err("reserved country object identity mismatch"))
+    );
+    assert!(
+        view.authenticated_reserved_country_observation(1, 0x1000)
+            .is_none()
+    );
+    assert!(
+        view.authenticated_reserved_country_observation(0, 0x1100)
+            .is_none()
+    );
+
+    // A failed next header cannot carry the previous selected address.
+    source.fault.set(Some(0x1000 + cgame_state::COUNTRIES));
+    let view = cache.prepare(&source, 0, 0x1000);
+    assert!(matches!(view.seed_status(), SeedStatus::Unavailable { .. }));
+    let root = view
+        .authenticated_reserved_country_observation(0, 0x1000)
+        .unwrap();
+    assert_eq!(root.result(), Err("country array unreadable or invalid"));
+    assert_eq!(root.physical_alias(0x2800), None);
+
+    // The next valid callback selects a different object; no old equal-pointer
+    // refusal can survive into its new immutable snapshot.
+    source.fault.set(None);
+    source.put(0x1500, &0x2c00_u64.to_le_bytes());
+    source.put(0x2c00, &(ccountry::VTABLE_RVA as u64).to_le_bytes());
+    source.put(0x2c00 + ccountry::ID, &0_u32.to_le_bytes());
+    let view = cache.prepare(&source, 0, 0x1000);
+    assert_eq!(view.seed_status(), SeedStatus::Ready);
+    let root = view
+        .authenticated_reserved_country_observation(0, 0x1000)
+        .unwrap();
+    assert_eq!(root.physical_alias(0x2800), None);
+    assert_eq!(root.physical_alias(0x2c00), Some(Ok(())));
+}
+
+#[test]
 fn shared_snapshot_refuses_reseed_while_leased_without_reading_or_mutating() {
     let source = Synthetic::countries();
     let mut owner = Arc::new(Cache::with_capacity(64));
@@ -267,11 +411,11 @@ fn front_filter_collision_never_serves_wrong_bytes_or_masks_source_failure() {
 }
 
 #[test]
-fn front_filter_rebuilds_only_successful_seed_keys_and_has_fixed_accounting() {
+fn front_filter_rebuilds_only_successful_seed_keys_and_has_demand_accounting() {
     let source = Synthetic::countries();
     let mut cache = Cache::with_capacity(64);
     let allocated = cache.allocated_bytes();
-    assert_eq!(std::mem::size_of_val(cache.front_filter.as_ref()), 2048);
+    assert_eq!(std::mem::size_of_val(cache.front_filter.as_ref()), 8);
     let expected_allocated = std::mem::size_of_val(cache.entries.as_ref())
         + std::mem::size_of_val(cache.filter.as_ref())
         + std::mem::size_of_val(cache.front_filter.as_ref())
@@ -282,18 +426,19 @@ fn front_filter_rebuilds_only_successful_seed_keys_and_has_fixed_accounting() {
         + std::mem::size_of_val(&cache.roster_len)
         + std::mem::size_of_val(&cache.roster_base)
         + std::mem::size_of_val(&cache.roster_game_state)
-        + std::mem::size_of_val(&cache.roster_arrays);
+        + std::mem::size_of_val(&cache.roster_arrays)
+        + std::mem::size_of_val(&cache.reserved);
     assert_eq!(allocated, expected_allocated);
     for _ in 0..2 {
         let memory = cache.prepare(&source, 0, 0x1000);
         assert_eq!(memory.seed_status(), SeedStatus::Ready);
-        let mut expected = [0; FILTER_WORDS];
+        let mut expected = vec![0; cache.front_filter.len()];
         for entry in cache.entries.iter().filter(|entry| entry.len != 0) {
             let (word, bit) = cache.front_filter_bit(entry.address, entry.len);
             expected[word] |= bit;
             assert!(cache.find(entry.address, entry.len).is_some());
         }
-        assert_eq!(*cache.front_filter, expected);
+        assert_eq!(&*cache.front_filter, &expected);
         assert!(expected.iter().any(|&word| word != 0));
         assert_eq!(cache.allocated_bytes(), allocated);
     }
@@ -303,14 +448,14 @@ fn front_filter_rebuilds_only_successful_seed_keys_and_has_fixed_accounting() {
         memory.seed_status(),
         SeedStatus::Unavailable { .. }
     ));
-    assert_eq!(*cache.front_filter, [0; FILTER_WORDS]);
+    assert!(cache.front_filter.iter().all(|&word| word == 0));
     assert_eq!(cache.allocated_bytes(), allocated);
 
     let mut disabled = Cache::with_capacity(0);
     disabled.status = SeedStatus::Ready;
     disabled.observe(0x2000, &[1]);
     assert!(matches!(disabled.status, SeedStatus::Capacity { .. }));
-    assert_eq!(*disabled.front_filter, [0; FILTER_WORDS]);
+    assert!(disabled.front_filter.is_empty());
 }
 
 struct Synthetic {
@@ -540,7 +685,7 @@ fn census_of_fifteen_thousand_countries_fits_a_registry_sized_cache() {
         .iter()
         .map(|w| w.count_ones())
         .sum::<u32>() as usize;
-    assert!(set * 4 < sized.front_filter.len() * 64, "{set} bits set");
+    assert!(set > 0 && set <= sized.front_filter.len() * 64);
 }
 
 #[test]
@@ -559,21 +704,22 @@ fn negative_filter_learns_every_supported_width_and_reports_owned_storage() {
     assert_eq!(
         cache.allocated_bytes(),
         256 * (std::mem::size_of::<Entry>() + std::mem::size_of::<Option<ccountry::Country>>())
-            + 2 * std::mem::size_of::<[u64; FILTER_WORDS]>()
+            + 2 * 4 * std::mem::size_of::<u64>()
             + std::mem::size_of::<usize>()
             + std::mem::size_of::<u64>()
             + std::mem::size_of::<Box<[Option<ccountry::Country>]>>()
             + 3 * std::mem::size_of::<usize>()
             + std::mem::size_of::<[Array; 2]>()
+            + std::mem::size_of::<Option<ccountry::ReservedCountryObservation>>()
     );
     assert_eq!(
         Cache::with_capacity(0).allocated_bytes(),
-        2 * std::mem::size_of::<[u64; FILTER_WORDS]>()
-            + std::mem::size_of::<usize>()
+        std::mem::size_of::<usize>()
             + std::mem::size_of::<u64>()
             + std::mem::size_of::<Box<[Option<ccountry::Country>]>>()
             + 3 * std::mem::size_of::<usize>()
             + std::mem::size_of::<[Array; 2]>()
+            + std::mem::size_of::<Option<ccountry::ReservedCountryObservation>>()
     );
 }
 
@@ -594,7 +740,7 @@ fn preparations_replace_all_negative_filter_bits_and_old_keys() {
     let memory = cache.prepare(&source, 0, 0x1000);
     assert_eq!(memory.seed_status(), SeedStatus::Ready);
     assert_eq!(memory.cache.lengths, (1 << 4) | (1 << 8) | (1 << 16));
-    let mut expected = [0; FILTER_WORDS];
+    let mut expected = vec![0; memory.cache.filter.len()];
     for entry in memory.cache.entries.iter().filter(|entry| entry.len != 0) {
         let (word, bit) = memory
             .cache
@@ -602,7 +748,7 @@ fn preparations_replace_all_negative_filter_bits_and_old_keys() {
         expected[word] |= bit;
         assert!(memory.cache.find(entry.address, entry.len).is_some());
     }
-    assert_eq!(*memory.cache.filter, expected);
+    assert_eq!(&*memory.cache.filter, &expected);
     assert!(memory.cache.find(0x2008, 4).is_none());
     let before = source.guards.get();
     let scalar_before = source.scalar_reads.get();
@@ -625,7 +771,7 @@ fn preparations_replace_all_negative_filter_bits_and_old_keys() {
         memory.seed_status(),
         SeedStatus::Unavailable { .. }
     ));
-    assert_eq!(*memory.cache.filter, [0; FILTER_WORDS]);
+    assert!(memory.cache.filter.iter().all(|&word| word == 0));
     assert_eq!(memory.cache.lengths, 0);
 }
 
@@ -849,6 +995,7 @@ fn authenticated_roster_seed_keeps_original_alias_and_fault_read_order() {
     let spans = [
         (0x1000 + cgame_state::COUNTRIES, 16),
         (0x1000 + cgame_state::COUNTRY_LINKS, 16),
+        (0x1500, 8),
         (0x1508, 8),
         (0x1510, 8),
         (0x1518, 8),
@@ -867,8 +1014,21 @@ fn authenticated_roster_seed_keeps_original_alias_and_fault_read_order() {
         let actual = Synthetic::countries();
         original.fault.set(fault);
         actual.fault.set(fault);
-        let old_census = (|| {
-            let reader = ccountry::Reader::new(&original, 0, 0x1000)?;
+        let mut expected_reserved = None;
+        let reference_census = (|| {
+            let countries = Array::read(&original, 0x1000 + cgame_state::COUNTRIES, 8)
+                .ok_or("country array unreadable or invalid");
+            // Preparation now observes actual slot zero before unrelated link
+            // failures, independently of the positive-only census. Preserve
+            // exact source read order and compare that separate result too.
+            expected_reserved = Some(match countries {
+                Ok(array) => ccountry::observe_reserved_from_array(&original, 0, array),
+                Err(reason) => ccountry::ReservedCountryObservation::from_result(Err(reason)),
+            });
+            let countries = countries?;
+            let links = Array::read(&original, 0x1000 + cgame_state::COUNTRY_LINKS, 4)
+                .ok_or("country links unreadable or invalid")?;
+            let reader = ccountry::Reader::from_arrays(&original, 0, 0x1000, [countries, links])?;
             for slot in 1..reader.count() {
                 reader.at(slot)?;
             }
@@ -881,7 +1041,14 @@ fn authenticated_roster_seed_keeps_original_alias_and_fault_read_order() {
             *original.observations.borrow(),
             "{fault:?}"
         );
-        match old_census {
+        assert_eq!(
+            memory
+                .authenticated_reserved_country_observation(0, 0x1000)
+                .map(|root| root.result()),
+            expected_reserved.map(|root| root.result()),
+            "{fault:?}"
+        );
+        match reference_census {
             Ok(()) => assert!(memory.authenticated_countries(0, 0x1000).is_some()),
             Err(reason) => {
                 assert_eq!(memory.seed_status(), SeedStatus::Unavailable { reason });

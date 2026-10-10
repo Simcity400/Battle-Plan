@@ -9,15 +9,24 @@ use replay::{
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ArmyIconInputs];
 pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     rows: usize,
 }
-impl Default for Capacities {
-    fn default() -> Self {
-        Self { rows: 8192 }
+impl Capacities {
+    pub(crate) fn presize(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+    ) -> Result<(), &'static str> {
+        let count =
+            crate::country_scale::table_demand::rows(carmy::walk(memory, base, state, &mut []))?;
+        crate::table_capture::grow_capacity(&mut self.rows, count);
+        Ok(())
     }
 }
+
 pub struct Captured {
     rows: CaptureRows<carmy::IconInputsRow>,
 }
@@ -54,6 +63,10 @@ impl Captured {
     ) -> [u64; N] {
         let _reads = crate::read_accounting::table(TABLES[0]);
         let begin = qpc();
+        if !crate::table_capture::grow_vec(&mut self.rows.rows, sources.outcome.len()) {
+            self.fail_capture("army icon row allocation failed");
+            return [qpc().saturating_sub(begin).max(0) as u64];
+        }
         self.rows.outcome = read(
             memory,
             base,
@@ -132,6 +145,49 @@ fn read(
 mod tests {
     use super::*;
     use engine::memory::SliceMemory;
+    #[test]
+    fn worker_rows_grow_for_first_and_later_5000_country_mod_censuses() {
+        let mut capture = Captured::vacant();
+        let mut bytes = [0; 0x800];
+        bytes[0x100 + carmy::SEPARATE_COUNTER] = 255;
+        let memory = SliceMemory {
+            base: 0,
+            bytes: &bytes,
+        };
+        for count in [5_000, 12_000] {
+            let sources: Vec<_> = (0..count)
+                .map(|index| DivisionSource {
+                    pointer: 0x100,
+                    division: ((index as u64 + 1) << 32) | 51,
+                    country: index as u32 + 1,
+                    template: 0,
+                })
+                .collect();
+            let seeds: Vec<_> = sources
+                .iter()
+                .map(|source| carmy::DivisionSeed {
+                    pointer: source.pointer,
+                    division: source.division,
+                    primary_vtable: Some(carmy::VTABLE_RVA as u64),
+                    secondary_vtable: Some(carmy::SECONDARY_VTABLE_RVA as u64),
+                    handle: Some(source.division),
+                    roster_owner: Some(source.country),
+                    ..Default::default()
+                })
+                .collect();
+            capture.capture(
+                &memory,
+                0,
+                super::super::production::Sources {
+                    rows: &sources,
+                    outcome: Outcome::Rows { len: count },
+                },
+                Some(&seeds),
+            );
+            assert_eq!(capture.outcomes(), [Outcome::Rows { len: count }]);
+            assert_eq!(capture.rows.rows[count - 1].separate_counter, 255);
+        }
+    }
     #[test]
     fn missing_or_truncated_census_never_becomes_empty_success() {
         let memory = SliceMemory {

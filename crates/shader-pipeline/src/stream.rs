@@ -354,6 +354,44 @@ impl Stream {
         result
     }
 
+    /// Decode the retained packed declaration, using the caller's attachments and
+    /// retained native depth/raster state. Later texture groups can reuse these
+    /// vertex slices with [`Self::prepare_pass`] without uploading the geometry again.
+    pub fn prepare_packed_pass(
+        &mut self,
+        arena: &gpu::Arena,
+        label: &str,
+        template: &gpu::Pass,
+        bytes: &[u8],
+        stride: usize,
+        count: usize,
+    ) -> Result<NativeSubmission, String> {
+        let result = (|| {
+            let (selection, layout) = self.program.as_ref().ok_or(
+                "null technique needs the preceding native program, which has not been supplied",
+            )?;
+            let Layout::Packed(declaration) = layout else {
+                return Err("native vertex buffers require prepare_native_pass".into());
+            };
+            let compiled = selection.effect.compiled(selection.index)?;
+            let packed = Vertices {
+                declaration: *declaration,
+                bytes,
+                stride,
+                count,
+            }
+            .pack(&compiled.vertex.inputs)?;
+            let pass = self.prepare_pass_inner(arena, template, None)?;
+            let vertices = vec![arena.vertices(bytemuck::cast_slice(&packed))?];
+            Ok(NativeSubmission { pass, vertices })
+        })()
+        .map_err(|reason: String| format!("native draw {label:?}: {reason}"));
+        if let Err(reason) = &result {
+            *self.refused.entry(reason.clone()).or_default() += 1;
+        }
+        result
+    }
+
     /// Decode complete native buffer allocations into WebGPU-compatible strides.
     /// This preserves overlapping declarations and D3D out-of-allocation reads;
     /// unknown bytes in an allocation are still a named refusal. The native
@@ -395,12 +433,28 @@ impl Stream {
         template: &gpu::Pass,
         vertices: Option<Vec<gpu::VertexLayout>>,
     ) -> Result<PassSubmission, String> {
-        let (selection, _) = self.program.as_ref().ok_or(
+        let (selection, layout) = self.program.as_ref().ok_or(
             "null technique needs the preceding native program, which has not been supplied",
         )?;
+        let packed = matches!(layout, Layout::Packed(_));
         let selection = selection.clone();
         let (mut pass, stencil_reference, scissor_enabled) = self.pass_state(template);
-        pass.vertices = vertices.map_or_else(|| self.vertex_layouts(), Ok)?;
+        pass.vertices = match vertices {
+            Some(vertices) => vertices,
+            None if packed => {
+                let compiled = selection.effect.compiled(selection.index)?;
+                let format = template
+                    .targets
+                    .iter()
+                    .flatten()
+                    .next()
+                    .ok_or("packed native pass has no colour attachment")?
+                    .format;
+                gpu::Pass::packed(&compiled, &self.state, format, template.multisample.count)
+                    .vertices
+            }
+            None => self.vertex_layouts()?,
+        };
         let pipeline = self
             .cache
             .get_pass(arena.device(), &selection, &self.state, &pass)?;
@@ -505,35 +559,9 @@ impl Stream {
             match self.textures.get(&key) {
                 Some(Some(_)) => {}
                 Some(None) => {
-                    self.null_textures.entry(cube).or_insert_with(|| {
-                        // DX11 reads an explicitly null SRV as zero. WebGPU zero-initialises resources.
-                        let texture = device.create_texture(&wgpu::TextureDescriptor {
-                            label: Some("native null texture"),
-                            size: wgpu::Extent3d {
-                                width: 1,
-                                height: 1,
-                                depth_or_array_layers: if cube == super::TextureKind::Cube {
-                                    6
-                                } else {
-                                    1
-                                },
-                            },
-                            mip_level_count: 1,
-                            sample_count: 1,
-                            dimension: if cube == super::TextureKind::D3 {
-                                wgpu::TextureDimension::D3
-                            } else {
-                                wgpu::TextureDimension::D2
-                            },
-                            format: wgpu::TextureFormat::Rgba8Unorm,
-                            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                            view_formats: &[],
-                        });
-                        texture.create_view(&wgpu::TextureViewDescriptor {
-                            dimension: Some(cube.view()),
-                            ..Default::default()
-                        })
-                    });
+                    self.null_textures
+                        .entry(cube)
+                        .or_insert_with(|| gpu::null_texture(device, cube));
                 }
                 None => {
                     return Err(format!(
@@ -663,5 +691,58 @@ mod tests {
         assert_eq!(scoped.constants[&binding(1, Stage::Vertex)], [1, 2, 3, 4]);
         assert_eq!(stream.rasterizer.as_ref().unwrap().depth_bias, -7);
         assert_eq!(scoped.rasterizer.as_ref().unwrap().depth_bias, 0);
+    }
+
+    #[test]
+    fn packed_world_text_retains_raster_and_distinct_stage_allocations() {
+        let source = installed_content::pdxshader::program::read_with(b"text.shader", &|path| {
+            Some(if path == b"text.shader" {
+                b"Effect Text3D { }".to_vec()
+            } else {
+                Vec::new()
+            })
+        })
+        .unwrap();
+        let selection = Selection {
+            effect: super::super::library::Effect::from_compiled(
+                Arc::new(source),
+                Vec::new(),
+                vec![],
+            ),
+            index: 0,
+        };
+        let mut stream = Stream::default();
+        stream.bind_constants(0, Stage::Pixel, Some(&[17; 408]));
+        stream.bind_rasterizer(RasterizerState {
+            front_ccw: true,
+            depth_bias: -3,
+            scissor: true,
+            ..Default::default()
+        });
+        stream.bind_depth_stencil(DepthStencilState {
+            depth_enable: false,
+            depth_write_mask: 0,
+            ..Default::default()
+        });
+        stream
+            .bind_effect(Some(selection), Declaration::Text)
+            .unwrap();
+        stream.bind_constants(0, Stage::Vertex, Some(&[29; 80]));
+        let (pass, _, scissor) = stream.pass_state(&template());
+        assert_eq!(stream.constants[&binding(0, Stage::Vertex)], [29; 80]);
+        assert_eq!(stream.constants[&binding(0, Stage::Pixel)], [17; 408]);
+        assert_eq!(pass.primitive.front_face, wgpu::FrontFace::Ccw);
+        assert_eq!(scissor, Some(true));
+        let depth = pass.depth_stencil.unwrap();
+        assert_eq!(depth.depth_write_enabled, Some(false));
+        assert_eq!(depth.depth_compare, Some(wgpu::CompareFunction::Always));
+        assert_eq!(depth.bias.constant, -3);
+        assert_eq!(pass.multisample.count, 4);
+        // A null technique changes blend but keeps the native packed declaration.
+        stream.bind_effect(None, Declaration::Sprite).unwrap();
+        assert!(matches!(
+            stream.program,
+            Some((_, Layout::Packed(Declaration::Text)))
+        ));
     }
 }

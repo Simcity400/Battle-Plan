@@ -21,11 +21,42 @@ pub struct StaticEdge {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StaticKey {
+pub struct StaticGeometryKey {
     base: usize,
     state: usize,
     session: i64,
     root: [u8; 16],
+}
+
+fn observe_static_key(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> (Option<StaticGeometryKey>, Option<Array>) {
+    let root = state
+        .checked_add(cgame_state::PROVINCES)
+        .and_then(|address| crate::read::<[u8; 16]>(memory, address));
+    let session = base
+        .checked_add(cgame_state::PLAY_SESSION_STARTED_AT_RVA)
+        .and_then(|address| crate::read::<i64>(memory, address));
+    let key = root.zip(session).map(|(root, session)| StaticGeometryKey {
+        base,
+        state,
+        session,
+        root,
+    });
+    (key, root.and_then(|root| Array::from_header(root, 8)))
+}
+
+/// The same root/session law used by StaticGeometry::begin, without a memo.
+pub fn static_geometry_demand_key(
+    memory: &impl Memory,
+    base: usize,
+    state: usize,
+) -> Result<StaticGeometryKey, &'static str> {
+    let (key, root) = observe_static_key(memory, base, state);
+    root.ok_or("static geometry province root invalid")?;
+    key.ok_or("static geometry session key unavailable")
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -42,7 +73,7 @@ pub struct StaticCounters {
 /// whole memo. `begin` validates the key before immutable entries are reused.
 #[derive(Default)]
 pub struct StaticGeometry {
-    key: Option<StaticKey>,
+    key: Option<StaticGeometryKey>,
     root: Option<Array>,
     provinces: Vec<Option<StaticProvince>>,
     edges: std::collections::HashMap<
@@ -69,18 +100,7 @@ impl StaticGeometry {
         // kinds through 1413f51e0 and may append adjacencies. It does not replace
         // the province census or begin a new play session.
         self.edges.clear();
-        let root = state
-            .checked_add(cgame_state::PROVINCES)
-            .and_then(|address| crate::read::<[u8; 16]>(memory, address));
-        let session = base
-            .checked_add(cgame_state::PLAY_SESSION_STARTED_AT_RVA)
-            .and_then(|address| crate::read::<i64>(memory, address));
-        let key = root.zip(session).map(|(root, session)| StaticKey {
-            base,
-            state,
-            session,
-            root,
-        });
+        let (key, root) = observe_static_key(memory, base, state);
         if key.is_none() || self.key != key {
             self.clear();
             self.counters.cleared = self.counters.cleared.saturating_add(1);
@@ -88,7 +108,7 @@ impl StaticGeometry {
         // An unreadable key leaves the memo unusable rather than denying the
         // walk: every lookup then reads live and nothing is retained.
         self.key = key;
-        self.root = root.and_then(|root| Array::from_header(root, 8));
+        self.root = root;
         self.root.is_some()
     }
 
@@ -97,10 +117,50 @@ impl StaticGeometry {
         self.key.is_some()
     }
 
+    /// Certifies the same session/root key observed by begin for this pass.
+    /// Fresh map domains cannot reuse immutable entries after a failed key.
+    pub fn province_count(&self) -> Result<usize, &'static str> {
+        self.demand_key()?;
+        self.root
+            .map(|root| root.count as usize)
+            .ok_or("static geometry province root invalid")
+    }
+
+    /// The successfully begun immutable-map key, without another source read.
+    pub fn demand_key(&self) -> Result<StaticGeometryKey, &'static str> {
+        self.root.ok_or("static geometry province root invalid")?;
+        self.key.ok_or("static geometry session key unavailable")
+    }
+
+    pub(crate) fn province_root(&self) -> Result<Array, &'static str> {
+        self.demand_key()?;
+        self.root.ok_or("static geometry province root invalid")
+    }
+
+    /// Prepare immutable province slots outside acquisition. Rekeying clears
+    /// their values without discarding this prepared length.
+    pub fn reserve_provinces(&mut self, count: usize) -> std::io::Result<()> {
+        if self.provinces.len() < count {
+            crate::allocation::resize(&mut self.provinces, count, None)?;
+        }
+        Ok(())
+    }
+
+    /// Temporary advisory hint storage must not fire frame-allocation hooks.
+    pub(crate) fn reserve_provinces_advisory(&mut self, count: usize) -> std::io::Result<()> {
+        if self.provinces.len() < count {
+            self.provinces
+                .try_reserve_exact(count - self.provinces.len())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+            self.provinces.resize(count, None);
+        }
+        Ok(())
+    }
+
     pub fn clear(&mut self) {
         self.key = None;
         self.root = None;
-        self.provinces.clear();
+        self.provinces.fill(None);
         self.edges.clear();
         self.embark = None;
     }
@@ -116,6 +176,20 @@ impl StaticGeometry {
 
     fn stored(&self, id: u32) -> Option<StaticProvince> {
         *self.provinces.get(id as usize)?
+    }
+
+    /// Fresh LAND capture uses prepared slots and never grows them in-pass.
+    pub fn province_prepared(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        id: u32,
+    ) -> Result<StaticProvince, &'static str> {
+        self.province_count()?;
+        if id as usize >= self.provinces.len() {
+            return Err("static geometry province capacity exhausted");
+        }
+        self.province(memory, base, id)
     }
 
     /// One province's map data, from the memo or from an authenticated read.

@@ -99,6 +99,7 @@ pub struct Want {
     /// is still being built.
     pub playing: bool,
     pub perspective: perspective::Choice,
+    pub show_allied_plans: bool,
     /// The window's counter options and memory, which its hours are laid out with.
     pub counters: crate::map::counters::CounterView,
     pub view: View,
@@ -131,7 +132,13 @@ impl Want {
 
     /// Whether a change from `self` to `next` invalidates what was built.
     fn invalidates(&self, next: &Want) -> bool {
-        self.perspective != next.perspective || self.counters != next.counters
+        // Selection and the active GUI object are viewer-local overlay inputs.
+        // Their prepared snapshot is checked when installed; pointer motion
+        // must not cancel simulation-hour builders or restart their epoch.
+        self.perspective != next.perspective
+            || self.show_allied_plans != next.show_allied_plans
+            || self.counters.settings != next.counters.settings
+            || !Arc::ptr_eq(&self.counters.presentation, &next.counters.presentation)
     }
 
     /// Whether an hour in flight is still worth finishing: one of `keep`, or,
@@ -194,7 +201,7 @@ pub struct Political {
 pub struct Borders {
     pub id: u64,
     political: u64,
-    zone: Zone,
+    pub(crate) zone: Zone,
     pub classes: ClassPlan,
     pub highlighted: ZonePlan,
 }
@@ -1392,17 +1399,20 @@ impl Coordinator {
             let fill = Fill(Arc::clone(&slots.political));
             let fill_borders = Fill(Arc::clone(&slots.borders));
             let near_regions = slots_of(&neighbours, |slots| &slots.political);
+            let political_perspective = want.perspective.clone();
             let near_borders = slots_of(&neighbours, |slots| &slots.borders);
             submit(
                 "political",
                 Box::new(move |view| {
                     Part::Political((|| {
-                        let key = FrameKey::new(view.frame)?;
+                        let naval = view.naval_fill(&political_perspective)?;
+                        let key = FrameKey::new(view.frame)?.with_naval(&naval);
                         let near = wait_all(near_regions);
                         let political = match near.iter().find(|near| near.key == key) {
                             Some(same) => Arc::clone(same),
                             None => {
-                                let layers = political::build(&view.map, view.frame)?;
+                                let layers =
+                                    political::build_with_naval(&view.map, view.frame, naval)?;
                                 Arc::new(Political {
                                     id: next_id(),
                                     key,
@@ -1530,12 +1540,14 @@ impl Coordinator {
             );
         }
         let movers_perspective = want.perspective.clone();
+        let show_allied_plans = want.show_allied_plans;
         submit(
             "movers",
             Box::new(move |view| {
                 Part::Movers((|| {
                     // The raid arrows' units join the unit models.
-                    let orders = view.order_field(&movers_perspective)?;
+                    let orders =
+                        view.order_field_with_allied(&movers_perspective, show_allied_plans)?;
                     let mut units = view.prepare_unit_models(&movers_perspective)?;
                     units.add_raid_units(&view.unit_models, &orders.raid_units);
                     Ok(Box::new(Movers {
@@ -1619,6 +1631,7 @@ pub struct Pipeline {
     engaged: Engaged,
     /// The builders' turns, which other work may borrow.
     workers: crate::parallel::Workers,
+    pool: Arc<Pool>,
 }
 
 /// The window's engaged-flag index, shared by the window and its builders.
@@ -1695,7 +1708,7 @@ impl Pipeline {
             sends: 0,
             slots: BTreeMap::new(),
             memos: Arc::new(Memos::new()),
-            pool,
+            pool: Arc::clone(&pool),
             parallel,
             events: events.clone(),
             outbox,
@@ -1717,6 +1730,7 @@ impl Pipeline {
             requested,
             engaged,
             workers,
+            pool,
         })
     }
 
@@ -1754,6 +1768,11 @@ impl Pipeline {
     /// batch ([`crate::parallel::Workers`]).
     pub fn workers(&self) -> crate::parallel::Workers {
         self.workers.clone()
+    }
+
+    /// Queues a view's CPU preparation without blocking its frame.
+    pub(crate) fn try_submit(&self, work: Box<dyn FnOnce() + Send>) -> bool {
+        self.pool.try_submit(work).is_ok()
     }
 
     /// Whether this pipeline builds for this content and replay.

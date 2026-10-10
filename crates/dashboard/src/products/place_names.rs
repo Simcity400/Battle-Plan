@@ -190,16 +190,8 @@ fn name_at(
     if let Ok(Some(name)) = &province_name
         && (!land || !name.is_empty())
     {
-        return if name.is_empty() {
-            (
-                None,
-                Some(format!(
-                    "province {province_id}: native display name is empty"
-                )),
-            )
-        } else {
-            (Some(name.clone()), None)
-        };
+        // 140E69320 returns successful empty localisation unchanged.
+        return (Some(name.clone()), None);
     }
     if province.state == 0 {
         if land {
@@ -212,25 +204,14 @@ fn name_at(
                 }),
             );
         }
-        let region = regions
-            .map_err(str::to_owned)
-            .and_then(|regions| {
-                regions
-                    .get(&province_id)
-                    .ok_or_else(|| {
-                        format!("province {province_id}: no content-defined strategic region")
-                    })?
-                    .clone()
-            })
-            .and_then(|name| {
-                if name.is_empty() {
-                    Err(format!(
-                        "province {province_id}: native region display name is empty"
-                    ))
-                } else {
-                    Ok(name)
-                }
-            });
+        let region = regions.map_err(str::to_owned).and_then(|regions| {
+            regions
+                .get(&province_id)
+                .ok_or_else(|| {
+                    format!("province {province_id}: no content-defined strategic region")
+                })?
+                .clone()
+        });
         // Region identity is independent of an unread province override/owner.
         return match (province_name, region) {
             (Ok(_), Ok(region)) => (Some(region), None),
@@ -254,15 +235,8 @@ fn name_at(
                 scripted_text::StateNameUsage::Place,
             )
         });
-    let state_name = state_name.and_then(|name| {
-        if name.is_empty() {
-            Err(format!(
-                "province {province_id}: native state display name is empty"
-            ))
-        } else {
-            Ok(name)
-        }
-    });
+    // 1409CC380 returns template text even when it is empty; absence of
+    // recorded/template inputs remains an error, distinct from that result.
     match (province_name, state_name) {
         (Ok(_), Ok(state)) => (Some(state), None),
         (Err(reason), Ok(state)) => (Some(state), Some(reason)),
@@ -301,13 +275,6 @@ fn state_name_at(
                 names,
                 scripted_text::StateNameUsage::Place,
             )
-        })
-        .and_then(|name| {
-            if name.is_empty() {
-                Err(format!("state {state_id}: native display name is empty"))
-            } else {
-                Ok(name)
-            }
         });
     match name {
         Ok(name) => (Some(name), None),

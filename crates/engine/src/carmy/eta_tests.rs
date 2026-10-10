@@ -1168,7 +1168,106 @@ const GOLDEN_PACKETS: [u64; 24] = [
     1263167948750048186,
 ];
 
-const GOLDEN_FAULTS: (usize, [u64; 2]) = (4169, [15411669950108721350, 6421612874394399558]);
+// The political integration routes ETA river terms through MovementRelations:
+// 140D1E540 establishes the diplomacy owner, and 140D03410 the status owner
+// and target. Those guarded identities add refusal paths without changing the
+// clean packets above. Fault digests are from claude-validation/test-r1.log.
+const GOLDEN_FAULTS: (usize, [u64; 2]) = (4181, [8159933298070585749, 10581983527932471709]);
+
+#[test]
+fn eta_river_roster_refuses_native_owner_and_target_faults() {
+    fn query(memory: &impl Memory, world: &World, province: usize) -> Result<i64, &'static str> {
+        let reader = ccountry::Reader::new(memory, world.base, world.state)?;
+        let owner = reader.resolve(1)?;
+        let relations = crelation_status::MovementRelations::new(memory, world.base, owner)?;
+        let roster = EtaRiverRoster {
+            reader,
+            relations,
+            definition: std::cell::Cell::new(None),
+        };
+        eta_river_combined(memory, world.base, &roster, province)
+    }
+
+    let mut world = World::synthetic(Shape::small());
+    let (province, diplomacy, relation, other_owner) = {
+        let memory = world.memory();
+        let countries = ccountry::Reader::new(&memory, world.base, world.state).unwrap();
+        let owner = countries.resolve(1).unwrap();
+        let other_owner = countries.resolve(2).unwrap().pointer;
+        let diplomacy =
+            read::<u64>(&memory, owner.pointer + ccountry::DIPLOMACY_STATUS).unwrap() as usize;
+        let matrix = Array::read(&memory, diplomacy + cdiplomacy_status::RELATIONS, 8).unwrap();
+        let relation = read::<u64>(&memory, matrix.element(1, 8).unwrap()).unwrap() as usize;
+        let provinces = Array::read(&memory, world.state + cgame_state::PROVINCES, 8).unwrap();
+        let province = read::<u64>(&memory, provinces.element(1, 8).unwrap()).unwrap() as usize;
+        assert_eq!(
+            read::<u32>(&memory, province + cprovince::CONTROLLER),
+            Some(1)
+        );
+        assert_eq!(query(&memory, &world, province), Ok(-1_001));
+        (province, diplomacy, relation, other_owner)
+    };
+    // These are native constructor invariants, independent of the digest.
+    // Exercise both unreadable fields and readable objects with wrong owners
+    // or targets; none may supply the otherwise readable river modifier.
+    for (address, len, replacement, fault_reason, mismatch_reason) in [
+        (
+            diplomacy,
+            8,
+            0,
+            "diplomacy vtable mismatch",
+            "diplomacy vtable mismatch",
+        ),
+        (
+            diplomacy + cdiplomacy_status::COUNTRY,
+            8,
+            other_owner as u64,
+            "diplomacy country mismatch",
+            "diplomacy country mismatch",
+        ),
+        (
+            relation,
+            8,
+            0,
+            "relation status identity mismatch",
+            "relation status identity mismatch",
+        ),
+        (
+            relation + crelation_status::DIPLOMACY_STATUS,
+            8,
+            diplomacy as u64 + 1,
+            "relation status identity mismatch",
+            "relation status identity mismatch",
+        ),
+        (
+            relation + crelation_status::TARGET_COUNTRY,
+            4,
+            2,
+            "relation status target unreadable",
+            "relation status target differs from matrix slot",
+        ),
+    ] {
+        let faulted = Faulted {
+            source: world.memory(),
+            fault: (address, len),
+        };
+        assert_eq!(
+            query(&faulted, &world, province),
+            Err(fault_reason),
+            "{address:#x}"
+        );
+        let offset = world.offset(address);
+        let original = world.bytes[offset..offset + len].to_vec();
+        world.bytes[offset..offset + len].copy_from_slice(&replacement.to_le_bytes()[..len]);
+        assert_eq!(
+            query(&world.memory(), &world, province),
+            Err(mismatch_reason),
+            "{address:#x}"
+        );
+        world.bytes[offset..offset + len].copy_from_slice(&original);
+        assert_eq!(query(&world.memory(), &world, province), Ok(-1_001));
+    }
+}
 
 /// Every fixture field, faulted in turn, reproduces the golden first failure,
 /// row set and arenas, cold and after a clean warm walk.
@@ -1254,7 +1353,7 @@ fn eta_walk_production_faults_match_their_golden_packets() {
 }
 
 const GOLDEN_PRODUCTION_FAULTS: (usize, [u64; 2]) =
-    (4139, [16057994072682618205, 14133751343559739669]);
+    (4155, [6849365646774858470, 12533698677180971366]);
 
 /// Bench, not a check: guarded calls, then the median and minimum wall time
 /// and thread cycles of a warm walk, and of a walk after evicting the caches,
@@ -1336,5 +1435,110 @@ fn eta_walk_bench() {
                 spent[0],
             );
         }
+    }
+}
+
+#[test]
+fn worker_eta_original_routes_grow_cold_rows_legs_terrain_and_geometry_before_publication() {
+    for divisions in [5000, 6103] {
+        let shape = Shape {
+            divisions,
+            group_size: 50,
+            ..Shape::small()
+        };
+        let world = World::synthetic(shape);
+        let memory = world.memory();
+        let mut baseline = Walker::new(divisions, divisions * 8, divisions * 8);
+        baseline.capacities = (usize::MAX, usize::MAX, usize::MAX);
+        let expected = baseline.walk(
+            &memory,
+            &world,
+            &world.seeds,
+            0..world.seeds.len(),
+            Outcome::Rows {
+                len: world.seeds.len(),
+            },
+        );
+        assert_eq!(expected.walk.outcome, Outcome::Rows { len: divisions });
+        let mut fixed = Walker::new(0, 0, 0);
+        let short = fixed.walk(
+            &memory,
+            &world,
+            &world.seeds,
+            0..world.seeds.len(),
+            Outcome::Rows {
+                len: world.seeds.len(),
+            },
+        );
+        assert_eq!(
+            short.walk.outcome,
+            Outcome::Truncated {
+                len: 0,
+                unread_rows: divisions as u32
+            }
+        );
+        let mut worker = Walker::new(0, 0, 0);
+        worker.capacities = (usize::MAX, usize::MAX, usize::MAX);
+        worker.geometry = cprovince::GeometryPacket::vacant();
+        worker.geometry.enable_growth();
+        worker.packet.enable_growth();
+        let observed = worker.walk(
+            &memory,
+            &world,
+            &world.seeds,
+            0..world.seeds.len(),
+            Outcome::Rows {
+                len: world.seeds.len(),
+            },
+        );
+        assert_eq!(observed.walk, expected.walk);
+        assert_eq!(observed.rows, expected.rows);
+        assert_eq!(observed.terrain, expected.terrain);
+        assert_eq!(observed.river, expected.river);
+        assert_eq!(observed.transport, expected.transport);
+        assert_eq!(observed.rail, expected.rail);
+        let provinces = worker.geometry.province_count().unwrap();
+        worker.statics.reserve_provinces(provinces).unwrap();
+        let mut terrain = vec![
+            cprovince::StaticProvince {
+                pointer: 0,
+                definition: 0,
+                flags: 0,
+                terrain: 0,
+                terrain_index: 0
+            };
+            provinces
+        ];
+        let len = capture_counter_land_terrains(
+            &memory,
+            world.base,
+            world.state,
+            &mut worker.geometry,
+            &mut worker.statics,
+            &mut terrain,
+        )
+        .unwrap();
+        let mut fresh = FreshCounterEtaPacket::vacant();
+        fresh.enable_growth();
+        let walk = capture_fresh_counter_eta(
+            &memory,
+            world.base,
+            world.state,
+            7,
+            &world.seeds,
+            0..world.seeds.len(),
+            (0, 1),
+            Outcome::Rows {
+                len: world.seeds.len(),
+            },
+            Ok(&terrain[..len]),
+            &mut worker.geometry,
+            &mut worker.packet,
+            &mut fresh,
+        );
+        assert_eq!(walk.outcome, Outcome::Rows { len: divisions });
+        assert_eq!(fresh.rows().len(), divisions);
+        assert!(fresh.rows().iter().all(|row| row.normal.is_ok()));
+        assert!(!fresh.terrain().is_empty());
     }
 }

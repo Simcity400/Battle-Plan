@@ -27,6 +27,12 @@ pub struct Captured {
     drained: Option<Drain>,
 }
 impl Captured {
+    pub(crate) fn vacant() -> Self {
+        Self::with_capacities(&Capacities::default())
+    }
+    pub(crate) fn fail(&mut self, hour: i32, reason: &'static str) {
+        self.drained = Some(crate::land_events::lost_drain(hour, reason));
+    }
     pub fn with_capacities(c: &Capacities) -> Self {
         Self {
             words: allocation::owned_vec(allocation::default_vec(c.words)),
@@ -47,10 +53,21 @@ impl Captured {
         }
         grow_vec(&mut self.words, c.words);
     }
+    #[cfg(test)]
     pub fn drain(&mut self, hour: i32, invalidating: bool) -> u64 {
         let start = crate::sampling::qpc();
         let d = crate::land_events::drain(&mut self.words, hour, invalidating);
         self.drained = Some(d);
+        crate::land_events::install_offered();
+        crate::sampling::qpc().saturating_sub(start).max(0) as u64
+    }
+    pub(crate) fn drain_growing(&mut self, hour: i32, invalidating: bool) -> u64 {
+        let start = crate::sampling::qpc();
+        self.drained = Some(crate::land_events::drain_growing(
+            &mut self.words,
+            hour,
+            invalidating,
+        ));
         crate::land_events::install_offered();
         crate::sampling::qpc().saturating_sub(start).max(0) as u64
     }
@@ -269,7 +286,7 @@ fn decode(
     let mut commanders = std::collections::HashMap::new();
     let mut histories = std::collections::HashMap::new();
     let mut losses = std::collections::HashMap::new();
-    let mut killers = std::collections::HashMap::new();
+    let mut destructions = std::collections::HashMap::new();
     while at < words.len() {
         let size = usize::try_from(words[at]).map_err(|_| "land event length overflow")?;
         if size < 4 {
@@ -354,6 +371,9 @@ fn decode(
                 }
                 allocation::reserve_push_batch(&mut destroyed, 1)
                     .map_err(|_| "collector allocation failed")?;
+                allocation::reserve_map(&mut destructions, 1)
+                    .map_err(|_| "collector allocation failed")?;
+                destructions.insert(id, destroyed.len());
                 destroyed.push(DestroyedDivisionsRow {
                     id,
                     division,
@@ -401,11 +421,14 @@ fn decode(
                 }
             }
             6 => {
-                let division = reader.word()?;
+                // 140C79E70 can repeat before deferred deletion. The hook's
+                // reserved entry identifies this invocation, including nesting.
+                let entry = reader.word()?;
                 let killer = reader.word()?;
-                if insert(&mut killers, division, killer)? {
-                    return Err("duplicate destruction killer observation");
-                }
+                let index = destructions
+                    .remove(&entry)
+                    .ok_or("killer observation has no destruction entry")?;
+                destroyed[index].killer_division = Some(killer);
             }
             7 => {
                 let hour = reader.word()? as i32;
@@ -503,18 +526,8 @@ fn decode(
     if !histories.is_empty() {
         return Err("history projection has no final result");
     }
-    for row in destroyed
-        .iter_mut()
-        .filter(|row| row.killer_division.is_some())
-    {
-        row.killer_division = Some(
-            killers
-                .remove(&row.division)
-                .ok_or("destruction killer observation missing")?,
-        );
-    }
-    if !killers.is_empty() {
-        return Err("killer observation has no destruction entry");
+    if !destructions.is_empty() {
+        return Err("destruction killer observation missing");
     }
     Ok((results, destroyed))
 }
@@ -938,6 +951,85 @@ mod tests {
         assert!(!rows[0].complete);
     }
     #[test]
+    fn repeated_and_nested_destruction_observations_preserve_each_killer_and_sibling_table() {
+        // 140C79E70 -> 140CCC7F0 observes each invocation before deferred
+        // deletion. Reentrant effects may complete an inner entry first.
+        let first = 77;
+        let division = 0x8000_0001_0000_1269;
+        let mut words = result(0, false, true);
+        words.extend(history(41, [1, 2]));
+        let outer = first + words.len() as u64;
+        words.extend([12, 1, division, 1, 2, 0, 7, 8, 80, 2, 41, 41]);
+        let inner = first + words.len() as u64;
+        words.extend([10, 1, division, 3, 4, 0, 9, 10, 80, 0]);
+        words.extend([4, 6, inner, 0x8000_0002_0000_0042]);
+        words.extend([4, 6, outer, 0x8000_0003_0000_0043]);
+        let repeated = first + words.len() as u64;
+        words.extend([10, 1, division, 5, 6, 0, 11, 12, 80, 0]);
+        let paired = words.len();
+        assert_eq!(
+            decode(&words, first).unwrap_err(),
+            "destruction killer observation missing"
+        );
+        words.extend([4, 6, repeated, 0]);
+        let (_, destroyed) = decode(&words, first).unwrap();
+        assert_eq!(destroyed.len(), 3);
+        assert_eq!(
+            destroyed.iter().map(|row| row.id).collect::<Vec<_>>(),
+            [outer, inner, repeated]
+        );
+        assert!(destroyed.iter().all(|row| row.division == division));
+        assert_eq!(destroyed[0].killer_division, Some(0x8000_0003_0000_0043));
+        assert_eq!(destroyed[1].killer_division, Some(0x8000_0002_0000_0042));
+        assert_eq!(destroyed[2].killer_division, Some(0));
+        assert_eq!(destroyed[0].combats, [41, 41]);
+        for (row, owner, killer_country, province, destination) in [
+            (&destroyed[0], 1, 2, 7, 8),
+            (&destroyed[1], 3, 4, 9, 10),
+            (&destroyed[2], 5, 6, 11, 12),
+        ] {
+            assert_eq!(row.owner, owner);
+            assert_eq!(row.killer_country, killer_country);
+            assert_eq!(row.province, province);
+            assert_eq!(row.destination, Some(destination));
+        }
+        let captured = Captured {
+            drained: Some(Drain {
+                epoch: 1,
+                first,
+                words: words.len(),
+                required: words.len(),
+                from_hour: 79,
+                to_hour: 80,
+                complete: true,
+                lost: 0,
+                reason: "",
+            }),
+            words: words.clone(),
+        };
+        let tables = captured.tables();
+        assert!(complete_coverage(&tables).complete);
+        assert!(
+            matches!(&tables[0], TableView::Complete(TableRows::LandCombatResults(rows)) if rows.len() == 1)
+        );
+        assert_eq!(
+            tables[1],
+            TableView::Complete(TableRows::DestroyedDivisions(destroyed))
+        );
+        let mut encoder = replay::frame::FrameEncoder::new();
+        let frame = encode_land(&mut encoder, 80, tables.clone(), true);
+        let mut decoder = replay::frame::FrameDecoder::new();
+        let decoded = decoder.advance(&frame).unwrap();
+        for (id, expected) in TABLES.into_iter().zip(&tables) {
+            assert_eq!(&*decoded.tables[id.index()], expected);
+        }
+        words.extend_from_within(paired..);
+        assert_eq!(
+            decode(&words, first).unwrap_err(),
+            "killer observation has no destruction entry"
+        );
+    }
+    #[test]
     fn native_destruction_to_replay_roundtrip_recovers_without_stale_events() {
         #[derive(Default)]
         struct Memory(std::collections::BTreeMap<usize, u8>);
@@ -1003,7 +1095,7 @@ mod tests {
         // paired killer return must not replace the captured country/owner.
         m.d(0x2000 + cunit::LOGICAL_OWNER, 0);
         m.d(0x4000 + cprovince::CONTROLLER, 0);
-        words.extend([4, 6, 0x8000_0001_0000_1269, 0]);
+        words.extend([4, 6, 77, 0]);
         let (_, dead) = decode(&words, 77).unwrap();
         assert_eq!(dead[0].combats, [0x8000_0003_0000_003e]);
         assert_eq!(dead[0].killer_division, Some(0));

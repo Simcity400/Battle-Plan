@@ -6,12 +6,12 @@
 //! The variant's +0xD0 list already holds the equipment bonuses selected by
 //! `140BD2040` / `140E4AE40`, so no research or country bonus census is inferred.
 //! Every collection retains native order and first-match semantics. Reads are
-//! callback-local and allocation-free; unreadable dependencies refuse the ETA.
+//! fixed for callbacks or growing for workers; unreadable inputs refuse the ETA.
 
 use crate::{
     Memory, ccountry, cequipment_module, cequipment_type, cequipment_upgrade,
     cequipment_upgrades_instance, cequipment_variant, cpdx_array::Array, cproduction_status,
-    equipment_module_entry, equipment_upgrade_entry, fixed5, modifier_entry, read,
+    equipment_module_entry, equipment_upgrade_entry, fixed5, modifier_entry, read, walk::Buffer,
 };
 
 /// `140632AC0` maps stat 0x3E to this token. Static registration `1400EA1E1`
@@ -43,9 +43,9 @@ const STATS_VTABLE_RVA: usize = 0x0270_2938;
 
 /// Reused caller-owned storage for native `140BC6620`'s selected pointers.
 /// It collects every handle before `141927730` reads any selected stat array.
-/// A shortage reports the live raw handle count; grow outside acquisition.
+/// Fixed shortages report the raw count; workers grow from that original header.
 pub struct NamedBonuses<'a> {
-    pub pointers: &'a mut [usize],
+    pub pointers: Buffer<'a, usize>,
     pub required: usize,
 }
 
@@ -188,6 +188,8 @@ fn collect_named(
 ) -> Result<usize, &'static str> {
     let handles = array(memory, variant, NAMED_HANDLES, 4)?;
     scratch.required = scratch.required.max(handles.count as usize);
+    // 140BC6620 collects every variant+E8 handle before selected stats.
+    scratch.pointers.ensure(handles.count as usize)?;
     if handles.count == 0 {
         return Ok(0);
     }
@@ -259,7 +261,7 @@ fn group(
 /// selected inputs. The caller has resolved the exact railway-gun reference
 /// and authenticated this variant's full reference and primary vtable,
 /// and must have verified [`MAXIMUM_SPEED_TOKEN`] in its fixed-layout report.
-/// The named-pointer arena must be grown off-thread using `required`.
+/// The named-pointer arena grows only in the worker Buffer mode.
 pub fn variant_speed(
     memory: &impl Memory,
     base: usize,

@@ -415,7 +415,7 @@ pub(crate) fn lost_drain() {
     }
 }
 
-pub(crate) fn capture(output: &mut Snapshot, hour: i32, partial: bool) {
+pub(crate) fn capture_growing(output: &mut Snapshot, hour: i32, partial: bool) {
     use replay::event_feed_rows::EventFeedCoverage;
     let generation = crate::world_lifetime::generation();
     let Some(owner) = (unsafe { SHARED.load(Ordering::SeqCst).as_ref() }) else {
@@ -441,19 +441,17 @@ pub(crate) fn capture(output: &mut Snapshot, hour: i32, partial: bool) {
             } else {
                 crate::world_lifetime::unavailable_reason()
             };
-            let result = store.snapshot(
-                output,
-                crate::event_feed_history::OwnerBoundary {
-                    generation,
-                    read_hour: hour,
-                    coverage: if partial {
-                        EventFeedCoverage::Partial
-                    } else {
-                        EventFeedCoverage::Complete
-                    },
-                    failure,
+            let boundary = crate::event_feed_history::OwnerBoundary {
+                generation,
+                read_hour: hour,
+                coverage: if partial {
+                    EventFeedCoverage::Partial
+                } else {
+                    EventFeedCoverage::Complete
                 },
-            );
+                failure,
+            };
+            let result = store.snapshot_growing(output, boundary);
             if let Err(reason) = result {
                 store.invalidate(reason);
             }
@@ -484,6 +482,10 @@ pub(crate) fn discarded(publication: u64) {
 
 /// Spool-only growth and retirement; native callbacks never allocate or free.
 pub(crate) fn presize(slots: usize) {
+    engine::allocation::advisory(|| presize_storage(slots));
+}
+
+fn presize_storage(slots: usize) {
     if active() & RETAIN != 0 {
         return;
     }
